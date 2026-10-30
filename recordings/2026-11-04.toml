@@ -1,0 +1,26 @@
+# Latency recording for Wednesday, November 4, 2026. Times are US Eastern.
+#
+#   uv run earnings-bot-record recordings/2026-11-04.toml
+#
+# Start it any time before 6:45 AM. It waits for each window, and the computer needs to stay
+# awake until the FICO window closes at 4:45 PM.
+
+[[target]]
+ticker = "UBER"
+expected = 2026-11-04T06:55:00
+cik = 1543151
+q4_host = "investor.uber.com"
+newswire = ["Uber"]
+# Same names and folders as the last three quarters
+guess = [
+    "https://s23.q4cdn.com/407969754/files/doc_earnings/2026/q3/earnings-result/Uber-Q3-26-Earnings-Press-Release.pdf",
+    "https://s23.q4cdn.com/407969754/files/doc_earnings/2026/q3/supplemental-info/Uber-Q3-26-Earnings-Supplemental-Data.pdf",
+    "https://s23.q4cdn.com/407969754/files/doc_earnings/2026/q3/transcript/Uber-Q3-26-Prepared-Remarks.pdf",
+]
+
+[[target]]
+ticker = "FICO"
+expected = 2026-11-04T16:15:00
+cik = 814547
+# FICO's IR site blocks automated access, so it's the newswire and EDGAR
+newswire = ["FICO", "Fair Isaac"]
