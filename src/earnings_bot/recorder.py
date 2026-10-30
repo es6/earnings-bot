@@ -11,9 +11,7 @@ import argparse
 import asyncio
 import contextlib
 import json
-import socket
 import statistics
-import struct
 import sys
 import time
 import tomllib
@@ -27,6 +25,7 @@ from zoneinfo import ZoneInfo
 import aiohttp
 from pydantic import BaseModel, ValidationError, field_validator
 
+from earnings_bot.clock import TrustedClock
 from earnings_bot.config import RecorderSettings
 from earnings_bot.fetch import Fetcher, Response
 from earnings_bot.sources import (
@@ -44,6 +43,10 @@ ET = ZoneInfo("America/New_York")
 
 # Response headers worth keeping, to see how stale a CDN's copy was
 CACHE_HEADERS = ("age", "cache-control", "expires", "last-modified", "date", "cf-cache-status")
+
+# Seconds between clock syncs during a window. A computer's clock can drift by about a
+# millisecond a minute, so this keeps the error to a few milliseconds.
+CLOCK_RESYNC = 300
 
 
 class Target(BaseModel):
@@ -96,26 +99,6 @@ def load_plan(path: Path) -> Plan:
         return Plan.model_validate(tomllib.load(file))
 
 
-def clock_offset(server: str = "time.cloudflare.com") -> float | None:
-    """Seconds this machine's clock is behind real time, from one SNTP exchange."""
-    request = b"\x1b" + bytes(47)  # SNTP version 3, client mode
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-            sock.settimeout(3)
-            sent = time.time()
-            sock.sendto(request, (server, 123))
-            reply = sock.recv(48)
-            received = time.time()
-    except OSError:
-        return None
-    # The server's receive and transmit times: seconds since 1900, as 32.32 fixed point
-    server_received, server_sent = (
-        seconds + fraction / 2**32 - 2_208_988_800
-        for seconds, fraction in struct.iter_unpack("!II", reply[32:48])
-    )
-    return ((server_received - sent) + (server_sent - received)) / 2
-
-
 def _clock(moment: datetime) -> str:
     return f"{moment.astimezone(ET):%H:%M:%S.%f}"[:-3]
 
@@ -129,12 +112,12 @@ def _json_value(value: object) -> str:
 class Journal:
     """Appends every event to the JSON Lines log, and prints the ones worth watching live."""
 
-    def __init__(self, file: TextIO, clock_offset: float = 0.0) -> None:
+    def __init__(self, file: TextIO, clock: TrustedClock | None = None) -> None:
         self.file = file
-        self.clock_offset = clock_offset
+        self.clock = clock or TrustedClock()
 
     def now(self) -> datetime:
-        return datetime.now(UTC) + timedelta(seconds=self.clock_offset)
+        return self.clock.now()
 
     def write(self, event: str, **fields: Any) -> None:
         record = {"at": self.now(), "event": event, **fields}
@@ -295,6 +278,47 @@ def summarize(target: Target, watches: list[Watch], journal: Journal) -> None:
     )
 
 
+async def sync_clock(journal: Journal, periodic: bool = False) -> bool:
+    """Syncs the journal's clock and logs the result. A periodic sync is quiet, and keeps the
+    previous sync if no server answers."""
+    # Windows that open together share a sync, since NIST asks for at most one query every
+    # 4 seconds. This age is on the system clock because time.monotonic() can stop during sleep.
+    if journal.clock.synced and time.time() - journal.clock.synced_at < 60:
+        return True
+    samples = await asyncio.to_thread(journal.clock.sync)
+    if not samples:
+        journal.write("clock", synced=False)
+        if not periodic:
+            # The last sync may be days old, and time.monotonic() can stop while the computer
+            # sleeps, so the system clock is the safer guess
+            journal.clock.forget()
+            journal.say("Couldn't reach a time server, so times come from this PC's clock")
+        return False
+    best, behind = samples[0], journal.clock.system_clock_behind()
+    journal.write(
+        "clock",
+        synced=True,
+        server=best.server,
+        max_error_ms=round(best.round_trip * 500, 1),
+        system_clock_behind=round(behind, 4),
+        # How far each server's answer was from the one in use, in milliseconds
+        servers={s.server: round((s.offset - best.offset) * 1000, 1) for s in samples},
+    )
+    if not periodic:
+        direction = "behind" if behind > 0 else "ahead"
+        journal.say(
+            f"Time is from {best.server}, accurate to {best.round_trip * 500:.0f} ms. "
+            f"This PC's clock is {abs(behind):.3f}s {direction}."
+        )
+    return True
+
+
+async def keep_clock_synced(journal: Journal, end: datetime) -> None:
+    while (end - journal.now()).total_seconds() > CLOCK_RESYNC:
+        await asyncio.sleep(CLOCK_RESYNC)
+        await sync_clock(journal, periodic=True)
+
+
 async def record_target(target: Target, fetcher: Fetcher, journal: Journal) -> None:
     start, end = target.window
     if journal.now() >= end:
@@ -302,9 +326,11 @@ async def record_target(target: Target, fetcher: Fetcher, journal: Journal) -> N
         return
     if journal.now() < start:
         journal.say(f"{target.ticker}: waiting until {_clock(start)} ET")
-    # Short naps, so a computer waking from sleep doesn't oversleep the window
-    while (remaining := (start - journal.now()).total_seconds()) > 0:  # noqa: ASYNC110
+    # Wait on the system clock, which catches up after the computer sleeps, in short naps so a
+    # sleep doesn't make us miss the window. The clock is synced again once the window opens.
+    while (remaining := (start - datetime.now(UTC)).total_seconds()) > 0:  # noqa: ASYNC110
         await asyncio.sleep(min(remaining, 30))
+    await sync_clock(journal)
 
     watches = [Watch(target.ticker, source) for source in target.sources()]
     journal.write(
@@ -318,6 +344,7 @@ async def record_target(target: Target, fetcher: Fetcher, journal: Journal) -> N
     journal.say(f"{target.ticker}: watching {len(watches)} sources until {_clock(end)} ET")
     try:
         async with asyncio.TaskGroup() as group:
+            group.create_task(keep_clock_synced(journal, end))
             for w in watches:
                 group.create_task(watch(w, fetcher, journal, end))
     finally:
@@ -325,15 +352,10 @@ async def record_target(target: Target, fetcher: Fetcher, journal: Journal) -> N
 
 
 async def record(plan: Plan, sec_user_agent: str, log_path: Path) -> None:
-    offset = await asyncio.to_thread(clock_offset)
     with log_path.open("a", encoding="utf-8") as file:
-        journal = Journal(file, offset or 0.0)
-        journal.write("start", clock_offset=offset, targets=[t.ticker for t in plan.target])
-        if offset is None:
-            journal.say("Couldn't reach a time server, so times come from this machine's clock")
-        else:
-            direction = "behind" if offset > 0 else "ahead"
-            journal.say(f"This clock is {abs(offset):.3f}s {direction}. Times are corrected.")
+        journal = Journal(file)
+        journal.write("start", targets=[t.ticker for t in plan.target])
+        await sync_clock(journal)
         journal.say(f"Logging to {log_path}. Press Ctrl+C to stop.")
         async with Fetcher(sec_user_agent) as fetcher, asyncio.TaskGroup() as group:
             for target in plan.target:

@@ -4,8 +4,12 @@ from collections import deque
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import pytest
+
+from earnings_bot import clock
+from earnings_bot.clock import Sample
 from earnings_bot.fetch import Fetcher, Response
-from earnings_bot.recorder import ET, Journal, Watch, load_plan, watch
+from earnings_bot.recorder import ET, Journal, Watch, load_plan, sync_clock, watch
 from earnings_bot.sources import Sighting, Source
 
 
@@ -90,3 +94,46 @@ async def test_watch_stops_when_blocked() -> None:
     assert w.polls == 1
     assert w.stopped is not None
     assert w.first is None
+
+
+async def test_clock_sync_is_logged(monkeypatch: pytest.MonkeyPatch) -> None:
+    answers = {"a": Sample("a", 5.0, 0.010), "b": Sample("b", 5.002, 0.030)}
+    monkeypatch.setattr(clock, "ask", answers.get)
+    log = io.StringIO()
+    journal = Journal(log, clock.TrustedClock(servers=("a", "b")))
+
+    assert await sync_clock(journal)
+
+    [event] = events(log)
+    assert event["server"] == "a"
+    assert event["max_error_ms"] == 5.0
+    assert event["servers"] == {"a": 0.0, "b": 2.0}
+
+
+@pytest.mark.parametrize(("periodic", "kept"), [(False, False), (True, True)])
+async def test_failed_clock_sync(
+    monkeypatch: pytest.MonkeyPatch, periodic: bool, kept: bool
+) -> None:
+    monkeypatch.setattr(clock, "ask", lambda server: None)
+    journal = Journal(io.StringIO(), clock.TrustedClock(servers=("a",)))
+    journal.clock.synced = Sample("a", 5.0, 0.01)
+
+    assert not await sync_clock(journal, periodic=periodic)
+
+    # When a window opens, an old sync is dropped for the system clock. Mid-window it's kept.
+    assert (journal.clock.synced is not None) is kept
+
+
+async def test_windows_opening_together_share_a_clock_sync(monkeypatch: pytest.MonkeyPatch) -> None:
+    asked: list[str] = []
+
+    def ask(server: str) -> Sample:
+        asked.append(server)
+        return Sample(server, 5.0, 0.01)
+
+    monkeypatch.setattr(clock, "ask", ask)
+    journal = Journal(io.StringIO(), clock.TrustedClock(servers=("a",)))
+
+    assert await sync_clock(journal)
+    assert await sync_clock(journal)
+    assert asked == ["a"]

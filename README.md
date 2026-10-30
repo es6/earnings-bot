@@ -79,6 +79,10 @@ waits for each window, prints new items as they appear, and prints a summary tab
 closes. Every event is appended to a JSON Lines log next to the plan (`recordings/*.jsonl`, not
 committed). It needs `SEC_USER_AGENT` in `.env`.
 
+Times don't come from your computer's clock, which can be seconds off. The recorder asks NTP time
+servers (Cloudflare, Google and NIST) when it starts, when each window opens and every five
+minutes during a window, and counts forward from their answer in between.
+
 ## License
 
 [MIT](LICENSE)
