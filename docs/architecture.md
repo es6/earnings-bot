@@ -164,10 +164,34 @@ approval step.
   around the block, whether by faking a browser User-Agent or by scripting a real browser.
   FICO's IR site is behind Akamai bot protection, and even its `robots.txt` returns 403.
 
-## Summary generation
+## Posting and summaries
 
-**Open.** Where consensus estimates come from, how numbers are pulled out of releases, which
-KPIs matter for each company, and how the post is laid out in Discord.
+One Discord message per release, edited as more arrives:
+
+1. **Alert.** The first source to show the release triggers a post with its link and the time
+   it was first seen. Later sources add their links.
+2. **Files.** Release PDFs (guessed URLs, the IR site's file list) are downloaded and attached.
+3. **Summary.** The first source that can supply the full text starts the summary, which is
+   edited in as an embed (up to 4,096 characters, against 2,000 for plain text).
+
+Where the text comes from:
+
+| Source | Text | Notes |
+|---|---|---|
+| Q4 press release feed | The full release HTML, from the same feed with `bodyType=1` | Ready the moment the release is detected |
+| SEC 8-K | The press release exhibit (EX-99.1), found through the filing's `index.json` | About a minute later for most companies; at the same time for Apple |
+| Guessed or newsroom pages | The page itself | Apple's newsroom |
+| Business Wire | None | Its article pages drop automated requests |
+
+The summary comes from Claude (`claude-opus-5-5`, effort `medium`). It gets the release text,
+consensus EPS and revenue from Financial Modeling Prep's earnings calendar, and a style guide
+written for this project, with a made-up example rather than copies of anyone's posts. Claude
+picks the KPIs that matter for each company. The bot then checks every number in the summary
+against the release, allowing for rounding and for tables stated in thousands or millions, and
+lists any it can't find in the embed's footer.
+
+**Open.** Estimates for KPIs beyond EPS and revenue, and how fast the summary can get without
+losing accuracy (effort `low`, or a smaller model).
 
 ## Hosting and storage
 
@@ -186,3 +210,6 @@ KPIs matter for each company, and how the post is laid out in Discord.
 | 2026-10-30 | Each deployment sets its own SEC contact through `SEC_USER_AGENT` |
 | 2026-10-30 | Add newswire RSS as a source (Business Wire's earnings feed first). It's the main source for FICO, whose IR site blocks automated access |
 | 2026-10-30 | Measure every source live with a latency recorder before building the detector, starting with Uber and FICO on 2026-11-04 |
+| 2026-10-30 | Post one message per release and edit it: alert with links, then files, then the summary as an embed |
+| 2026-10-30 | Write summaries with the Claude API (`claude-opus-5-5`) and check their numbers against the release. Consensus estimates come from Financial Modeling Prep |
+| 2026-10-30 | Until `/track` exists, the bot watches the releases in a schedule file, the same format the latency recorder uses |

@@ -7,16 +7,19 @@ A Discord bot that posts company earnings the moment they're released, pulled st
 investor relations pages and SEC filings, along with a summary of the numbers and KPIs that
 matter for each company.
 
-> **Status: early development.** The bot connects to Discord and answers `/ping`. Earnings
-> detection and summaries come next. See [docs/architecture.md](docs/architecture.md) for the
-> design.
+> **Status: early development.** The bot watches the releases listed in a schedule file and
+> posts each one: an alert with links within seconds, then the release files, then a summary
+> written by Claude. Adding companies with a slash command comes next. See
+> [docs/architecture.md](docs/architecture.md) for the design.
 
-## Planned features
+## Features
 
-- Watch investor relations pages and SEC EDGAR for new earnings releases
-- Post the release files (press release, slides, supplemental data) to a channel
-- Post a formatted summary of results, guidance and company-specific KPIs
-- Request and manage tracked companies with slash commands
+- Watches investor relations sites, SEC EDGAR, Business Wire and guessed file URLs at once,
+  and posts as soon as any of them shows the release
+- Attaches the release files (press release, supplemental data) as they appear
+- Edits in a summary of results, guidance and the KPIs that matter for that company, with
+  consensus estimates from [Financial Modeling Prep](https://site.financialmodelingprep.com/)
+- Planned: request and manage tracked companies with slash commands
 
 ## Run your own copy
 
@@ -51,6 +54,23 @@ version for you.
    ```bash
    docker build -t earnings-bot .
    docker run --env-file .env earnings-bot
+   ```
+5. **Watch a day's releases.** Fill in `DISCORD_CHANNEL_ID`, `SEC_USER_AGENT`,
+   `ANTHROPIC_API_KEY` and `FMP_API_KEY` in `.env` (see `.env.example`), then give the bot a
+   schedule file:
+
+   ```bash
+   uv run earnings-bot schedules/2026-11-04.toml
+   ```
+
+   It waits for each release's window and posts to the channel. Without the Anthropic key, posts
+   have no summary; without the FMP key, summaries have no estimates. Every step is logged to
+   `schedules/*.jsonl`, the same log the latency recorder writes.
+
+   To test the whole flow on a past release, replay it:
+
+   ```bash
+   uv run earnings-bot-replay schedules/2026-11-04.toml UBER --date 2026-08-05 --q4-release 1585 --edgar 0001543151-26-000027
    ```
 
 ## Development

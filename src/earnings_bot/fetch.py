@@ -55,14 +55,17 @@ class Fetcher:
         if self._session is not None:
             await self._session.close()
 
-    async def request(self, method: str, url: str) -> Response:
+    async def request(
+        self, method: str, url: str, headers: dict[str, str] | None = None
+    ) -> Response:
         if self._session is None:
             raise RuntimeError("Fetcher must be used with `async with`")
         host = urlsplit(url).hostname or ""
         await self._wait_turn(host)
         user_agent = self._sec_user_agent if _on_domain(host, "sec.gov") else USER_AGENT
+        headers = {"User-Agent": user_agent, **(headers or {})}
         started = time.monotonic()
-        async with self._session.request(method, url, headers={"User-Agent": user_agent}) as r:
+        async with self._session.request(method, url, headers=headers) as r:
             body = await r.read()
             headers = {name.lower(): value for name, value in r.headers.items()}
         return Response(url, r.status, headers, body, time.monotonic() - started)

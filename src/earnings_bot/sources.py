@@ -81,11 +81,16 @@ class Q4PressReleases(Source):
     name = "q4_press"
     interval = 1.0
 
-    def __init__(self, host: str) -> None:
+    def __init__(self, host: str, page_size: int = 5) -> None:
         self.host = host
+        self.page_size = page_size
 
-    def url(self) -> str:
-        return _bust_cache(f"https://{self.host}{_Q4_PRESS}")
+    def url(self, with_bodies: bool = False) -> str:
+        # With bodies, each release comes with its full HTML, for the summary
+        path = _Q4_PRESS.replace("pageSize=5", f"pageSize={self.page_size}")
+        if with_bodies:
+            path = path.replace("bodyType=0", "bodyType=1")
+        return _bust_cache(f"https://{self.host}{path}")
 
     def parse(self, response: Response) -> list[Sighting]:
         return [
@@ -131,8 +136,9 @@ class EdgarFilings(Source):
     name = "edgar"
     interval = 1.0
 
-    def __init__(self, cik: int) -> None:
+    def __init__(self, cik: int, limit: int = 20) -> None:
         self.cik = cik
+        self.limit = limit  # newest filings to read; new ones always come first
 
     def url(self) -> str:
         return f"https://data.sec.gov/submissions/CIK{self.cik:010d}.json"
@@ -150,7 +156,7 @@ class EdgarFilings(Source):
                 published=accepted,  # UTC
                 earnings=form.startswith("8-K") and "2.02" in items,
             )
-            for accession, form, items, accepted, document in itertools.islice(rows, 20)
+            for accession, form, items, accepted, document in itertools.islice(rows, self.limit)
         ]
 
 
