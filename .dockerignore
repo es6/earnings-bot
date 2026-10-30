@@ -7,4 +7,5 @@
 .env
 .env.*
 tests
+schedules/*.jsonl
 recordings

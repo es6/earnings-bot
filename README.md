@@ -71,12 +71,12 @@ To measure which source shows a release first, the recorder polls every source a
 scheduled release and logs when each one first lists it:
 
 ```bash
-uv run earnings-bot-record recordings/2026-11-04.toml
+uv run earnings-bot-record schedules/2026-11-02.toml
 ```
 
 The plan file lists each release's expected time (US Eastern) and where to look. The recorder
 waits for each window, prints new items as they appear, and prints a summary table when the window
-closes. Every event is appended to a JSON Lines log next to the plan (`recordings/*.jsonl`, not
+closes. Every event is appended to a JSON Lines log next to the plan (`schedules/*.jsonl`, not
 committed). It needs `SEC_USER_AGENT` in `.env`.
 
 Times don't come from your computer's clock, which can be seconds off. The recorder asks NTP time

@@ -24,4 +24,5 @@ htmlcov/
 Thumbs.db
 
 # Latency recorder logs
-recordings/*.jsonl
+schedules/*.jsonl
+recordings/

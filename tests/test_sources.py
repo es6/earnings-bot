@@ -25,6 +25,9 @@ def response(
     [
         ("Uber Announces Results for Second Quarter 2026", True),
         ("FICO Announces Earnings of $3.42 per Share for Third Quarter Fiscal 2026", True),
+        ("Palantir Reports Q2 2026 U.S. Comm Revenue Growth of 149% Y/Y", True),
+        ("Apple reports fourth quarter results", True),
+        ("Palantir Announces Date of Third Quarter 2026 Earnings Release and Webcast", False),
         ("Uber Announces Date of Third Quarter 2026 Results Conference Call", False),
         ("Amazon.com to Webcast Third Quarter 2026 Financial Results Conference Call", False),
         ("Key Food Stores Co-Op Joins Uber Eats", False),
@@ -181,7 +184,42 @@ def test_guessed_file() -> None:
     up = response(b"", headers={"last-modified": "Wed, 04 Nov 2026 11:55:20 GMT"})
 
     assert source.name == "guess:Uber-Q3-26-Earnings-Press-Release.pdf"
+    assert source.url().startswith(url + "?_=")
     assert source.parse(response(b"", status=404)) == []
     [file] = source.parse(up)
     assert file.key == url
     assert file.published == "Wed, 04 Nov 2026 11:55:20 GMT"
+
+
+def test_guessed_page_is_named_after_its_last_folder() -> None:
+    source = GuessedFile(
+        "https://www.apple.com/newsroom/2026/11/apple-reports-fourth-quarter-results/"
+    )
+
+    assert source.name == "guess:apple-reports-fourth-quarter-results"
+
+
+ATOM = """<?xml version="1.0" encoding="UTF-8"?><feed xmlns="http://www.w3.org/2005/Atom">
+<title>Apple Newsroom</title><updated>2026-11-02T21:30:01.000Z</updated>
+<entry><updated>2026-11-02T21:30:00.000Z</updated>
+<title><![CDATA[Apple reports fourth quarter results
+]]></title><link href="https://www.apple.com/newsroom/2026/11/apple-reports-fourth-quarter-results/"/>
+<id>https://www.apple.com/newsroom/2026/11/apple-reports-fourth-quarter-results/</id>
+<content>Apple today announced financial results</content>
+<link href="https://www.apple.com/newsroom/images/tile.jpg" rel="enclosure" type="image/jpeg"/>
+</entry>
+</feed>"""
+
+
+def test_atom_feed() -> None:
+    [entry] = RssFeed("rss:www.apple.com", "https://www.apple.com/newsroom/rss-feed.rss").parse(
+        response(ATOM)
+    )
+
+    assert entry.title == "Apple reports fourth quarter results"
+    assert (
+        entry.url == "https://www.apple.com/newsroom/2026/11/apple-reports-fourth-quarter-results/"
+    )
+    assert entry.published == "2026-11-02T21:30:00.000Z"
+    assert entry.details == {"feed_built": "2026-11-02T21:30:01.000Z"}
+    assert entry.earnings

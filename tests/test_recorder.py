@@ -137,3 +137,19 @@ async def test_windows_opening_together_share_a_clock_sync(monkeypatch: pytest.M
     assert await sync_clock(journal)
     assert await sync_clock(journal)
     assert asked == ["a"]
+
+
+class FoundOnceSource(ListSource):
+    stop_when_found = True
+
+
+async def test_watch_stops_polling_a_guess_once_found() -> None:
+    journal = Journal(io.StringIO())
+    w = Watch("AAPL", FoundOnceSource())
+
+    await watch(
+        w, FakeFetcher((200, ""), (200, "page")), journal, journal.now() + timedelta(seconds=5)
+    )
+
+    assert w.polls == 2
+    assert w.first_title == "Item page"

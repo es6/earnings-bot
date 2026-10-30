@@ -1,0 +1,34 @@
+# Latency recording for Monday, November 2, 2026. Times are US Eastern.
+#
+#   uv run earnings-bot-record schedules/2026-11-02.toml
+#
+# Start it any time before 3:55 PM and keep the computer awake until Apple's window closes at
+# 5:00 PM.
+
+[[target]]
+ticker = "PLTR"
+# 4:05 PM in each of the last four quarters, with the 8-K about a minute later
+expected = 2026-11-02T16:05:00
+cik = 1321655
+# Palantir's own site, in front of Q4's feeds. It caches them for an hour, which the cache-buster
+# gets around.
+q4_host = "investors.palantir.com"
+newswire = ["Palantir"]
+# Short enough that this window ends when Apple's opens
+after_minutes = 15
+
+[[target]]
+ticker = "AAPL"
+# The 8-K has been accepted at 4:30 PM, within seconds of the release, for six quarters running
+expected = 2026-11-02T16:30:00
+cik = 320193
+q4_host = "investor.apple.com"
+newswire = ["Apple reports"]
+rss = ["https://www.apple.com/newsroom/rss-feed.rss"]
+# Apple posts the release in its newsroom, under the names of past quarters. The statements PDF
+# folder has been both `fy2026q3` and `fy2026-q1`, so both are probed.
+guess = [
+    "https://www.apple.com/newsroom/2026/11/apple-reports-fourth-quarter-results/",
+    "https://www.apple.com/newsroom/pdfs/fy2026q4/FY26_Q4_Consolidated_Financial_Statements.pdf",
+    "https://www.apple.com/newsroom/pdfs/fy2026-q4/FY26_Q4_Consolidated_Financial_Statements.pdf",
+]

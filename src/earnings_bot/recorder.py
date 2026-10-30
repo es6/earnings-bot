@@ -1,7 +1,7 @@
 """Latency recorder: poll every source around a scheduled release and log when each one first
 shows it.
 
-    uv run earnings-bot-record recordings/2026-11-04.toml
+    uv run earnings-bot-record schedules/2026-11-02.toml
 
 The plan file lists the releases to watch. Every event is appended to a JSON Lines log next to
 the plan, and a summary prints when each watch window closes.
@@ -85,9 +85,16 @@ class Target(BaseModel):
                 RssFeed("businesswire", BUSINESS_WIRE_EARNINGS, self.newswire),
                 RssFeed("businesswire_busted", BUSINESS_WIRE_EARNINGS, self.newswire, True),
             ]
-        sources += [RssFeed(f"rss:{urlsplit(url).hostname}", url) for url in self.rss]
-        sources += [GuessedFile(url) for url in self.guess]
-        return sources
+        sources += [
+            RssFeed(f"rss:{urlsplit(url).hostname}", url, bust_cache=True) for url in self.rss
+        ]
+        guesses = [GuessedFile(url) for url in self.guess]
+        names = [guess.name for guess in guesses]
+        for guess in guesses:
+            if names.count(guess.name) > 1:
+                # Variants of one file name in different folders: name them by folder too
+                guess.name = "guess:" + "/".join(urlsplit(guess.file_url).path.split("/")[-2:])
+        return sources + guesses
 
 
 class Plan(BaseModel):
@@ -231,6 +238,8 @@ async def watch(w: Watch, fetcher: Fetcher, journal: Journal, end: datetime) -> 
             w.elapsed.append(response.elapsed)
             record_items(w, items, response, journal, sent, previous)
             previous = sent
+            if w.source.stop_when_found and w.known:
+                return
         await asyncio.sleep(max(0.0, next_poll - time.monotonic()))
 
 
