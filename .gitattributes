@@ -1,0 +1,2 @@
+# Store text files with LF line endings so Windows and Linux (CI, Docker) agree
+* text=auto eol=lf
