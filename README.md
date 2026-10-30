@@ -8,7 +8,8 @@ investor relations pages and SEC filings, along with a summary of the numbers an
 matter for each company.
 
 > **Status: early development.** The bot connects to Discord and answers `/ping`. Earnings
-> detection and summaries come next.
+> detection and summaries come next. See [docs/architecture.md](docs/architecture.md) for the
+> design.
 
 ## Planned features
 
