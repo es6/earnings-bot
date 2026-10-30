@@ -18,9 +18,10 @@ from earnings_bot.fetch import Response
 
 BUSINESS_WIRE_EARNINGS = "https://feed.businesswire.com/rss/home/?rss=G1QFDERJXkJeEF9YXA=="
 
-# Matches "Uber Announces Results for Third Quarter 2026" but not the earlier
-# "Uber Announces Date of Third Quarter 2026 Results Conference Call"
-_EARNINGS = re.compile(r"results|earnings|quarter", re.IGNORECASE)
+# Matches "Uber Announces Results for Third Quarter 2026" and "Palantir Reports Q2 2026 U.S. Comm
+# Revenue Growth of 149%", but not the earlier "Uber Announces Date of Third Quarter 2026 Results
+# Conference Call"
+_EARNINGS = re.compile(r"results|earnings|quarter|\bQ[1-4]\b|\b[1-4]Q\d{2}\b", re.IGNORECASE)
 _NOT_EARNINGS = re.compile(
     r"webcast|conference call|to host|to announce|schedule|\bdate\b", re.IGNORECASE
 )
@@ -52,6 +53,7 @@ class Source(ABC):
     interval: float  # seconds between polls
     method = "GET"
     ok_statuses = frozenset({200})
+    stop_when_found = False  # stop polling once the source lists anything
 
     @abstractmethod
     def url(self) -> str: ...
@@ -171,47 +173,88 @@ class RssFeed(Source):
 
     def parse(self, response: Response) -> list[Sighting]:
         try:
-            channel = ET.fromstring(response.body).find("channel")
+            root = ET.fromstring(response.body)
         except ET.ParseError as error:
             raise ValueError(f"not valid XML: {error}") from error
-        if channel is None:
-            raise ValueError("not an RSS feed")
-        built = channel.findtext("lastBuildDate")
+        if root.tag == f"{_ATOM}feed":  # Apple's newsroom feed, for one
+            built = root.findtext(f"{_ATOM}updated")
+            entries = [_atom_entry(entry) for entry in root.iter(f"{_ATOM}entry")]
+        elif (channel := root.find("channel")) is not None:
+            built = channel.findtext("lastBuildDate")
+            entries = [_rss_item(item) for item in channel.iter("item")]
+        else:
+            raise ValueError("not an RSS or Atom feed")
         sightings = []
-        for item in channel.iter("item"):
-            title = (item.findtext("title") or "").strip()
+        for entry in entries:
             # Newswire descriptions open with the dateline and the company's name:
             # "IRVINE, Calif.--(BUSINESS WIRE)--Beach Cities Commercial Bank ..."
-            lead = (item.findtext("description") or "")[:150]
-            if self._match and not self._match.search(f"{title} {lead}"):
+            if self._match and not self._match.search(f"{entry.title} {entry.lead[:150]}"):
                 continue
-            link = (item.findtext("link") or "").strip()
             sightings.append(
                 Sighting(
-                    key=item.findtext("guid") or link,
-                    title=title,
-                    url=link,
-                    published=item.findtext("pubDate"),
-                    earnings=looks_like_earnings(title),
+                    key=entry.key,
+                    title=entry.title,
+                    url=entry.link,
+                    published=entry.published,
+                    earnings=looks_like_earnings(entry.title),
                     details={"feed_built": built} if built else {},
                 )
             )
         return sightings
 
 
+_ATOM = "{http://www.w3.org/2005/Atom}"
+
+
+@dataclass(frozen=True)
+class _Entry:
+    key: str
+    title: str
+    lead: str
+    link: str
+    published: str | None
+
+
+def _rss_item(item: ET.Element) -> _Entry:
+    link = (item.findtext("link") or "").strip()
+    return _Entry(
+        key=item.findtext("guid") or link,
+        title=(item.findtext("title") or "").strip(),
+        lead=item.findtext("description") or "",
+        link=link,
+        published=item.findtext("pubDate"),
+    )
+
+
+def _atom_entry(entry: ET.Element) -> _Entry:
+    links = entry.findall(f"{_ATOM}link")
+    page = next((ln for ln in links if ln.get("rel", "alternate") == "alternate"), None)
+    link = page.get("href", "") if page is not None else ""
+    return _Entry(
+        key=entry.findtext(f"{_ATOM}id") or link,
+        title=(entry.findtext(f"{_ATOM}title") or "").strip(),
+        lead=entry.findtext(f"{_ATOM}content") or entry.findtext(f"{_ATOM}summary") or "",
+        link=link,
+        published=entry.findtext(f"{_ATOM}updated"),
+    )
+
+
 class GuessedFile(Source):
-    """A file URL we expect the release to use, probed until it exists."""
+    """A URL we expect the release or one of its files to use, probed until it exists."""
 
     method = "HEAD"
     interval = 1.0
     ok_statuses = frozenset({200, 404})  # 404 just means it isn't up yet
+    stop_when_found = True
 
     def __init__(self, file_url: str) -> None:
         self.file_url = file_url
-        self.name = "guess:" + urlsplit(file_url).path.rsplit("/", 1)[-1]
+        self.name = "guess:" + urlsplit(file_url).path.rstrip("/").rsplit("/", 1)[-1]
 
     def url(self) -> str:
-        return self.file_url
+        # Some sites (Apple's newsroom) cache a 404 for minutes, which would hide the page after
+        # it goes up. The file CDN doesn't, but busting costs nothing until the file exists.
+        return _bust_cache(self.file_url)
 
     def parse(self, response: Response) -> list[Sighting]:
         if response.status != 200:

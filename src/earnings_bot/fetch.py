@@ -13,8 +13,9 @@ import aiohttp
 USER_AGENT = "Mozilla/5.0 (compatible; earnings-bot/0.1; +https://github.com/es6/earnings-bot)"
 
 # Minimum seconds between requests to one host. SEC allows 10 a second across everything we send
-# it, and the file CDN serves many companies. Every other host gets one request a second.
-_HOST_GAPS = {"sec.gov": 0.125, "q4cdn.com": 0.2}
+# it. The file CDN serves many companies, and Apple's newsroom is a few guessed URLs plus a feed
+# on one very large site. Every other host gets one request a second.
+_HOST_GAPS = {"sec.gov": 0.125, "q4cdn.com": 0.2, "apple.com": 0.25}
 _DEFAULT_GAP = 1.0
 
 

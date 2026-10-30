@@ -1,6 +1,6 @@
 # Latency recording for Wednesday, November 4, 2026. Times are US Eastern.
 #
-#   uv run earnings-bot-record recordings/2026-11-04.toml
+#   uv run earnings-bot-record schedules/2026-11-04.toml
 #
 # Start it any time before 6:45 AM. It waits for each window, and the computer needs to stay
 # awake until the FICO window closes at 4:45 PM.
