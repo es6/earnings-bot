@@ -22,3 +22,6 @@ htmlcov/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Latency recorder logs
+recordings/*.jsonl

@@ -1,0 +1,92 @@
+import io
+import json
+from collections import deque
+from datetime import datetime, timedelta
+from pathlib import Path
+
+from earnings_bot.fetch import Fetcher, Response
+from earnings_bot.recorder import ET, Journal, Watch, load_plan, watch
+from earnings_bot.sources import Sighting, Source
+
+
+class ListSource(Source):
+    """Lists the keys in the response body, one per line."""
+
+    name = "list"
+    interval = 0.01
+
+    def url(self) -> str:
+        return "https://example.com/list"
+
+    def parse(self, response: Response) -> list[Sighting]:
+        keys = response.body.decode().split()
+        return [Sighting(key, f"Item {key}", "", earnings=True) for key in keys]
+
+
+class FakeFetcher(Fetcher):
+    """Serves canned responses in order, then repeats the last one."""
+
+    def __init__(self, *responses: tuple[int, str]) -> None:
+        super().__init__("Test Person test@example.com")
+        self.responses = deque(responses)
+
+    async def request(self, method: str, url: str) -> Response:
+        status, body = self.responses[0] if len(self.responses) == 1 else self.responses.popleft()
+        return Response(url, status, {"age": "3"}, body.encode(), 0.02)
+
+
+def events(log: io.StringIO) -> list[dict[str, object]]:
+    return [json.loads(line) for line in log.getvalue().splitlines()]
+
+
+def test_plan_times_default_to_eastern(tmp_path: Path) -> None:
+    plan_file = tmp_path / "plan.toml"
+    plan_file.write_text(
+        '[[target]]\nticker = "UBER"\nexpected = 2026-11-04T06:55:00\ncik = 1543151\n'
+        'q4_host = "investor.uber.com"\nnewswire = ["Uber"]\n'
+        'guess = ["https://s23.q4cdn.com/1/Uber-Q3-26-Earnings-Press-Release.pdf"]\n'
+    )
+
+    [target] = load_plan(plan_file).target
+
+    assert target.expected == datetime(2026, 11, 4, 6, 55, tzinfo=ET)
+    assert target.expected.utcoffset() == timedelta(hours=-5)  # daylight saving ended Nov 1
+    assert target.window[0] == datetime(2026, 11, 4, 6, 45, tzinfo=ET)
+    assert [source.name for source in target.sources()] == [
+        "q4_press",
+        "q4_files",
+        "edgar",
+        "businesswire",
+        "businesswire_busted",
+        "guess:Uber-Q3-26-Earnings-Press-Release.pdf",
+    ]
+
+
+async def test_watch_logs_items_that_appear_after_the_first_poll() -> None:
+    log = io.StringIO()
+    journal = Journal(log)
+    w = Watch("UBER", ListSource())
+    fetcher = FakeFetcher((200, "a"), (500, ""), (200, "a b"))
+
+    await watch(w, fetcher, journal, end=journal.now() + timedelta(seconds=0.2))
+
+    new = [e for e in events(log) if e["event"] == "new"]
+    assert [e["key"] for e in new] == ["b"]
+    assert new[0]["headers"] == {"age": "3"}
+    assert new[0]["previous_sent"] is not None
+    assert w.first_title == "Item b"
+    assert w.errors == 1
+    assert w.problem is None
+    assert w.polls > 3
+
+
+async def test_watch_stops_when_blocked() -> None:
+    log = io.StringIO()
+    journal = Journal(log)
+    w = Watch("FICO", ListSource())
+
+    await watch(w, FakeFetcher((403, "")), journal, end=journal.now() + timedelta(seconds=5))
+
+    assert w.polls == 1
+    assert w.stopped is not None
+    assert w.first is None
