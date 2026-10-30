@@ -15,6 +15,7 @@ import statistics
 import sys
 import time
 import tomllib
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -101,6 +102,10 @@ class Plan(BaseModel):
     target: list[Target]
 
 
+# Called with each new item a source lists during a window
+OnNew = Callable[[Target, Source, Sighting], None]
+
+
 def load_plan(path: Path) -> Plan:
     with path.open("rb") as file:
         return Plan.model_validate(tomllib.load(file))
@@ -184,6 +189,7 @@ def record_items(
     journal: Journal,
     sent: datetime,
     previous: datetime | None,
+    on_new: Callable[[Source, Sighting], None] | None = None,
 ) -> None:
     if w.known is None:
         w.known = {item.key for item in items}
@@ -212,9 +218,17 @@ def record_items(
         if item.earnings and w.first is None:
             w.first, w.first_title = seen, item.title
         journal.say(f"{w.ticker} {w.source.name}: NEW{' *' if item.earnings else ''} {item.title}")
+        if on_new:
+            on_new(w.source, item)
 
 
-async def watch(w: Watch, fetcher: Fetcher, journal: Journal, end: datetime) -> None:
+async def watch(
+    w: Watch,
+    fetcher: Fetcher,
+    journal: Journal,
+    end: datetime,
+    on_new: Callable[[Source, Sighting], None] | None = None,
+) -> None:
     previous: datetime | None = None
     while (sent := journal.now()) < end:
         next_poll = time.monotonic() + w.source.interval
@@ -236,7 +250,7 @@ async def watch(w: Watch, fetcher: Fetcher, journal: Journal, end: datetime) -> 
                 journal.say(f"{w.ticker} {w.source.name}: working again")
                 w.problem = None
             w.elapsed.append(response.elapsed)
-            record_items(w, items, response, journal, sent, previous)
+            record_items(w, items, response, journal, sent, previous, on_new)
             previous = sent
             if w.source.stop_when_found and w.known:
                 return
@@ -328,7 +342,9 @@ async def keep_clock_synced(journal: Journal, end: datetime) -> None:
         await sync_clock(journal, periodic=True)
 
 
-async def record_target(target: Target, fetcher: Fetcher, journal: Journal) -> None:
+async def record_target(
+    target: Target, fetcher: Fetcher, journal: Journal, on_new: OnNew | None = None
+) -> None:
     start, end = target.window
     if journal.now() >= end:
         journal.say(f"{target.ticker}: its window closed at {_clock(end)} ET, skipping")
@@ -342,6 +358,7 @@ async def record_target(target: Target, fetcher: Fetcher, journal: Journal) -> N
     await sync_clock(journal)
 
     watches = [Watch(target.ticker, source) for source in target.sources()]
+    notify = (lambda source, item: on_new(target, source, item)) if on_new else None
     journal.write(
         "window",
         ticker=target.ticker,
@@ -355,20 +372,27 @@ async def record_target(target: Target, fetcher: Fetcher, journal: Journal) -> N
         async with asyncio.TaskGroup() as group:
             group.create_task(keep_clock_synced(journal, end))
             for w in watches:
-                group.create_task(watch(w, fetcher, journal, end))
+                group.create_task(watch(w, fetcher, journal, end, notify))
     finally:
         summarize(target, watches, journal)
 
 
-async def record(plan: Plan, sec_user_agent: str, log_path: Path) -> None:
+async def record(
+    plan: Plan, fetcher: Fetcher, journal: Journal, on_new: OnNew | None = None
+) -> None:
+    journal.write("start", targets=[t.ticker for t in plan.target])
+    await sync_clock(journal)
+    async with asyncio.TaskGroup() as group:
+        for target in plan.target:
+            group.create_task(record_target(target, fetcher, journal, on_new))
+
+
+async def _record_to(plan: Plan, sec_user_agent: str, log_path: Path) -> None:
     with log_path.open("a", encoding="utf-8") as file:
         journal = Journal(file)
-        journal.write("start", targets=[t.ticker for t in plan.target])
-        await sync_clock(journal)
         journal.say(f"Logging to {log_path}. Press Ctrl+C to stop.")
-        async with Fetcher(sec_user_agent) as fetcher, asyncio.TaskGroup() as group:
-            for target in plan.target:
-                group.create_task(record_target(target, fetcher, journal))
+        async with Fetcher(sec_user_agent) as fetcher:
+            await record(plan, fetcher, journal)
 
 
 def main() -> None:
@@ -396,7 +420,7 @@ def main() -> None:
     # Ctrl+C cancels the watches, which still print their summaries
     with contextlib.suppress(KeyboardInterrupt):
         asyncio.run(
-            record(plan, settings.sec_user_agent, args.log or args.plan.with_suffix(".jsonl"))
+            _record_to(plan, settings.sec_user_agent, args.log or args.plan.with_suffix(".jsonl"))
         )
 
 

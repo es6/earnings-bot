@@ -34,7 +34,9 @@ class FakeFetcher(Fetcher):
         super().__init__("Test Person test@example.com")
         self.responses = deque(responses)
 
-    async def request(self, method: str, url: str) -> Response:
+    async def request(
+        self, method: str, url: str, headers: dict[str, str] | None = None
+    ) -> Response:
         status, body = self.responses[0] if len(self.responses) == 1 else self.responses.popleft()
         return Response(url, status, {"age": "3"}, body.encode(), 0.02)
 

@@ -12,6 +12,10 @@ _ENV = SettingsConfigDict(
     extra="ignore",
 )
 
+# SEC rejects requests unless the User-Agent names a person and a contact email,
+# e.g. "Jane Doe jane@example.com"
+_SEC_USER_AGENT = r"\S+@\S+\.\S+"
+
 
 class Settings(BaseSettings):
     model_config = _ENV
@@ -22,10 +26,14 @@ class Settings(BaseSettings):
     discord_guild_id: int | None = None
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
 
+    # The rest is for watching a schedule (`uv run earnings-bot schedules/<day>.toml`)
+    discord_channel_id: int | None = None  # where releases get posted
+    sec_user_agent: str | None = Field(None, pattern=_SEC_USER_AGENT)
+    anthropic_api_key: SecretStr | None = None  # without it, posts have no summary
+    fmp_api_key: SecretStr | None = None  # without it, summaries have no estimates
+
 
 class RecorderSettings(BaseSettings):
     model_config = _ENV
 
-    # SEC rejects requests unless the User-Agent names a person and a contact email,
-    # e.g. "Jane Doe jane@example.com"
-    sec_user_agent: str = Field(pattern=r"\S+@\S+\.\S+")
+    sec_user_agent: str = Field(pattern=_SEC_USER_AGENT)
