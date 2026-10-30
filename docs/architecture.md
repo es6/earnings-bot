@@ -98,7 +98,28 @@ What this tells us:
    (`s-maxage=300`), so how quickly it refreshes still needs measuring. PR Newswire has a similar
    feed (`https://www.prnewswire.com/rss/news-releases-list.rss`) for companies that use it,
    such as S&P Global.
+   The same source reads company press release feeds, such as the ones Equisolve sites publish.
 5. **Later:** adapters for other IR platforms.
+
+### IR platforms
+
+How often is a company's IR site something other than Q4? We checked 36 widely followed
+companies on 2026-10-30, plus the seven above, by probing the Q4 feed and reading each site's
+DNS records:
+
+| Platform | Companies | Automated access |
+|---|---|---|
+| Q4 | AAPL, NVDA, NFLX, ORCL, CRM, PLTR, COIN, V, PYPL, COST, SBUX, BA, ABNB, SNOW, MU, QCOM, plus AMZN, GOOGL, MA, META, UBER, SPGI | JSON feeds work |
+| Equisolve | AMD, INTC, BAC, WMT, KO, NKE | Pages load, and each site has a press release RSS feed at `/news-events/press-releases/rss` |
+| Notified (`*.gcs-web.com`) | FICO, CRWD, LLY | Blocked by Akamai (403) |
+| Investis | HD | Blocked (403) |
+| The company's own site | MSFT, ADBE, GS, JPM, UNH, TGT | Pages load, with no common feed |
+| Unknown, blocked | TSLA, AVGO, MCD, DIS | 403 or timeout |
+
+- **Q4 is about half** (22 of 43), so it stays the first IR adapter.
+- **Equisolve is next**, and its RSS feeds already work with the newswire source.
+- **About one in five sites block automated access** (8 of 43). Those companies are covered by
+  newswires and EDGAR, the way FICO is.
 
 ### Scheduling
 
@@ -125,6 +146,9 @@ What this tells us:
   then the summary.
 - Every source records when it first saw each release. This latency log shows which source
   wins for each company and lets us compare against public timestamps such as X posts.
+- Until the detector exists, `earnings-bot-record` takes the same measurements for scheduled
+  releases. It polls every source during a window around the expected time. The first run is
+  November 4, 2026: Uber at 6:55 AM ET and FICO at 4:15 PM ET.
 
 ### Adding a company
 
@@ -161,3 +185,4 @@ KPIs matter for each company, and how the post is laid out in Discord.
 | 2026-10-30 | `/track` adds companies without an approval step |
 | 2026-10-30 | Each deployment sets its own SEC contact through `SEC_USER_AGENT` |
 | 2026-10-30 | Add newswire RSS as a source (Business Wire's earnings feed first). It's the main source for FICO, whose IR site blocks automated access |
+| 2026-10-30 | Measure every source live with a latency recorder before building the detector, starting with Uber and FICO on 2026-11-04 |
