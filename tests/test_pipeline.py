@@ -1,6 +1,6 @@
 import io
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 
 import pytest
 
@@ -18,20 +18,26 @@ FILING = "https://www.sec.gov/Archives/edgar/data/1543151/000154315126000040/ube
 
 
 class FakePoster(Poster):
+    """Records each step, and stamps it with the current time the way Discord would."""
+
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
 
-    async def send(self, content: str) -> None:
+    async def send(self, content: str) -> datetime | None:
         self.calls.append(("send", content))
+        return datetime.now(UTC)
 
-    async def edit(self, content: str) -> None:
+    async def edit(self, content: str) -> datetime | None:
         self.calls.append(("edit", content))
+        return datetime.now(UTC)
 
-    async def attach(self, name: str, data: bytes) -> None:
+    async def attach(self, name: str, data: bytes) -> datetime | None:
         self.calls.append(("attach", name))
+        return datetime.now(UTC)
 
-    async def set_summary(self, text: str, footer: str) -> None:
+    async def set_summary(self, text: str, footer: str) -> datetime | None:
         self.calls.append(("summary", f"{text} | {footer}"))
+        return datetime.now(UTC)
 
 
 class FakeSummarizer(Summarizer):
@@ -70,8 +76,8 @@ def release_texts(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
 
 async def test_release_posts_links_files_and_summary(release_texts: dict[str, str]) -> None:
     release_texts[IR_PAGE] = "Uber Announces Results for Third Quarter 2026 ..."
-    poster, summarizer = FakePoster(), FakeSummarizer()
-    release = Release(uber(), poster, fetcher(), Journal(io.StringIO()), summarizer, "key")
+    poster, summarizer, log = FakePoster(), FakeSummarizer(), io.StringIO()
+    release = Release(uber(), poster, fetcher(), Journal(log), summarizer, "key")
     press = Sighting("1700", "Uber Announces Results", IR_PAGE, earnings=True)
     filing = Sighting("0001543151-26-000040", "8-K 2.02,9.01", FILING, earnings=True)
 
@@ -93,6 +99,10 @@ async def test_release_posts_links_files_and_summary(release_texts: dict[str, st
     assert "from the IR site text" in summary
     assert "12%" in summary
     assert summarizer.calls == [(release_texts[IR_PAGE], Estimates(eps=0.86, revenue=None))]
+    # Each step logs when Discord stamped it, counted from the first sighting
+    events = {e["event"]: e for e in map(json.loads, log.getvalue().splitlines())}
+    for step in ("posted", "attached", "summary"):
+        assert 0 <= events[step]["live_seconds"] < 5
 
 
 async def test_only_one_summary_when_several_sources_have_the_text(
