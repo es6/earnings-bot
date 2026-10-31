@@ -4,6 +4,8 @@
 # names      how wire headlines name the company, for matching newswire feeds
 # platform   q4, equisolve, notified, investis, own-site or unknown
 # reachable  whether the IR site answers automated requests (we never work around a block)
+# soft_404   the site answers 200 for pages that don't exist, so guesses stay out of
+#            schedules until the bot can tell
 # wire       Business Wire, PR Newswire, GlobeNewswire, none or unknown
 # fastest    the first source we can read, judged from past quarters: ir-feed, company-rss,
 #            company-page (a page or file on the company's own site), newswire, sec-8k or
@@ -73,7 +75,7 @@ release_time = "16:15"
 eightk = ["16:16", "16:16", "16:16", "16:16"]
 fastest = "company-rss"
 rss = ["https://ir.amd.com/news-events/press-releases/rss"]
-evidence = "Q2 2026: RSS item at 4:15 PM. The 8-K has come at 4:16 PM four quarters running. GlobeNewswire's feed refuses automated reads."
+evidence = "Q2 2026: RSS item at 4:15 PM. The 8-K has come at 4:16 PM four quarters running. GlobeNewswire's feed refuses automated reads. The feed sits behind CloudFront, which ignores cache-busting; how stale it gets is measured on November 3, 2026."
 checked = 2026-10-31
 
 [company.AMZN]
@@ -270,7 +272,7 @@ release_time = "16:01"
 eightk = ["16:08", "16:09", "16:07", "16:10"]
 fastest = "company-rss"
 rss = ["https://www.intc.com/news-events/press-releases/rss"]
-evidence = "RSS item at 4:01 PM, 8-K 4:07 to 4:11 PM. The feed allows 30 s of caching, so bust the cache."
+evidence = "RSS item at 4:01 PM, 8-K 4:07 to 4:11 PM. The feed allows 30 s of caching plus stale-while-revalidate, and its CDN ignores cache-busting: one copy was 113 s old. Business Wire carries the release the same minute."
 checked = 2026-10-31
 
 [company.JPM]
@@ -299,7 +301,7 @@ fastest = "company-rss"
 rss = [
     "https://investors.coca-colacompany.com/news-events/press-releases/rss",
 ]
-evidence = "RSS item at 6:55 AM, 8-K 6:58 to 7:00 AM."
+evidence = "RSS item at 6:55 AM, 8-K 6:58 to 7:00 AM. Cache-busting reaches the origin on this feed."
 checked = 2026-10-31
 
 [company.LLY]
@@ -545,11 +547,10 @@ wire = "PR Newswire"
 release_time = "06:30"
 eightk = ["07:51", "07:57", "07:12", "06:30"]
 fastest = "newswire"
-rss = ["https://corporate.target.com/feeds/pressreleases"]
 guess = [
     "https://corporate.target.com/press/release/{yyyy}/{mm}/target-corporation-reports-{nth}-quarter-earnings",
 ]
-evidence = "Q2 2026: PR Newswire and the press page both at 6:30 AM, 8-K at 7:51 AM (6:30 to 7:57 AM over four quarters). URL seen for two quarters."
+evidence = "Q2 2026: PR Newswire and the press page both at 6:30 AM, 8-K at 7:51 AM (6:30 to 7:57 AM over four quarters). Target's own press release feed is cached for hours (a copy 2.2 hours old, cache-busting ignored), so it's left out. Not-found answers on the press pages are cached too, for an unknown time. URL seen for two quarters."
 checked = 2026-10-31
 
 [company.TSLA]
@@ -589,15 +590,16 @@ names = ["UnitedHealth Group"]
 cik = 731766
 platform = "own-site"
 reachable = true
+soft_404 = true
 wire = "Business Wire"
 release_time = "05:55"
 eightk = ["06:14", "06:00", "06:02", "06:02"]
-fastest = "company-page"
+fastest = "newswire"
 guess = [
     "https://www.unitedhealthgroup.com/newsroom/{yyyy}/{yyyy}-{mm}-{dd}-uhg-reports-{nth}-quarter-{fy}-results.html",
     "https://www.unitedhealthgroup.com/content/dam/uhg/pdf/investors/{fy}/unh-reports-{nth}-quarter-{fy}-results.pdf",
 ]
-evidence = "Q3 2026: newsroom page published 5:55:34 AM and Business Wire at 5:55 AM, 19 minutes before the 8-K at 6:14:45 AM (6:00 to 6:14 AM over four quarters). Watch both. URLs seen for two quarters; the Q4 release may be named for the full year."
+evidence = "Q3 2026: Business Wire 5:55 AM and the newsroom page 5:55:34 AM, 19 minutes before the 8-K at 6:14:45 AM (6:00 to 6:14 AM over four quarters). The site answers 200 with a Page Not Found page for URLs that don't exist yet, PDFs included, so the guesses stay out of schedules until the bot can tell. URLs seen for two quarters; the Q4 release may be named for the full year."
 checked = 2026-10-31
 
 [company.V]
