@@ -109,17 +109,75 @@ DNS records:
 
 | Platform | Companies | Automated access |
 |---|---|---|
-| Q4 | AAPL, NVDA, NFLX, ORCL, CRM, PLTR, COIN, V, PYPL, COST, SBUX, BA, ABNB, SNOW, MU, QCOM, plus AMZN, GOOGL, MA, META, UBER, SPGI | JSON feeds work |
-| Equisolve | AMD, INTC, BAC, WMT, KO, NKE | Pages load, and each site has a press release RSS feed at `/news-events/press-releases/rss` |
+| Q4 | AAPL, NVDA, NFLX, ORCL, CRM, PLTR, COIN, V, PYPL, COST, SBUX, BA, ABNB, SNOW, MU, QCOM, DIS, plus AMZN, GOOGL, MA, META, UBER, SPGI | JSON feeds work |
+| Equisolve | AMD, INTC, BAC, WMT, KO, NKE | Pages load. AMD, Intel, Coca-Cola and Nike have a press release RSS feed at `/news-events/press-releases/rss`; Walmart and Bank of America don't |
 | Notified (`*.gcs-web.com`) | FICO, CRWD, LLY | Blocked by Akamai (403) |
 | Investis | HD | Blocked (403) |
 | The company's own site | MSFT, ADBE, GS, JPM, UNH, TGT | Pages load, with no common feed |
-| Unknown, blocked | TSLA, AVGO, MCD, DIS | 403 or timeout |
+| Unknown, blocked | TSLA, AVGO, MCD | 403 or timeout |
 
-- **Q4 is about half** (22 of 43), so it stays the first IR adapter.
+- **Q4 is about half** (23 of the 42 in the table), so it stays the first IR adapter. Disney
+  was first counted as blocked, because `thewaltdisneycompany.com/investor-relations/` returns
+  403. Its IR site is really `investors.thewaltdisneycompany.com`, on Q4, which works.
 - **Equisolve is next**, and its RSS feeds already work with the newswire source.
-- **About one in five sites block automated access** (8 of 43). Those companies are covered by
+- **About one in six sites block automated access** (7 of 42). Those companies are covered by
   newswires and EDGAR, the way FICO is.
+
+### Companies off Q4
+
+Checked on 2026-10-31 for the 19 companies in the table that aren't on Q4, plus S&P Global.
+Each row gives the fastest source we can read and how far it led the 8-K. Where a range is
+given, the source's time held for the quarters we could see. A single number comes from the
+latest quarter only. The details per company, with the last four 8-K times, are in
+`src/earnings_bot/companies.toml`.
+
+| Fastest source we can read | Companies | Lead over the 8-K |
+|---|---|---|
+| The company's RSS feed (Equisolve) | AMD 4:15 PM, Intel 4:01 PM, Coca-Cola 6:55 AM, Nike 4:15 PM | AMD 1 min, Intel 6–10 min, Coca-Cola 3–5 min, Nike only 15–28 s |
+| PR Newswire | Lilly 6:45 AM, Home Depot 6:00 AM, Target 6:30 AM | Lilly 18 min, Home Depot 10 min, Target 81 min |
+| A company page at a predictable URL | UnitedHealth 5:55 AM | 19 min |
+| Business Wire | FICO 4:15 PM | median 1m13s |
+| SEC 8-K | S&P Global, Walmart, Bank of America, JPMorgan, CrowdStrike, Broadcom, McDonald's, Tesla | S&P Global's 8-K beats PR Newswire by 6–11 min; Walmart's beats its own newsroom by about a minute |
+| Not known yet | Microsoft, Goldman Sachs, Adobe | |
+
+- **Which wire a company uses varies, and it isn't always Business Wire.** AMD uses
+  GlobeNewswire, whose RSS feed returns 403 to us, so AMD's own feed is the way in. Lilly, Home
+  Depot, Target and S&P Global use PR Newswire. McDonald's used PR Newswire until Q4 2025, but
+  none of its 2026 releases are there. Microsoft and Tesla use no wire.
+- **PR Newswire needs its own source.** Its earnings feed
+  (`https://www.prnewswire.com/rss/financial-services-latest-news/earnings-list.rss`) holds the
+  latest 20 earnings releases and allows 60 seconds of caching. Twenty items can turn over within
+  a minute at 4 PM on a busy day, so it has to be polled every second or two. It isn't a source
+  yet. It's what Lilly, Home Depot and Target need.
+- **Some own sites have predictable URLs** for the release page or PDF: UnitedHealth, Target,
+  Walmart, Goldman Sachs and Microsoft. These are guess templates in `companies.toml`. Others
+  name files by random IDs: JPMorgan, Bank of America, and Walmart's PDFs.
+- **Tesla is the biggest gap.** Its update deck goes up on the blocked IR site at about 4:05 PM,
+  but its 8-K comes 30 to 35 minutes later and it uses no wire. If the deck's file host answers
+  automated requests, a guessed URL would close the gap; see
+  [manual checks](manual-checks.md).
+- **Blocked sites stay blocked.** For FICO, CrowdStrike, Lilly, Home Depot, Broadcom, McDonald's
+  and Tesla, a person can check by hand how early the site posted, using
+  [manual checks](manual-checks.md). The bot itself never reads those sites.
+
+### How fresh feeds are
+
+Every company feed we read stamps the release with its release minute: AMD 4:15:00 PM, Intel
+4:01:00 PM, Coca-Cola 6:55:00 AM, Nike 4:15:00 PM and Target 6:30 AM. That's the same minute as
+the wire and the release page. But a stamp is the time the release was scheduled for, not proof
+the item was in the feed at that second. How stale a copy can be depends on caching:
+
+| Feed | Caching it allows |
+|---|---|
+| Q4 JSON feeds | 10 s |
+| Intel's RSS feed | 30 s, and a stale copy may be served while it refreshes |
+| AMD, Coca-Cola and Nike RSS feeds | No cache headers |
+| PR Newswire RSS | 60 s |
+| Business Wire RSS | 300 s at the CDN |
+
+The bot busts the cache on company feeds. Live runs will measure the real delay: Nov 2 (Palantir
+and Apple: Business Wire against Q4 and Apple's newsroom), Nov 3 (AMD: its RSS feed against the
+8-K) and Nov 4 (Uber and FICO: Business Wire against Q4 and the 8-K).
 
 ### Scheduling
 
@@ -200,7 +258,12 @@ Acceptance times of the last five earnings 8-Ks:
 
 ### What `/track` works out
 
-`/track TICKER` fills in everything a schedule file holds today:
+`/track TICKER` starts from `src/earnings_bot/companies.toml` when the company is in it. That
+file holds what we've already checked for 42 companies: CIK, platform, which wire, feeds, URL
+templates, recent 8-K times and the fastest source. Until `/track` exists,
+`uv run python -m earnings_bot.known TICKER TIME --fiscal-year YYYY --quarter Q` prints a
+schedule entry from it. For any other company, `/track` fills in everything a schedule file
+holds today:
 
 - **CIK and name** from SEC's ticker list. A ticker that isn't on it is rejected.
 - **IR site.** We use the IR host named in the last earnings release. If it names only the main
@@ -345,3 +408,4 @@ log stays a JSONL file.
 | 2026-10-31 | Anyone can `/track`, up to 5 companies a day each and 50 in all. `/untrack` and changes to a tracked company need Manage Server |
 | 2026-10-31 | One server and one channel per copy of the bot |
 | 2026-10-31 | Keep tracked companies, dates and posts in SQLite |
+| 2026-10-31 | Keep what we've researched about each company in `companies.toml`, checked into the repository, for `/track` to start from |
