@@ -123,9 +123,9 @@ DNS records:
 
 ### Scheduling
 
-- **Calendar.** Earnings dates come from the Q4 events feed, or from EDGAR and manual entry for
-  other companies. Each company's past release times tell us when in the day to look: Amazon has
-  used 4:01:00 PM ET for nine straight quarters, Uber 6:55:00 AM ET, and FICO 4:15:00 PM ET.
+- **Calendar.** [Report dates](#report-dates) covers where dates come from. Each company's past
+  release times tell us when in the day to look: Amazon has used 4:01:00 PM ET for nine straight
+  quarters, Uber 6:55:00 AM ET, and FICO 4:15:00 PM ET.
 - **Hot window.** Starts a few minutes before the expected release and runs until the release is
   detected or the window times out. Each source is polled about once a second, and once every
   few seconds for newswire RSS, which serves every company from one URL. IR feeds get a
@@ -134,7 +134,8 @@ DNS records:
 - **Cold polling.** Outside hot windows, every source is polled every few minutes to catch
   unscheduled or early releases.
 - **Rate limits are per host and shared across companies.** On a busy evening, a dozen companies
-  report at 4 PM and all of them share SEC's 10 requests per second.
+  report at 4 PM and all of them share SEC's 10 requests per second. See
+  [Sharing SEC's limit](#sharing-secs-limit).
 - **Connections stay open** (HTTP keep-alive / HTTP/2), so polls don't pay for a new TLS
   handshake.
 
@@ -155,13 +156,7 @@ DNS records:
   wins for each company and lets us compare against public timestamps such as X posts.
 - Until the detector exists, `earnings-bot-record` takes the same measurements for scheduled
   releases. It polls every source during a window around the expected time. The first run is
-  November 4, 2026: Uber at 6:55 AM ET and FICO at 4:15 PM ET.
-
-### Adding a company
-
-`/track TICKER` looks up the CIK in SEC's `company_tickers.json`, checks whether the IR site runs
-on Q4, learns file name patterns from past quarters, and starts tracking right away. There's no
-approval step.
+  November 2, 2026: Palantir at 4:05 PM ET and Apple at 4:30 PM ET.
 
 ### Ground rules
 
@@ -170,6 +165,129 @@ approval step.
 - If a site blocks automated requests, cover it through EDGAR and newswires. We don't try to get
   around the block, whether by faking a browser User-Agent or by scripting a real browser.
   FICO's IR site is behind Akamai bot protection, and even its `robots.txt` returns 403.
+
+## Tracking companies
+
+Designed on 2026-10-31, to be built after the November 4 test. Until then the bot watches a
+hand-written schedule file. Schedule files stay afterwards, for tests and replays.
+
+### What SEC's data gives us
+
+Checked on 2026-10-31:
+
+- **SEC's ticker list** (`company_tickers.json`) has 10,423 tickers, each with its CIK.
+- **SEC's `website` and `investorWebsite` fields** were empty for all seven companies in the
+  table below.
+- **Earnings 8-Ks are filed at the same time of day every quarter** (table below).
+- **The press release filed with the 8-K (EX-99.1) often names the IR site.** Of eight we read,
+  four name it outright (investor.apple.com, investors.palantir.com, investors.nike.com,
+  ir.crowdstrike.com) and three name only the main site (fico.com, amd.com, microsoft.com). Our
+  check found no site in Amazon's.
+- **Few releases say which newswire carried them.** Three of the eight have a Business Wire
+  dateline (PLTR, FICO, AMZN). The other five name no wire.
+
+Acceptance times of the last five earnings 8-Ks:
+
+| Ticker | 8-K accepted (ET) |
+|---|---|
+| AAPL | 4:30 PM all five times |
+| PLTR | 4:06–4:07 PM |
+| UBER | 6:56 AM all five times |
+| FICO | 4:15–4:19 PM |
+| SPGI | 7:10–7:15 AM |
+| AMD | 4:16 PM all five times |
+| MSFT | 4:03–4:07 PM |
+
+### What `/track` works out
+
+`/track TICKER` fills in everything a schedule file holds today:
+
+- **CIK and name** from SEC's ticker list. A ticker that isn't on it is rejected.
+- **IR site.** We use the IR host named in the last earnings release. If it names only the main
+  site, we try `investor.`, `investors.` and `ir.` in front of it. Each candidate is probed for
+  Q4's feeds and for Equisolve's press release RSS feed. A site that blocks us, like FICO's, is
+  left out, and the company is covered by EDGAR and the newswires.
+- **Names to match on newswires.** The SEC name without suffixes such as Inc. or Corp., plus the
+  name in the company's own release headlines. Fair Isaac files with SEC as "FAIR ISAAC CORP",
+  but its headlines say "FICO". Since few releases name their wire, every newswire feed is
+  matched against every company. Each feed is one URL for all companies, so this costs a few
+  requests, not a few per company.
+- **File patterns.** On Q4 sites, the last three quarters' file names from the financial reports
+  feed. When they follow one pattern, the bot guesses next quarter's URLs. When they don't, it
+  doesn't guess.
+- **Time of day** from past 8-K acceptance times.
+
+The reply lists what was found and what wasn't. Optional `ir_site`, `date` and `time` arguments
+fill in or correct what the lookup missed.
+
+### Report dates
+
+We don't use a calendar service. FMP's free plan returned only 12 companies for November 1–6,
+2026, and we chose not to add another provider. Dates come from these sources, most trusted
+first:
+
+1. A date and time given in `/track`
+2. The Q4 events feed, which lists the next earnings call
+3. The company's date announcement. Most companies put one out two to four weeks ahead: FICO
+   announced its November 4 date on October 21. The bot looks for these in sources it already
+   polls, meaning the company's IR or RSS feed and newswire items matched to it. It reads the
+   date, plus either a time or "before the market opens" or "after the market closes".
+4. An estimate: the same quarter's date a year earlier, from EDGAR. Estimated dates get no hot
+   window, so cold polling catches the release, a few minutes later. `/upcoming` marks the date
+   as estimated so someone can fix it.
+
+Every morning the bot refreshes the dates and builds that day's hot windows. A window opens 30
+minutes before the earliest of the last four 8-K times and closes 30 minutes after the latest,
+because the release can come well before the 8-K (up to 24 minutes before, for Amazon). When an
+announcement or `/track` gives a time, the window goes around that time instead, the same way a
+schedule file's expected time does today.
+
+### Commands and limits
+
+| Command | Who can use it | What it does |
+|---|---|---|
+| `/track TICKER` | Anyone, up to 5 a day each | Starts tracking, with optional `ir_site`, `date` and `time` |
+| `/untrack TICKER` | Members with Manage Server | Stops tracking |
+| `/tracked` | Anyone | Lists the tracked companies |
+| `/upcoming` | Anyone | Who reports in the next 7 days, and when |
+
+- At most 50 companies are tracked at once.
+- Changing a company that's already tracked (its date, time or IR site) also needs Manage Server,
+  so nobody can quietly move another company's window.
+- `/untrack` is registered with Manage Server as its default permission, so other members don't
+  see it. Server admins can change that under Server Settings → Integrations.
+
+### One server per copy
+
+Each copy of the bot serves one server and posts to one channel (`DISCORD_GUILD_ID` and
+`DISCORD_CHANNEL_ID`). Other people run their own copy from this repository, with their own SEC
+contact and their own share of SEC's limit. If the bot is added to another server, it leaves.
+Turning off **Public Bot** in the Developer Portal stops other people from adding it at all.
+
+### Storage
+
+A SQLite file holds:
+
+- each tracked company and what `/track` found
+- its next date, and where that date came from
+- who added it and when, for the daily limit
+- each release's Discord message, so a restarted bot keeps editing the same post instead of
+  posting a second alert
+
+### Sharing SEC's limit
+
+With up to 50 companies, a busy evening can put a dozen or more in the same window. When n
+companies' windows overlap, each one's SEC poll runs every n/8 seconds (never more than once a
+second), which keeps us under SEC's 10 requests per second. EDGAR's list of the latest filings
+would cover every company in one request. We'll measure how quickly it updates before relying
+on it.
+
+### Build order
+
+1. Storage, the `/track` lookup, `/tracked` and `/untrack`
+2. Dates: the Q4 events feed, date announcements, estimates, `/upcoming`, and the daily windows
+   that replace schedule files
+3. Sharing SEC's limit across overlapping windows
 
 ## Posting and summaries
 
@@ -202,8 +320,10 @@ losing accuracy (effort `low`, or a smaller model).
 
 ## Hosting and storage
 
-**Open.** Where the bot runs (it should sit close to US East for latency) and what it stores
-(tracked companies, seen releases, latency log).
+Tracked companies, dates and posts go in a SQLite file (see [Storage](#storage)). The latency
+log stays a JSONL file.
+
+**Open.** Where the bot runs. It should sit close to US East for latency.
 
 ## Decision log
 
@@ -220,3 +340,8 @@ losing accuracy (effort `low`, or a smaller model).
 | 2026-10-30 | Post one message per release and edit it: alert with links, then files, then the summary as an embed |
 | 2026-10-30 | Write summaries with the Claude API (`claude-opus-5-5`) and check their numbers against the release. Consensus estimates come from Financial Modeling Prep |
 | 2026-10-30 | Until `/track` exists, the bot watches the releases in a schedule file, the same format the latency recorder uses |
+| 2026-10-31 | `/track` works out each company's CIK, IR site, newswire names, file patterns and usual time of day by itself, from SEC's data and the company's last earnings release |
+| 2026-10-31 | Report dates come from `/track`, the Q4 events feed and the companies' own date announcements. No calendar service. Estimated dates get no hot window |
+| 2026-10-31 | Anyone can `/track`, up to 5 companies a day each and 50 in all. `/untrack` and changes to a tracked company need Manage Server |
+| 2026-10-31 | One server and one channel per copy of the bot |
+| 2026-10-31 | Keep tracked companies, dates and posts in SQLite |
