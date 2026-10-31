@@ -83,6 +83,8 @@ def describe_source(source: Source) -> str:
         return "SEC 8-K"
     if source.name.startswith("businesswire"):
         return "Business Wire"
+    if source.name == "prnewswire":
+        return "PR Newswire"
     if source.name.startswith("guess:"):
         return "guessed URL"
     return source.name.removeprefix("rss:")

@@ -31,6 +31,7 @@ from earnings_bot.config import RecorderSettings
 from earnings_bot.fetch import Fetcher, Response
 from earnings_bot.sources import (
     BUSINESS_WIRE_EARNINGS,
+    PR_NEWSWIRE_EARNINGS,
     EdgarFilings,
     GuessedFile,
     Q4FinancialReports,
@@ -58,6 +59,7 @@ class Target(BaseModel):
     cik: int
     q4_host: str | None = None
     newswire: list[str] = []  # names to look for in Business Wire's earnings feed
+    prnewswire: list[str] = []  # names to look for in PR Newswire's earnings feed
     rss: list[str] = []  # the company's own press release feeds
     guess: list[str] = []  # file URLs to probe
     before_minutes: float = 10
@@ -86,6 +88,8 @@ class Target(BaseModel):
                 RssFeed("businesswire", BUSINESS_WIRE_EARNINGS, self.newswire),
                 RssFeed("businesswire_busted", BUSINESS_WIRE_EARNINGS, self.newswire, True),
             ]
+        if self.prnewswire:
+            sources.append(RssFeed("prnewswire", PR_NEWSWIRE_EARNINGS, self.prnewswire))
         sources += [
             RssFeed(f"rss:{urlsplit(url).hostname}", url, bust_cache=True) for url in self.rss
         ]

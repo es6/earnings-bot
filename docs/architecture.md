@@ -95,9 +95,10 @@ What this tells us:
    (`https://feed.businesswire.com/rss/home/?rss=G1QFDERJXkJeEF9YXA==`) carries about 220
    releases a day, and each `pubDate` is the release minute. We match items to tracked companies
    by name. It's the main source for FICO. The feed allows caching for up to 5 minutes
-   (`s-maxage=300`), so how quickly it refreshes still needs measuring. PR Newswire has a similar
-   feed (`https://www.prnewswire.com/rss/news-releases-list.rss`) for companies that use it,
-   such as S&P Global.
+   (`s-maxage=300`), so how quickly it refreshes still needs measuring. PR Newswire's earnings
+   feed (`https://www.prnewswire.com/rss/financial-services-latest-news/earnings-list.rss`) is
+   read the same way for companies that use it: a schedule entry lists their names under
+   `prnewswire`. Its items also name the company in `dc:contributor`, which is matched too.
    The same source reads company press release feeds, such as the ones Equisolve sites publish.
 5. **Later:** adapters for other IR platforms.
 
@@ -153,11 +154,11 @@ latest quarter only. The details per company, with the last four 8-K times, are 
   stamps, Lilly's PDF went up 2 minutes after PR Newswire, Home Depot's 5 minutes after it, and
   CrowdStrike's 2 minutes after its 8-K. McDonald's is the exception: its PDF was uploaded at
   6:46 AM, 14 minutes before the 7:00 AM release, but that host refuses automated requests.
-- **PR Newswire needs its own source.** Its earnings feed
-  (`https://www.prnewswire.com/rss/financial-services-latest-news/earnings-list.rss`) holds the
-  latest 20 earnings releases and allows 60 seconds of caching. Twenty items can turn over within
-  a minute at 4 PM on a busy day, so it has to be polled every second or two. It isn't a source
-  yet. It's what Lilly, Home Depot, Target and McDonald's need.
+- **PR Newswire is a source,** for Lilly, Home Depot, Target, McDonald's and S&P Global. Its
+  earnings feed holds the latest 20 earnings releases, so it's polled every 2 seconds: twenty
+  items can turn over within a minute at 4 PM on a busy day. Its CDN keeps a copy for up to 60
+  seconds and ignores cache-busting parameters (a fresh URL came back as a cache hit 38 seconds
+  old), so there's no busted copy to poll. Live data will show how much of that minute it costs.
 - **Some own sites have predictable URLs** for the release page or PDF: UnitedHealth, Target,
   Walmart, Goldman Sachs and Microsoft. These are guess templates in `companies.toml`. Others
   name files by random IDs: JPMorgan, Bank of America, and Walmart's PDFs.
@@ -182,10 +183,11 @@ the item was in the feed at that second. How stale a copy can be depends on cach
 | Q4 JSON feeds | 10 s |
 | Intel's RSS feed | 30 s, and a stale copy may be served while it refreshes |
 | AMD, Coca-Cola and Nike RSS feeds | No cache headers |
-| PR Newswire RSS | 60 s |
+| PR Newswire RSS | 60 s, and the CDN ignores cache-busting parameters |
 | Business Wire RSS | 300 s at the CDN |
 
-The bot busts the cache on company feeds. Live runs will measure the real delay: Nov 2 (Palantir
+The bot busts the cache on company feeds, and on Business Wire it polls both a busted and a plain
+copy. Live runs will measure the real delay: Nov 2 (Palantir
 and Apple: Business Wire against Q4 and Apple's newsroom), Nov 3 (AMD: its RSS feed against the
 8-K) and Nov 4 (Uber and FICO: Business Wire against Q4 and the 8-K).
 
@@ -419,3 +421,4 @@ log stays a JSONL file.
 | 2026-10-31 | One server and one channel per copy of the bot |
 | 2026-10-31 | Keep tracked companies, dates and posts in SQLite |
 | 2026-10-31 | Keep what we've researched about each company in `companies.toml`, checked into the repository, for `/track` to start from |
+| 2026-10-31 | Add PR Newswire's earnings feed as a source for the companies that use it, matched on headline, dateline and `dc:contributor` |

@@ -82,8 +82,9 @@ def to_target(ticker: str, expected: datetime, fiscal_year: int, fiscal_quarter:
         expected=expected,
         cik=company.cik,
         q4_host=company.q4_host if company.reachable else None,
-        # Business Wire's feed is the only newswire the bot reads so far
+        # A company with no known wire is still matched on Business Wire, the most common one
         newswire=company.names if company.wire in ("Business Wire", "unknown") else [],
+        prnewswire=company.names if company.wire == "PR Newswire" else [],
         rss=company.rss,
         guess=guess_urls(company, expected.date(), fiscal_year, fiscal_quarter),
     )
@@ -96,7 +97,7 @@ def target_toml(target: Target) -> str:
     lines.append(f"cik = {target.cik}")
     if target.q4_host:
         lines.append(f'q4_host = "{target.q4_host}"')
-    for key in ("newswire", "rss", "guess"):
+    for key in ("newswire", "prnewswire", "rss", "guess"):
         values: list[str] = getattr(target, key)
         if values:
             lines += [f"{key} = [", *(f"    {json.dumps(v)}," for v in values), "]"]

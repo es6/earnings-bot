@@ -17,6 +17,11 @@ from urllib.parse import urljoin, urlsplit
 from earnings_bot.fetch import Response
 
 BUSINESS_WIRE_EARNINGS = "https://feed.businesswire.com/rss/home/?rss=G1QFDERJXkJeEF9YXA=="
+# The latest 20 releases PR Newswire files under Earnings. Its CDN keeps a copy for up to 60 s
+# and ignores cache-busting parameters, so there's no busted variant to poll.
+PR_NEWSWIRE_EARNINGS = (
+    "https://www.prnewswire.com/rss/financial-services-latest-news/earnings-list.rss"
+)
 
 # Matches "Uber Announces Results for Third Quarter 2026" and "Palantir Reports Q2 2026 U.S. Comm
 # Revenue Growth of 149%", but not the earlier "Uber Announces Date of Third Quarter 2026 Results
@@ -171,7 +176,7 @@ class RssFeed(Source):
         self.name = name
         self.feed_url = feed_url
         self.bust_cache = bust_cache
-        names = "|".join(re.escape(company) for company in companies)
+        names = "|".join(re.escape(_straight_quotes(company)) for company in companies)
         self._match = re.compile(rf"\b(?:{names})\b", re.IGNORECASE) if companies else None
 
     def url(self) -> str:
@@ -193,8 +198,10 @@ class RssFeed(Source):
         sightings = []
         for entry in entries:
             # Newswire descriptions open with the dateline and the company's name:
-            # "IRVINE, Calif.--(BUSINESS WIRE)--Beach Cities Commercial Bank ..."
-            if self._match and not self._match.search(f"{entry.title} {entry.lead[:150]}"):
+            # "IRVINE, Calif.--(BUSINESS WIRE)--Beach Cities Commercial Bank ...". PR Newswire
+            # also names the company in each item's dc:contributor.
+            text = _straight_quotes(f"{entry.title} {entry.contributor} {entry.lead[:150]}")
+            if self._match and not self._match.search(text):
                 continue
             sightings.append(
                 Sighting(
@@ -210,6 +217,12 @@ class RssFeed(Source):
 
 
 _ATOM = "{http://www.w3.org/2005/Atom}"
+_DC = "{http://purl.org/dc/elements/1.1/}"
+
+
+def _straight_quotes(text: str) -> str:
+    # Headlines spell "McDonald's" with either apostrophe
+    return text.replace("\N{RIGHT SINGLE QUOTATION MARK}", "'")
 
 
 @dataclass(frozen=True)
@@ -219,6 +232,7 @@ class _Entry:
     lead: str
     link: str
     published: str | None
+    contributor: str = ""
 
 
 def _rss_item(item: ET.Element) -> _Entry:
@@ -229,6 +243,7 @@ def _rss_item(item: ET.Element) -> _Entry:
         lead=item.findtext("description") or "",
         link=link,
         published=item.findtext("pubDate"),
+        contributor=item.findtext(f"{_DC}contributor") or "",
     )
 
 
