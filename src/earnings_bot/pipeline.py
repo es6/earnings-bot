@@ -28,19 +28,20 @@ MAX_CONTENT = 2000  # Discord's limit for a message's text
 
 
 class Poster(ABC):
-    """Where a release gets posted: one message, created once and then edited."""
+    """Where a release gets posted: one message, created once and then edited. Each step returns
+    the time the platform put on the change, when it gives one."""
 
     @abstractmethod
-    async def send(self, content: str) -> None: ...
+    async def send(self, content: str) -> datetime | None: ...
 
     @abstractmethod
-    async def edit(self, content: str) -> None: ...
+    async def edit(self, content: str) -> datetime | None: ...
 
     @abstractmethod
-    async def attach(self, name: str, data: bytes) -> None: ...
+    async def attach(self, name: str, data: bytes) -> datetime | None: ...
 
     @abstractmethod
-    async def set_summary(self, text: str, footer: str) -> None: ...
+    async def set_summary(self, text: str, footer: str) -> datetime | None: ...
 
 
 class DiscordPoster(Poster):
@@ -53,22 +54,26 @@ class DiscordPoster(Poster):
             raise RuntimeError("send() must come before any edit")
         return self.message
 
-    async def send(self, content: str) -> None:
+    async def send(self, content: str) -> datetime | None:
         self.message = await self.channel.send(content)
+        return self.message.created_at
 
-    async def edit(self, content: str) -> None:
+    async def edit(self, content: str) -> datetime | None:
         self.message = await self._sent().edit(content=content)
+        return self.message.edited_at
 
-    async def attach(self, name: str, data: bytes) -> None:
+    async def attach(self, name: str, data: bytes) -> datetime | None:
         message = self._sent()
         file = discord.File(io.BytesIO(data), filename=name)
         self.message = await message.edit(attachments=[*message.attachments, file])
+        return self.message.edited_at
 
-    async def set_summary(self, text: str, footer: str) -> None:
+    async def set_summary(self, text: str, footer: str) -> datetime | None:
         # An embed fits 4,096 characters, twice a plain message
         embed = discord.Embed(description=text, color=discord.Color.dark_teal())
         embed.set_footer(text=footer)
         self.message = await self._sent().edit(embed=embed)
+        return self.message.edited_at
 
 
 def describe_source(source: Source) -> str:
@@ -137,6 +142,14 @@ class Release:
     def _since_first_seen(self) -> float:
         return round(time.monotonic() - self.first_seen_at, 2)
 
+    def _live_after(self, stamp: datetime | None) -> float | None:
+        """Seconds from the first sighting to Discord's own timestamp on a change, which is when
+        people could see it. Discord's reply can reach us seconds later than that, when
+        discord.py waits out a rate limit before returning."""
+        if stamp is None or self.first_seen is None:
+            return None
+        return round((stamp - self.first_seen).total_seconds(), 2)
+
     def _content(self) -> str:
         seen = f"{self.first_seen.astimezone(ET):%H:%M:%S.%f}"[:-3] if self.first_seen else ""
         first_label = next(iter(self.links.values()), "")
@@ -185,10 +198,13 @@ class Release:
             if self.posted:
                 await self.poster.edit(self._content())
                 return
-            await self.poster.send(self._content())
+            stamp = await self.poster.send(self._content())
             self.posted = True
-        self.journal.write("posted", ticker=self.target.ticker, seconds=self._since_first_seen())
-        self.journal.say(f"{self.target.ticker}: posted the alert ({label})")
+        live = self._live_after(stamp)
+        self.journal.write(
+            "posted", ticker=self.target.ticker, seconds=self._since_first_seen(), live_seconds=live
+        )
+        self.journal.say(f"{self.target.ticker}: posted the alert ({label}), live after {live}s")
 
     async def _attach(self, url: str) -> None:
         name = _file_name(url)
@@ -203,9 +219,13 @@ class Release:
             )
             return
         async with self.lock:
-            await self.poster.attach(name, response.body)
+            stamp = await self.poster.attach(name, response.body)
         self.journal.write(
-            "attached", ticker=self.target.ticker, file=name, seconds=self._since_first_seen()
+            "attached",
+            ticker=self.target.ticker,
+            file=name,
+            seconds=self._since_first_seen(),
+            live_seconds=self._live_after(stamp),
         )
         self.journal.say(f"{self.target.ticker}: attached {name}")
 
@@ -232,11 +252,12 @@ class Release:
             shown = ", ".join(summary.unverified[:8])
             footer += f" · Check these, they aren't in the release as written: {shown}"
         async with self.lock:
-            await self.poster.set_summary(summary.text, footer[:2048])
+            stamp = await self.poster.set_summary(summary.text, footer[:2048])
         self.journal.write(
             "summary",
             ticker=self.target.ticker,
             seconds=self._since_first_seen(),
+            live_seconds=self._live_after(stamp),
             claude_seconds=round(took, 1),
             source=label,
             text=summary.text,

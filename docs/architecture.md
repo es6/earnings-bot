@@ -144,6 +144,13 @@ DNS records:
   release by (ticker, fiscal period) and only add what's missing, such as more files.
 - Posting happens in stages: an alert with a link within seconds, then files as they appear,
   then the summary.
+- Each step logs two times after the first sighting. `live_seconds` comes from Discord's own
+  timestamp on the message or edit, which is when people could see it. `seconds` is when
+  Discord's reply reached the bot. They differ when discord.py waits out a rate limit before
+  returning. In tests on 2026-10-30, Discord answered every request in 0.1 to 0.6 seconds, and
+  every multi-second wait came from discord.py's rate limiter: about 4 seconds on reads, once a
+  bucket ran out. In one replay, Discord stamped the alert 0.12 seconds after the sighting, but
+  the reply reached the bot only at 2.54 seconds.
 - Every source records when it first saw each release. This latency log shows which source
   wins for each company and lets us compare against public timestamps such as X posts.
 - Until the detector exists, `earnings-bot-record` takes the same measurements for scheduled
