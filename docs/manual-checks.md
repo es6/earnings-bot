@@ -20,28 +20,32 @@ earnings 8-K.
    releases show a time like "October 14, 2026 06:45 ET".
 4. If it's on neither, write "none".
 
-| Company | Release date | Business Wire time | GlobeNewswire time |
-|---|---|---|---|
-| Bank of America | Oct 14, 2026 | | |
-| UnitedHealth Group | Oct 13, 2026 | | |
-| Goldman Sachs | Oct 13, 2026 | | |
-| JPMorgan Chase | Oct 13, 2026 | | |
-| Adobe | Sep 10, 2026 | | |
-| Broadcom | Sep 2, 2026 | | |
-| CrowdStrike | Aug 26, 2026 | | |
-| NVIDIA | Aug 26, 2026 | | |
-| Salesforce | Aug 26, 2026 | | |
-| Walmart | Aug 20, 2026 | | |
-| McDonald's | Aug 4, 2026 | | |
+Results from 2026-10-31, with the open items last:
 
-## 2. Tesla's update deck link
+| Company | Release date | Wire | Time | Still to do |
+|---|---|---|---|---|
+| Bank of America | Oct 14, 2026 | None (not on PR Newswire either) | | |
+| Goldman Sachs | Oct 13, 2026 | None. The Business Wire hit was Goldman Sachs BDC, a separate company | | |
+| Broadcom | Sep 2, 2026 | None (not on PR Newswire either) | | |
+| NVIDIA | Aug 26, 2026 | GlobeNewswire | | |
+| McDonald's | Aug 4, 2026 | PR Newswire | 7:00 AM | |
+| UnitedHealth Group | Oct 13, 2026 | Business Wire | | Read the time on the page |
+| Salesforce | Aug 26, 2026 | Business Wire | | Read the time on the page |
+| Walmart | Aug 20, 2026 | Business Wire | | Read the time on the page |
+| JPMorgan Chase | Oct 13, 2026 | | | Check |
+| Adobe | Sep 10, 2026 | | | Check |
+| CrowdStrike | Aug 26, 2026 | | | Check |
+
+## 2. Tesla's update deck links
 
 About 2 minutes. This is the most valuable check: Tesla's 8-K comes 30 to 35 minutes after the
 deck, and Tesla uses no newswire.
 
-1. Open <https://ir.tesla.com>.
-2. Find the Q3 2026 Update, the quarterly results deck.
-3. Right-click its link, choose **Copy link address**, and paste the link into the chat.
+1. Open <https://ir.tesla.com>. Its quarterly table has the columns Year, Quarter, Earnings
+   Date, Production & Delivery, Shareholder Deck, Webcast with Q&A, SEC Filing and Consensus.
+2. In the Q3 2026 row, right-click **Shareholder Deck**, choose **Copy link address**, and paste
+   the link into the chat.
+3. Do the same for the Q2 2026 row, so the file name's pattern shows.
 
 If the deck sits on a file host that answers automated requests, the bot can try next quarter's
 file name from 4:00 PM on.
@@ -62,14 +66,18 @@ time is the better clue.
 `last-modified` is when the file was uploaded. A file can be uploaded before the release and
 kept hidden, or re-uploaded later, so treat it as a clue, not proof.
 
-| Company | IR site | Time on the release page | PDF `last-modified` | PDF link |
-|---|---|---|---|---|
-| FICO | <https://investors.fico.com> | | | |
-| CrowdStrike | <https://ir.crowdstrike.com> | | | |
-| Lilly | <https://investor.lilly.com> | | | |
-| Home Depot | <https://ir.homedepot.com> | | | |
-| Broadcom | <https://investors.broadcom.com> | | | |
-| McDonald's | <https://corporate.mcdonalds.com/corpmcd/investors.html> | | | |
+Results from 2026-10-31:
+
+| Company | PDF `last-modified` | Compared with | What it tells us |
+|---|---|---|---|
+| FICO | No PDF; the release page's stamp is the time it was viewed | Business Wire 4:15 PM | Nothing; the page URL contains the EPS figure, so it can't be guessed either |
+| CrowdStrike | Aug 26, 4:09:12 PM (`/node/17376/pdf`) | 8-K 4:07:02 PM | The site came after the 8-K |
+| Lilly | Oct 29, 6:47:20 AM (`/node/55191/pdf`) | PR Newswire 6:45 AM | The site came after the wire |
+| Home Depot | Aug 18, 6:05:18 AM (`q2-2026-earnings-release.pdf`) | PR Newswire 6:00 AM, 8-K 6:10:33 AM | The site came after the wire |
+| Broadcom | Jun 6 (`/node/64371/pdf`), regenerated later | 8-K | Nothing |
+| McDonald's | Aug 4, 6:46:00 AM (`MCD Q226 Earnings Release - Exhibit 99.1.pdf`) | PR Newswire 7:00 AM | Uploaded 14 minutes before the release, but the host blocks automated reads |
+
+None of these PDF hosts answer automated requests (all return 403), so the bot can't use them.
 
 ## 4. Live check: FICO on November 4
 
