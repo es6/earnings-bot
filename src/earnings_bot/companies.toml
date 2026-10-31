@@ -52,14 +52,16 @@ checked = 2026-10-31
 
 [company.ADBE]
 name = "Adobe"
+names = ["Adobe"]
 cik = 796343
 platform = "own-site"
 reachable = true
-wire = "unknown"
+wire = "Business Wire"
+release_time = "16:05"
 eightk = ["16:06", "16:08", "16:09", "16:05"]
-fastest = "unknown"
-evidence = "adobe.com's IR page loads, but news.adobe.com builds its list in the browser. 8-K at 4:05 to 4:09 PM."
-todo = "Check which wire carries the release and its time."
+fastest = "newswire"
+evidence = "Q3 FY26: Business Wire 4:05 PM, the IR site's release PDF 4:05:37 PM, 8-K 4:06:14 PM (4:05 to 4:09 PM over four quarters). adobe.com's IR page loads, but news.adobe.com builds its list in the browser."
+todo = "Get the release PDF's link from the IR page by hand, to see whether its name can be guessed."
 checked = 2026-10-31
 
 [company.AMD]
@@ -173,14 +175,15 @@ checked = 2026-10-31
 
 [company.CRWD]
 name = "CrowdStrike"
+names = ["CrowdStrike"]
 cik = 1535527
 platform = "notified"
 reachable = false
-wire = "unknown"
+wire = "Business Wire"
 eightk = ["16:07", "16:06", "16:06", "16:11"]
-fastest = "sec-8k"
-evidence = "The IR site blocks automated reads. Its Q2 FY27 release PDF (/node/17376/pdf) was stamped 4:09:12 PM, two minutes after the 8-K at 4:07:02 PM. Not on PR Newswire. 8-K at 4:06 to 4:11 PM."
-todo = "Check Business Wire and GlobeNewswire for the August 26, 2026 release."
+fastest = "unknown"
+evidence = "Business Wire carried the Q2 FY27 date announcement (Aug 4, 8:00 AM), so it likely carries the results too. The IR site blocks automated reads. Its Q2 FY27 release PDF (/node/17376/pdf) was stamped 4:09:12 PM, two minutes after the 8-K at 4:07:02 PM. 8-K at 4:06 to 4:11 PM."
+todo = "Read the time of the August 26, 2026 results release on Business Wire."
 checked = 2026-10-31
 
 [company.DIS]
@@ -273,14 +276,15 @@ checked = 2026-10-31
 
 [company.JPM]
 name = "JPMorgan Chase"
+names = ["JPMorganChase", "JPMorgan Chase"]
 cik = 19617
 platform = "own-site"
 reachable = true
-wire = "unknown"
+wire = "Business Wire"
 eightk = ["06:30", "06:30", "06:32", "06:41"]
 fastest = "sec-8k"
-evidence = "8-K at 6:30 to 6:41 AM. The release PDF is named by a random ID (uploaded at 5:14 AM for Q3 2026), so it can't be guessed."
-todo = "Check which wire carries the release and its time."
+evidence = "Q3 2026: 8-K 6:30:38 AM, Business Wire 7:08 AM, 38 minutes later. The release PDF was uploaded at 5:14:57 AM under a random name, so it can't be guessed, but the quarterly-earnings page that lists it answers automated requests. 8-K at 6:30 to 6:41 AM over four quarters."
+todo = "Measure the quarterly-earnings page (jpmorganchase.com/ir/quarterly-earnings) against the 8-K live; the new PDF link may appear on it before 6:30 AM. Next report mid-January 2027."
 checked = 2026-10-31
 
 [company.KO]

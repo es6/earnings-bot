@@ -32,9 +32,9 @@ Results from 2026-10-31, with the open items last:
 | UnitedHealth Group | Oct 13, 2026 | Business Wire | 5:55 AM | |
 | Salesforce | Aug 26, 2026 | Business Wire | 4:01 PM | |
 | Walmart | Aug 20, 2026 | Business Wire | 7:01 AM | |
-| JPMorgan Chase | Oct 13, 2026 | | | Check |
-| Adobe | Sep 10, 2026 | | | Check |
-| CrowdStrike | Aug 26, 2026 | | | Check |
+| JPMorgan Chase | Oct 13, 2026 | Business Wire | 7:08 AM | |
+| Adobe | Sep 10, 2026 | Business Wire | 4:05 PM | |
+| CrowdStrike | Aug 26, 2026 | Business Wire (found the Aug 4 date announcement) | | Read the time of the Aug 26 results release |
 
 ## 2. Tesla's update deck
 
@@ -74,6 +74,13 @@ Results from 2026-10-31:
 | McDonald's | Aug 4, 6:46:00 AM (`MCD Q226 Earnings Release - Exhibit 99.1.pdf`) | PR Newswire 7:00 AM | Uploaded 14 minutes before the release, but the host blocks automated reads |
 
 None of these PDF hosts answer automated requests (all return 403), so the bot can't use them.
+
+Two sites that do answer us, checked the same way:
+
+| Company | PDF `last-modified` | Compared with | What it tells us |
+|---|---|---|---|
+| JPMorgan Chase | Oct 13, 5:14:57 AM (named by a random ID) | 8-K 6:30:38 AM, Business Wire 7:08 AM | Uploaded 75 minutes before the 8-K. It can't be guessed, but the page that links it can be watched |
+| Adobe | Sep 10, 4:05:37 PM | Business Wire 4:05 PM, 8-K 4:06:14 PM | Business Wire is first. Next: copy the PDF's link to see whether its name can be guessed |
 
 ## 4. Live check: FICO on November 4
 

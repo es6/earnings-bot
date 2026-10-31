@@ -136,15 +136,19 @@ latest quarter only. The details per company, with the last four 8-K times, are 
 | The company's RSS feed (Equisolve) | AMD 4:15 PM, Intel 4:01 PM, Coca-Cola 6:55 AM, Nike 4:15 PM | AMD 1 min, Intel 6–10 min, Coca-Cola 3–5 min, Nike only 15–28 s |
 | PR Newswire | Lilly 6:45 AM, Home Depot 6:00 AM, Target 6:30 AM, McDonald's 7:00 AM | Lilly 18 min, Home Depot 10 min, Target 81 min, McDonald's 1.5 min |
 | A company page at a predictable URL | UnitedHealth 5:55 AM, with Business Wire the same minute | 19 min |
-| Business Wire | FICO 4:15 PM | median 1m13s |
-| SEC 8-K | S&P Global, Walmart, Bank of America, JPMorgan, CrowdStrike, Broadcom, Tesla | S&P Global's 8-K beats PR Newswire by 6–11 min. Walmart's beats its own newsroom by about a minute and Business Wire by two |
-| Not known yet | Microsoft, Goldman Sachs, Adobe | |
+| Business Wire | FICO 4:15 PM, Adobe 4:05 PM | FICO median 1m13s, Adobe 1 min |
+| SEC 8-K | S&P Global, Walmart, JPMorgan, Bank of America, Broadcom, Tesla | S&P Global's 8-K beats PR Newswire by 6–11 min. Walmart's beats its own newsroom by about a minute and Business Wire by two. JPMorgan's beats Business Wire by 38 min |
+| Not known yet | Microsoft, Goldman Sachs, CrowdStrike | |
 
 - **Which wire a company uses varies, and it isn't always Business Wire.** AMD and NVIDIA use
   GlobeNewswire, whose RSS feed returns 403 to us, so their own feeds are the way in. Lilly, Home
-  Depot, Target, McDonald's and S&P Global use PR Newswire. UnitedHealth, Salesforce and Walmart
-  use Business Wire. Bank of America, Goldman Sachs, Broadcom, Microsoft and Tesla use none.
-  JPMorgan's, Adobe's and CrowdStrike's are still to check.
+  Depot, Target, McDonald's and S&P Global use PR Newswire. UnitedHealth, Salesforce, Walmart,
+  JPMorgan, Adobe and CrowdStrike use Business Wire. Bank of America, Goldman Sachs, Broadcom,
+  Microsoft and Tesla use none.
+- **A wire can trail the 8-K badly.** JPMorgan's 8-K was accepted at 6:30 AM, and Business
+  Wire posted its release at 7:08 AM. Its release PDF was uploaded at 5:15 AM under a random
+  name. The quarterly-earnings page that links it answers us, so watching that page might beat
+  the 8-K.
 - **Release files on blocked sites mostly come after the wire.** By their `Last-Modified`
   stamps, Lilly's PDF went up 2 minutes after PR Newswire, Home Depot's 5 minutes after it, and
   CrowdStrike's 2 minutes after its 8-K. McDonald's is the exception: its PDF was uploaded at
