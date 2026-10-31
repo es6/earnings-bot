@@ -135,9 +135,9 @@ latest quarter only. The details per company, with the last four 8-K times, are 
 |---|---|---|
 | The company's RSS feed (Equisolve) | AMD 4:15 PM, Intel 4:01 PM, Coca-Cola 6:55 AM, Nike 4:15 PM | AMD 1 min, Intel 6–10 min, Coca-Cola 3–5 min, Nike only 15–28 s |
 | PR Newswire | Lilly 6:45 AM, Home Depot 6:00 AM, Target 6:30 AM, McDonald's 7:00 AM | Lilly 18 min, Home Depot 10 min, Target 81 min, McDonald's 1.5 min |
-| A company page at a predictable URL | UnitedHealth 5:55 AM | 19 min |
+| A company page at a predictable URL | UnitedHealth 5:55 AM, with Business Wire the same minute | 19 min |
 | Business Wire | FICO 4:15 PM | median 1m13s |
-| SEC 8-K | S&P Global, Walmart, Bank of America, JPMorgan, CrowdStrike, Broadcom, Tesla | S&P Global's 8-K beats PR Newswire by 6–11 min; Walmart's beats its own newsroom by about a minute |
+| SEC 8-K | S&P Global, Walmart, Bank of America, JPMorgan, CrowdStrike, Broadcom, Tesla | S&P Global's 8-K beats PR Newswire by 6–11 min. Walmart's beats its own newsroom by about a minute and Business Wire by two |
 | Not known yet | Microsoft, Goldman Sachs, Adobe | |
 
 - **Which wire a company uses varies, and it isn't always Business Wire.** AMD and NVIDIA use
@@ -157,10 +157,11 @@ latest quarter only. The details per company, with the last four 8-K times, are 
 - **Some own sites have predictable URLs** for the release page or PDF: UnitedHealth, Target,
   Walmart, Goldman Sachs and Microsoft. These are guess templates in `companies.toml`. Others
   name files by random IDs: JPMorgan, Bank of America, and Walmart's PDFs.
-- **Tesla is the biggest gap.** Its update deck goes up on the blocked IR site at about 4:05 PM,
-  but its 8-K comes 30 to 35 minutes later and it uses no wire. If the deck's file host answers
-  automated requests, a guessed URL would close the gap; see
-  [manual checks](manual-checks.md).
+- **Tesla is the biggest gap.** It uses no wire, and its update deck sits on hosts that block
+  automated requests: `ir.tesla.com`, and the deck's own host `assets-ir.tesla.com` (both Akamai
+  403). That holds even though the deck's name is predictable (`TSLA-Q3-2026-Update.pdf`). So
+  the 8-K is the first source we can read. It came at 4:35 and 4:41 PM in the last two quarters,
+  and 4:06 to 4:14 PM before that.
 - **Blocked sites stay blocked.** For FICO, CrowdStrike, Lilly, Home Depot, Broadcom, McDonald's
   and Tesla, a person can check by hand how early the site posted, using
   [manual checks](manual-checks.md). The bot itself never reads those sites.

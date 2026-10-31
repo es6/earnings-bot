@@ -29,26 +29,22 @@ Results from 2026-10-31, with the open items last:
 | Broadcom | Sep 2, 2026 | None (not on PR Newswire either) | | |
 | NVIDIA | Aug 26, 2026 | GlobeNewswire | | |
 | McDonald's | Aug 4, 2026 | PR Newswire | 7:00 AM | |
-| UnitedHealth Group | Oct 13, 2026 | Business Wire | | Read the time on the page |
-| Salesforce | Aug 26, 2026 | Business Wire | | Read the time on the page |
-| Walmart | Aug 20, 2026 | Business Wire | | Read the time on the page |
+| UnitedHealth Group | Oct 13, 2026 | Business Wire | 5:55 AM | |
+| Salesforce | Aug 26, 2026 | Business Wire | 4:01 PM | |
+| Walmart | Aug 20, 2026 | Business Wire | 7:01 AM | |
 | JPMorgan Chase | Oct 13, 2026 | | | Check |
 | Adobe | Sep 10, 2026 | | | Check |
 | CrowdStrike | Aug 26, 2026 | | | Check |
 
-## 2. Tesla's update deck links
+## 2. Tesla's update deck
 
-About 2 minutes. This is the most valuable check: Tesla's 8-K comes 30 to 35 minutes after the
-deck, and Tesla uses no newswire.
+Done on 2026-10-31. The deck links follow one pattern
+(`https://assets-ir.tesla.com/tesla-contents/IR/TSLA-Q3-2026-Update.pdf`), but that host
+returns 403 to automated requests, so the bot can't use it. Tesla stays on the 8-K.
 
-1. Open <https://ir.tesla.com>. Its quarterly table has the columns Year, Quarter, Earnings
-   Date, Production & Delivery, Shareholder Deck, Webcast with Q&A, SEC Filing and Consensus.
-2. In the Q3 2026 row, right-click **Shareholder Deck**, choose **Copy link address**, and paste
-   the link into the chat.
-3. Do the same for the Q2 2026 row, so the file name's pattern shows.
-
-If the deck sits on a file host that answers automated requests, the bot can try next quarter's
-file name from 4:00 PM on.
+One optional check is left, at Tesla's next report (late January 2027). Note when the deck
+appears in the Shareholder Deck column of <https://ir.tesla.com>'s quarterly table, using
+<https://time.gov>. That shows how far the 8-K trails it.
 
 ## 3. When a blocked IR site posted its release
 
