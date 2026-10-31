@@ -6,8 +6,10 @@
 # reachable  whether the IR site answers automated requests (we never work around a block)
 # wire       Business Wire, PR Newswire, GlobeNewswire, none or unknown
 # fastest    the first source we can read, judged from past quarters: ir-feed, company-rss,
-#            company-page, newswire, sec-8k or unknown
-# eightk     acceptance times of the last four earnings 8-Ks, HH:MM US Eastern, newest first
+#            company-page (a page or file on the company's own site), newswire, sec-8k or
+#            unknown
+# eightk     acceptance times of the last four item 2.02 8-Ks, HH:MM US Eastern, newest first.
+#            A few may be other filings under that item. Tesla's leaves out its delivery reports.
 # guess      URL templates. {yyyy} {mm} {dd} are the release date. {fy} {fyy} {fq} are the
 #            fiscal year and quarter as the company labels them. {nth} is first to fourth,
 #            and {ord} is 1st to 4th.
@@ -50,14 +52,15 @@ checked = 2026-10-31
 
 [company.ADBE]
 name = "Adobe"
+names = ["Adobe"]
 cik = 796343
 platform = "own-site"
 reachable = true
-wire = "unknown"
+wire = "Business Wire"
+release_time = "16:05"
 eightk = ["16:06", "16:08", "16:09", "16:05"]
-fastest = "unknown"
-evidence = "adobe.com's IR page loads, but news.adobe.com builds its list in the browser. 8-K at 4:05 to 4:09 PM."
-todo = "Check which wire carries the release and its time."
+fastest = "newswire"
+evidence = "Q3 FY26: Business Wire 4:05 PM, the IR site's release PDF 4:05:37 PM, 8-K 4:06:14 PM (4:05 to 4:09 PM over four quarters). The PDF's path is random (pdfs/01906202/au56y4ter.pdf), so it can't be guessed. adobe.com's IR page loads, but news.adobe.com builds its list in the browser."
 checked = 2026-10-31
 
 [company.AMD]
@@ -90,13 +93,13 @@ checked = 2026-10-31
 [company.AVGO]
 name = "Broadcom"
 cik = 1730168
-platform = "unknown"
+platform = "notified"
 reachable = false
-wire = "unknown"
+wire = "none"
 eightk = ["16:26", "16:21", "16:16", "16:17"]
 fastest = "sec-8k"
-evidence = "investors.broadcom.com blocks automated reads. Not found on PR Newswire. 8-K at 4:16 to 4:26 PM."
-todo = "Check which wire carries the release and its time."
+evidence = "No newswire: not on Business Wire, GlobeNewswire or PR Newswire. investors.broadcom.com blocks automated reads, and its release PDFs are regenerated later, so their Last-Modified dates say nothing. 8-K at 4:16 to 4:26 PM."
+todo = "Find out whether the IR site posts before the 8-K, by watching it live."
 checked = 2026-10-31
 
 [company.BA]
@@ -117,11 +120,11 @@ name = "Bank of America"
 cik = 70858
 platform = "equisolve"
 reachable = true
-wire = "unknown"
+wire = "none"
 eightk = ["06:44", "06:45", "06:44", "06:45"]
 fastest = "sec-8k"
-evidence = "8-K at 6:44:44 to 6:45:47 AM, the minute the release goes out. Files sit under unpredictable IDs, and the newsroom's RSS link returns a web app."
-todo = "Check which wire carries the release and its time."
+evidence = "No newswire: not on Business Wire, GlobeNewswire or PR Newswire. 8-K at 6:44:44 to 6:45:47 AM, the minute the release goes out. Files sit under unpredictable IDs, and the newsroom's RSS link returns a web app."
+todo = "Measure the newsroom against the 8-K live."
 checked = 2026-10-31
 
 [company.COIN]
@@ -156,27 +159,30 @@ checked = 2026-10-31
 
 [company.CRM]
 name = "Salesforce"
+names = ["Salesforce"]
 cik = 1108524
 platform = "q4"
 q4_host = "investor.salesforce.com"
 reachable = true
-wire = "unknown"
+wire = "Business Wire"
+release_time = "16:01"
 eightk = ["16:03", "16:18", "16:03", "16:04"]
-fastest = "unknown"
-evidence = "Results weren't among the press feed's recent earnings items. 8-K at 4:03 to 4:18 PM."
-todo = "Find where the release appears first."
+fastest = "newswire"
+evidence = "Q2 FY27: Business Wire 4:01 PM, 8-K 4:03:53 PM (4:03 to 4:18 PM over four quarters). Results weren't among the Q4 press feed's recent earnings items."
+todo = "Check whether the Q4 press feed carries the results at 4:01 PM too."
 checked = 2026-10-31
 
 [company.CRWD]
 name = "CrowdStrike"
+names = ["CrowdStrike"]
 cik = 1535527
 platform = "notified"
 reachable = false
-wire = "unknown"
+wire = "Business Wire"
+release_time = "16:05"
 eightk = ["16:07", "16:06", "16:06", "16:11"]
-fastest = "sec-8k"
-evidence = "The IR site blocks automated reads. crowdstrike.com's press page loads, but we didn't find earnings releases on it. 8-K at 4:06 to 4:11 PM."
-todo = "Check which wire carries the release and its time."
+fastest = "newswire"
+evidence = "Q2 FY27: Business Wire 4:05 PM, 8-K 4:07:02 PM, and the IR site's release PDF (/node/17376/pdf) 4:09:12 PM. The IR site blocks automated reads. 8-K at 4:06 to 4:11 PM over four quarters."
 checked = 2026-10-31
 
 [company.DIS]
@@ -205,7 +211,7 @@ wire = "Business Wire"
 release_time = "16:15"
 eightk = ["16:16", "16:15", "16:15", "16:19"]
 fastest = "newswire"
-evidence = "Business Wire at 4:15:00 PM, 8-K a median 1m13s later. The IR site (Akamai) and fico.com (Incapsula) both block automated reads."
+evidence = "Business Wire at 4:15:00 PM, 8-K a median 1m13s later. The IR site (Akamai) and fico.com (Incapsula) both block automated reads. The release page has no PDF, and its URL contains the EPS figure, so it can't be guessed."
 checked = 2026-10-31
 
 [company.GOOGL]
@@ -229,15 +235,15 @@ name = "Goldman Sachs"
 cik = 886982
 platform = "own-site"
 reachable = true
-wire = "unknown"
+wire = "none"
 eightk = ["07:32", "07:30", "07:40", "07:42"]
 fastest = "unknown"
 guess = [
     "https://www.goldmansachs.com/pressroom/press-releases/{yyyy}/{yyyy}-{mm}-{dd}-q{fq}-results",
     "https://www.goldmansachs.com/pressroom/press-releases/current/pdfs/{fy}-q{fq}-results.pdf",
 ]
-evidence = "Press release URL seen for four quarters, PDF for one. 8-K at 7:30 to 7:42 AM. Files are re-uploaded later, so their Last-Modified dates say nothing."
-todo = "Check which wire carries the release and its time."
+evidence = "No newswire: not on Business Wire, GlobeNewswire or PR Newswire. Goldman Sachs BDC, a separate company, does use Business Wire, so don't match newswire items on the name alone. Press release URL seen for four quarters, PDF for one. 8-K at 7:30 to 7:42 AM. Files are re-uploaded later, so their Last-Modified dates say nothing."
+todo = "Measure the press release page against the 8-K live (next report mid-January 2027)."
 checked = 2026-10-31
 
 [company.HD]
@@ -250,7 +256,7 @@ wire = "PR Newswire"
 release_time = "06:00"
 eightk = ["06:10", "06:06", "06:07", "06:05"]
 fastest = "newswire"
-evidence = "Q2 FY26: PR Newswire 6:00 AM, 8-K 6:10:33 AM (6:05 to 6:10 AM over four quarters). ir.homedepot.com and corporate.homedepot.com block automated reads."
+evidence = "Q2 FY26: PR Newswire 6:00 AM, the IR site's release PDF 6:05:18 AM, 8-K 6:10:33 AM (6:05 to 6:10 AM over four quarters). The PDF's name is predictable (q2-2026-earnings-release.pdf), but ir.homedepot.com and corporate.homedepot.com block automated reads."
 checked = 2026-10-31
 
 [company.INTC]
@@ -269,14 +275,15 @@ checked = 2026-10-31
 
 [company.JPM]
 name = "JPMorgan Chase"
+names = ["JPMorganChase", "JPMorgan Chase"]
 cik = 19617
 platform = "own-site"
 reachable = true
-wire = "unknown"
+wire = "Business Wire"
 eightk = ["06:30", "06:30", "06:32", "06:41"]
 fastest = "sec-8k"
-evidence = "8-K at 6:30 to 6:41 AM. The release PDF is named by a random ID (uploaded at 5:14 AM for Q3 2026), so it can't be guessed."
-todo = "Check which wire carries the release and its time."
+evidence = "Q3 2026: 8-K 6:30:38 AM, Business Wire 7:08 AM, 38 minutes later. The release PDF was uploaded at 5:14:57 AM under a random name, so it can't be guessed, but the quarterly-earnings page that lists it answers automated requests. 8-K at 6:30 to 6:41 AM over four quarters."
+todo = "Measure the quarterly-earnings page (jpmorganchase.com/ir/quarterly-earnings) against the 8-K live; the new PDF link may appear on it before 6:30 AM. Next report mid-January 2027."
 checked = 2026-10-31
 
 [company.KO]
@@ -305,7 +312,7 @@ wire = "PR Newswire"
 release_time = "06:45"
 eightk = ["07:03", "07:05", "07:03", "07:05"]
 fastest = "newswire"
-evidence = "Q3 2026: PR Newswire 6:45 AM, 8-K 7:03:30 AM. investor.lilly.com and lilly.com block automated reads."
+evidence = "Q3 2026: PR Newswire 6:45 AM, the IR site's release PDF 6:47:20 AM, 8-K 7:03:30 AM. investor.lilly.com and lilly.com block automated reads."
 checked = 2026-10-31
 
 [company.MA]
@@ -326,14 +333,15 @@ checked = 2026-10-31
 
 [company.MCD]
 name = "McDonald's"
+names = ["McDonald's"]
 cik = 63908
 platform = "unknown"
 reachable = false
-wire = "unknown"
+wire = "PR Newswire"
+release_time = "07:00"
 eightk = ["07:01", "07:01", "16:02", "07:01"]
-fastest = "sec-8k"
-evidence = "The IR site blocks automated reads. PR Newswire carried earnings at 7:00 AM through Q4 2025, but none in 2026. 8-K at about 7:01 AM."
-todo = "Check which wire carried the 2026 releases and their times."
+fastest = "newswire"
+evidence = "Q2 2026: PR Newswire 7:00 AM, 8-K 7:01:40 AM. The release PDF went up on the IR site at 6:46 AM, 14 minutes before the release, but that host blocks automated reads (Akamai)."
 checked = 2026-10-31
 
 [company.META]
@@ -412,15 +420,17 @@ checked = 2026-10-31
 
 [company.NVDA]
 name = "NVIDIA"
+names = ["NVIDIA"]
 cik = 1045810
 platform = "q4"
 q4_host = "investor.nvidia.com"
 reachable = true
-wire = "unknown"
+wire = "GlobeNewswire"
 eightk = ["16:21", "16:21", "16:31", "16:20"]
 fastest = "unknown"
-evidence = "The Q4 press feed lists only the call announcement. The release itself is on nvidianews.nvidia.com. 8-K at 4:20 to 4:31 PM."
-todo = "Find where the release appears first. Next report: November 17, 2026 (Q4 events feed)."
+rss = ["https://nvidianews.nvidia.com/rss.xml"]
+evidence = "Releases go out on GlobeNewswire, whose feed refuses automated reads, and on nvidianews.nvidia.com, whose RSS feed stamped the Oct 28 call notice at 5:00 PM, the same minute as GlobeNewswire. The Q4 press feed lists only the call notice. 8-K at 4:20 to 4:31 PM."
+todo = "Measure the newsroom feed against the 8-K live on November 17, 2026. Its 20 items had already dropped the August results."
 checked = 2026-10-31
 
 [company.ORCL]
@@ -548,10 +558,10 @@ cik = 1318605
 platform = "unknown"
 reachable = false
 wire = "none"
-eightk = ["16:41", "09:04", "16:35", "09:01"]
+eightk = ["16:41", "16:35", "16:10", "16:11"]
 fastest = "sec-8k"
-evidence = "ir.tesla.com blocks automated reads (Akamai), and Tesla uses no newswire. Its earnings 8-Ks come at 4:35 to 4:41 PM, well after the update deck goes up."
-todo = "Get the update deck's link from ir.tesla.com by hand. If its file host answers us, the deck can be guessed."
+evidence = "No newswire, and the update deck sits on hosts that block automated reads: ir.tesla.com and assets-ir.tesla.com (both Akamai 403), even though the deck's name is predictable (TSLA-Q3-2026-Update.pdf). Earnings 8-Ks came at 4:35 and 4:41 PM in the last two quarters, and 4:06 to 4:14 PM before that."
+todo = "By hand: note when the deck appears on ir.tesla.com at the next report, to see how far the 8-K trails it."
 checked = 2026-10-31
 
 [company.UBER]
@@ -575,10 +585,11 @@ checked = 2026-10-31
 
 [company.UNH]
 name = "UnitedHealth Group"
+names = ["UnitedHealth Group"]
 cik = 731766
 platform = "own-site"
 reachable = true
-wire = "unknown"
+wire = "Business Wire"
 release_time = "05:55"
 eightk = ["06:14", "06:00", "06:02", "06:02"]
 fastest = "company-page"
@@ -586,8 +597,7 @@ guess = [
     "https://www.unitedhealthgroup.com/newsroom/{yyyy}/{yyyy}-{mm}-{dd}-uhg-reports-{nth}-quarter-{fy}-results.html",
     "https://www.unitedhealthgroup.com/content/dam/uhg/pdf/investors/{fy}/unh-reports-{nth}-quarter-{fy}-results.pdf",
 ]
-evidence = "Q3 2026: newsroom page published 5:55:34 AM, 8-K 6:14:45 AM (6:00 to 6:14 AM over four quarters). URLs seen for two quarters; the Q4 release may be named for the full year."
-todo = "Check which wire carries the release and its time."
+evidence = "Q3 2026: newsroom page published 5:55:34 AM and Business Wire at 5:55 AM, 19 minutes before the 8-K at 6:14:45 AM (6:00 to 6:14 AM over four quarters). Watch both. URLs seen for two quarters; the Q4 release may be named for the full year."
 checked = 2026-10-31
 
 [company.V]
@@ -608,15 +618,16 @@ checked = 2026-10-31
 
 [company.WMT]
 name = "Walmart"
+names = ["Walmart"]
 cik = 104169
 platform = "equisolve"
 reachable = true
-wire = "unknown"
+wire = "Business Wire"
+release_time = "07:00"
 eightk = ["06:59", "06:59", "06:59", "06:58"]
 fastest = "sec-8k"
 guess = [
     "https://corporate.walmart.com/news/{yyyy}/{mm}/{dd}/walmart-releases-q{fq}-fy{fyy}-earnings",
 ]
-evidence = "Q2 FY27: 8-K 6:59:01 AM, newsroom page and PDFs 7:00 AM. Release files sit under unpredictable IDs. Newsroom URL seen for one quarter."
-todo = "Check which wire carries the release and its time."
+evidence = "Q2 FY27: 8-K 6:59:01 AM, newsroom page and PDFs 7:00 AM, Business Wire 7:01 AM. Release files sit under unpredictable IDs. Newsroom URL seen for one quarter."
 checked = 2026-10-31

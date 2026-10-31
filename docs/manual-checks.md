@@ -20,31 +20,31 @@ earnings 8-K.
    releases show a time like "October 14, 2026 06:45 ET".
 4. If it's on neither, write "none".
 
-| Company | Release date | Business Wire time | GlobeNewswire time |
+Results from 2026-10-31. Every company's wire is now known:
+
+| Company | Release date | Wire | Time |
 |---|---|---|---|
-| Bank of America | Oct 14, 2026 | | |
-| UnitedHealth Group | Oct 13, 2026 | | |
-| Goldman Sachs | Oct 13, 2026 | | |
-| JPMorgan Chase | Oct 13, 2026 | | |
-| Adobe | Sep 10, 2026 | | |
-| Broadcom | Sep 2, 2026 | | |
-| CrowdStrike | Aug 26, 2026 | | |
-| NVIDIA | Aug 26, 2026 | | |
-| Salesforce | Aug 26, 2026 | | |
-| Walmart | Aug 20, 2026 | | |
-| McDonald's | Aug 4, 2026 | | |
+| Bank of America | Oct 14, 2026 | None (not on PR Newswire either) | |
+| Goldman Sachs | Oct 13, 2026 | None. The Business Wire hit was Goldman Sachs BDC, a separate company | |
+| Broadcom | Sep 2, 2026 | None (not on PR Newswire either) | |
+| NVIDIA | Aug 26, 2026 | GlobeNewswire | |
+| McDonald's | Aug 4, 2026 | PR Newswire | 7:00 AM |
+| UnitedHealth Group | Oct 13, 2026 | Business Wire | 5:55 AM |
+| Salesforce | Aug 26, 2026 | Business Wire | 4:01 PM |
+| Walmart | Aug 20, 2026 | Business Wire | 7:01 AM |
+| JPMorgan Chase | Oct 13, 2026 | Business Wire | 7:08 AM |
+| Adobe | Sep 10, 2026 | Business Wire | 4:05 PM |
+| CrowdStrike | Aug 26, 2026 | Business Wire | 4:05 PM |
 
-## 2. Tesla's update deck link
+## 2. Tesla's update deck
 
-About 2 minutes. This is the most valuable check: Tesla's 8-K comes 30 to 35 minutes after the
-deck, and Tesla uses no newswire.
+Done on 2026-10-31. The deck links follow one pattern
+(`https://assets-ir.tesla.com/tesla-contents/IR/TSLA-Q3-2026-Update.pdf`), but that host
+returns 403 to automated requests, so the bot can't use it. Tesla stays on the 8-K.
 
-1. Open <https://ir.tesla.com>.
-2. Find the Q3 2026 Update, the quarterly results deck.
-3. Right-click its link, choose **Copy link address**, and paste the link into the chat.
-
-If the deck sits on a file host that answers automated requests, the bot can try next quarter's
-file name from 4:00 PM on.
+One optional check is left, at Tesla's next report (late January 2027). Note when the deck
+appears in the Shareholder Deck column of <https://ir.tesla.com>'s quarterly table, using
+<https://time.gov>. That shows how far the 8-K trails it.
 
 ## 3. When a blocked IR site posted its release
 
@@ -62,14 +62,25 @@ time is the better clue.
 `last-modified` is when the file was uploaded. A file can be uploaded before the release and
 kept hidden, or re-uploaded later, so treat it as a clue, not proof.
 
-| Company | IR site | Time on the release page | PDF `last-modified` | PDF link |
-|---|---|---|---|---|
-| FICO | <https://investors.fico.com> | | | |
-| CrowdStrike | <https://ir.crowdstrike.com> | | | |
-| Lilly | <https://investor.lilly.com> | | | |
-| Home Depot | <https://ir.homedepot.com> | | | |
-| Broadcom | <https://investors.broadcom.com> | | | |
-| McDonald's | <https://corporate.mcdonalds.com/corpmcd/investors.html> | | | |
+Results from 2026-10-31:
+
+| Company | PDF `last-modified` | Compared with | What it tells us |
+|---|---|---|---|
+| FICO | No PDF; the release page's stamp is the time it was viewed | Business Wire 4:15 PM | Nothing; the page URL contains the EPS figure, so it can't be guessed either |
+| CrowdStrike | Aug 26, 4:09:12 PM (`/node/17376/pdf`) | Business Wire 4:05 PM, 8-K 4:07:02 PM | The site came after the wire and the 8-K |
+| Lilly | Oct 29, 6:47:20 AM (`/node/55191/pdf`) | PR Newswire 6:45 AM | The site came after the wire |
+| Home Depot | Aug 18, 6:05:18 AM (`q2-2026-earnings-release.pdf`) | PR Newswire 6:00 AM, 8-K 6:10:33 AM | The site came after the wire |
+| Broadcom | Jun 6 (`/node/64371/pdf`), regenerated later | 8-K | Nothing |
+| McDonald's | Aug 4, 6:46:00 AM (`MCD Q226 Earnings Release - Exhibit 99.1.pdf`) | PR Newswire 7:00 AM | Uploaded 14 minutes before the release, but the host blocks automated reads |
+
+None of these PDF hosts answer automated requests (all return 403), so the bot can't use them.
+
+Two sites that do answer us, checked the same way:
+
+| Company | PDF `last-modified` | Compared with | What it tells us |
+|---|---|---|---|
+| JPMorgan Chase | Oct 13, 5:14:57 AM (named by a random ID) | 8-K 6:30:38 AM, Business Wire 7:08 AM | Uploaded 75 minutes before the 8-K. It can't be guessed, but the page that links it can be watched |
+| Adobe | Sep 10, 4:05:37 PM (`pdfs/01906202/au56y4ter.pdf`, a random path) | Business Wire 4:05 PM, 8-K 4:06:14 PM | Business Wire is first, and the PDF can't be guessed |
 
 ## 4. Live check: FICO on November 4
 
