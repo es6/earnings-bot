@@ -70,12 +70,14 @@ def test_blocked_sites_and_other_wires_are_left_out_of_the_target() -> None:
     fico = to_target("FICO", datetime(2026, 11, 4, 16, 15), 2026, 4)
     assert fico.q4_host is None
     assert fico.newswire == ["FICO", "Fair Isaac"]
-    # PR Newswire isn't read yet, so its names would only be matched against Business Wire
-    assert to_target("LLY", datetime(2027, 2, 4, 6, 45), 2026, 4).newswire == []
+    lilly = to_target("LLY", datetime(2027, 2, 4, 6, 45), 2026, 4)
+    assert (lilly.newswire, lilly.prnewswire) == ([], ["Lilly"])
+    assert [s.name for s in lilly.sources()] == ["edgar", "prnewswire"]
 
 
-def test_printed_entry_is_a_valid_schedule() -> None:
-    target = to_target("AMD", datetime(2026, 11, 3, 16, 15), 2026, 3)
+@pytest.mark.parametrize("ticker", ["AMD", "MCD"])
+def test_printed_entry_is_a_valid_schedule(ticker: str) -> None:
+    target = to_target(ticker, datetime(2026, 11, 3, 16, 15), 2026, 3)
     plan = Plan.model_validate(tomllib.loads(target_toml(target)))
     assert plan.target[0] == target
     assert plan.target[0].expected == datetime(2026, 11, 3, 16, 15, tzinfo=ET)

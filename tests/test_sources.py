@@ -4,6 +4,7 @@ import pytest
 
 from earnings_bot.fetch import Response, host_gap
 from earnings_bot.sources import (
+    PR_NEWSWIRE_EARNINGS,
     EdgarFilings,
     GuessedFile,
     Q4FinancialReports,
@@ -161,6 +162,70 @@ def test_rss_keeps_items_naming_the_company() -> None:
     assert by_headline.details == {"feed_built": "Wed, 04 Nov 2026 21:15:20 UT"}
     assert by_headline.earnings
     assert by_dateline.key == "2en"
+
+
+PR_NEWSWIRE = """<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/"><channel>
+  <item>
+    <title>S&amp;P Global Reports Third Quarter Results</title>
+    <link>https://www.prnewswire.com/news-releases/s-p-global-reports-302900001.html</link>
+    <guid>https://www.prnewswire.com/news-releases/s-p-global-reports-302900001.html</guid>
+    <pubDate>Tue, 27 Oct 2026 11:21:00 +0000</pubDate>
+    <description><![CDATA[<p>NEW YORK /PRNewswire/ -- S&P Global]]></description>
+    <dc:contributor><![CDATA[S&P Global]]></dc:contributor>
+  </item>
+  <item>
+    <title>McDonald{rsquo}s reports third quarter 2026 results</title>
+    <link>https://www.prnewswire.com/news-releases/mcdonalds-reports-302900002.html</link>
+    <guid>https://www.prnewswire.com/news-releases/mcdonalds-reports-302900002.html</guid>
+    <pubDate>Tue, 03 Nov 2026 12:00:00 +0000</pubDate>
+    <description><![CDATA[<p>CHICAGO /PRNewswire/ -- McDonald{rsquo}s]]></description>
+    <dc:contributor><![CDATA[McDonald{rsquo}s Corporation]]></dc:contributor>
+  </item>
+  <item>
+    <title>Third-quarter 2026 financial results</title>
+    <link>https://www.prnewswire.com/news-releases/third-quarter-302900003.html</link>
+    <guid>https://www.prnewswire.com/news-releases/third-quarter-302900003.html</guid>
+    <pubDate>Thu, 29 Oct 2026 10:45:00 +0000</pubDate>
+    <description><![CDATA[<p>INDIANAPOLIS /PRNewswire/ -- The company]]></description>
+    <dc:contributor><![CDATA[Eli Lilly and Company]]></dc:contributor>
+  </item>
+  <item>
+    <title>The Home Depot anuncia resultados del tercer trimestre del año fiscal 2026</title>
+    <link>https://www.prnewswire.com/news-releases/the-home-depot-anuncia-302900004.html</link>
+    <guid>https://www.prnewswire.com/news-releases/the-home-depot-anuncia-302900004.html</guid>
+    <pubDate>Tue, 17 Nov 2026 11:00:00 +0000</pubDate>
+    <description><![CDATA[<p>ATLANTA /PRNewswire/ -- The Home Depot]]></description>
+    <dc:contributor><![CDATA[The Home Depot]]></dc:contributor>
+  </item>
+  <item>
+    <title>Kansas City Life Announces Third Quarter 2026 Results</title>
+    <link>https://www.prnewswire.com/news-releases/kansas-city-life-302900005.html</link>
+    <guid>https://www.prnewswire.com/news-releases/kansas-city-life-302900005.html</guid>
+    <pubDate>Fri, 30 Oct 2026 16:41:00 +0000</pubDate>
+    <description><![CDATA[<p>KANSAS CITY /PRNewswire/ -- Kansas City Life]]></description>
+    <dc:contributor><![CDATA[Kansas City Life Insurance Company]]></dc:contributor>
+  </item>
+</channel></rss>""".replace("{rsquo}", "\N{RIGHT SINGLE QUOTATION MARK}")
+
+
+def test_pr_newswire_items_match_on_headline_or_contributor() -> None:
+    names = ["S&P Global", "McDonald's", "Lilly", "The Home Depot"]
+    source = RssFeed("prnewswire", PR_NEWSWIRE_EARNINGS, names)
+
+    sightings = source.parse(response(PR_NEWSWIRE))
+
+    # S&P Global despite the &amp;, McDonald's despite the curly apostrophe, and Lilly only
+    # through dc:contributor. Kansas City Life names none of them.
+    assert [s.url.rsplit("-", 1)[-1] for s in sightings] == [
+        "302900001.html",
+        "302900002.html",
+        "302900003.html",
+        "302900004.html",
+    ]
+    assert sightings[0].title == "S&P Global Reports Third Quarter Results"
+    # The Spanish edition matches the name but doesn't read as an earnings headline
+    assert [s.earnings for s in sightings] == [True, True, True, False]
 
 
 def test_rss_without_companies_keeps_everything() -> None:

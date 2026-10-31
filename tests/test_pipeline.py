@@ -6,9 +6,17 @@ import pytest
 
 from earnings_bot import pipeline
 from earnings_bot.estimates import Estimates
-from earnings_bot.pipeline import Poster, Release
+from earnings_bot.pipeline import Poster, Release, describe_source
 from earnings_bot.recorder import ET, Journal, Target
-from earnings_bot.sources import EdgarFilings, GuessedFile, Q4PressReleases, Sighting, Source
+from earnings_bot.sources import (
+    PR_NEWSWIRE_EARNINGS,
+    EdgarFilings,
+    GuessedFile,
+    Q4PressReleases,
+    RssFeed,
+    Sighting,
+    Source,
+)
 from earnings_bot.summary import Summarizer, Summary
 from tests.fakes import RoutedFetcher
 
@@ -72,6 +80,13 @@ def release_texts(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
 
     monkeypatch.setattr(pipeline, "release_text", release_text)
     return texts
+
+
+def test_newswires_are_named_in_the_alert() -> None:
+    assert describe_source(RssFeed("prnewswire", PR_NEWSWIRE_EARNINGS, ["Lilly"])) == "PR Newswire"
+    assert describe_source(RssFeed("businesswire_busted", "https://bw.example/rss")) == (
+        "Business Wire"
+    )
 
 
 async def test_release_posts_links_files_and_summary(release_texts: dict[str, str]) -> None:
