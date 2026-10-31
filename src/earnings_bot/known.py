@@ -34,6 +34,7 @@ class KnownCompany(BaseModel):
     platform: Literal["q4", "equisolve", "notified", "investis", "own-site", "unknown"]
     q4_host: str | None = None
     reachable: bool  # whether the IR site answers automated requests
+    soft_404: bool = False  # the site answers 200 for pages that don't exist
     wire: Literal["Business Wire", "PR Newswire", "GlobeNewswire", "none", "unknown"]
     release_time: str | None = None  # HH:MM US Eastern
     eightk: list[str] = []  # last four earnings 8-Ks accepted, HH:MM US Eastern
@@ -86,7 +87,10 @@ def to_target(ticker: str, expected: datetime, fiscal_year: int, fiscal_quarter:
         newswire=company.names if company.wire in ("Business Wire", "unknown") else [],
         prnewswire=company.names if company.wire == "PR Newswire" else [],
         rss=company.rss,
-        guess=guess_urls(company, expected.date(), fiscal_year, fiscal_quarter),
+        # A guess counts as found on a 200, which a soft 404 would fake from the first poll
+        guess=[]
+        if company.soft_404
+        else guess_urls(company, expected.date(), fiscal_year, fiscal_quarter),
     )
 
 

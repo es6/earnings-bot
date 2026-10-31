@@ -4,7 +4,14 @@ from pathlib import Path
 
 import pytest
 
-from earnings_bot.known import FIELDS, known_companies, target_toml, template_fields, to_target
+from earnings_bot.known import (
+    FIELDS,
+    guess_urls,
+    known_companies,
+    target_toml,
+    template_fields,
+    to_target,
+)
 from earnings_bot.recorder import ET, Plan, load_plan
 
 SCHEDULES = Path(__file__).parent.parent / "schedules"
@@ -62,8 +69,15 @@ def test_templates_rebuild_the_hand_written_schedules(
 def test_templates_match_urls_seen_on_company_sites(
     ticker: str, released: date, fiscal_year: int, quarter: int, seen: str
 ) -> None:
-    expected = datetime.combine(released, datetime.min.time())
-    assert seen in to_target(ticker, expected, fiscal_year, quarter).guess
+    assert seen in guess_urls(known_companies()[ticker], released, fiscal_year, quarter)
+
+
+def test_soft_404_sites_get_no_guesses() -> None:
+    # UnitedHealth answers 200 for pages that don't exist, so a guess would fire at once
+    unh = to_target("UNH", datetime(2027, 1, 15, 5, 55), 2026, 4)
+    assert unh.guess == []
+    assert unh.newswire == ["UnitedHealth Group"]
+    assert to_target("GS", datetime(2027, 1, 14, 7, 30), 2026, 4).guess
 
 
 def test_blocked_sites_and_other_wires_are_left_out_of_the_target() -> None:

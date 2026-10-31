@@ -176,20 +176,42 @@ latest quarter only. The details per company, with the last four 8-K times, are 
 Every company feed we read stamps the release with its release minute: AMD 4:15:00 PM, Intel
 4:01:00 PM, Coca-Cola 6:55:00 AM, Nike 4:15:00 PM and Target 6:30 AM. That's the same minute as
 the wire and the release page. But a stamp is the time the release was scheduled for, not proof
-the item was in the feed at that second. How stale a copy can be depends on caching:
+the item was in the feed at that second. How stale a copy can be depends on caching.
 
-| Feed | Caching it allows |
-|---|---|
-| Q4 JSON feeds | 10 s |
-| Intel's RSS feed | 30 s, and a stale copy may be served while it refreshes |
-| AMD, Coca-Cola and Nike RSS feeds | No cache headers |
-| PR Newswire RSS | 60 s, and the CDN ignores cache-busting parameters |
-| Business Wire RSS | 300 s at the CDN |
+On 2026-10-31 we sent each feed three requests: a plain one, one with a cache-busting query
+parameter, and one with `Cache-Control: no-cache`. A slower answer, a `MISS`, or no `age` means
+the request reached the origin:
 
-The bot busts the cache on company feeds, and on Business Wire it polls both a busted and a plain
-copy. Live runs will measure the real delay: Nov 2 (Palantir
-and Apple: Business Wire against Q4 and Apple's newsroom), Nov 3 (AMD: its RSS feed against the
-8-K) and Nov 4 (Uber and FICO: Business Wire against Q4 and the 8-K).
+| Feed | Caching | Does busting reach the origin? |
+|---|---|---|
+| Q4 JSON feeds | 10 s | Yes |
+| Business Wire RSS | 300 s at the CDN | Yes: the busted request took 389 ms against 101 ms. But the origin itself returned a build nine hours old (on a Saturday), so it may lag on its own |
+| PR Newswire RSS | 60 s (Cloudflare) | No: busted and `no-cache` requests were both cache hits, 47 s old |
+| Intel's RSS feed | 30 s plus stale-while-revalidate (CloudFront) | No, and one copy was 113 s old |
+| AMD's RSS feed | No cache headers, but CloudFront caches it anyway | No |
+| Coca-Cola's RSS feed | CloudFront | Yes: the busted request was a `MISS` |
+| Target's press release feed | A copy 2.2 hours old | No. Useless for speed; PR Newswire carries Target |
+
+`no-cache` made no difference anywhere. What we can do about the rest:
+
+- **Business Wire:** the bot already polls a busted and a plain copy. Nov 2 and Nov 4 show
+  whether the origin lags.
+- **PR Newswire:** its cache can't be skipped, but its feeds keep separate 60-second timers. At
+  one moment, 18 of its feeds had last refreshed at times spread over a minute. Reading two or
+  three feeds that carry the same release, such as the earnings feed, the company's industry
+  feed (Health for Lilly, Consumer Products & Retail for Home Depot and Target) and the all-news
+  feed, cuts the typical delay from about 30 seconds to about 15. The worst case stays at 60.
+- **Equisolve feeds behind CloudFront:** the delay is whatever the CDN keeps. AMD on Nov 3
+  measures it. The wire is the backup for Intel, Coca-Cola and Nike.
+- **Guessed pages:** a site has to answer a missing page with a real 404, and not cache it for
+  long. Goldman Sachs sends `no-store`, which is ideal. Target caches its 404s for an unknown
+  time and ignores busting. UnitedHealth answers 200 with a "Page Not Found" page, a soft 404,
+  even for PDFs, which would read as found. So its guesses stay out of schedules
+  (`soft_404 = true` in `companies.toml`) until the bot checks what it got back.
+
+Live runs will measure the real delay: Nov 2 (Palantir and Apple: Business Wire against Q4 and
+Apple's newsroom), Nov 3 (AMD: its RSS feed against the 8-K) and Nov 4 (Uber and FICO: Business
+Wire against Q4 and the 8-K).
 
 ### Scheduling
 
@@ -239,7 +261,8 @@ and Apple: Business Wire against Q4 and Apple's newsroom), Nov 3 (AMD: its RSS f
 ## Tracking companies
 
 Designed on 2026-10-31, to be built after the November 4 test. Until then the bot watches a
-hand-written schedule file. Schedule files stay afterwards, for tests and replays.
+hand-written schedule file. Schedule files stay afterwards, for tests and replays. The build
+order is part of the automation plan in [Running unattended](#running-unattended).
 
 ### What SEC's data gives us
 
@@ -357,13 +380,6 @@ second), which keeps us under SEC's 10 requests per second. EDGAR's list of the 
 would cover every company in one request. We'll measure how quickly it updates before relying
 on it.
 
-### Build order
-
-1. Storage, the `/track` lookup, `/tracked` and `/untrack`
-2. Dates: the Q4 events feed, date announcements, estimates, `/upcoming`, and the daily windows
-   that replace schedule files
-3. Sharing SEC's limit across overlapping windows
-
 ## Posting and summaries
 
 One Discord message per release, edited as more arrives:
@@ -393,12 +409,74 @@ lists any it can't find in the embed's footer.
 **Open.** Estimates for KPIs beyond EPS and revenue, and how fast the summary can get without
 losing accuracy (effort `low`, or a smaller model).
 
-## Hosting and storage
+## Running unattended
 
-Tracked companies, dates and posts go in a SQLite file (see [Storage](#storage)). The latency
-log stays a JSONL file.
+The plan for the bot to run day after day without anyone starting it, written on 2026-10-31.
+It runs on the owner's Windows PC, not on a paid server. CI still builds the Docker image for
+anyone who'd rather host it. Tracked companies, dates and posts go in a SQLite file (see
+[Storage](#storage)), and the latency log stays a JSONL file.
 
-**Open.** Where the bot runs. It should sit close to US East for latency.
+### On the owner's PC
+
+- **It starts itself.** A Task Scheduler task runs `scripts/run-bot.ps1` when Windows starts.
+  The script loops: update if asked to, run the bot, and if the bot exits, wait 30 seconds and
+  start it again. Task Scheduler restarts the script itself if that dies. Running the task "when
+  Windows starts" rather than "at log on" means it comes back after an overnight update restart
+  without anyone logging in. Windows asks the owner for their password once, when the task is
+  saved.
+- **It updates itself.** Once a day, at an hour with no window coming up, the bot checks whether
+  `main` has new commits whose CI passed. If it does, the bot exits with a code the script reads
+  as "update": `git pull --ff-only`, `uv sync`, then start again. Merging a PR is the deploy.
+- **The PC stays ready.** Its power plan already never sleeps. In busy report weeks, pause
+  Windows Update, or set its active hours to cover 6 AM to 6 PM Eastern.
+- **Time and secrets stay as they are:** network time through `TrustedClock`, keys in `.env`.
+
+**Open.** What to do about a release the bot missed while the PC was off or offline: post it
+late, marked as late, or only note the gap in the status channel.
+
+### Status messages
+
+These go to a separate channel, such as `#bot-status`, so `#stocks` only gets releases:
+
+- started, stopped and updated (with the commit)
+- each morning, the day's windows
+- problems: a source failing for a whole window (403s, timeouts), a window closing with nothing
+  seen, or a Discord post failing
+- after each window, which source saw the release first and by how much
+
+If the PC is off, nothing can post. Discord still shows the bot as offline, which is the one
+signal that doesn't need the bot running.
+
+### Daily planner
+
+Each morning at 5:00 AM Eastern, and at startup, the bot builds the day's windows from the
+tracked companies and their [report dates](#report-dates), the way a schedule file does today.
+
+### Learning from each release
+
+After a window closes, the bot stores which source saw the release first, when, and how far
+ahead of the 8-K. Those update the company's stored notes (fastest source, usual release
+minute), so windows and source choices follow what actually happens. Changes worth keeping in
+`companies.toml` come back as a PR.
+
+### Build order
+
+This starts after the Nov 2–4 runs, whose results feed into it.
+
+0. **Read the Nov 2–4 logs.** Check Business Wire's real delay, AMD's feed, whether the window
+   sizes were right, and how Discord held up. Update `companies.toml` and this doc.
+1. **Fix what the 2026-10-31 checks found.** Guesses need to recognize a soft 404 by checking
+   the content type, and the title for pages. Then UnitedHealth's guesses can go back in. PR
+   Newswire should be read from two or three feeds per company.
+2. **Run unattended:** `scripts/run-bot.ps1`, the Task Scheduler task, the status channel and
+   self-updates. From here the bot is always on, still fed by schedule files.
+3. **Storage, the daily planner, and `/track` for companies already in `companies.toml`,** with
+   the date and time given in the command. Add `/tracked` and `/untrack` too. Schedule files
+   become optional.
+4. **Find dates automatically:** the Q4 events feed, date announcements and estimates, plus
+   `/upcoming`.
+5. **`/track` for any company,** researching it the way it was done by hand on 2026-10-31.
+6. **Scale:** share SEC's limit across overlapping windows, and learn from each release.
 
 ## Decision log
 
@@ -422,3 +500,5 @@ log stays a JSONL file.
 | 2026-10-31 | Keep tracked companies, dates and posts in SQLite |
 | 2026-10-31 | Keep what we've researched about each company in `companies.toml`, checked into the repository, for `/track` to start from |
 | 2026-10-31 | Add PR Newswire's earnings feed as a source for the companies that use it, matched on headline, dateline and `dc:contributor` |
+| 2026-10-31 | Run the bot on the owner's Windows PC, started by Task Scheduler and updated from `main`, not on a paid server |
+| 2026-10-31 | Leave guesses out of schedules for sites that answer missing pages with 200, until the bot checks what it got back |
