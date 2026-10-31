@@ -34,7 +34,7 @@ Results from 2026-10-31, with the open items last:
 | Walmart | Aug 20, 2026 | Business Wire | 7:01 AM | |
 | JPMorgan Chase | Oct 13, 2026 | Business Wire | 7:08 AM | |
 | Adobe | Sep 10, 2026 | Business Wire | 4:05 PM | |
-| CrowdStrike | Aug 26, 2026 | Business Wire (found the Aug 4 date announcement) | | Read the time of the Aug 26 results release |
+| CrowdStrike | Aug 26, 2026 | Business Wire | 4:05 PM | |
 
 ## 2. Tesla's update deck
 
@@ -67,7 +67,7 @@ Results from 2026-10-31:
 | Company | PDF `last-modified` | Compared with | What it tells us |
 |---|---|---|---|
 | FICO | No PDF; the release page's stamp is the time it was viewed | Business Wire 4:15 PM | Nothing; the page URL contains the EPS figure, so it can't be guessed either |
-| CrowdStrike | Aug 26, 4:09:12 PM (`/node/17376/pdf`) | 8-K 4:07:02 PM | The site came after the 8-K |
+| CrowdStrike | Aug 26, 4:09:12 PM (`/node/17376/pdf`) | Business Wire 4:05 PM, 8-K 4:07:02 PM | The site came after the wire and the 8-K |
 | Lilly | Oct 29, 6:47:20 AM (`/node/55191/pdf`) | PR Newswire 6:45 AM | The site came after the wire |
 | Home Depot | Aug 18, 6:05:18 AM (`q2-2026-earnings-release.pdf`) | PR Newswire 6:00 AM, 8-K 6:10:33 AM | The site came after the wire |
 | Broadcom | Jun 6 (`/node/64371/pdf`), regenerated later | 8-K | Nothing |

@@ -180,10 +180,10 @@ cik = 1535527
 platform = "notified"
 reachable = false
 wire = "Business Wire"
+release_time = "16:05"
 eightk = ["16:07", "16:06", "16:06", "16:11"]
-fastest = "unknown"
-evidence = "Business Wire carried the Q2 FY27 date announcement (Aug 4, 8:00 AM), so it likely carries the results too. The IR site blocks automated reads. Its Q2 FY27 release PDF (/node/17376/pdf) was stamped 4:09:12 PM, two minutes after the 8-K at 4:07:02 PM. 8-K at 4:06 to 4:11 PM."
-todo = "Read the time of the August 26, 2026 results release on Business Wire."
+fastest = "newswire"
+evidence = "Q2 FY27: Business Wire 4:05 PM, 8-K 4:07:02 PM, and the IR site's release PDF (/node/17376/pdf) 4:09:12 PM. The IR site blocks automated reads. 8-K at 4:06 to 4:11 PM over four quarters."
 checked = 2026-10-31
 
 [company.DIS]
