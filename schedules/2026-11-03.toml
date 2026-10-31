@@ -1,0 +1,16 @@
+# Latency recording for Tuesday, November 3, 2026. Times are US Eastern.
+#
+#   uv run earnings-bot-record schedules/2026-11-03.toml
+#
+# Start it any time before 4:05 PM and keep the computer awake until the window closes at
+# 4:45 PM. AMD announced the date on October 6: "after the market close", which has been 4:15 PM
+# for four quarters. It's the first live test of an Equisolve RSS feed against the 8-K.
+# Generated with `uv run python -m earnings_bot.known AMD 2026-11-03T16:15 --fiscal-year 2026
+# --quarter 3`.
+
+[[target]]
+ticker = "AMD"
+expected = 2026-11-03T16:15:00
+cik = 2488
+# AMD's own feed. Its releases go out on GlobeNewswire, whose feed refuses automated reads.
+rss = ["https://ir.amd.com/news-events/press-releases/rss"]

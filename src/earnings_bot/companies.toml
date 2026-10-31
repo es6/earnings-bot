@@ -1,0 +1,622 @@
+# Companies we've already researched, so /track can start from what we know. Read by
+# earnings_bot.known. Every fact was checked on the date in `checked`.
+#
+# names      how wire headlines name the company, for matching newswire feeds
+# platform   q4, equisolve, notified, investis, own-site or unknown
+# reachable  whether the IR site answers automated requests (we never work around a block)
+# wire       Business Wire, PR Newswire, GlobeNewswire, none or unknown
+# fastest    the first source we can read, judged from past quarters: ir-feed, company-rss,
+#            company-page, newswire, sec-8k or unknown
+# eightk     acceptance times of the last four earnings 8-Ks, HH:MM US Eastern, newest first
+# guess      URL templates. {yyyy} {mm} {dd} are the release date. {fy} {fyy} {fq} are the
+#            fiscal year and quarter as the company labels them. {nth} is first to fourth,
+#            and {ord} is 1st to 4th.
+
+[company.AAPL]
+name = "Apple"
+names = ["Apple reports"]
+cik = 320193
+platform = "q4"
+q4_host = "investor.apple.com"
+reachable = true
+wire = "Business Wire"
+release_time = "16:30"
+eightk = ["16:30", "16:30", "16:30", "16:30"]
+fastest = "company-page"
+rss = ["https://www.apple.com/newsroom/rss-feed.rss"]
+guess = [
+    "https://www.apple.com/newsroom/{yyyy}/{mm}/apple-reports-{nth}-quarter-results/",
+    "https://www.apple.com/newsroom/pdfs/fy{fy}q{fq}/FY{fyy}_Q{fq}_Consolidated_Financial_Statements.pdf",
+    "https://www.apple.com/newsroom/pdfs/fy{fy}-q{fq}/FY{fyy}_Q{fq}_Consolidated_Financial_Statements.pdf",
+]
+evidence = "The release is on the Apple newsroom, not in the Q4 press feed. The 8-K has been accepted at 4:30 PM, within seconds of the release, for six quarters."
+checked = 2026-10-31
+
+[company.ABNB]
+name = "Airbnb"
+cik = 1559720
+platform = "q4"
+q4_host = "investors.airbnb.com"
+reachable = true
+wire = "unknown"
+eightk = ["16:02", "16:00", "16:01", "16:00"]
+fastest = "unknown"
+guess = [
+    "https://s26.q4cdn.com/656283129/files/doc_financials/{fy}/q{fq}/Airbnb-Q{fq}-{fy}-Shareholder-Letter-FINAL-1.pdf",
+]
+evidence = "The 8-K comes at 4:00 to 4:02 PM. Letter name seen for one quarter, and its -FINAL-1 suffix may change."
+todo = "Measure live. Next report: November 5, 2026 (Q4 events feed)."
+checked = 2026-10-31
+
+[company.ADBE]
+name = "Adobe"
+cik = 796343
+platform = "own-site"
+reachable = true
+wire = "unknown"
+eightk = ["16:06", "16:08", "16:09", "16:05"]
+fastest = "unknown"
+evidence = "adobe.com's IR page loads, but news.adobe.com builds its list in the browser. 8-K at 4:05 to 4:09 PM."
+todo = "Check which wire carries the release and its time."
+checked = 2026-10-31
+
+[company.AMD]
+name = "AMD"
+cik = 2488
+platform = "equisolve"
+reachable = true
+wire = "GlobeNewswire"
+release_time = "16:15"
+eightk = ["16:16", "16:16", "16:16", "16:16"]
+fastest = "company-rss"
+rss = ["https://ir.amd.com/news-events/press-releases/rss"]
+evidence = "Q2 2026: RSS item at 4:15 PM. The 8-K has come at 4:16 PM four quarters running. GlobeNewswire's feed refuses automated reads."
+checked = 2026-10-31
+
+[company.AMZN]
+name = "Amazon.com"
+names = ["Amazon.com"]
+cik = 1018724
+platform = "q4"
+q4_host = "ir.aboutamazon.com"
+reachable = true
+wire = "Business Wire"
+release_time = "16:01"
+eightk = ["16:05", "16:06", "16:18", "16:25"]
+fastest = "ir-feed"
+evidence = "IR feed first in 9 of 9 quarters. 8-K a median 12m17s later (4m27s to 24m12s)."
+checked = 2026-10-31
+
+[company.AVGO]
+name = "Broadcom"
+cik = 1730168
+platform = "unknown"
+reachable = false
+wire = "unknown"
+eightk = ["16:26", "16:21", "16:16", "16:17"]
+fastest = "sec-8k"
+evidence = "investors.broadcom.com blocks automated reads. Not found on PR Newswire. 8-K at 4:16 to 4:26 PM."
+todo = "Check which wire carries the release and its time."
+checked = 2026-10-31
+
+[company.BA]
+name = "Boeing"
+cik = 12927
+platform = "q4"
+q4_host = "investors.boeing.com"
+reachable = true
+wire = "unknown"
+release_time = "07:30"
+eightk = ["07:30", "07:31", "07:40", "07:30"]
+fastest = "ir-feed"
+evidence = "Q3 2026: IR feed 7:30 AM, 8-K 7:30:23 AM."
+checked = 2026-10-31
+
+[company.BAC]
+name = "Bank of America"
+cik = 70858
+platform = "equisolve"
+reachable = true
+wire = "unknown"
+eightk = ["06:44", "06:45", "06:44", "06:45"]
+fastest = "sec-8k"
+evidence = "8-K at 6:44:44 to 6:45:47 AM, the minute the release goes out. Files sit under unpredictable IDs, and the newsroom's RSS link returns a web app."
+todo = "Check which wire carries the release and its time."
+checked = 2026-10-31
+
+[company.COIN]
+name = "Coinbase"
+cik = 1679788
+platform = "q4"
+q4_host = "investor.coinbase.com"
+reachable = true
+wire = "unknown"
+eightk = ["16:09", "16:06", "16:11", "16:06"]
+fastest = "unknown"
+guess = [
+    "https://s27.q4cdn.com/397450999/files/content_files/Q{fq}_{fyy}-Earnings-Deck.pdf",
+]
+evidence = "Results come as a letter and a deck, and the press feed lists only the date announcement. 8-K at 4:06 to 4:11 PM. Deck name seen for one quarter."
+todo = "Measure the deck PDF against the 8-K live."
+checked = 2026-10-31
+
+[company.COST]
+name = "Costco"
+cik = 909832
+platform = "q4"
+q4_host = "investor.costco.com"
+reachable = true
+wire = "unknown"
+release_time = "16:15"
+eightk = ["16:17", "16:17", "16:19", "16:22"]
+fastest = "unknown"
+evidence = "Quarterly 8-Ks come at 4:17 to 4:22 PM."
+todo = "Check the IR feed time of the next quarterly release."
+checked = 2026-10-31
+
+[company.CRM]
+name = "Salesforce"
+cik = 1108524
+platform = "q4"
+q4_host = "investor.salesforce.com"
+reachable = true
+wire = "unknown"
+eightk = ["16:03", "16:18", "16:03", "16:04"]
+fastest = "unknown"
+evidence = "Results weren't among the press feed's recent earnings items. 8-K at 4:03 to 4:18 PM."
+todo = "Find where the release appears first."
+checked = 2026-10-31
+
+[company.CRWD]
+name = "CrowdStrike"
+cik = 1535527
+platform = "notified"
+reachable = false
+wire = "unknown"
+eightk = ["16:07", "16:06", "16:06", "16:11"]
+fastest = "sec-8k"
+evidence = "The IR site blocks automated reads. crowdstrike.com's press page loads, but we didn't find earnings releases on it. 8-K at 4:06 to 4:11 PM."
+todo = "Check which wire carries the release and its time."
+checked = 2026-10-31
+
+[company.DIS]
+name = "Disney"
+cik = 1744489
+platform = "q4"
+q4_host = "investors.thewaltdisneycompany.com"
+reachable = true
+wire = "unknown"
+eightk = ["06:30", "06:40", "06:42", "06:42"]
+fastest = "unknown"
+guess = [
+    "https://s206.q4cdn.com/979796730/files/doc_financials/{fy}/q{fq}/q{fq}-fy{fyy}-earnings.pdf",
+]
+evidence = "The IR site is Q4 at investors.thewaltdisneycompany.com (the investor-relations page on thewaltdisneycompany.com is a 403). The release is a PDF, and the press feed lists only the webcast notice. 8-K at 6:30 to 6:42 AM. Disney left PR Newswire after 2024. File name seen for one quarter."
+todo = "Measure the PDF against the 8-K live. Next report: November 17, 2026 (Q4 events feed)."
+checked = 2026-10-31
+
+[company.FICO]
+name = "FICO"
+names = ["FICO", "Fair Isaac"]
+cik = 814547
+platform = "notified"
+reachable = false
+wire = "Business Wire"
+release_time = "16:15"
+eightk = ["16:16", "16:15", "16:15", "16:19"]
+fastest = "newswire"
+evidence = "Business Wire at 4:15:00 PM, 8-K a median 1m13s later. The IR site (Akamai) and fico.com (Incapsula) both block automated reads."
+checked = 2026-10-31
+
+[company.GOOGL]
+name = "Alphabet"
+cik = 1652044
+platform = "q4"
+q4_host = "abc.xyz"
+reachable = true
+wire = "unknown"
+release_time = "16:01"
+eightk = ["16:01", "16:01", "16:01", "16:01"]
+fastest = "ir-feed"
+guess = [
+    "https://s206.q4cdn.com/479360582/files/doc_financials/{fy}/q{fq}/{fy}q{fq}-alphabet-earnings-release.pdf",
+]
+evidence = "IR feed first in 5 of 5 quarters (its times are Pacific). 8-K a median 36 s later."
+checked = 2026-10-31
+
+[company.GS]
+name = "Goldman Sachs"
+cik = 886982
+platform = "own-site"
+reachable = true
+wire = "unknown"
+eightk = ["07:32", "07:30", "07:40", "07:42"]
+fastest = "unknown"
+guess = [
+    "https://www.goldmansachs.com/pressroom/press-releases/{yyyy}/{yyyy}-{mm}-{dd}-q{fq}-results",
+    "https://www.goldmansachs.com/pressroom/press-releases/current/pdfs/{fy}-q{fq}-results.pdf",
+]
+evidence = "Press release URL seen for four quarters, PDF for one. 8-K at 7:30 to 7:42 AM. Files are re-uploaded later, so their Last-Modified dates say nothing."
+todo = "Check which wire carries the release and its time."
+checked = 2026-10-31
+
+[company.HD]
+name = "The Home Depot"
+names = ["The Home Depot"]
+cik = 354950
+platform = "investis"
+reachable = false
+wire = "PR Newswire"
+release_time = "06:00"
+eightk = ["06:10", "06:06", "06:07", "06:05"]
+fastest = "newswire"
+evidence = "Q2 FY26: PR Newswire 6:00 AM, 8-K 6:10:33 AM (6:05 to 6:10 AM over four quarters). ir.homedepot.com and corporate.homedepot.com block automated reads."
+checked = 2026-10-31
+
+[company.INTC]
+name = "Intel"
+names = ["Intel"]
+cik = 50863
+platform = "equisolve"
+reachable = true
+wire = "Business Wire"
+release_time = "16:01"
+eightk = ["16:08", "16:09", "16:07", "16:10"]
+fastest = "company-rss"
+rss = ["https://www.intc.com/news-events/press-releases/rss"]
+evidence = "RSS item at 4:01 PM, 8-K 4:07 to 4:11 PM. The feed allows 30 s of caching, so bust the cache."
+checked = 2026-10-31
+
+[company.JPM]
+name = "JPMorgan Chase"
+cik = 19617
+platform = "own-site"
+reachable = true
+wire = "unknown"
+eightk = ["06:30", "06:30", "06:32", "06:41"]
+fastest = "sec-8k"
+evidence = "8-K at 6:30 to 6:41 AM. The release PDF is named by a random ID (uploaded at 5:14 AM for Q3 2026), so it can't be guessed."
+todo = "Check which wire carries the release and its time."
+checked = 2026-10-31
+
+[company.KO]
+name = "Coca-Cola"
+names = ["Coca-Cola"]
+cik = 21344
+platform = "equisolve"
+reachable = true
+wire = "Business Wire"
+release_time = "06:55"
+eightk = ["06:58", "06:58", "07:00", "06:59"]
+fastest = "company-rss"
+rss = [
+    "https://investors.coca-colacompany.com/news-events/press-releases/rss",
+]
+evidence = "RSS item at 6:55 AM, 8-K 6:58 to 7:00 AM."
+checked = 2026-10-31
+
+[company.LLY]
+name = "Lilly"
+names = ["Lilly"]
+cik = 59478
+platform = "notified"
+reachable = false
+wire = "PR Newswire"
+release_time = "06:45"
+eightk = ["07:03", "07:05", "07:03", "07:05"]
+fastest = "newswire"
+evidence = "Q3 2026: PR Newswire 6:45 AM, 8-K 7:03:30 AM. investor.lilly.com and lilly.com block automated reads."
+checked = 2026-10-31
+
+[company.MA]
+name = "Mastercard"
+cik = 1141391
+platform = "q4"
+q4_host = "investor.mastercard.com"
+reachable = true
+wire = "unknown"
+release_time = "08:01"
+eightk = ["08:04", "08:07", "08:03", "08:03"]
+fastest = "ir-feed"
+guess = [
+    "https://s25.q4cdn.com/479285134/files/content_files/{fq}Q{fyy}-Mastercard-Earnings-Release.pdf",
+]
+evidence = "IR feed first in 9 of 9 quarters. 8-K a median 3m09s later."
+checked = 2026-10-31
+
+[company.MCD]
+name = "McDonald's"
+cik = 63908
+platform = "unknown"
+reachable = false
+wire = "unknown"
+eightk = ["07:01", "07:01", "16:02", "07:01"]
+fastest = "sec-8k"
+evidence = "The IR site blocks automated reads. PR Newswire carried earnings at 7:00 AM through Q4 2025, but none in 2026. 8-K at about 7:01 AM."
+todo = "Check which wire carried the 2026 releases and their times."
+checked = 2026-10-31
+
+[company.META]
+name = "Meta"
+cik = 1326801
+platform = "q4"
+q4_host = "investor.atmeta.com"
+reachable = true
+wire = "unknown"
+release_time = "16:01"
+eightk = ["16:03", "16:03", "16:05", "16:04"]
+fastest = "ir-feed"
+evidence = "IR feed first in 9 of 9 quarters. 8-K a median 3m34s later. File names have changed between quarters."
+checked = 2026-10-31
+
+[company.MSFT]
+name = "Microsoft"
+cik = 789019
+platform = "own-site"
+reachable = true
+wire = "none"
+eightk = ["16:04", "16:04", "16:03", "16:04"]
+fastest = "unknown"
+guess = [
+    "https://www.microsoft.com/en-us/investor/earnings/fy-{fy}-q{fq}/press-release-webcast",
+]
+evidence = "No newswire: the release goes up on the investor site. 8-K at 4:03 to 4:04 PM. URL seen for two quarters."
+todo = "Measure the investor page against the 8-K live (next report late January 2027)."
+checked = 2026-10-31
+
+[company.MU]
+name = "Micron"
+cik = 723125
+platform = "q4"
+q4_host = "investors.micron.com"
+reachable = true
+wire = "unknown"
+release_time = "16:01"
+eightk = ["16:02", "16:02", "16:02", "16:03"]
+fastest = "ir-feed"
+guess = [
+    "https://s25.q4cdn.com/621799436/files/doc_financials/{fy}/q{fq}/Q{fq}-{fyy}-Earnings-Deck.pdf",
+]
+evidence = "Q4 FY26: IR feed 4:01 PM, 8-K 4:02:22 PM. Deck name seen for one quarter."
+checked = 2026-10-31
+
+[company.NFLX]
+name = "Netflix"
+cik = 1065280
+platform = "q4"
+q4_host = "ir.netflix.net"
+reachable = true
+wire = "unknown"
+eightk = ["16:01", "16:03", "16:01", "16:07"]
+fastest = "unknown"
+guess = [
+    "https://s22.q4cdn.com/959853165/files/doc_financials/{fy}/q{fq}/FINAL-Q{fq}-{fyy}-Shareholder-Letter.pdf",
+]
+evidence = "Results come as a shareholder letter PDF, and the press feed lists only the date announcement. 8-K at 4:01 to 4:07 PM. File name seen for one quarter."
+todo = "Measure the letter PDF against the 8-K live."
+checked = 2026-10-31
+
+[company.NKE]
+name = "NIKE"
+names = ["NIKE, Inc."]
+cik = 320187
+platform = "equisolve"
+reachable = true
+wire = "Business Wire"
+release_time = "16:15"
+eightk = ["16:15", "16:15", "16:24", "16:15"]
+fastest = "company-rss"
+rss = ["https://investors.nike.com/news-events/press-releases/rss"]
+evidence = "RSS item at 4:15:00 PM, but the 8-K follows only 15 to 28 s later, so it's a close race."
+checked = 2026-10-31
+
+[company.NVDA]
+name = "NVIDIA"
+cik = 1045810
+platform = "q4"
+q4_host = "investor.nvidia.com"
+reachable = true
+wire = "unknown"
+eightk = ["16:21", "16:21", "16:31", "16:20"]
+fastest = "unknown"
+evidence = "The Q4 press feed lists only the call announcement. The release itself is on nvidianews.nvidia.com. 8-K at 4:20 to 4:31 PM."
+todo = "Find where the release appears first. Next report: November 17, 2026 (Q4 events feed)."
+checked = 2026-10-31
+
+[company.ORCL]
+name = "Oracle"
+cik = 1341439
+platform = "q4"
+q4_host = "investor.oracle.com"
+reachable = true
+wire = "unknown"
+release_time = "16:10"
+eightk = ["16:16", "16:13", "16:12", "16:14"]
+fastest = "ir-feed"
+evidence = "Q1 FY27: IR feed 4:10 PM, 8-K 4:16:50 PM. File names vary, so no guesses."
+checked = 2026-10-31
+
+[company.PLTR]
+name = "Palantir"
+names = ["Palantir"]
+cik = 1321655
+platform = "q4"
+q4_host = "investors.palantir.com"
+reachable = true
+wire = "Business Wire"
+release_time = "16:05"
+eightk = ["16:06", "16:06", "16:06", "16:06"]
+fastest = "ir-feed"
+evidence = "A custom front end over Q4's feeds that caches them for an hour, so bust the cache. The 8-K comes about a minute after the 4:05 PM release."
+checked = 2026-10-31
+
+[company.PYPL]
+name = "PayPal"
+cik = 1633917
+platform = "q4"
+q4_host = "investor.pypl.com"
+reachable = true
+wire = "unknown"
+release_time = "07:00"
+eightk = ["07:02", "07:02", "07:03", "07:08"]
+fastest = "ir-feed"
+guess = [
+    "https://s205.q4cdn.com/875401827/files/content_files/PYPL-{fq}Q-{fyy}-Earnings-Release.pdf",
+]
+evidence = "Q3 2026: IR feed 7:00 AM, 8-K 7:02:43 AM. File name seen for one quarter."
+checked = 2026-10-31
+
+[company.QCOM]
+name = "Qualcomm"
+cik = 804328
+platform = "q4"
+q4_host = "investor.qualcomm.com"
+reachable = true
+wire = "unknown"
+eightk = ["16:01", "16:02", "16:00", "16:01"]
+fastest = "unknown"
+guess = [
+    "https://s204.q4cdn.com/645488518/files/doc_financials/{fy}/q{fq}/FY{fy}-{ord}-Quarter-Earnings-Release.pdf",
+]
+evidence = "The 8-K comes at 4:00 to 4:02 PM. Release file name seen for one quarter."
+todo = "Measure live. Next report: November 4, 2026, call at 4:45 PM ET (Q4 events feed)."
+checked = 2026-10-31
+
+[company.SBUX]
+name = "Starbucks"
+cik = 829224
+platform = "q4"
+q4_host = "investor.starbucks.com"
+reachable = true
+wire = "unknown"
+release_time = "16:05"
+eightk = ["16:07", "16:06", "16:06", "07:46"]
+fastest = "ir-feed"
+evidence = "Q4 FY26: IR feed 4:05 PM, 8-K 4:07:14 PM. File names vary between quarters, so no guesses."
+checked = 2026-10-31
+
+[company.SNOW]
+name = "Snowflake"
+cik = 1640147
+platform = "q4"
+q4_host = "investors.snowflake.com"
+reachable = true
+wire = "unknown"
+release_time = "16:05"
+eightk = ["16:08", "16:07", "16:07", "16:06"]
+fastest = "ir-feed"
+evidence = "Q2 FY27: IR feed 4:05 PM, 8-K 4:08:29 PM."
+checked = 2026-10-31
+
+[company.SPGI]
+name = "S&P Global"
+names = ["S&P Global"]
+cik = 64040
+platform = "q4"
+q4_host = "investor.spglobal.com"
+reachable = true
+wire = "PR Newswire"
+release_time = "07:21"
+eightk = ["07:15", "07:10", "07:10", "07:10"]
+fastest = "sec-8k"
+guess = [
+    "https://s29.q4cdn.com/690959130/files/doc_financials/{fy}/q{fq}/S-P-Global-{fq}Q-{fy}-Earnings-Release-Exhibits-{mm}-{dd}-{yyyy}.pdf",
+]
+evidence = "The 8-K (7:10 to 7:15 AM) beats PR Newswire and the IR feed (both 7:21 AM) every quarter. Exhibits file name seen for one quarter."
+checked = 2026-10-31
+
+[company.TGT]
+name = "Target Corporation"
+names = ["Target Corporation"]
+cik = 27419
+platform = "own-site"
+reachable = true
+wire = "PR Newswire"
+release_time = "06:30"
+eightk = ["07:51", "07:57", "07:12", "06:30"]
+fastest = "newswire"
+rss = ["https://corporate.target.com/feeds/pressreleases"]
+guess = [
+    "https://corporate.target.com/press/release/{yyyy}/{mm}/target-corporation-reports-{nth}-quarter-earnings",
+]
+evidence = "Q2 2026: PR Newswire and the press page both at 6:30 AM, 8-K at 7:51 AM (6:30 to 7:57 AM over four quarters). URL seen for two quarters."
+checked = 2026-10-31
+
+[company.TSLA]
+name = "Tesla"
+cik = 1318605
+platform = "unknown"
+reachable = false
+wire = "none"
+eightk = ["16:41", "09:04", "16:35", "09:01"]
+fastest = "sec-8k"
+evidence = "ir.tesla.com blocks automated reads (Akamai), and Tesla uses no newswire. Its earnings 8-Ks come at 4:35 to 4:41 PM, well after the update deck goes up."
+todo = "Get the update deck's link from ir.tesla.com by hand. If its file host answers us, the deck can be guessed."
+checked = 2026-10-31
+
+[company.UBER]
+name = "Uber"
+names = ["Uber"]
+cik = 1543151
+platform = "q4"
+q4_host = "investor.uber.com"
+reachable = true
+wire = "Business Wire"
+release_time = "06:55"
+eightk = ["06:56", "06:56", "06:56", "06:56"]
+fastest = "ir-feed"
+guess = [
+    "https://s23.q4cdn.com/407969754/files/doc_earnings/{fy}/q{fq}/earnings-result/Uber-Q{fq}-{fyy}-Earnings-Press-Release.pdf",
+    "https://s23.q4cdn.com/407969754/files/doc_earnings/{fy}/q{fq}/supplemental-info/Uber-Q{fq}-{fyy}-Earnings-Supplemental-Data.pdf",
+    "https://s23.q4cdn.com/407969754/files/doc_earnings/{fy}/q{fq}/transcript/Uber-Q{fq}-{fyy}-Prepared-Remarks.pdf",
+]
+evidence = "IR feed first in 8 of 8 quarters. 8-K a median 1m12s later. PDFs follow 17 to 29 s after the release."
+checked = 2026-10-31
+
+[company.UNH]
+name = "UnitedHealth Group"
+cik = 731766
+platform = "own-site"
+reachable = true
+wire = "unknown"
+release_time = "05:55"
+eightk = ["06:14", "06:00", "06:02", "06:02"]
+fastest = "company-page"
+guess = [
+    "https://www.unitedhealthgroup.com/newsroom/{yyyy}/{yyyy}-{mm}-{dd}-uhg-reports-{nth}-quarter-{fy}-results.html",
+    "https://www.unitedhealthgroup.com/content/dam/uhg/pdf/investors/{fy}/unh-reports-{nth}-quarter-{fy}-results.pdf",
+]
+evidence = "Q3 2026: newsroom page published 5:55:34 AM, 8-K 6:14:45 AM (6:00 to 6:14 AM over four quarters). URLs seen for two quarters; the Q4 release may be named for the full year."
+todo = "Check which wire carries the release and its time."
+checked = 2026-10-31
+
+[company.V]
+name = "Visa"
+cik = 1403161
+platform = "q4"
+q4_host = "investor.visa.com"
+reachable = true
+wire = "unknown"
+release_time = "16:05"
+eightk = ["16:05", "16:05", "16:05", "16:05"]
+fastest = "ir-feed"
+guess = [
+    "https://s1.q4cdn.com/050606653/files/content_files/{fq}Q{fyy}-Earnings-Release_vFINAL.pdf",
+]
+evidence = "Q4 FY26: IR feed 4:05 PM, 8-K 4:05:22 PM. File name seen for one quarter."
+checked = 2026-10-31
+
+[company.WMT]
+name = "Walmart"
+cik = 104169
+platform = "equisolve"
+reachable = true
+wire = "unknown"
+eightk = ["06:59", "06:59", "06:59", "06:58"]
+fastest = "sec-8k"
+guess = [
+    "https://corporate.walmart.com/news/{yyyy}/{mm}/{dd}/walmart-releases-q{fq}-fy{fyy}-earnings",
+]
+evidence = "Q2 FY27: 8-K 6:59:01 AM, newsroom page and PDFs 7:00 AM. Release files sit under unpredictable IDs. Newsroom URL seen for one quarter."
+todo = "Check which wire carries the release and its time."
+checked = 2026-10-31
