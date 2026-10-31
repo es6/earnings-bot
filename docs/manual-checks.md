@@ -20,21 +20,21 @@ earnings 8-K.
    releases show a time like "October 14, 2026 06:45 ET".
 4. If it's on neither, write "none".
 
-Results from 2026-10-31, with the open items last:
+Results from 2026-10-31. Every company's wire is now known:
 
-| Company | Release date | Wire | Time | Still to do |
-|---|---|---|---|---|
-| Bank of America | Oct 14, 2026 | None (not on PR Newswire either) | | |
-| Goldman Sachs | Oct 13, 2026 | None. The Business Wire hit was Goldman Sachs BDC, a separate company | | |
-| Broadcom | Sep 2, 2026 | None (not on PR Newswire either) | | |
-| NVIDIA | Aug 26, 2026 | GlobeNewswire | | |
-| McDonald's | Aug 4, 2026 | PR Newswire | 7:00 AM | |
-| UnitedHealth Group | Oct 13, 2026 | Business Wire | 5:55 AM | |
-| Salesforce | Aug 26, 2026 | Business Wire | 4:01 PM | |
-| Walmart | Aug 20, 2026 | Business Wire | 7:01 AM | |
-| JPMorgan Chase | Oct 13, 2026 | Business Wire | 7:08 AM | |
-| Adobe | Sep 10, 2026 | Business Wire | 4:05 PM | |
-| CrowdStrike | Aug 26, 2026 | Business Wire | 4:05 PM | |
+| Company | Release date | Wire | Time |
+|---|---|---|---|
+| Bank of America | Oct 14, 2026 | None (not on PR Newswire either) | |
+| Goldman Sachs | Oct 13, 2026 | None. The Business Wire hit was Goldman Sachs BDC, a separate company | |
+| Broadcom | Sep 2, 2026 | None (not on PR Newswire either) | |
+| NVIDIA | Aug 26, 2026 | GlobeNewswire | |
+| McDonald's | Aug 4, 2026 | PR Newswire | 7:00 AM |
+| UnitedHealth Group | Oct 13, 2026 | Business Wire | 5:55 AM |
+| Salesforce | Aug 26, 2026 | Business Wire | 4:01 PM |
+| Walmart | Aug 20, 2026 | Business Wire | 7:01 AM |
+| JPMorgan Chase | Oct 13, 2026 | Business Wire | 7:08 AM |
+| Adobe | Sep 10, 2026 | Business Wire | 4:05 PM |
+| CrowdStrike | Aug 26, 2026 | Business Wire | 4:05 PM |
 
 ## 2. Tesla's update deck
 
@@ -80,7 +80,7 @@ Two sites that do answer us, checked the same way:
 | Company | PDF `last-modified` | Compared with | What it tells us |
 |---|---|---|---|
 | JPMorgan Chase | Oct 13, 5:14:57 AM (named by a random ID) | 8-K 6:30:38 AM, Business Wire 7:08 AM | Uploaded 75 minutes before the 8-K. It can't be guessed, but the page that links it can be watched |
-| Adobe | Sep 10, 4:05:37 PM | Business Wire 4:05 PM, 8-K 4:06:14 PM | Business Wire is first. Next: copy the PDF's link to see whether its name can be guessed |
+| Adobe | Sep 10, 4:05:37 PM (`pdfs/01906202/au56y4ter.pdf`, a random path) | Business Wire 4:05 PM, 8-K 4:06:14 PM | Business Wire is first, and the PDF can't be guessed |
 
 ## 4. Live check: FICO on November 4
 

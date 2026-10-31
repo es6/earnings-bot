@@ -60,8 +60,7 @@ wire = "Business Wire"
 release_time = "16:05"
 eightk = ["16:06", "16:08", "16:09", "16:05"]
 fastest = "newswire"
-evidence = "Q3 FY26: Business Wire 4:05 PM, the IR site's release PDF 4:05:37 PM, 8-K 4:06:14 PM (4:05 to 4:09 PM over four quarters). adobe.com's IR page loads, but news.adobe.com builds its list in the browser."
-todo = "Get the release PDF's link from the IR page by hand, to see whether its name can be guessed."
+evidence = "Q3 FY26: Business Wire 4:05 PM, the IR site's release PDF 4:05:37 PM, 8-K 4:06:14 PM (4:05 to 4:09 PM over four quarters). The PDF's path is random (pdfs/01906202/au56y4ter.pdf), so it can't be guessed. adobe.com's IR page loads, but news.adobe.com builds its list in the browser."
 checked = 2026-10-31
 
 [company.AMD]
