@@ -79,9 +79,21 @@ What this tells us:
    Feed timestamps use each site's local time zone, and that isn't consistent even within one
    site. We use our own clock.
 2. **SEC EDGAR.** The fallback for every company, and the main source for S&P Global, whose IR
-   site trails its 8-K. We poll `data.sec.gov/submissions/CIK##########.json` for new 8-Ks
-   with item 2.02. SEC allows at most 10 requests per second across everything we send it, and
-   requires a User-Agent with a name and contact email (`SEC_USER_AGENT` in `.env`).
+   site trails its 8-K. We poll two lists of the company's filings for new 8-Ks with item 2.02:
+   - EDGAR's latest-filings feed, narrowed to the company
+     (`/cgi-bin/browse-edgar?action=getcurrent&CIK=...&type=8-K&output=atom`). It lists a
+     filing the moment it goes public, together with its folder, and is never cached.
+   - The submissions JSON (`data.sec.gov/submissions/CIK##########.json`). It lagged the feed
+     by 0 to 56 seconds for six 8-Ks measured on 2026-11-03, and by 48 seconds for AMD's. It
+     stays as a backup: the feed is a slower, generated page, and one request to it took over
+     20 seconds during that evening's rush.
+
+   New 8-Ks reached the feed 19 to 35 seconds after SEC accepted them (15 filings that
+   evening).
+
+   Both point to the same filing folder, so the alert gets one SEC link. SEC allows at most 10
+   requests per second across everything we send it, and requires a User-Agent with a name and
+   contact email (`SEC_USER_AGENT` in `.env`).
 3. **Guessed file URLs.** File names follow per-company patterns that we learn from past
    quarters, for example:
    - `AMZN-Q{q}-{yyyy}-Earnings-Release.pdf`
@@ -209,9 +221,40 @@ the request reached the origin:
   even for PDFs, which would read as found. So its guesses stay out of schedules
   (`soft_404 = true` in `companies.toml`) until the bot checks what it got back.
 
-Live runs will measure the real delay: Nov 2 (Palantir and Apple: Business Wire against Q4 and
-Apple's newsroom), Nov 3 (AMD: its RSS feed against the 8-K) and Nov 4 (Uber and FICO: Business
-Wire against Q4 and the 8-K).
+### Live runs
+
+**Nov 2 (Palantir, Apple):** not run.
+
+**Nov 3, AMD** (the bot, `schedules/2026-11-03.jsonl`). Times are US Eastern. Each comes from
+the server that set it, not this PC's clock.
+
+| Time | What happened |
+|---|---|
+| 4:15:00 | AMD's stated release time (its RSS item) |
+| 4:15:04.6 | Our poll of AMD's feed: not there yet |
+| about 4:15:05 | AMD's CDN fetched a copy that had it (`date` 21:15:05 GMT, `age` 1 s) |
+| **4:15:06.668** | **The bot saw it** on AMD's feed (25 ms response) |
+| **4:15:06.868** | **Discord showed the alert**, 0.2 s later |
+| 4:15:10.688 | @earnings_guy's post on X, read from the post ID: 3.8 s after ours |
+| 4:15:44 | AMD's earnings tables and slides uploaded to its IR site (`Last-Modified`) |
+| 4:16:27 | SEC accepted the 8-K |
+| 4:17:04 | The 8-K's files went up on SEC's site |
+| 4:17:52.6 | The bot saw the 8-K in the submissions JSON, 48 s after the files |
+| 4:17:52.8 | Discord edit added the SEC link |
+
+What it tells us:
+
+- Detection to a visible post took 0.2 s.
+- About 5 of the 6.9 s happened before AMD's CDN had the release. From outside we can't tell
+  how much of that was AMD publishing after 4:15:00 and how much was the CDN's copy. The rest
+  was waiting for the next 2-second poll.
+- AMD's files went up 44 s after the release, so they can't explain the gap. Their IDs (9232,
+  9237, 9247) can't be guessed, but the quarterly-results page that lists them can be watched.
+- GlobeNewswire, AMD's wire, answers 403 from Akamai to every automated request, even
+  `robots.txt`. Services that post from it, such as @earnings_guy, likely use a paid real-time
+  feed. We use AMD's own feed instead.
+
+**Nov 4:** Uber and FICO, with EDGAR's latest-filings feed added as a source.
 
 ### Scheduling
 
@@ -502,3 +545,5 @@ This starts after the Nov 2–4 runs, whose results feed into it.
 | 2026-10-31 | Add PR Newswire's earnings feed as a source for the companies that use it, matched on headline, dateline and `dc:contributor` |
 | 2026-10-31 | Run the bot on the owner's Windows PC, started by Task Scheduler and updated from `main`, not on a paid server |
 | 2026-10-31 | Leave guesses out of schedules for sites that answer missing pages with 200, until the bot checks what it got back |
+| 2026-11-03 | Also poll EDGAR's latest-filings feed, which beat the submissions JSON by up to 56 s |
+| 2026-11-03 | A guessed file that comes back as a web page counts as not there yet |

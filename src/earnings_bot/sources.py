@@ -32,6 +32,10 @@ _NOT_EARNINGS = re.compile(
 )
 
 
+# Guessed URLs with these endings are files, not pages
+_FILE_TYPES = (".pdf", ".xlsx", ".xls")
+
+
 def looks_like_earnings(headline: str) -> bool:
     return bool(_EARNINGS.search(headline)) and not _NOT_EARNINGS.search(headline)
 
@@ -165,6 +169,47 @@ class EdgarFilings(Source):
         ]
 
 
+class EdgarLatest(EdgarFilings):
+    """EDGAR's latest-filings feed, narrowed to one company's 8-Ks. It lists a filing the moment
+    it goes public and is never cached, while the submissions JSON lagged it by 0 to 56 s on
+    2026-11-03 (48 s for AMD's earnings 8-K)."""
+
+    name = "edgar_latest"
+
+    def url(self) -> str:
+        return (
+            "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent"
+            f"&CIK={self.cik:010d}&type=8-K&company=&dateb=&owner=include&start=0&count=10"
+            "&output=atom"
+        )
+
+    def parse(self, response: Response) -> list[Sighting]:
+        try:
+            root = ET.fromstring(response.body)
+        except ET.ParseError as error:
+            raise ValueError(f"not valid XML: {error}") from error
+        sightings = []
+        for entry in root.iter(f"{_ATOM}entry"):
+            # "<b>AccNo:</b> 0000002488-26-000188 ... Item 2.02: Results of Operations ..."
+            summary = entry.findtext(f"{_ATOM}summary") or ""
+            accession = re.search(r"\d{10}-\d{2}-\d{6}", entry.findtext(f"{_ATOM}id") or "")
+            link = entry.find(f"{_ATOM}link")
+            if accession is None or link is None:
+                raise ValueError("an entry without an accession number or link")
+            form = (entry.findtext(f"{_ATOM}title") or "").split(" - ", 1)[0]
+            items = ",".join(re.findall(r"Item (\d+\.\d+)", summary))
+            sightings.append(
+                Sighting(
+                    key=accession.group(0),
+                    title=f"{form} {items}".strip(),
+                    url=link.get("href", ""),  # the filing's index page
+                    published=entry.findtext(f"{_ATOM}updated"),  # US Eastern, with offset
+                    earnings=form.startswith("8-K") and "2.02" in items,
+                )
+            )
+        return sightings
+
+
 class RssFeed(Source):
     """An RSS feed, optionally narrowed to items that name one of the given companies."""
 
@@ -279,6 +324,11 @@ class GuessedFile(Source):
 
     def parse(self, response: Response) -> list[Sighting]:
         if response.status != 200:
+            return []
+        # Some sites answer 200 with a "Page Not Found" page (UnitedHealth's does), so a file that
+        # comes back as a web page isn't there yet
+        is_file = urlsplit(self.file_url).path.lower().endswith(_FILE_TYPES)
+        if is_file and response.headers.get("content-type", "").startswith("text/html"):
             return []
         return [
             Sighting(

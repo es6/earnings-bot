@@ -62,6 +62,7 @@ def test_plan_times_default_to_eastern(tmp_path: Path) -> None:
         "q4_press",
         "q4_files",
         "edgar",
+        "edgar_latest",
         "businesswire",
         "businesswire_busted",
         "guess:Uber-Q3-26-Earnings-Press-Release.pdf",

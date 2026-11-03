@@ -3,6 +3,7 @@ release files as they appear, then the summary edited in."""
 
 import asyncio
 import io
+import re
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Coroutine
@@ -88,6 +89,14 @@ def describe_source(source: Source) -> str:
     if source.name.startswith("guess:"):
         return "guessed URL"
     return source.name.removeprefix("rss:")
+
+
+def _same_filing(a: str, b: str) -> bool:
+    """Whether two SEC links point into one filing's folder: one SEC source links its index page
+    and the other its main document."""
+    folder = re.compile(r"https://www\.sec\.gov/Archives/edgar/data/\d+/\d+/")
+    match_a, match_b = folder.match(a), folder.match(b)
+    return bool(match_a and match_b and match_a.group(0) == match_b.group(0))
 
 
 def _file_name(url: str) -> str:
@@ -194,19 +203,30 @@ class Release:
 
     async def _link(self, label: str, url: str) -> None:
         async with self.lock:
-            if url in self.links:
+            if url in self.links or any(_same_filing(url, known) for known in self.links):
                 return
             self.links[url] = label
             if self.posted:
-                await self.poster.edit(self._content())
-                return
-            stamp = await self.poster.send(self._content())
-            self.posted = True
+                stamp = await self.poster.edit(self._content())
+                event = "linked"
+            else:
+                stamp = await self.poster.send(self._content())
+                self.posted = True
+                event = "posted"
         live = self._live_after(stamp)
         self.journal.write(
-            "posted", ticker=self.target.ticker, seconds=self._since_first_seen(), live_seconds=live
+            event,
+            ticker=self.target.ticker,
+            source=label,
+            seconds=self._since_first_seen(),
+            live_seconds=live,
         )
-        self.journal.say(f"{self.target.ticker}: posted the alert ({label}), live after {live}s")
+        if event == "posted":
+            self.journal.say(
+                f"{self.target.ticker}: posted the alert ({label}), live after {live}s"
+            )
+        else:
+            self.journal.say(f"{self.target.ticker}: added the {label} link, live after {live}s")
 
     async def _attach(self, url: str) -> None:
         name = _file_name(url)

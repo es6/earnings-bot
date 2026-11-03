@@ -6,6 +6,7 @@ from earnings_bot.fetch import Response, host_gap
 from earnings_bot.sources import (
     PR_NEWSWIRE_EARNINGS,
     EdgarFilings,
+    EdgarLatest,
     GuessedFile,
     Q4FinancialReports,
     Q4PressReleases,
@@ -94,6 +95,53 @@ def test_q4_financial_reports() -> None:
     assert document.key == pdf
     assert document.title == "Second Quarter 2026: Press Release"
     assert document.earnings
+
+
+EDGAR_LATEST = """<?xml version="1.0" encoding="ISO-8859-1" ?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+<title>Latest Filings</title>
+<entry>
+<title>8-K - UBER TECHNOLOGIES, INC (0001543151) (Filer)</title>
+<link rel="alternate" type="text/html"
+  href="https://www.sec.gov/Archives/edgar/data/1543151/000154315126000040/0001543151-26-000040-index.htm"/>
+<summary type="html"> &lt;b&gt;Filed:&lt;/b&gt; 2026-11-04
+ &lt;b&gt;AccNo:&lt;/b&gt; 0001543151-26-000040
+ &lt;br&gt;Item 2.02: Results of Operations and Financial Condition
+ &lt;br&gt;Item 9.01: Financial Statements and Exhibits </summary>
+<updated>2026-11-04T06:56:02-05:00</updated>
+<category scheme="https://www.sec.gov/" label="form type" term="8-K"/>
+<id>urn:tag:sec.gov,2008:accession-number=0001543151-26-000040</id>
+</entry>
+<entry>
+<title>8-K - UBER TECHNOLOGIES, INC (0001543151) (Filer)</title>
+<link rel="alternate" type="text/html"
+  href="https://www.sec.gov/Archives/edgar/data/1543151/000154315126000039/0001543151-26-000039-index.htm"/>
+<summary type="html"> &lt;b&gt;Filed:&lt;/b&gt; 2026-11-02
+ &lt;b&gt;AccNo:&lt;/b&gt; 0001543151-26-000039
+ &lt;br&gt;Item 8.01: Other Events &lt;br&gt;Item 9.01: Financial Statements and Exhibits </summary>
+<updated>2026-11-02T08:00:12-05:00</updated>
+<id>urn:tag:sec.gov,2008:accession-number=0001543151-26-000039</id>
+</entry>
+</feed>"""
+
+
+def test_edgar_latest_reads_one_companys_8ks_from_the_live_feed() -> None:
+    source = EdgarLatest(1543151)
+
+    earnings, other = source.parse(response(EDGAR_LATEST))
+
+    assert "CIK=0001543151&type=8-K" in source.url()
+    assert source.name == "edgar_latest"
+    assert (earnings.key, earnings.title, earnings.earnings) == (
+        "0001543151-26-000040",
+        "8-K 2.02,9.01",
+        True,
+    )
+    assert earnings.url.endswith("/000154315126000040/0001543151-26-000040-index.htm")
+    assert earnings.published == "2026-11-04T06:56:02-05:00"
+    assert (other.title, other.earnings) == ("8-K 8.01,9.01", False)
+    with pytest.raises(ValueError, match="not valid XML"):
+        source.parse(response("<html>"))
 
 
 def test_edgar_flags_item_2_02_8ks() -> None:
@@ -254,6 +302,21 @@ def test_guessed_file() -> None:
     [file] = source.parse(up)
     assert file.key == url
     assert file.published == "Wed, 04 Nov 2026 11:55:20 GMT"
+
+
+def test_guessed_file_answered_with_a_web_page_isnt_there_yet() -> None:
+    # UnitedHealth answers 200 with a "Page Not Found" page for files that don't exist yet
+    pdf = GuessedFile("https://www.unitedhealthgroup.com/content/dam/uhg/pdf/q4-results.pdf")
+    soft_404 = response(b"<html>", headers={"content-type": "text/html;charset=utf-8"})
+    real = response(b"%PDF", headers={"content-type": "application/pdf"})
+
+    assert pdf.parse(soft_404) == []
+    assert len(pdf.parse(real)) == 1
+    # A guessed page is expected to be a web page
+    page = GuessedFile(
+        "https://www.apple.com/newsroom/2026/11/apple-reports-fourth-quarter-results/"
+    )
+    assert len(page.parse(soft_404)) == 1
 
 
 def test_guessed_page_is_named_after_its_last_folder() -> None:
