@@ -33,6 +33,7 @@ from earnings_bot.sources import (
     BUSINESS_WIRE_EARNINGS,
     PR_NEWSWIRE_EARNINGS,
     EdgarFilings,
+    EdgarLatest,
     GuessedFile,
     Q4FinancialReports,
     Q4PressReleases,
@@ -81,7 +82,7 @@ class Target(BaseModel):
         sources: list[Source] = []
         if self.q4_host:
             sources += [Q4PressReleases(self.q4_host), Q4FinancialReports(self.q4_host)]
-        sources.append(EdgarFilings(self.cik))
+        sources += [EdgarFilings(self.cik), EdgarLatest(self.cik)]
         if self.newswire:
             # Polled both as is and with a cache-buster, to learn whether the feed's CDN delays it
             sources += [

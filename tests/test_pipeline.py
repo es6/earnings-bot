@@ -11,6 +11,7 @@ from earnings_bot.recorder import ET, Journal, Target
 from earnings_bot.sources import (
     PR_NEWSWIRE_EARNINGS,
     EdgarFilings,
+    EdgarLatest,
     GuessedFile,
     Q4PressReleases,
     RssFeed,
@@ -116,8 +117,26 @@ async def test_release_posts_links_files_and_summary(release_texts: dict[str, st
     assert summarizer.calls == [(release_texts[IR_PAGE], Estimates(eps=0.86, revenue=None))]
     # Each step logs when Discord stamped it, counted from the first sighting
     events = {e["event"]: e for e in map(json.loads, log.getvalue().splitlines())}
-    for step in ("posted", "attached", "summary"):
+    for step in ("posted", "linked", "attached", "summary"):
         assert 0 <= events[step]["live_seconds"] < 5
+    assert events["posted"]["source"] == "IR site"
+
+
+async def test_both_sec_sources_give_the_filing_one_link() -> None:
+    poster = FakePoster()
+    release = Release(uber(), poster, fetcher(), Journal(io.StringIO()), None, None)
+    index = FILING.rsplit("/", 1)[0] + "/0001543151-26-000040-index.htm"
+
+    release.add(
+        EdgarLatest(1543151), Sighting("0001543151-26-000040", "8-K 2.02", index, earnings=True)
+    )
+    release.add(
+        EdgarFilings(1543151), Sighting("0001543151-26-000040", "8-K 2.02", FILING, earnings=True)
+    )
+    await release.finish()
+
+    assert [kind for kind, _ in poster.calls] == ["send"]
+    assert f"SEC 8-K: <{index}>" in poster.calls[0][1]
 
 
 async def test_only_one_summary_when_several_sources_have_the_text(
