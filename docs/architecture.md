@@ -62,7 +62,7 @@ What this tells us:
   source and take whichever fires first.
 - **The newswire is stamped as fast as the IR site.** Business Wire's earnings feed lists Amazon's
   Q3 release at 4:01:00 PM ET, the same minute as the IR feed. But the free feed only shows a
-  release at its next rebuild, up to 4.5 minutes later (measured on Nov 4, see
+  release at its next rebuild, up to about 5 minutes later (measured on Nov 4, see
   [Live runs](#live-runs)). For FICO, whose IR site we can't reach, the 8-K can come first.
 - **Release PDFs usually go up after the release page.** So guessing file URLs mostly helps us
   collect files sooner, and only sometimes detects a release first.
@@ -113,7 +113,7 @@ What this tells us:
    releases a day, and each `pubDate` is the release minute. We match items to tracked companies
    by name. It's a main source for FICO and HubSpot. Business Wire rebuilds the feed about every
    4.5 minutes, and a release only appears at the next rebuild, so it reaches us anywhere from
-   a few seconds to 4.5 minutes after its stamp. Its CDN can then keep a copy for up to 5 more
+   a few seconds to about 5 minutes after its stamp. Its CDN can then keep a copy for up to 5 more
    minutes (`s-maxage=300`), so we only poll a cache-busted copy. PR Newswire's earnings
    feed (`https://www.prnewswire.com/rss/financial-services-latest-news/earnings-list.rss`) is
    read the same way for companies that use it: a schedule entry lists their names under
@@ -165,7 +165,7 @@ latest quarter only. The details per company, with the last four 8-K times, are 
   Depot, Target, McDonald's and S&P Global use PR Newswire. UnitedHealth, Salesforce, Walmart,
   JPMorgan, Adobe, CrowdStrike and HubSpot use Business Wire. Bank of America, Goldman Sachs, Broadcom,
   Microsoft and Tesla use none.
-- **Business Wire's free feed shows a release up to 4.5 minutes after its stamp,** at the
+- **Business Wire's free feed shows a release up to about 5 minutes after its stamp,** at the
   feed's next rebuild. So the Business Wire row's lead over the 8-K shrinks by that much. On
   Nov 4 it was still first for HubSpot (8-K 5 minutes after the release) but not for FICO (8-K
   39 seconds after).
@@ -287,12 +287,15 @@ the bot watched Business Wire (a plain and a busted copy) and EDGAR. Times are U
 What it tells us:
 
 - **Business Wire's free feed is rebuilt on a timer, about every 4.5 minutes.** Builds seen that
-  evening: 4:08:52, 4:17:52, 4:31:24, 4:35:55, 4:40:26 and 4:44:56, all multiples of about
-  270 s apart (the last two were predicted from the others before they happened).
-  A release only shows up at the next build: HubSpot's waited 3m52s and FICO's 2m52s. Other
-  companies' releases fit too (Murphy Oil, stamped 4:32, appeared at 4:35:55). Busting the
-  CDN can't get past this. Two servers answer in turn, and their copies can differ by a second
-  or by an item.
+  evening: 4:08:52, 4:17:52, 4:31:24, 4:35:55, 4:40:26, 4:44:56, 4:49:26 and 4:53:56, all
+  multiples of about 270 s apart (the last four were predicted from the others before they
+  happened, to within 2 seconds). A release only shows up at a build: HubSpot's waited 3m52s
+  and FICO's 2m52s. Other companies' releases fit too (Murphy Oil, stamped 4:32, appeared at
+  4:35:55). A release also takes a while to get into Business Wire's system: Ellington
+  Financial's, stamped 4:49:00, missed the 4:49:26 build and waited 4m56s, while Atmos
+  Energy's, stamped 4:31:00, made the 4:31:24 one on one of the two servers. Busting the CDN
+  can't get past any of this. Two servers answer in turn, and their copies can differ by a
+  second or by an item.
 - **So which source wins depends on where the release falls in that cycle.** For HubSpot the
   wire came first, 1m50s before the 8-K reached EDGAR's feed. For FICO, the 8-K reached the
   feed 1m40s before Business Wire showed the release.
