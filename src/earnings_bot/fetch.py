@@ -14,8 +14,11 @@ USER_AGENT = "Mozilla/5.0 (compatible; earnings-bot/0.1; +https://github.com/es6
 
 # Minimum seconds between requests to one host. SEC allows 10 a second across everything we send
 # it. The file CDN serves many companies, and Apple's newsroom is a few guessed URLs plus a feed
-# on one very large site. Every other host gets one request a second.
-_HOST_GAPS = {"sec.gov": 0.125, "q4cdn.com": 0.2, "apple.com": 0.25}
+# on one very large site. Business Wire's one earnings feed serves every company, and each
+# company's window polls it twice every 2 s, so two overlapping windows need two a second. (Once
+# windows share one poll of each feed, this can go back to one.) Every other host gets one
+# request a second.
+_HOST_GAPS = {"sec.gov": 0.125, "q4cdn.com": 0.2, "apple.com": 0.25, "businesswire.com": 0.5}
 _DEFAULT_GAP = 1.0
 
 

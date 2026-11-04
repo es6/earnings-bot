@@ -89,6 +89,16 @@ def test_blocked_sites_and_other_wires_are_left_out_of_the_target() -> None:
     assert [s.name for s in lilly.sources()] == ["edgar", "edgar_latest", "prnewswire"]
 
 
+@pytest.mark.parametrize(
+    ("ticker", "fiscal_year", "quarter"), [("HUBS", 2026, 3), ("FICO", 2026, 4)]
+)
+def test_tonights_entries_match_the_database(ticker: str, fiscal_year: int, quarter: int) -> None:
+    plan = load_plan(SCHEDULES / "2026-11-04.toml")
+    [scheduled] = [t for t in plan.target if t.ticker == ticker]
+    expected = scheduled.expected.replace(tzinfo=None)
+    assert to_target(ticker, expected, fiscal_year, quarter) == scheduled
+
+
 @pytest.mark.parametrize("ticker", ["AMD", "MCD"])
 def test_printed_entry_is_a_valid_schedule(ticker: str) -> None:
     target = to_target(ticker, datetime(2026, 11, 3, 16, 15), 2026, 3)
