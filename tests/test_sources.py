@@ -42,7 +42,7 @@ def test_looks_like_earnings(headline: str, expected: bool) -> None:
 def test_host_gaps() -> None:
     assert host_gap("data.sec.gov") == 0.125
     assert host_gap("s23.q4cdn.com") == 0.2
-    assert host_gap("feed.businesswire.com") == 0.5
+    assert host_gap("feed.businesswire.com") == 1.0
     assert host_gap("investor.uber.com") == 1.0
     assert host_gap("notsec.gov") == 1.0
 

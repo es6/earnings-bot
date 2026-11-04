@@ -60,6 +60,11 @@ class Sighting:
 class Source(ABC):
     name: str
     interval: float  # seconds between polls
+    # Seconds to wait for an answer before giving up and polling again. Every source normally
+    # answers in under a second, but SEC's live feed takes 7 to 12 s or more over about 2% of
+    # requests, and waiting on one blinds the source for as long as the wait. Asking again is
+    # quicker.
+    timeout = 3.0
     method = "GET"
     ok_statuses = frozenset({200})
     stop_when_found = False  # stop polling once the source lists anything

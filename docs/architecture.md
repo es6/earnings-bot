@@ -60,9 +60,10 @@ What this tells us:
   press release is out.
 - **Not always.** S&P Global's 8-K beats its own IR site every quarter. We have to run every
   source and take whichever fires first.
-- **The newswire is as fast as the IR site.** Business Wire's earnings feed lists Amazon's Q3
-  release at 4:01:00 PM ET, the same minute as the IR feed. For FICO, whose IR site we can't
-  reach, the newswire is the fastest source.
+- **The newswire is stamped as fast as the IR site.** Business Wire's earnings feed lists Amazon's
+  Q3 release at 4:01:00 PM ET, the same minute as the IR feed. But the free feed only shows a
+  release at its next rebuild, up to about 5 minutes later (measured on Nov 4, see
+  [Live runs](#live-runs)). For FICO, whose IR site we can't reach, the 8-K can come first.
 - **Release PDFs usually go up after the release page.** So guessing file URLs mostly helps us
   collect files sooner, and only sometimes detects a release first.
 - For comparison, Wall St Engine's full posts came 2m14s (AMZN), 4m25s (MA) and 6m35s (GOOGL)
@@ -86,10 +87,14 @@ What this tells us:
    - The submissions JSON (`data.sec.gov/submissions/CIK##########.json`). It lagged the feed
      by 0 to 56 seconds for six 8-Ks measured on 2026-11-03, and by 48 seconds for AMD's. It
      stays as a backup: the feed is a slower, generated page, and one request to it took over
-     20 seconds during that evening's rush.
+     20 seconds during that evening's rush. Between 4 and 4:45 PM on Nov 4, about 2% of
+     requests to it took more than 10 seconds, while the submissions JSON never failed. Slow
+     answers do come (after 7 and 12 seconds in a test that evening, against a median of 0.09
+     seconds), and asking again is quicker. So every poll gives up after 3 seconds and the next
+     one goes out at once.
 
-   New 8-Ks reached the feed 19 to 35 seconds after SEC accepted them (15 filings that
-   evening).
+   New 8-Ks reached the feed 19 to 35 seconds after SEC accepted them (15 filings on Nov 3;
+   HubSpot's and FICO's took 28 and 35 seconds on Nov 4).
 
    Both point to the same filing folder, so the alert gets one SEC link. SEC allows at most 10
    requests per second across everything we send it, and requires a User-Agent with a name and
@@ -106,8 +111,10 @@ What this tells us:
 4. **Newswire RSS.** Business Wire's Earnings News feed
    (`https://feed.businesswire.com/rss/home/?rss=G1QFDERJXkJeEF9YXA==`) carries about 220
    releases a day, and each `pubDate` is the release minute. We match items to tracked companies
-   by name. It's the main source for FICO. The feed allows caching for up to 5 minutes
-   (`s-maxage=300`), so how quickly it refreshes still needs measuring. PR Newswire's earnings
+   by name. It's a main source for FICO and HubSpot. Business Wire rebuilds the feed about every
+   4.5 minutes, and a release only appears at the next rebuild, so it reaches us anywhere from
+   a few seconds to about 5 minutes after its stamp. Its CDN can then keep a copy for up to 5 more
+   minutes (`s-maxage=300`), so we only poll a cache-busted copy. PR Newswire's earnings
    feed (`https://www.prnewswire.com/rss/financial-services-latest-news/earnings-list.rss`) is
    read the same way for companies that use it: a schedule entry lists their names under
    `prnewswire`. Its items also name the company in `dc:contributor`, which is matched too.
@@ -158,6 +165,10 @@ latest quarter only. The details per company, with the last four 8-K times, are 
   Depot, Target, McDonald's and S&P Global use PR Newswire. UnitedHealth, Salesforce, Walmart,
   JPMorgan, Adobe, CrowdStrike and HubSpot use Business Wire. Bank of America, Goldman Sachs, Broadcom,
   Microsoft and Tesla use none.
+- **Business Wire's free feed shows a release up to about 5 minutes after its stamp,** at the
+  feed's next rebuild. So the Business Wire row's lead over the 8-K shrinks by that much. On
+  Nov 4 it was still first for HubSpot (8-K 5 minutes after the release) but not for FICO (8-K
+  39 seconds after).
 - **A wire can trail the 8-K badly.** JPMorgan's 8-K was accepted at 6:30 AM, and Business
   Wire posted its release at 7:08 AM. Its release PDF was uploaded at 5:15 AM under a random
   name. The quarterly-earnings page that links it answers us, so watching that page might beat
@@ -197,7 +208,7 @@ the request reached the origin:
 | Feed | Caching | Does busting reach the origin? |
 |---|---|---|
 | Q4 JSON feeds | 10 s | Yes |
-| Business Wire RSS | 300 s at the CDN | Yes: the busted request took 389 ms against 101 ms. But the origin itself returned a build nine hours old (on a Saturday), so it may lag on its own |
+| Business Wire RSS | 300 s at the CDN | Yes: the busted request took 389 ms against 101 ms. But the origin only rebuilds the feed about every 4.5 minutes (Nov 4) |
 | PR Newswire RSS | 60 s (Cloudflare) | No: busted and `no-cache` requests were both cache hits, 47 s old |
 | Intel's RSS feed | 30 s plus stale-while-revalidate (CloudFront) | No, and one copy was 113 s old |
 | AMD's RSS feed | No cache headers, but CloudFront caches it anyway | No |
@@ -206,8 +217,9 @@ the request reached the origin:
 
 `no-cache` made no difference anywhere. What we can do about the rest:
 
-- **Business Wire:** the bot already polls a busted and a plain copy. Nov 2 and Nov 4 show
-  whether the origin lags.
+- **Business Wire:** on Nov 4 the plain copy trailed the busted one by 2m10s for both releases,
+  so only the busted copy is polled now. The origin's 4.5-minute rebuild timer is what's left,
+  and nothing we send changes it.
 - **PR Newswire:** its cache can't be skipped, but its feeds keep separate 60-second timers. At
   one moment, 18 of its feeds had last refreshed at times spread over a minute. Reading two or
   three feeds that carry the same release, such as the earnings feed, the company's industry
@@ -254,11 +266,56 @@ What it tells us:
   `robots.txt`. Services that post from it, such as @earnings_guy, likely use a paid real-time
   feed. We use AMD's own feed instead.
 
-**Nov 4:** the bot wasn't running for Uber. Its sources, read afterwards: the IR feed and
+**Nov 4, Uber:** the bot wasn't running. Its sources, read afterwards: the IR feed and
 Business Wire both stamped 6:55:00, all three guessed PDF URLs were right and went up at
-6:55:35–36 (`Last-Modified`), and SEC accepted the 8-K at 6:55:39. HubSpot (4:05 PM, Business
-Wire and EDGAR) was added on the day, and FICO runs at 4:15 PM, both with EDGAR's latest-filings
-feed. Their windows overlap, so both poll Business Wire's feed at once.
+6:55:35–36 (`Last-Modified`), and SEC accepted the 8-K at 6:55:39.
+
+**Nov 4, HubSpot and FICO** (the bot, `schedules/2026-11-04.jsonl`). Both IR sites block us, so
+the bot watched Business Wire (a plain and a busted copy) and EDGAR. Times are US Eastern.
+
+| | HubSpot | FICO |
+|---|---|---|
+| Release, by Business Wire's stamp | 4:05:00 | 4:15:00 |
+| SEC accepted the 8-K | 4:10:16 | 4:15:39 |
+| Business Wire, busted copy | **4:08:53.8**, in a feed built 4:08:52 | 4:17:53.9, in a feed built 4:17:52 |
+| EDGAR latest-filings feed | 4:10:44.2 | **4:16:14.1** |
+| EDGAR submissions JSON | 4:10:52.1 | 4:16:39.1 |
+| Business Wire, plain copy | 4:11:03.2 | 4:20:06.3 |
+| **Discord alert** | **4:08:54.3**, 0.4 s after detection | **4:16:14.5**, 0.4 s after detection |
+| Release page `last-modified`, read by hand afterwards | 4:15:18 | 4:15:51 |
+
+What it tells us:
+
+- **Business Wire's free feed is rebuilt on a timer, about every 4.5 minutes.** Builds seen that
+  evening: 4:08:52, 4:17:52, 4:31:24, 4:35:55, 4:40:26, 4:44:56, 4:49:26 and 4:53:56, all
+  multiples of about 270 s apart (the last four were predicted from the others before they
+  happened, to within 2 seconds). A release only shows up at a build: HubSpot's waited 3m52s
+  and FICO's 2m52s. Other companies' releases fit too (Murphy Oil, stamped 4:32, appeared at
+  4:35:55). A release also takes a while to get into Business Wire's system: Ellington
+  Financial's, stamped 4:49:00, missed the 4:49:26 build and waited 4m56s, while Atmos
+  Energy's, stamped 4:31:00, made the 4:31:24 one on one of the two servers. Busting the CDN
+  can't get past any of this. Two servers answer in turn, and their copies can differ by a
+  second or by an item.
+- **So which source wins depends on where the release falls in that cycle.** For HubSpot the
+  wire came first, 1m50s before the 8-K reached EDGAR's feed. For FICO, the 8-K reached the
+  feed 1m40s before Business Wire showed the release.
+- **The plain copy of Business Wire's feed trailed the busted copy by 2m10s both times,** so
+  the bot no longer polls it.
+- **EDGAR's latest-filings feed listed the 8-Ks 28 and 35 seconds after acceptance,** 8 and 25
+  seconds before the submissions JSON.
+- **About 2% of requests to EDGAR's latest-filings feed took over 10 seconds** (36 of 1,647
+  in HubSpot's window, 30 of 1,800 in FICO's), and each one left the feed blind for 10 to 11
+  seconds. aiohttp rounds a timeout of 5 seconds or more up to a whole second, which is why
+  every timeout ended at the same fraction of a second. Neither 8-K was delayed by it, but
+  polls now give up after 3 seconds. The submissions JSON never failed.
+- **FICO's release page may have beaten our alert.** Its `last-modified` was 4:15:51, 23 s
+  before the alert, though we can't read that site. A page's `last-modified` can also be when a
+  copy was rebuilt, so HubSpot's 4:15:18, ten minutes after the wire, says little.
+- **Detection to a visible alert took 0.4 s** both times. Neither alert had files, since SEC and
+  wire alerts only add links. Attaching the 8-K's press release exhibit would fix that.
+- **FMP's free calendar had no estimates for either company.** For Nov 3–5 it listed only eight
+  companies, Uber, AMD and Shopify among them, so most tracked companies would get no
+  estimates on the free plan.
 
 ### Scheduling
 
@@ -529,7 +586,8 @@ minute), so windows and source choices follow what actually happens. Changes wor
 This starts after the Nov 2–4 runs, whose results feed into it.
 
 0. **Read the Nov 2–4 logs.** Check Business Wire's real delay, AMD's feed, whether the window
-   sizes were right, and how Discord held up. Update `companies.toml` and this doc.
+   sizes were right, and how Discord held up. Update `companies.toml` and this doc. Business
+   Wire's delay and AMD's feed are done (see [Live runs](#live-runs)).
 1. **Fix what the 2026-10-31 checks found.** Guesses need to recognize a soft 404 by checking
    the content type, and the title for pages. Then UnitedHealth's guesses can go back in. PR
    Newswire should be read from two or three feeds per company.
@@ -543,8 +601,8 @@ This starts after the Nov 2–4 runs, whose results feed into it.
    `/upcoming`.
 5. **`/track` for any company,** researching it the way it was done by hand on 2026-10-31.
 6. **Scale:** share SEC's limit across overlapping windows, poll each newswire feed once for
-   every company whose window is open (then Business Wire can go back to one request a second),
-   and learn from each release.
+   every company whose window is open (with three windows open at once, Business Wire's one
+   request a second stretches each window's polls to 3 s), and learn from each release.
 
 ## Decision log
 
@@ -574,3 +632,5 @@ This starts after the Nov 2–4 runs, whose results feed into it.
 | 2026-11-03 | A guessed file that comes back as a web page counts as not there yet |
 | 2026-11-04 | The bot is meant to run permanently and build its own schedule. Schedule files are a stopgap, and from build step 2 they're picked up without a restart |
 | 2026-11-04 | Allow two requests a second to Business Wire, so two overlapping windows each still poll its feed every 2 s, until windows share one poll of each feed |
+| 2026-11-04 | Poll only the cache-busted copy of Business Wire's feed, since the plain one trailed it by 2 minutes. Business Wire goes back to one request a second |
+| 2026-11-04 | Every poll gives up after 3 seconds and the next goes out at once. Other requests, such as file downloads, keep the 10-second limit |

@@ -84,11 +84,10 @@ class Target(BaseModel):
             sources += [Q4PressReleases(self.q4_host), Q4FinancialReports(self.q4_host)]
         sources += [EdgarFilings(self.cik), EdgarLatest(self.cik)]
         if self.newswire:
-            # Polled both as is and with a cache-buster, to learn whether the feed's CDN delays it
-            sources += [
-                RssFeed("businesswire", BUSINESS_WIRE_EARNINGS, self.newswire),
-                RssFeed("businesswire_busted", BUSINESS_WIRE_EARNINGS, self.newswire, True),
-            ]
+            # Only the cache-busted copy: on Nov 4 the plain one trailed it by 2 minutes both times
+            sources.append(
+                RssFeed("businesswire_busted", BUSINESS_WIRE_EARNINGS, self.newswire, True)
+            )
         if self.prnewswire:
             sources.append(RssFeed("prnewswire", PR_NEWSWIRE_EARNINGS, self.prnewswire))
         sources += [
@@ -170,8 +169,10 @@ class PollError(Exception):
 
 async def poll(source: Source, fetcher: Fetcher) -> tuple[Response, list[Sighting]]:
     try:
-        response = await fetcher.request(source.method, source.url())
-    except (aiohttp.ClientError, TimeoutError) as error:
+        response = await fetcher.request(source.method, source.url(), give_up_after=source.timeout)
+    except TimeoutError as error:
+        raise PollError(f"no answer within {source.timeout:g}s") from error
+    except aiohttp.ClientError as error:
         raise PollError(f"{type(error).__name__} {error}".strip()) from error
     if response.status == 403:
         raise PollError("HTTP 403, so the site doesn't want us here. Stopped.", fatal=True)

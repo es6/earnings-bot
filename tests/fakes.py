@@ -10,7 +10,11 @@ class RoutedFetcher(Fetcher):
         self.requests: list[tuple[str, str, dict[str, str] | None]] = []
 
     async def request(
-        self, method: str, url: str, headers: dict[str, str] | None = None
+        self,
+        method: str,
+        url: str,
+        headers: dict[str, str] | None = None,
+        give_up_after: float | None = None,
     ) -> Response:
         self.requests.append((method, url, headers))
         for part, (status, body) in self.routes.items():

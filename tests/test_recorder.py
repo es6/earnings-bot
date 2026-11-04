@@ -1,5 +1,7 @@
+import asyncio
 import io
 import json
+import time
 from collections import deque
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -35,9 +37,15 @@ class FakeFetcher(Fetcher):
         self.responses = deque(responses)
 
     async def request(
-        self, method: str, url: str, headers: dict[str, str] | None = None
+        self,
+        method: str,
+        url: str,
+        headers: dict[str, str] | None = None,
+        give_up_after: float | None = None,
     ) -> Response:
         status, body = self.responses[0] if len(self.responses) == 1 else self.responses.popleft()
+        if status == 0:
+            raise TimeoutError
         return Response(url, status, {"age": "3"}, body.encode(), 0.02)
 
 
@@ -63,7 +71,6 @@ def test_plan_times_default_to_eastern(tmp_path: Path) -> None:
         "q4_files",
         "edgar",
         "edgar_latest",
-        "businesswire",
         "businesswire_busted",
         "guess:Uber-Q3-26-Earnings-Press-Release.pdf",
     ]
@@ -85,6 +92,33 @@ async def test_watch_logs_items_that_appear_after_the_first_poll() -> None:
     assert w.errors == 1
     assert w.problem is None
     assert w.polls > 3
+
+
+async def test_watch_keeps_polling_after_a_timeout() -> None:
+    log = io.StringIO()
+    journal = Journal(log)
+    w = Watch("HUBS", ListSource())
+    fetcher = FakeFetcher((200, "a"), (0, ""), (200, "a b"))
+
+    await watch(w, fetcher, journal, end=journal.now() + timedelta(seconds=0.2))
+
+    [error] = [e for e in events(log) if e["event"] == "error"]
+    assert error["message"] == "no answer within 3s"
+    assert [e["key"] for e in events(log) if e["event"] == "new"] == ["b"]
+    assert w.problem is None
+
+
+async def test_fetcher_gives_up_on_a_server_that_never_answers() -> None:
+    async def accept_and_say_nothing(reader: asyncio.StreamReader, _: asyncio.StreamWriter) -> None:
+        await reader.read()  # until the client gives up and closes the connection
+
+    server = await asyncio.start_server(accept_and_say_nothing, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    async with server, Fetcher("Test Person test@example.com") as fetcher:
+        started = time.monotonic()
+        with pytest.raises(TimeoutError):
+            await fetcher.request("GET", f"http://127.0.0.1:{port}/", give_up_after=0.2)
+        assert time.monotonic() - started < 1
 
 
 async def test_watch_stops_when_blocked() -> None:

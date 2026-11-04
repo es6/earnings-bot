@@ -14,11 +14,8 @@ USER_AGENT = "Mozilla/5.0 (compatible; earnings-bot/0.1; +https://github.com/es6
 
 # Minimum seconds between requests to one host. SEC allows 10 a second across everything we send
 # it. The file CDN serves many companies, and Apple's newsroom is a few guessed URLs plus a feed
-# on one very large site. Business Wire's one earnings feed serves every company, and each
-# company's window polls it twice every 2 s, so two overlapping windows need two a second. (Once
-# windows share one poll of each feed, this can go back to one.) Every other host gets one
-# request a second.
-_HOST_GAPS = {"sec.gov": 0.125, "q4cdn.com": 0.2, "apple.com": 0.25, "businesswire.com": 0.5}
+# on one very large site. Every other host gets one request a second.
+_HOST_GAPS = {"sec.gov": 0.125, "q4cdn.com": 0.2, "apple.com": 0.25}
 _DEFAULT_GAP = 1.0
 
 
@@ -59,16 +56,27 @@ class Fetcher:
             await self._session.close()
 
     async def request(
-        self, method: str, url: str, headers: dict[str, str] | None = None
+        self,
+        method: str,
+        url: str,
+        headers: dict[str, str] | None = None,
+        give_up_after: float | None = None,
     ) -> Response:
+        """Raises TimeoutError if the whole response hasn't arrived within `give_up_after`
+        seconds (the Fetcher's own timeout if None). Waiting for this host's turn doesn't count,
+        which is why this isn't left to the caller's `asyncio.timeout`."""
         if self._session is None:
             raise RuntimeError("Fetcher must be used with `async with`")
         host = urlsplit(url).hostname or ""
         await self._wait_turn(host)
         user_agent = self._sec_user_agent if _on_domain(host, "sec.gov") else USER_AGENT
         headers = {"User-Agent": user_agent, **(headers or {})}
+        # aiohttp rounds a timeout of 5 s or more up to a whole second; shorter ones are exact
+        limit = (
+            self._timeout if give_up_after is None else aiohttp.ClientTimeout(total=give_up_after)
+        )
         started = time.monotonic()
-        async with self._session.request(method, url, headers=headers) as r:
+        async with self._session.request(method, url, headers=headers, timeout=limit) as r:
             body = await r.read()
             headers = {name.lower(): value for name, value in r.headers.items()}
         return Response(url, r.status, headers, body, time.monotonic() - started)
