@@ -261,6 +261,19 @@ fastest = "newswire"
 evidence = "Q2 FY26: PR Newswire 6:00 AM, the IR site's release PDF 6:05:18 AM, 8-K 6:10:33 AM (6:05 to 6:10 AM over four quarters). The PDF's name is predictable (q2-2026-earnings-release.pdf), but ir.homedepot.com and corporate.homedepot.com block automated reads."
 checked = 2026-10-31
 
+[company.HUBS]
+name = "HubSpot"
+names = ["HubSpot"]
+cik = 1404655
+platform = "notified"
+reachable = false
+wire = "Business Wire"
+release_time = "16:05"
+eightk = ["16:15", "16:12", "16:10", "16:20"]
+fastest = "newswire"
+evidence = "Q2 2026: Business Wire 4:05 PM, 8-K 4:15:17 PM. 8-Ks at 4:10 to 4:20 PM over four quarters (a 2026-10-06 layoff 8-K also listed item 2.02 and is left out). ir.hubspot.com is Notified (/node/<id>/html pages) behind Cloudflare, which answers 403 to automated reads, robots.txt included, so file URLs can't be found or guessed. Headlines vary: \"HubSpot Reports Q2 2026 Results\", \"HubSpot Reports Strong Q1 2026 Results\"."
+checked = 2026-11-04
+
 [company.INTC]
 name = "Intel"
 names = ["Intel"]

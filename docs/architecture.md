@@ -139,7 +139,7 @@ DNS records:
 ### Companies off Q4
 
 Checked on 2026-10-31 for the 19 companies in the table that aren't on Q4, plus S&P Global.
-Each row gives the fastest source we can read and how far it led the 8-K. Where a range is
+HubSpot was added on 2026-11-04. Each row gives the fastest source we can read and how far it led the 8-K. Where a range is
 given, the source's time held for the quarters we could see. A single number comes from the
 latest quarter only. The details per company, with the last four 8-K times, are in
 `src/earnings_bot/companies.toml`.
@@ -149,14 +149,14 @@ latest quarter only. The details per company, with the last four 8-K times, are 
 | The company's RSS feed (Equisolve) | AMD 4:15 PM, Intel 4:01 PM, Coca-Cola 6:55 AM, Nike 4:15 PM | AMD 1 min, Intel 6–10 min, Coca-Cola 3–5 min, Nike only 15–28 s |
 | PR Newswire | Lilly 6:45 AM, Home Depot 6:00 AM, Target 6:30 AM, McDonald's 7:00 AM | Lilly 18 min, Home Depot 10 min, Target 81 min, McDonald's 1.5 min |
 | A company page at a predictable URL | UnitedHealth 5:55 AM, with Business Wire the same minute | 19 min |
-| Business Wire | FICO 4:15 PM, Adobe 4:05 PM, CrowdStrike 4:05 PM | FICO median 1m13s, Adobe 1 min, CrowdStrike 2 min |
+| Business Wire | FICO 4:15 PM, Adobe 4:05 PM, CrowdStrike 4:05 PM, HubSpot 4:05 PM | FICO median 1m13s, Adobe 1 min, CrowdStrike 2 min, HubSpot 10 min |
 | SEC 8-K | S&P Global, Walmart, JPMorgan, Bank of America, Broadcom, Tesla | S&P Global's 8-K beats PR Newswire by 6–11 min. Walmart's beats its own newsroom by about a minute and Business Wire by two. JPMorgan's beats Business Wire by 38 min |
 | Not known yet | Microsoft, Goldman Sachs | |
 
 - **Which wire a company uses varies, and it isn't always Business Wire.** AMD and NVIDIA use
   GlobeNewswire, whose RSS feed returns 403 to us, so their own feeds are the way in. Lilly, Home
   Depot, Target, McDonald's and S&P Global use PR Newswire. UnitedHealth, Salesforce, Walmart,
-  JPMorgan, Adobe and CrowdStrike use Business Wire. Bank of America, Goldman Sachs, Broadcom,
+  JPMorgan, Adobe, CrowdStrike and HubSpot use Business Wire. Bank of America, Goldman Sachs, Broadcom,
   Microsoft and Tesla use none.
 - **A wire can trail the 8-K badly.** JPMorgan's 8-K was accepted at 6:30 AM, and Business
   Wire posted its release at 7:08 AM. Its release PDF was uploaded at 5:15 AM under a random
@@ -179,8 +179,8 @@ latest quarter only. The details per company, with the last four 8-K times, are 
   403). That holds even though the deck's name is predictable (`TSLA-Q3-2026-Update.pdf`). So
   the 8-K is the first source we can read. It came at 4:35 and 4:41 PM in the last two quarters,
   and 4:06 to 4:14 PM before that.
-- **Blocked sites stay blocked.** For FICO, CrowdStrike, Lilly, Home Depot, Broadcom, McDonald's
-  and Tesla, a person can check by hand how early the site posted, using
+- **Blocked sites stay blocked.** For FICO, CrowdStrike, HubSpot, Lilly, Home Depot, Broadcom,
+  McDonald's and Tesla, a person can check by hand how early the site posted, using
   [manual checks](manual-checks.md). The bot itself never reads those sites.
 
 ### How fresh feeds are
@@ -254,7 +254,11 @@ What it tells us:
   `robots.txt`. Services that post from it, such as @earnings_guy, likely use a paid real-time
   feed. We use AMD's own feed instead.
 
-**Nov 4:** Uber and FICO, with EDGAR's latest-filings feed added as a source.
+**Nov 4:** the bot wasn't running for Uber. Its sources, read afterwards: the IR feed and
+Business Wire both stamped 6:55:00, all three guessed PDF URLs were right and went up at
+6:55:35–36 (`Last-Modified`), and SEC accepted the 8-K at 6:55:39. HubSpot (4:05 PM, Business
+Wire and EDGAR) was added on the day, and FICO runs at 4:15 PM, both with EDGAR's latest-filings
+feed. Their windows overlap, so both poll Business Wire's feed at once.
 
 ### Scheduling
 
@@ -455,9 +459,27 @@ losing accuracy (effort `low`, or a smaller model).
 ## Running unattended
 
 The plan for the bot to run day after day without anyone starting it, written on 2026-10-31.
-It runs on the owner's Windows PC, not on a paid server. CI still builds the Docker image for
-anyone who'd rather host it. Tracked companies, dates and posts go in a SQLite file (see
-[Storage](#storage)), and the latency log stays a JSONL file.
+The goal is a bot that's left running permanently and builds its own schedule, so nobody writes
+a schedule file or restarts it to add a company. It runs on the owner's Windows PC, not on a
+paid server. CI still builds the Docker image for anyone who'd rather host it. Tracked
+companies, dates and posts go in a SQLite file (see [Storage](#storage)), and the latency log
+stays a JSONL file.
+
+### From schedule files to an automatic schedule
+
+Today someone writes a schedule file for each day and starts the bot with it. The bot reads the
+file once, so adding a company on the day means restarting it, as HubSpot did on 2026-11-04.
+That's a stopgap. The steps away from it, in the [build order](#build-order):
+
+| Stage | Who decides what to watch | Restart to add a company? |
+|---|---|---|
+| Now | A schedule file per day, named when the bot starts | Yes |
+| Step 2 | Every file in `schedules/`, read again when one is added or changed | No |
+| Step 3 | The daily planner, from companies added with `/track` and a date | No |
+| Step 4 | The daily planner, with dates it finds by itself | No, and no dates to type in |
+
+From step 4 the bot only needs `/track` once per company. Schedule files stay as a way to add a
+one-off window by hand.
 
 ### On the owner's PC
 
@@ -512,14 +534,17 @@ This starts after the Nov 2–4 runs, whose results feed into it.
    the content type, and the title for pages. Then UnitedHealth's guesses can go back in. PR
    Newswire should be read from two or three feeds per company.
 2. **Run unattended:** `scripts/run-bot.ps1`, the Task Scheduler task, the status channel and
-   self-updates. From here the bot is always on, still fed by schedule files.
+   self-updates. From here the bot is always on. It reads every file in `schedules/` and picks
+   up new or changed ones without a restart.
 3. **Storage, the daily planner, and `/track` for companies already in `companies.toml`,** with
    the date and time given in the command. Add `/tracked` and `/untrack` too. Schedule files
    become optional.
 4. **Find dates automatically:** the Q4 events feed, date announcements and estimates, plus
    `/upcoming`.
 5. **`/track` for any company,** researching it the way it was done by hand on 2026-10-31.
-6. **Scale:** share SEC's limit across overlapping windows, and learn from each release.
+6. **Scale:** share SEC's limit across overlapping windows, poll each newswire feed once for
+   every company whose window is open (then Business Wire can go back to one request a second),
+   and learn from each release.
 
 ## Decision log
 
@@ -547,3 +572,5 @@ This starts after the Nov 2–4 runs, whose results feed into it.
 | 2026-10-31 | Leave guesses out of schedules for sites that answer missing pages with 200, until the bot checks what it got back |
 | 2026-11-03 | Also poll EDGAR's latest-filings feed, which beat the submissions JSON by up to 56 s |
 | 2026-11-03 | A guessed file that comes back as a web page counts as not there yet |
+| 2026-11-04 | The bot is meant to run permanently and build its own schedule. Schedule files are a stopgap, and from build step 2 they're picked up without a restart |
+| 2026-11-04 | Allow two requests a second to Business Wire, so two overlapping windows each still poll its feed every 2 s, until windows share one poll of each feed |

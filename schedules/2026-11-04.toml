@@ -19,6 +19,13 @@ guess = [
 ]
 
 [[target]]
+ticker = "HUBS"
+expected = 2026-11-04T16:05:00
+cik = 1404655
+# HubSpot's IR site blocks automated access too. Added on the day from companies.toml.
+newswire = ["HubSpot"]
+
+[[target]]
 ticker = "FICO"
 expected = 2026-11-04T16:15:00
 cik = 814547
