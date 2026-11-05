@@ -25,8 +25,8 @@ PR_NEWSWIRE_EARNINGS = (
 
 # Matches "Uber Announces Results for Third Quarter 2026" and "Palantir Reports Q2 2026 U.S. Comm
 # Revenue Growth of 149%", but not the earlier "Uber Announces Date of Third Quarter 2026 Results
-# Conference Call"
-_EARNINGS = re.compile(r"results|earnings|quarter|\bQ[1-4]\b|\b[1-4]Q\d{2}\b", re.IGNORECASE)
+# Conference Call" or "Cloudflare Expands EMEA Operations with New Headquarters"
+_EARNINGS = re.compile(r"results|earnings|\bquarter|\bQ[1-4]\b|\b[1-4]Q\d{2}\b", re.IGNORECASE)
 _NOT_EARNINGS = re.compile(
     r"webcast|conference call|to host|to announce|schedule|\bdate\b", re.IGNORECASE
 )
@@ -137,7 +137,10 @@ class Q4FinancialReports(Source):
                 key=document["DocumentPath"],
                 title=f"{report['ReportTitle']}: {document['DocumentTitle']}",
                 url=document["DocumentPath"],
-                earnings=looks_like_earnings(report["ReportTitle"]),
+                # A quarter's webcast link ("Online", not "File") can be listed before its
+                # release, so only a file counts as the release
+                earnings=looks_like_earnings(report["ReportTitle"])
+                and document.get("DocumentType") != "Online",
             )
             for report in json.loads(response.body)["GetFinancialReportListResult"]
             for document in report["Documents"]

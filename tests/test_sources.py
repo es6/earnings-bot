@@ -33,6 +33,9 @@ def response(
         ("Uber Announces Date of Third Quarter 2026 Results Conference Call", False),
         ("Amazon.com to Webcast Third Quarter 2026 Financial Results Conference Call", False),
         ("Key Food Stores Co-Op Joins Uber Eats", False),
+        ("Cloudflare Expands EMEA Operations with New Headquarters in Lisbon", False),
+        ("Atlassian Announces First Quarter Fiscal Year 2027 Results", True),
+        ("Cloudflare Announces Third Quarter 2026 Financial Results", True),
     ],
 )
 def test_looks_like_earnings(headline: str, expected: bool) -> None:
@@ -96,6 +99,37 @@ def test_q4_financial_reports() -> None:
     assert document.key == pdf
     assert document.title == "Second Quarter 2026: Press Release"
     assert document.earnings
+
+
+def test_q4_financial_reports_webcast_link_isnt_the_release() -> None:
+    source = Q4FinancialReports("investors.atlassian.com")
+    letter = "https://s206.q4cdn.com/270053503/files/doc_financials/2027/q1/TEAM-Q1-2027-Shareholder-Letter.pdf"
+    webcast = "https://events.q4inc.com/attendee/400181594"
+    body = json.dumps(
+        {
+            "GetFinancialReportListResult": [
+                {
+                    "ReportTitle": "First Quarter 2027",
+                    "Documents": [
+                        {
+                            "DocumentTitle": "Webcast",
+                            "DocumentPath": webcast,
+                            "DocumentType": "Online",
+                        },
+                        {
+                            "DocumentTitle": "Shareholder letter",
+                            "DocumentPath": letter,
+                            "DocumentType": "File",
+                        },
+                    ],
+                }
+            ]
+        }
+    )
+
+    found = {item.url: item.earnings for item in source.parse(response(body))}
+
+    assert found == {webcast: False, letter: True}
 
 
 EDGAR_LATEST = """<?xml version="1.0" encoding="ISO-8859-1" ?>
