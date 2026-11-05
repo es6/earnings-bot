@@ -77,6 +77,12 @@ def test_templates_rebuild_the_hand_written_schedules(
          "https://s206.q4cdn.com/270053503/files/doc_financials/2026/q3/TEAM-Q3-2026-IR-Data-Sheet.pdf"),
         ("NET", date(2026, 8, 6), 2026, 2,
          "https://www.cloudflare.com/press/press-releases/2026/cloudflare-announces-second-quarter-2026-financial-results/"),
+        ("ABNB", date(2026, 11, 5), 2026, 3,
+         "https://s26.q4cdn.com/656283129/files/content_files/Airbnb-Q3-2026-Shareholder-Letter.pdf"),
+        ("TEAM", date(2026, 11, 5), 2027, 1,
+         "https://s206.q4cdn.com/270053503/files/content_files/TEAM-Q1-2027-Shareholder-Letter.pdf"),
+        ("TEAM", date(2026, 11, 5), 2027, 1,
+         "https://s206.q4cdn.com/270053503/files/doc_financials/2027/q1/TEAM-Q1-2027-Earnings-Release.pdf"),
     ],
 )  # fmt: skip
 def test_templates_match_urls_seen_on_company_sites(
@@ -118,7 +124,10 @@ def test_schedule_entries_match_the_database(
     plan = load_plan(SCHEDULES / f"{day}.toml")
     [scheduled] = [t for t in plan.target if t.ticker == ticker]
     expected = scheduled.expected.replace(tzinfo=None)
-    assert to_target(ticker, expected, fiscal_year, quarter) == scheduled
+    database = to_target(ticker, expected, fiscal_year, quarter)
+    # A run can teach us new guesses, which past schedules don't have
+    assert set(scheduled.guess) <= set(database.guess)
+    assert database.model_copy(update={"guess": scheduled.guess}) == scheduled
 
 
 @pytest.mark.parametrize("ticker", ["AMD", "MCD"])

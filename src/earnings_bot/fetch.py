@@ -18,6 +18,10 @@ USER_AGENT = "Mozilla/5.0 (compatible; earnings-bot/0.1; +https://github.com/es6
 _HOST_GAPS = {"sec.gov": 0.125, "q4cdn.com": 0.2, "apple.com": 0.25}
 _DEFAULT_GAP = 1.0
 
+# aiohttp stops at 8190 bytes for any one header line. cloudflare.com's 404 pages sometimes
+# carry a 13 KB Content-Security-Policy-Report-Only header, which made every guess there fail.
+MAX_HEADER_BYTES = 64 * 1024
+
 
 def _on_domain(host: str, domain: str) -> bool:
     return host == domain or host.endswith("." + domain)
@@ -48,7 +52,14 @@ class Fetcher:
         self._next_slot: dict[str, float] = {}
 
     async def __aenter__(self) -> Self:
-        self._session = aiohttp.ClientSession(timeout=self._timeout)
+        self._session = aiohttp.ClientSession(
+            timeout=self._timeout,
+            max_line_size=MAX_HEADER_BYTES,
+            max_field_size=MAX_HEADER_BYTES,
+            # Each request stands alone, like curl's. cloudflare.com answered 500 to every request
+            # that sent back the analytics cookies its first answer set.
+            cookie_jar=aiohttp.DummyCookieJar(),
+        )
         return self
 
     async def __aexit__(self, *exc_info: object) -> None:

@@ -48,12 +48,13 @@ release_time = "16:03"
 eightk = ["16:02", "16:00", "16:01", "16:00"]
 fastest = "sec-8k"
 guess = [
+    "https://s26.q4cdn.com/656283129/files/content_files/Airbnb-Q{fq}-{fy}-Shareholder-Letter.pdf",
     "https://s26.q4cdn.com/656283129/files/doc_financials/{fy}/q{fq}/Airbnb-Q{fq}-{fy}-Shareholder-Letter.pdf",
     "https://s26.q4cdn.com/656283129/files/doc_financials/{fy}/q{fq}/Airbnb_Q{fq}-{fy}-Shareholder-Letter.pdf",
     "https://s26.q4cdn.com/656283129/files/doc_financials/{fy}/q{fq}/Airbnb_Q{fq}-{fy}-Shareholder-Letter_Final.pdf",
 ]
-evidence = "Over four quarters the 8-K (4:00:27 to 4:02:53 PM) came 7 s to 2m33s before PR Newswire's 4:03 PM release, and its exhibit 99.1 is the whole shareholder letter. The wire and IR releases only point to the letter. The letter PDF went up 14 to 41 s after 4:03 (Last-Modified), named with a hyphen in Q2 2026, an underscore before that, and _Final from Q3 2024 to Q1 2025. The -FINAL and -FINAL-1 names the feeds list now are corrections uploaded days later. investors.airbnb.com is behind Cloudflare, which challenged 1 of 90 polls at one a second with a 403."
-todo = "Measure live on November 5, 2026: when the IR feeds list the release, against the 8-K and PR Newswire."
+evidence = "Over four quarters the 8-K (4:00:27 to 4:02:53 PM) came 7 s to 2m33s before PR Newswire's 4:03 PM release, and its exhibit 99.1 is the whole shareholder letter. The wire and IR releases only point to the letter. The letter PDF went up 14 to 41 s after 4:03 (Last-Modified), named with a hyphen in Q2 2026, an underscore before that, and _Final from Q3 2024 to Q1 2025. The -FINAL and -FINAL-1 names the feeds list now are corrections uploaded days later. investors.airbnb.com is behind Cloudflare, which challenged 1 of 90 polls at one a second with a 403. Q3 2026 (Nov 5): 8-K accepted 4:02:09 PM, and the letter went up at 4:03:20 in files/content_files/ instead of the quarter's folder. The bot started too late to time the sources, but the IR site answered its first polls with 429 and a 403 at 4:13."
+todo = "Time the 8-K against PR Newswire live; Nov 5 was missed."
 checked = 2026-11-05
 
 [company.ADBE]
@@ -421,8 +422,8 @@ fastest = "ir-feed"
 guess = [
     "https://www.cloudflare.com/press/press-releases/{yyyy}/cloudflare-announces-{nth}-quarter-{fy}-financial-results/",
 ]
-evidence = "IR feed stamped 4:15:00 PM for every earnings release since Q3 2023, all on Business Wire. 8-Ks came 47 s to 6m23s later over four quarters (a 5:15 PM 8-K/A on 2026-05-07 is left out). cloudflare.net is a Q4 site behind Cloudflare's own CDN, which leaves our cache-buster out of its cache key, so its feeds can be up to 10 s old. Its release files (doc_financials/2026/q2/Q2-26-Exhibit-99-1.pdf, sometimes with _FINAL or in a v2 folder) aren't guessed: they'd share the host's one request a second with the press feed, its 404s are cached for 60 s, and the reports feed lists them anyway. The release is also posted on cloudflare.com/press, time unknown, and Q4's page there says fourth-quarter-and-fiscal-year instead."
-todo = "Measure live on November 5, 2026: how long after 4:15:00 the IR feed lists the release, and whether cloudflare.com/press comes first."
+evidence = "IR feed stamped 4:15:00 PM for every earnings release since Q3 2023, all on Business Wire. 8-Ks came 47 s to 6m23s later over four quarters (a 5:15 PM 8-K/A on 2026-05-07 is left out). cloudflare.net is a Q4 site behind Cloudflare's own CDN, which leaves our cache-buster out of its cache key, so its feeds can be up to 10 s old. Its release files (doc_financials/2026/q2/Q2-26-Exhibit-99-1.pdf, sometimes with _FINAL or in a v2 folder) aren't guessed: they'd share the host's one request a second with the press feed, its 404s are cached for 60 s, and the reports feed lists them anyway. The release is also posted on cloudflare.com/press, time unknown, and Q4's page there says fourth-quarter-and-fiscal-year instead. Live on Nov 5 (Q3 2026): the IR feed listed the release at 4:15:23.6 PM, 2.9 s after @earnings_guy posted it. The reports feed listed the files 9 s later, though the supplement wasn't uploaded until 4:38:11. The 8-K (accepted 4:18:21) and Business Wire followed at about 4:18:52. The cloudflare.com/press guess failed on every poll. Our HTTP client sent back the cookies cloudflare.com set, which it answers with 500, and some of its 404s have a header longer than the client read then. Both are fixed."
+todo = "Find out whether cloudflare.com/press comes first; the Nov 5 guess couldn't tell."
 checked = 2026-11-05
 
 [company.NFLX]
@@ -584,13 +585,13 @@ release_time = "16:05"
 eightk = ["16:10", "16:13", "16:09", "16:09"]
 fastest = "ir-feed"
 guess = [
+    "https://s206.q4cdn.com/270053503/files/content_files/TEAM-Q{fq}-{fy}-Shareholder-Letter.pdf",
     "https://s206.q4cdn.com/270053503/files/doc_financials/{fy}/q{fq}/TEAM-Q{fq}-{fy}-Shareholder-Letter.pdf",
     "https://s206.q4cdn.com/270053503/files/doc_financials/{fy}/q{fq}/TEAM-Q{fq}-{fy}-Earnings-Release.pdf",
     "https://s206.q4cdn.com/270053503/files/doc_financials/{fy}/q{fq}/TEAM-Q{fq}-{fy}-IR-Data-Sheet.pdf",
     "https://s206.q4cdn.com/270053503/files/doc_financials/{fy}/q{fq}/TEAM-Q{fq}-{fy}-Datasheet.pdf",
 ]
-evidence = "Business Wire at 4:05 PM in 16 of the last 17 quarters (4:02 PM in Feb 2026), and the IR feed stamps the same minute. 8-Ks came 4m33s to 8m26s later over four quarters, with the release as exhibit 99.1 and the shareholder letter as 99.2. The letter, release PDF and data sheet go up together, 20 s to 8.5 min after the release (Last-Modified). Folders use fiscal labels (Q1 FY26 is 2026/q1). Names drifted twice on release day (q3/v2/...-Earnings-Release-1.pdf, q2/up/...-Shareholder-Letter-1.pdf), and the data sheet was -Datasheet in Q4 FY26. Letters are 9 to 14 MB, mostly over the bot's 10 MiB attachment limit. The CIK is Atlassian Corp Plc's, kept when it moved to the US in 2022. The site's RSS feed is cached 120 s and ignores cache-busting, so it's left out."
-todo = "Measure live on November 5, 2026: when the IR feed lists the release against Business Wire and the 8-K. Its lead comes from stamps, not a live run."
+evidence = "Business Wire at 4:05 PM in 16 of the last 17 quarters (4:02 PM in Feb 2026), and the IR feed stamps the same minute. 8-Ks came 4m33s to 8m26s later over four quarters, with the release as exhibit 99.1 and the shareholder letter as 99.2. The letter, release PDF and data sheet go up together, 20 s to 8.5 min after the release (Last-Modified). Folders use fiscal labels (Q1 FY26 is 2026/q1). Names drifted twice on release day (q3/v2/...-Earnings-Release-1.pdf, q2/up/...-Shareholder-Letter-1.pdf), and the data sheet was -Datasheet in Q4 FY26. Letters are 9 to 14 MB, mostly over the bot's 10 MiB attachment limit. The CIK is Atlassian Corp Plc's, kept when it moved to the US in 2022. The site's RSS feed is cached 120 s and ignores cache-busting, so it's left out. Live on Nov 5 (Q1 FY27): the IR feed listed the release at 4:05:44 PM, 4m09s before Business Wire and 4m38s before EDGAR's feed (8-K accepted 4:09:54). The release PDF and the 8.9 MB letter went up at 4:18:56, the letter in files/content_files/ instead of the quarter's folder."
 checked = 2026-11-05
 
 [company.TGT]

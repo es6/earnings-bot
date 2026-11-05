@@ -207,7 +207,7 @@ the request reached the origin:
 
 | Feed | Caching | Does busting reach the origin? |
 |---|---|---|
-| Q4 JSON feeds | 10 s | Yes, except on cloudflare.net, Cloudflare's own IR site: its CDN leaves our parameter out of the cache key, so a busted request is a `HIT` (Nov 5) |
+| Q4 JSON feeds | 10 s | Yes on Oct 31. No by Nov 5: busted requests to five Q4 sites (Airbnb, Atlassian, Cloudflare, Amazon, Uber) were all `HIT`s, so the CDN leaves our parameter out of the cache key and a feed can be up to 10 s old |
 | Business Wire RSS | 300 s at the CDN | Yes: the busted request took 389 ms against 101 ms. But the origin only rebuilds the feed about every 4.5 minutes (Nov 4) |
 | PR Newswire RSS | 60 s (Cloudflare) | No: busted and `no-cache` requests were both cache hits, 47 s old |
 | Intel's RSS feed | 30 s plus stale-while-revalidate (CloudFront) | No, and one copy was 113 s old |
@@ -317,20 +317,59 @@ What it tells us:
   companies, Uber, AMD and Shopify among them, so most tracked companies would get no
   estimates on the free plan.
 
-**Nov 5, Airbnb, Atlassian and Cloudflare** (planned, `schedules/2026-11-05.toml`). All three
-IR sites are on Q4 and answer us, so it's the first live race between a Q4 feed and the wire:
+**Nov 5, Airbnb, Atlassian and Cloudflare** (the bot, `schedules/2026-11-05.jsonl`). All three
+IR sites are on Q4. The bot started at 4:04:46, 15 minutes late, after Airbnb's release. Times
+are US Eastern, and the X posts' times come from their post IDs.
 
 | | Airbnb | Atlassian | Cloudflare |
 |---|---|---|---|
-| Wire, and its usual time | PR Newswire, 4:03 PM | Business Wire, 4:05 PM | Business Wire, 4:15 PM |
-| 8-K over the last four quarters | 4:00:27 to 4:02:53, before the wire | 4:09:33 to 4:13:26 | 4:15:47 to 4:21:23 |
-| What's new to measure | The first PR Newswire release we've watched; whether anything beats the 8-K | When the IR feed lists a release stamped with the wire's minute | An IR feed we can't cache-bust, and cloudflare.com/press |
+| Release time stamped by the IR feed | | 4:05:00 | 4:15:00 |
+| SEC accepted the 8-K | 4:02:09 | 4:09:54 | 4:18:21 |
+| IR press release feed | 429, then 403 at 4:14 | **4:05:44.0** | **4:15:23.6** |
+| IR reports feed lists the files | | 4:18:59.0 | 4:15:32.7 |
+| Business Wire, busted copy | | 4:09:53.3 | 4:18:53.9 |
+| EDGAR latest-filings feed | Listed before the start | 4:10:21.6 | 4:18:51.1 |
+| EDGAR submissions JSON | Listed before the start | 4:10:40.5 | 4:19:15.4 |
+| Shareholder letter uploaded (`Last-Modified`) | 4:03:20 | 4:18:56 | |
+| **Discord alert** | **None** | **4:05:44.3** | 4:15:23.9 |
+| @earnings_guy | 4:03:07.7 | 4:06:30.5 | **4:15:20.6** |
+| Wall St Engine | 4:03:28.5 | 4:07:15.5 | 4:15:59.4 |
 
-- **Airbnb's IR site sits behind Cloudflare,** which answered 1 of 90 test polls with a
-  challenge (403). The bot stops a source at its first 403, so its IR feeds may not last the
-  window. The 8-K, PR Newswire and the letter guesses don't depend on it.
-- **Atlassian's shareholder letter is 9 to 14 MB,** mostly over the 10 MiB attachment limit,
-  so it'll be a link. The release PDF and data sheet are small.
+What it tells us:
+
+- **Atlassian was ours,** 46 s before @earnings_guy and 91 s before Wall St Engine. Its IR feed
+  listed the release 44 s after the 4:05:00 stamp, 4 minutes before the wire and the 8-K.
+- **@earnings_guy beat us on Cloudflare by 3.2 s.** The copy of the feed that had the release
+  was a cache `HIT`, and so was Atlassian's. That evening, busted requests to five Q4 sites
+  were all `HIT`s, so a Q4 feed can be up to 10 s old wherever we read it (see "How fresh feeds
+  are"). Getting past the cache is out of bounds, so any gain has to come from another source.
+- **Airbnb got no alert.** By 4:04:46 its 8-K and PR Newswire release were already listed, and
+  the bot treats anything listed when it starts as old news. EDGAR's latest-filings feed listed
+  the other two 8-Ks 27 and 30 s after acceptance, so Airbnb's would likely have reached us
+  around 4:02:38, ahead of both X accounts. That's an estimate, not a measurement.
+- **Two letters went to a new folder.** Airbnb and Atlassian both uploaded this quarter's letter
+  to `files/content_files/` instead of `files/doc_financials/{fy}/q{fq}/`. Airbnb's name matched
+  our first guess exactly. Both folders are guessed now. Atlassian's release PDF stayed in the
+  quarter folder, and its guess found it 3 s before the reports feed did. Atlassian's letter was
+  8.9 MB, so it attached.
+- **The cloudflare.com/press guess failed on 2,384 of 2,385 polls,** for two reasons:
+  - Our HTTP client sent back the analytics cookies the first answer set, and cloudflare.com
+    answers 500 to those requests.
+  - Some of its 404s carry a 13 KB `Content-Security-Policy-Report-Only` header, over aiohttp's
+    8,190-byte limit.
+
+  The fetcher now keeps no cookies and reads headers up to 64 KB. We still don't know whether
+  cloudflare.com/press comes before the IR feed.
+- **Cloudflare's reports feed listed its supplement 23 minutes before the file was uploaded**
+  (4:15:32 against 4:38:11), so the attachment got a 404. The bot now retries a 404 every 30 s
+  until the window closes.
+- **Airbnb's IR site** answered the first poll of each feed with 429, then a 403 at 4:13 and
+  4:14. The bot stopped both feeds, as planned.
+- **EDGAR's latest-filings feed took over 3 s on 11 to 15% of polls** during the rush. Polls
+  have given up after 3 s since Nov 4. It still listed both 8-Ks 19 and 24 s before the
+  submissions JSON.
+- **Cloudflare re-posted its release three times** under new IDs (4:19:50, 4:21:31 and
+  4:23:24). The bot logged each one as new, but the post went out once.
 
 ### Scheduling
 
@@ -341,7 +380,8 @@ IR sites are on Q4 and answer us, so it's the first live race between a Q4 feed 
   detected or the window times out. Each source is polled about once a second, and once every
   few seconds for newswire RSS, which serves every company from one URL. IR feeds get a
   cache-busting query parameter, because their CDN can otherwise serve a copy up to 10 seconds
-  old. We cap this at one request per second per company.
+  old. Q4's CDN stopped honoring it by Nov 5, so on Q4 sites the copy can still be that old. We
+  cap this at one request per second per company.
 - **Cold polling.** Outside hot windows, every source is polled every few minutes to catch
   unscheduled or early releases.
 - **Rate limits are per host and shared across companies.** On a busy evening, a dozen companies
@@ -649,3 +689,5 @@ This starts after the Nov 2–4 runs, whose results feed into it.
 | 2026-11-04 | Allow two requests a second to Business Wire, so two overlapping windows each still poll its feed every 2 s, until windows share one poll of each feed |
 | 2026-11-04 | Poll only the cache-busted copy of Business Wire's feed, since the plain one trailed it by 2 minutes. Business Wire goes back to one request a second |
 | 2026-11-04 | Every poll gives up after 3 seconds and the next goes out at once. Other requests, such as file downloads, keep the 10-second limit |
+| 2026-11-05 | The fetcher keeps no cookies, so each request stands alone. Sending back cloudflare.com's cookies got a 500 every time |
+| 2026-11-05 | A file a feed lists but answers 404 gets tried again every 30 s until the window closes |
