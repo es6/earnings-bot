@@ -1,0 +1,56 @@
+# Thursday, November 5, 2026. Times are US Eastern.
+#
+#   uv run earnings-bot schedules/2026-11-05.toml
+#
+# Start it before 3:50 PM and keep the computer awake until the Cloudflare window closes at
+# 4:45 PM. All three said only "after market close", so each time comes from past quarters.
+# Generated from companies.toml with `uv run python -m earnings_bot.known`.
+
+[[target]]
+ticker = "ABNB"
+# Its 8-K came at 4:00:27 to 4:02:53 PM over the last four quarters, before PR Newswire's
+# 4:03 PM release, so the window opens at 3:50. The first live run on PR Newswire.
+expected = 2026-11-05T16:00:00
+cik = 1559720
+q4_host = "investors.airbnb.com"
+prnewswire = [
+    "Airbnb",
+]
+# The shareholder letter's name on release day over the last eight quarters
+guess = [
+    "https://s26.q4cdn.com/656283129/files/doc_financials/2026/q3/Airbnb-Q3-2026-Shareholder-Letter.pdf",
+    "https://s26.q4cdn.com/656283129/files/doc_financials/2026/q3/Airbnb_Q3-2026-Shareholder-Letter.pdf",
+    "https://s26.q4cdn.com/656283129/files/doc_financials/2026/q3/Airbnb_Q3-2026-Shareholder-Letter_Final.pdf",
+]
+
+[[target]]
+ticker = "TEAM"
+# Q1 fiscal 2027. Business Wire at 4:05 PM in 16 of the last 17 quarters.
+expected = 2026-11-05T16:05:00
+cik = 1650372
+q4_host = "investors.atlassian.com"
+newswire = [
+    "Atlassian",
+]
+# The data sheet was -IR-Data-Sheet until Q4 FY26, which used -Datasheet, so both are probed
+guess = [
+    "https://s206.q4cdn.com/270053503/files/doc_financials/2027/q1/TEAM-Q1-2027-Shareholder-Letter.pdf",
+    "https://s206.q4cdn.com/270053503/files/doc_financials/2027/q1/TEAM-Q1-2027-Earnings-Release.pdf",
+    "https://s206.q4cdn.com/270053503/files/doc_financials/2027/q1/TEAM-Q1-2027-IR-Data-Sheet.pdf",
+    "https://s206.q4cdn.com/270053503/files/doc_financials/2027/q1/TEAM-Q1-2027-Datasheet.pdf",
+]
+
+[[target]]
+ticker = "NET"
+# The IR feed has stamped every earnings release 4:15:00 PM since Q3 2023. Its CDN ignores our
+# cache-buster, so the feed can be up to 10 s old.
+expected = 2026-11-05T16:15:00
+cik = 1477333
+q4_host = "cloudflare.net"
+newswire = [
+    "Cloudflare",
+]
+# Cloudflare's newsroom copy of the release, on its own host
+guess = [
+    "https://www.cloudflare.com/press/press-releases/2026/cloudflare-announces-third-quarter-2026-financial-results/",
+]

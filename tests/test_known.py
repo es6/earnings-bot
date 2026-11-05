@@ -64,6 +64,19 @@ def test_templates_rebuild_the_hand_written_schedules(
          "https://www.microsoft.com/en-us/investor/earnings/fy-2027-q1/press-release-webcast"),
         ("QCOM", date(2026, 7, 29), 2026, 3,
          "https://s204.q4cdn.com/645488518/files/doc_financials/2026/q3/FY2026-3rd-Quarter-Earnings-Release.pdf"),
+        # Each URL answered 200 on 2026-11-05
+        ("ABNB", date(2026, 8, 6), 2026, 2,
+         "https://s26.q4cdn.com/656283129/files/doc_financials/2026/q2/Airbnb-Q2-2026-Shareholder-Letter.pdf"),
+        ("ABNB", date(2026, 5, 7), 2026, 1,
+         "https://s26.q4cdn.com/656283129/files/doc_financials/2026/q1/Airbnb_Q1-2026-Shareholder-Letter.pdf"),
+        ("TEAM", date(2026, 8, 6), 2026, 4,
+         "https://s206.q4cdn.com/270053503/files/doc_financials/2026/q4/TEAM-Q4-2026-Shareholder-Letter.pdf"),
+        ("TEAM", date(2026, 8, 6), 2026, 4,
+         "https://s206.q4cdn.com/270053503/files/doc_financials/2026/q4/TEAM-Q4-2026-Datasheet.pdf"),
+        ("TEAM", date(2026, 4, 30), 2026, 3,
+         "https://s206.q4cdn.com/270053503/files/doc_financials/2026/q3/TEAM-Q3-2026-IR-Data-Sheet.pdf"),
+        ("NET", date(2026, 8, 6), 2026, 2,
+         "https://www.cloudflare.com/press/press-releases/2026/cloudflare-announces-second-quarter-2026-financial-results/"),
     ],
 )  # fmt: skip
 def test_templates_match_urls_seen_on_company_sites(
@@ -90,10 +103,19 @@ def test_blocked_sites_and_other_wires_are_left_out_of_the_target() -> None:
 
 
 @pytest.mark.parametrize(
-    ("ticker", "fiscal_year", "quarter"), [("HUBS", 2026, 3), ("FICO", 2026, 4)]
+    ("day", "ticker", "fiscal_year", "quarter"),
+    [
+        ("2026-11-04", "HUBS", 2026, 3),
+        ("2026-11-04", "FICO", 2026, 4),
+        ("2026-11-05", "ABNB", 2026, 3),
+        ("2026-11-05", "TEAM", 2027, 1),
+        ("2026-11-05", "NET", 2026, 3),
+    ],
 )
-def test_tonights_entries_match_the_database(ticker: str, fiscal_year: int, quarter: int) -> None:
-    plan = load_plan(SCHEDULES / "2026-11-04.toml")
+def test_schedule_entries_match_the_database(
+    day: str, ticker: str, fiscal_year: int, quarter: int
+) -> None:
+    plan = load_plan(SCHEDULES / f"{day}.toml")
     [scheduled] = [t for t in plan.target if t.ticker == ticker]
     expected = scheduled.expected.replace(tzinfo=None)
     assert to_target(ticker, expected, fiscal_year, quarter) == scheduled

@@ -207,7 +207,7 @@ the request reached the origin:
 
 | Feed | Caching | Does busting reach the origin? |
 |---|---|---|
-| Q4 JSON feeds | 10 s | Yes |
+| Q4 JSON feeds | 10 s | Yes, except on cloudflare.net, Cloudflare's own IR site: its CDN leaves our parameter out of the cache key, so a busted request is a `HIT` (Nov 5) |
 | Business Wire RSS | 300 s at the CDN | Yes: the busted request took 389 ms against 101 ms. But the origin only rebuilds the feed about every 4.5 minutes (Nov 4) |
 | PR Newswire RSS | 60 s (Cloudflare) | No: busted and `no-cache` requests were both cache hits, 47 s old |
 | Intel's RSS feed | 30 s plus stale-while-revalidate (CloudFront) | No, and one copy was 113 s old |
@@ -317,6 +317,21 @@ What it tells us:
   companies, Uber, AMD and Shopify among them, so most tracked companies would get no
   estimates on the free plan.
 
+**Nov 5, Airbnb, Atlassian and Cloudflare** (planned, `schedules/2026-11-05.toml`). All three
+IR sites are on Q4 and answer us, so it's the first live race between a Q4 feed and the wire:
+
+| | Airbnb | Atlassian | Cloudflare |
+|---|---|---|---|
+| Wire, and its usual time | PR Newswire, 4:03 PM | Business Wire, 4:05 PM | Business Wire, 4:15 PM |
+| 8-K over the last four quarters | 4:00:27 to 4:02:53, before the wire | 4:09:33 to 4:13:26 | 4:15:47 to 4:21:23 |
+| What's new to measure | The first PR Newswire release we've watched; whether anything beats the 8-K | When the IR feed lists a release stamped with the wire's minute | An IR feed we can't cache-bust, and cloudflare.com/press |
+
+- **Airbnb's IR site sits behind Cloudflare,** which answered 1 of 90 test polls with a
+  challenge (403). The bot stops a source at its first 403, so its IR feeds may not last the
+  window. The 8-K, PR Newswire and the letter guesses don't depend on it.
+- **Atlassian's shareholder letter is 9 to 14 MB,** mostly over the 10 MiB attachment limit,
+  so it'll be a link. The release PDF and data sheet are small.
+
 ### Scheduling
 
 - **Calendar.** [Report dates](#report-dates) covers where dates come from. Each company's past
@@ -398,7 +413,7 @@ Acceptance times of the last five earnings 8-Ks:
 ### What `/track` works out
 
 `/track TICKER` starts from `src/earnings_bot/companies.toml` when the company is in it. That
-file holds what we've already checked for 42 companies: CIK, platform, which wire, feeds, URL
+file holds what we've already checked for 45 companies: CIK, platform, which wire, feeds, URL
 templates, recent 8-K times and the fastest source. Until `/track` exists,
 `uv run python -m earnings_bot.known TICKER TIME --fiscal-year YYYY --quarter Q` prints a
 schedule entry from it. For any other company, `/track` fills in everything a schedule file
