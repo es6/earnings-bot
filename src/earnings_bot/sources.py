@@ -10,7 +10,7 @@ import re
 import time
 import xml.etree.ElementTree as ET
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from urllib.parse import urljoin, urlsplit
 
@@ -87,26 +87,61 @@ _Q4_REPORTS = (
     "&pageNumber=0&tagList=&includeTags=true&year=-1&excludeSelection=1"
 )
 
+# Q4's CDN keeps each feed URL's answer for 10 s. By Nov 5, 2026 its cache key counted only the
+# feed's own query parameters, so a cache-buster gets the same copy as everyone else. A list of
+# a different length is a different copy, though, so the press release list also asks for this
+# many longer lists in turn, each once its copy has expired. Measured live on Nov 6, that cut
+# the average wait for a new release from 5.2 s to 1.0 s. Each turn replaces a normal poll, so
+# the IR site gets no more requests from us, and Q4's servers get about one every 2 s.
+Q4_LONGER_LISTS = 5
+Q4_REFRESH_SECONDS = 10.5  # just over the CDN's max-age=10, so the copy has always expired
+
 
 class Q4PressReleases(Source):
-    """The press release list on an IR site run by Q4 Inc. Its CDN can serve a copy up to 10
-    seconds old. Every request busts the cache, though by Nov 5, 2026 the CDN ignored that."""
+    """The press release list on an IR site run by Q4 Inc. Q4's CDN can serve a copy up to 10
+    seconds old, so polls take turns with longer lists (see Q4_LONGER_LISTS)."""
 
     name = "q4_press"
     interval = 1.0
 
-    def __init__(self, host: str, page_size: int = 5) -> None:
+    def __init__(
+        self, host: str, page_size: int = 5, clock: Callable[[], float] = time.monotonic
+    ) -> None:
         self.host = host
         self.page_size = page_size
+        self.clock = clock
+        self._asked: list[float] | None = None  # when each longer list was last asked for
 
     def url(self, with_bodies: bool = False) -> str:
-        # With bodies, each release comes with its full HTML, for the summary
-        path = _Q4_PRESS.replace("pageSize=5", f"pageSize={self.page_size}")
         if with_bodies:
-            path = path.replace("bodyType=0", "bodyType=1")
+            # Each release comes with its full HTML, for the summary
+            path = self._path(self.page_size).replace("bodyType=0", "bodyType=1")
+        else:
+            path = self._path(self._next_page_size())
+        # Q4's CDN ignores the buster, but Palantir's own CDN in front of it caches for an hour
+        # and doesn't
         return _bust_cache(f"https://{self.host}{path}")
 
+    def _path(self, page_size: int) -> str:
+        return _Q4_PRESS.replace("pageSize=5", f"pageSize={page_size}")
+
+    def _next_page_size(self) -> int:
+        """The longer list asked for longest ago, if its copy has expired, or else the normal
+        one. Turns end up about Q4_REFRESH_SECONDS / Q4_LONGER_LISTS apart."""
+        now = self.clock()
+        if self._asked is None:
+            # Spread the first turns evenly over one refresh, starting now
+            step = Q4_REFRESH_SECONDS / Q4_LONGER_LISTS
+            self._asked = [now - Q4_REFRESH_SECONDS + i * step for i in range(Q4_LONGER_LISTS)]
+        oldest = min(range(Q4_LONGER_LISTS), key=self._asked.__getitem__)
+        if now - self._asked[oldest] < Q4_REFRESH_SECONDS:
+            return self.page_size
+        self._asked[oldest] = now
+        return self.page_size + 1 + oldest
+
     def parse(self, response: Response) -> list[Sighting]:
+        # A longer list's extra items are older ones, which mustn't look new
+        releases = json.loads(response.body)["GetPressReleaseListResult"][: self.page_size]
         return [
             Sighting(
                 key=str(release["PressReleaseId"]),
@@ -115,7 +150,7 @@ class Q4PressReleases(Source):
                 published=release["PressReleaseDate"],  # site-local time, and not consistently
                 earnings=looks_like_earnings(release["Headline"]),
             )
-            for release in json.loads(response.body)["GetPressReleaseListResult"]
+            for release in releases
         ]
 
 

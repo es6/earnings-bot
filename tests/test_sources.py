@@ -1,10 +1,13 @@
+import itertools
 import json
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
 from earnings_bot.fetch import Response, host_gap
 from earnings_bot.sources import (
     PR_NEWSWIRE_EARNINGS,
+    Q4_REFRESH_SECONDS,
     EdgarFilings,
     EdgarLatest,
     GuessedFile,
@@ -73,11 +76,61 @@ def test_q4_press_releases() -> None:
     assert release.earnings
 
 
-def test_q4_requests_bust_the_cache() -> None:
+def test_q4_requests_carry_a_buster_for_palantirs_cdn() -> None:
     source = Q4PressReleases("investor.uber.com")
 
     assert source.url() != source.url()
     assert "&_=" in source.url()
+
+
+def page_size(url: str) -> int:
+    return int(parse_qs(urlsplit(url).query)["pageSize"][0])
+
+
+def test_q4_polls_take_turns_with_longer_lists_once_their_copies_expire() -> None:
+    now = 1000.0
+    source = Q4PressReleases("investor.uber.com", clock=lambda: now)
+    asked: dict[int, list[float]] = {}
+    for _ in range(120):  # two minutes of polls, one a second
+        asked.setdefault(page_size(source.url()), []).append(now)
+        now += 1.0
+
+    longer = {size: times for size, times in asked.items() if size != 5}
+    assert sorted(longer) == [6, 7, 8, 9, 10]
+    for times in longer.values():
+        # Asking again before the CDN's copy expires would only get the same copy
+        assert all(b - a >= Q4_REFRESH_SECONDS for a, b in itertools.pairwise(times))
+    turns = sorted(t for times in longer.values() for t in times)
+    assert turns[0] == 1000.0
+    # A fresh copy every 2 or 3 s, and the normal list gets the polls in between
+    assert {b - a for a, b in itertools.pairwise(turns)} <= {2.0, 3.0}
+    assert len(asked[5]) == 120 - len(turns)
+
+
+def test_q4_bodies_come_from_the_normal_list() -> None:
+    source = Q4PressReleases("investor.uber.com")
+
+    url = source.url(with_bodies=True)
+
+    assert page_size(url) == 5
+    assert "bodyType=1" in url
+
+
+def test_q4_reads_only_the_normal_lists_length() -> None:
+    source = Q4PressReleases("investor.uber.com")
+    longer = [
+        {
+            "PressReleaseId": n,
+            "Headline": f"Release {n}",
+            "LinkToDetailPage": f"/news/{n}/default.aspx",
+            "PressReleaseDate": "08/05/2026 06:55:00",
+        }
+        for n in range(1700, 1690, -1)
+    ]
+
+    releases = source.parse(response(json.dumps({"GetPressReleaseListResult": longer})))
+
+    assert [r.key for r in releases] == ["1700", "1699", "1698", "1697", "1696"]
 
 
 def test_q4_financial_reports() -> None:
