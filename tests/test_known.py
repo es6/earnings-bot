@@ -6,6 +6,7 @@ import pytest
 
 from earnings_bot.known import (
     FIELDS,
+    fill,
     guess_urls,
     known_companies,
     target_toml,
@@ -22,7 +23,7 @@ def test_every_company_loads_and_uses_only_known_placeholders() -> None:
     assert len(companies) >= 40
     for ticker, company in companies.items():
         assert ticker.isupper()
-        for template in company.guess:
+        for template in [*company.guess, *company.trial.pages]:
             assert template_fields(template) <= FIELDS, (ticker, template)
         if company.platform == "q4" and company.reachable:
             assert company.q4_host, ticker
@@ -125,14 +126,54 @@ def test_schedule_entries_match_the_database(
     [scheduled] = [t for t in plan.target if t.ticker == ticker]
     expected = scheduled.expected.replace(tzinfo=None)
     database = to_target(ticker, expected, fiscal_year, quarter)
-    # A run can teach us new guesses, which past schedules don't have
+    # A run can teach us new guesses and trial sources, which past schedules don't have
     assert set(scheduled.guess) <= set(database.guess)
-    assert database.model_copy(update={"guess": scheduled.guess}) == scheduled
+    update = {"guess": scheduled.guess, "trial": scheduled.trial}
+    assert database.model_copy(update=update) == scheduled
 
 
-@pytest.mark.parametrize("ticker", ["AMD", "MCD"])
+@pytest.mark.parametrize("ticker", ["AMD", "MCD", "AVGO", "CRWD", "ABNB", "HUBS", "NVDA"])
 def test_printed_entry_is_a_valid_schedule(ticker: str) -> None:
     target = to_target(ticker, datetime(2026, 11, 3, 16, 15), 2026, 3)
     plan = Plan.model_validate(tomllib.loads(target_toml(target)))
     assert plan.target[0] == target
     assert plan.target[0].expected == datetime(2026, 11, 3, 16, 15, tzinfo=ET)
+
+
+@pytest.mark.parametrize(
+    ("ticker", "released", "fiscal_year", "quarter", "seen"),
+    [
+        # Each answered 200 on 2026-11-06
+        ("CRWD", date(2026, 8, 26), 2027, 2,
+         "https://markets.financialcontent.com/stocks/article/bizwire-2026-8-26-crowdstrike-reports-second-quarter-fiscal-year-2027-financial-results"),
+        ("MCD", date(2026, 11, 4), 2026, 3,
+         "https://mcdonalds.mediaroom.com/2026-11-04-McDONALDS-REPORTS-THIRD-QUARTER-2026-RESULTS"),
+        # Redirects to the page, which ends in a slash
+        ("ABNB", date(2026, 11, 5), 2026, 3,
+         "https://news.airbnb.com/airbnb-q3-2026-financial-results"),
+        # A fourth quarter's headline adds the full year
+        ("CRWD", date(2027, 3, 3), 2027, 4,
+         "https://markets.financialcontent.com/stocks/article/bizwire-2027-3-3-crowdstrike-reports-fourth-quarter-and-fiscal-year-2027-financial-results"),
+        ("MCD", date(2027, 2, 10), 2026, 4,
+         "https://mcdonalds.mediaroom.com/2027-02-10-McDONALDS-REPORTS-FOURTH-QUARTER-AND-FULL-YEAR-2026-RESULTS"),
+    ],
+)  # fmt: skip
+def test_trial_page_templates_match_the_release_pages(
+    ticker: str, released: date, fiscal_year: int, quarter: int, seen: str
+) -> None:
+    pages = known_companies()[ticker].trial.pages
+    assert fill(pages, released, fiscal_year, quarter) == [seen]
+
+
+def test_broadcom_is_matched_on_pr_newswire_and_tried_on_its_newsroom() -> None:
+    avgo = to_target("AVGO", datetime(2026, 12, 10, 16, 15), 2026, 4)
+
+    assert avgo.prnewswire == ["Broadcom Inc"]
+    assert not avgo.trial.post
+    assert [(s.name, s.trial) for s in avgo.sources()] == [
+        ("edgar", False),
+        ("edgar_latest", False),
+        ("prnewswire", False),
+        ("broadcom_newsroom", True),
+        ("prnewswire_semiconductors", True),
+    ]

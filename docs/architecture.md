@@ -119,7 +119,37 @@ What this tells us:
    read the same way for companies that use it: a schedule entry lists their names under
    `prnewswire`. Its items also name the company in `dc:contributor`, which is matched too.
    The same source reads company press release feeds, such as the ones Equisolve sites publish.
-5. **Later:** adapters for other IR platforms.
+5. **Sources on trial.** Found on Nov 6, 2026, each answering the bot's normal User-Agent. A
+   schedule lists them in a `[target.trial]` table. They're polled and logged like any other
+   source, but what they see only posts to Discord when the table says `post = true`, which
+   waits until release days show they're right and fast. Until then the summary marks them
+   `trial`.
+   - **Broadcom's newsroom JSON** (`www.broadcom.com/api/news/newsroom`): every financial
+     release, newest first, with its UTC time. It's about 150 KB and takes no paging
+     parameters. Cloudflare served a copy 445 s old despite `no-cache`, so it's busted. A
+     release's text comes from `/api/getmetadata`, which answers 200 with a stub that has no
+     `body` for an ID it doesn't know yet.
+   - **GlobeNewswire's earnings RSS** (`rss.globenewswire.com/RssFeed/subjectcode/13`, 20 items).
+     Its article pages on `www.globenewswire.com` still answer 403, but the RSS host lets us in
+     and names the company in `dc:contributor`. It's cached for 60 s. A cache-buster reaches the
+     server, but on Nov 6 that server returned the same build as the cached copy, so both copies
+     are polled until a live release shows whether busting helps. For NVIDIA and AMD.
+   - **PR Newswire's Semiconductors feed**, a second PR Newswire feed with its own 60-second
+     timer that carries Broadcom's releases.
+   - **Company feeds:** HubSpot's `ir.hubspot.com/rss/news-releases.xml`, whose CDN allows a
+     copy to be kept for 30 days (`s-maxage=2592000`), so it's busted like every company feed.
+   - **Release pages fetched whole**, on hosts with plain 404s and small 404 pages:
+     CrowdStrike's copy on FinancialContent (`markets.financialcontent.com`), McDonald's
+     MediaRoom newsroom (`mcdonalds.mediaroom.com`) and Airbnb's newsroom (`news.airbnb.com`).
+     Each poll is a `GET`, so the poll that finds the page already has the release's text. A
+     page counts as found only if it's HTML, or for a `.pdf` URL, if it starts with `%PDF-`.
+     McDonald's origin sometimes takes 11 to 16 s to answer. Polls still give up after 3 s,
+     and the summary counts timeouts apart from other errors so that stays visible.
+
+   These stay out, by the owner's decision: Yahoo, Home Depot, Tesla's deck (it would need a
+   different User-Agent), McDonald's PDFs, any scripted browser, and any way around a site
+   that blocks us.
+6. **Later:** adapters for other IR platforms.
 
 ### IR platforms
 
@@ -154,17 +184,19 @@ latest quarter only. The details per company, with the last four 8-K times, are 
 | Fastest source we can read | Companies | Lead over the 8-K |
 |---|---|---|
 | The company's RSS feed (Equisolve) | AMD 4:15 PM, Intel 4:01 PM, Coca-Cola 6:55 AM, Nike 4:15 PM | AMD 1 min, Intel 6–10 min, Coca-Cola 3–5 min, Nike only 15–28 s |
-| PR Newswire | Lilly 6:45 AM, Home Depot 6:00 AM, Target 6:30 AM, McDonald's 7:00 AM | Lilly 18 min, Home Depot 10 min, Target 81 min, McDonald's 1.5 min |
+| PR Newswire | Lilly 6:45 AM, Home Depot 6:00 AM, Target 6:30 AM, McDonald's 7:00 AM, Broadcom 4:15 PM | Lilly 18 min, Home Depot 10 min, Target 81 min, McDonald's 1.5 min, Broadcom 11 min (Q3 FY26, by its newsroom's time) |
 | A company page at a predictable URL | UnitedHealth 5:55 AM, with Business Wire the same minute | 19 min |
 | Business Wire | FICO 4:15 PM, Adobe 4:05 PM, CrowdStrike 4:05 PM, HubSpot 4:05 PM | FICO median 1m13s, Adobe 1 min, CrowdStrike 2 min, HubSpot 10 min |
-| SEC 8-K | S&P Global, Walmart, JPMorgan, Bank of America, Broadcom, Tesla | S&P Global's 8-K beats PR Newswire by 6–11 min. Walmart's beats its own newsroom by about a minute and Business Wire by two. JPMorgan's beats Business Wire by 38 min |
+| SEC 8-K | S&P Global, Walmart, JPMorgan, Bank of America, Tesla | S&P Global's 8-K beats PR Newswire by 6–11 min. Walmart's beats its own newsroom by about a minute and Business Wire by two. JPMorgan's beats Business Wire by 38 min |
 | Not known yet | Microsoft, Goldman Sachs | |
 
 - **Which wire a company uses varies, and it isn't always Business Wire.** AMD and NVIDIA use
-  GlobeNewswire, whose RSS feed returns 403 to us, so their own feeds are the way in. Lilly, Home
-  Depot, Target, McDonald's and S&P Global use PR Newswire. UnitedHealth, Salesforce, Walmart,
-  JPMorgan, Adobe, CrowdStrike and HubSpot use Business Wire. Bank of America, Goldman Sachs, Broadcom,
-  Microsoft and Tesla use none.
+  GlobeNewswire, whose site returns 403 to us, so their own feeds are the way in. Its RSS host
+  does answer us (found Nov 6), so its earnings feed is on trial. Lilly, Home Depot, Target,
+  McDonald's, S&P Global and Broadcom use PR Newswire; Broadcom's releases were missed on Oct 31
+  and found on Nov 6, filed as "Broadcom Inc.". UnitedHealth, Salesforce, Walmart, JPMorgan,
+  Adobe, CrowdStrike and HubSpot use Business Wire. Bank of America, Goldman Sachs, Microsoft and
+  Tesla use none.
 - **Business Wire's free feed shows a release up to about 5 minutes after its stamp,** at the
   feed's next rebuild. So the Business Wire row's lead over the 8-K shrinks by that much. On
   Nov 4 it was still first for HubSpot (8-K 5 minutes after the release) but not for FICO (8-K
@@ -192,7 +224,10 @@ latest quarter only. The details per company, with the last four 8-K times, are 
   and 4:06 to 4:14 PM before that.
 - **Blocked sites stay blocked.** For FICO, CrowdStrike, HubSpot, Lilly, Home Depot, Broadcom,
   McDonald's and Tesla, a person can check by hand how early the site posted, using
-  [manual checks](manual-checks.md). The bot itself never reads those sites.
+  [manual checks](manual-checks.md). The bot itself never reads those sites. Some of these
+  companies also publish where we're let in: CrowdStrike's release on FinancialContent,
+  McDonald's on its MediaRoom newsroom, Broadcom's on its own newsroom, and HubSpot's press
+  release feed. Those are on trial (see [Sources](#sources)).
 
 ### How fresh feeds are
 
@@ -214,6 +249,9 @@ the request reached the origin:
 | AMD's RSS feed | No cache headers, but CloudFront caches it anyway | No |
 | Coca-Cola's RSS feed | CloudFront | Yes: the busted request was a `MISS` |
 | Target's press release feed | A copy 2.2 hours old | No. Useless for speed; PR Newswire carries Target |
+| GlobeNewswire RSS (Nov 6) | 60 s | Yes, but its server returned the same build as the cached copy, so both are polled on trial |
+| Broadcom's newsroom JSON (Nov 6) | Cloudflare, despite `no-cache`: one copy was 445 s old | Yes |
+| HubSpot's press release feed (Nov 6) | `max-age=0, s-maxage=2592000` | Busted, since its CDN may keep a copy for 30 days |
 
 `no-cache` made no difference anywhere. What we can do about the rest:
 
@@ -363,7 +401,9 @@ What it tells us:
 - **Airbnb got no alert.** By 4:04:46 its 8-K and PR Newswire release were already listed, and
   the bot treats anything listed when it starts as old news. EDGAR's latest-filings feed listed
   the other two 8-Ks 27 and 30 s after acceptance, so Airbnb's would likely have reached us
-  around 4:02:38, ahead of both X accounts. That's an estimate, not a measurement.
+  around 4:02:38, ahead of both X accounts. That's an estimate, not a measurement. Since Nov 6
+  the bot catches up on a late start (see [From detection to Discord](#from-detection-to-discord)),
+  so it would have posted Airbnb's release at 4:04:46, marked as already out.
 - **Two letters went to a new folder.** Airbnb and Atlassian both uploaded this quarter's letter
   to `files/content_files/` instead of `files/doc_financials/{fy}/q{fq}/`. Airbnb's name matched
   our first guess exactly. Both folders are guessed now. Atlassian's release PDF stayed in the
@@ -403,7 +443,15 @@ What it tells us:
   unscheduled or early releases.
 - **Rate limits are per host and shared across companies.** On a busy evening, a dozen companies
   report at 4 PM and all of them share SEC's 10 requests per second. See
-  [Sharing SEC's limit](#sharing-secs-limit).
+  [Sharing SEC's limit](#sharing-secs-limit). Requests wait their turn for a host in order,
+  except that fetching the text of a release that just turned up is urgent: it takes the
+  host's next turn, ahead of polls, and the host's gap between requests stays the same. Each
+  `new` event logs how long its poll waited (`queued_ms`), and the summary gives the median and
+  the longest wait per source.
+- **Overlapping windows share one poll of each feed.** Watches whose sources read the same feed
+  (a newswire feed matched for several companies, Broadcom's newsroom) share one poll loop,
+  which hands every response to each watch. Each watch reads it with its own source, so it
+  still keeps only its own company's items. The loop runs while any of those windows is open.
 - **Connections stay open** (HTTP keep-alive / HTTP/2), so polls don't pay for a new TLS
   handshake.
 
@@ -414,9 +462,22 @@ What it tells us:
 - Posting happens in stages: an alert with a link within seconds, then files as they appear,
   then the summary.
 - Each step logs two times after the first sighting. `live_seconds` comes from Discord's own
-  timestamp on the message or edit, which is when people could see it. `seconds` is when
-  Discord's reply reached the bot. They differ when discord.py waits out a rate limit before
-  returning. In tests on 2026-10-30, Discord answered every request in 0.1 to 0.6 seconds, and
+  timestamp on the message or edit, which is when people could see it, and that timestamp is
+  logged too, as `visible`. `seconds` is when Discord's reply reached the bot. They differ when
+  discord.py waits out a rate limit before returning.
+- A `body` event marks when the release's text first arrived and from which source: `via`
+  `poll` when the poll that found the release already had it (a page fetched whole), or
+  `fetch` when it took another request. The text is fetched even without a summarizer, until
+  one source delivers it, so this gets measured on every release.
+- **A late start catches up.** Items a source lists at its first poll are normally old news. But
+  an earnings item whose own timestamp falls inside the window counts as new, so a bot started
+  after the release still posts it. The alert says it was already out when the bot started
+  watching, and the recorder logs it with `caught_up` and doesn't count it as a measurement of
+  how fast the source is. Only timestamps that name their time zone qualify: EDGAR's, the
+  newswires', company feeds' and Broadcom's. Q4's site-local times don't, and neither does a
+  guessed URL's `Last-Modified`, which can be when a copy was generated.
+- **Trial sources don't post** unless the target's `[target.trial]` table says `post = true`.
+  The recorder still logs everything they see. In tests on 2026-10-30, Discord answered every request in 0.1 to 0.6 seconds, and
   every multi-second wait came from discord.py's rate limiter: about 4 seconds on reads, once a
   bucket ran out. In one replay, Discord stamped the alert 0.12 seconds after the sighting, but
   the reply reached the bot only at 2.54 seconds.
@@ -573,7 +634,9 @@ Where the text comes from:
 | Q4 press release feed | The full release HTML, from the same feed with `bodyType=1` | Ready the moment the release is detected |
 | SEC 8-K | The press release exhibit (EX-99.1), found through the filing's `index.json` | About a minute later for most companies; at the same time for Apple |
 | Guessed or newsroom pages | The page itself | Apple's newsroom |
-| Business Wire | None | Its article pages drop automated requests |
+| Pages on trial | The page the poll already downloaded | No second request |
+| Broadcom's newsroom (trial) | The `body` field of `/api/getmetadata` | An ID that isn't up yet answers 200 with a stub that has no body, so no text |
+| Business Wire, GlobeNewswire | None | Their article pages drop or refuse automated requests |
 
 The summary comes from Claude (`claude-opus-5-5`, effort `medium`). It gets the release text,
 consensus EPS and revenue from Financial Modeling Prep's earnings calendar, and a style guide
@@ -626,7 +689,10 @@ one-off window by hand.
 - **Time and secrets stay as they are:** network time through `TrustedClock`, keys in `.env`.
 
 **Open.** What to do about a release the bot missed while the PC was off or offline: post it
-late, marked as late, or only note the gap in the status channel.
+late, marked as late, or only note the gap in the status channel. Since Nov 6, a release that
+came out inside its window before the bot started is posted, marked as already out. One that
+came out before the window opened, or while the PC was off for the whole window, is still
+open.
 
 ### Status messages
 
@@ -672,9 +738,10 @@ This starts after the Nov 2–4 runs, whose results feed into it.
 4. **Find dates automatically:** the Q4 events feed, date announcements and estimates, plus
    `/upcoming`.
 5. **`/track` for any company,** researching it the way it was done by hand on 2026-10-31.
-6. **Scale:** share SEC's limit across overlapping windows, poll each newswire feed once for
-   every company whose window is open (with three windows open at once, Business Wire's one
-   request a second stretches each window's polls to 3 s), and learn from each release.
+6. **Scale:** share SEC's limit across overlapping windows, and learn from each release.
+   Polling each newswire feed once for every company whose window is open was done on Nov 6
+   (before that, with three windows open at once, Business Wire's one request a second
+   stretched each window's polls to 3 s).
 
 ## Decision log
 
@@ -709,3 +776,5 @@ This starts after the Nov 2–4 runs, whose results feed into it.
 | 2026-11-05 | The fetcher keeps no cookies, so each request stands alone. Sending back cloudflare.com's cookies got a 500 every time |
 | 2026-11-05 | A file a feed lists but answers 404 gets tried again every 30 s until the window closes |
 | 2026-11-06 | Q4's CDN ignores cache-busters now, so Q4 press release polls take turns with five longer lists, each once its 10 s copy has expired. The site gets no extra requests, and Q4's servers about one every 2 s. Faking headers or a browser's identity stays out |
+| 2026-11-06 | New sources go on trial first: recorded on release days, but posted only when the schedule's `[target.trial]` table says `post = true`. On trial now: Broadcom's newsroom JSON, GlobeNewswire's earnings RSS (plain and busted), PR Newswire's Semiconductors feed, HubSpot's press release feed, and release pages for CrowdStrike (FinancialContent), McDonald's (MediaRoom) and Airbnb (its newsroom). Broadcom is matched on PR Newswire as "Broadcom Inc". Yahoo, Home Depot, Tesla's deck, McDonald's PDFs, scripted browsers and any way around a block stay out, and every site gets the same honest User-Agent |
+| 2026-11-06 | Overlapping windows share one poll of each feed. Fetching a release's text takes the host's next turn ahead of polls, keeping the host's gap. A late start catches up on earnings items stamped inside the window, posted as already out and not counted as a latency measurement |

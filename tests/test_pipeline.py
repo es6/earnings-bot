@@ -7,13 +7,17 @@ import pytest
 from earnings_bot import pipeline
 from earnings_bot.estimates import Estimates
 from earnings_bot.fetch import Response
-from earnings_bot.pipeline import Poster, Release, describe_source
-from earnings_bot.recorder import ET, Journal, Target
+from earnings_bot.pipeline import Poster, Release, Releases, describe_source
+from earnings_bot.recorder import ET, Journal, Target, Trial
 from earnings_bot.sources import (
+    GLOBENEWSWIRE_EARNINGS,
     PR_NEWSWIRE_EARNINGS,
+    PR_NEWSWIRE_SEMICONDUCTORS,
+    BroadcomNewsroom,
     EdgarFilings,
     EdgarLatest,
     GuessedFile,
+    GuessedPage,
     Q4FinancialReports,
     Q4PressReleases,
     RssFeed,
@@ -90,6 +94,13 @@ def test_newswires_are_named_in_the_alert() -> None:
     assert describe_source(RssFeed("businesswire_busted", "https://bw.example/rss")) == (
         "Business Wire"
     )
+    semis = RssFeed("prnewswire_semiconductors", PR_NEWSWIRE_SEMICONDUCTORS, ["Broadcom Inc"])
+    assert describe_source(semis) == "PR Newswire"
+    globe = RssFeed("globenewswire_busted", GLOBENEWSWIRE_EARNINGS, ["NVIDIA"], True)
+    assert describe_source(globe) == "GlobeNewswire"
+    assert describe_source(BroadcomNewsroom()) == "Broadcom newsroom"
+    page = GuessedPage("https://mcdonalds.mediaroom.com/2026-11-04-McDONALDS-REPORTS")
+    assert describe_source(page) == "mcdonalds.mediaroom.com"
 
 
 async def test_release_posts_links_files_and_summary(release_texts: dict[str, str]) -> None:
@@ -121,7 +132,13 @@ async def test_release_posts_links_files_and_summary(release_texts: dict[str, st
     events = {e["event"]: e for e in map(json.loads, log.getvalue().splitlines())}
     for step in ("posted", "linked", "attached", "summary"):
         assert 0 <= events[step]["live_seconds"] < 5
+        # Discord's own timestamp, when people could see the change
+        visible = datetime.fromisoformat(events[step]["visible"])
+        assert visible.tzinfo is not None
     assert events["posted"]["source"] == "IR site"
+    body = events["body"]
+    assert (body["source"], body["via"]) == ("IR site", "fetch")
+    assert body["chars"] == len(release_texts[IR_PAGE])
 
 
 async def test_both_sec_sources_give_the_filing_one_link() -> None:
@@ -145,8 +162,8 @@ async def test_only_one_summary_when_several_sources_have_the_text(
     release_texts: dict[str, str],
 ) -> None:
     release_texts[IR_PAGE] = release_texts[FILING] = "the release"
-    poster, summarizer = FakePoster(), FakeSummarizer()
-    release = Release(uber(), poster, fetcher(), Journal(io.StringIO()), summarizer, None)
+    poster, summarizer, log = FakePoster(), FakeSummarizer(), io.StringIO()
+    release = Release(uber(), poster, fetcher(), Journal(log), summarizer, None)
 
     release.add(Q4PressReleases("investor.uber.com"), Sighting("1700", "Results", IR_PAGE))
     release.add(EdgarFilings(1543151), Sighting("acc", "8-K 2.02", FILING, earnings=True))
@@ -154,6 +171,77 @@ async def test_only_one_summary_when_several_sources_have_the_text(
 
     assert len(summarizer.calls) == 1
     assert summarizer.calls[0][1] is None  # no FMP key, no estimates
+    # The text's arrival is logged once, for whichever source delivered it first
+    assert [e["event"] for e in map(json.loads, log.getvalue().splitlines())].count("body") == 1
+
+
+def broadcom_release() -> tuple[BroadcomNewsroom, Sighting]:
+    newsroom = BroadcomNewsroom()
+    newsroom.trial = True
+    path = "/company/news/financial-releases/64900"
+    title = "Broadcom Inc. Announces Fourth Quarter and Fiscal Year 2026 Financial Results"
+    url = f"https://www.broadcom.com{path}"
+    return newsroom, Sighting("64900", title, url, earnings=True, details={"path": path})
+
+
+async def test_trial_sources_dont_post_unless_the_schedule_asks() -> None:
+    posters: list[FakePoster] = []
+
+    def new_poster() -> FakePoster:
+        posters.append(FakePoster())
+        return posters[-1]
+
+    releases = Releases(new_poster, fetcher(), Journal(io.StringIO()), None, None)
+    newsroom, results = broadcom_release()
+    expected = datetime(2026, 12, 10, 16, 15, tzinfo=ET)
+    on_trial = Target(ticker="AVGO", expected=expected, cik=1730168, trial=Trial())
+
+    releases.on_new(on_trial, newsroom, results)
+    await releases.finish()
+    assert posters == []
+
+    proven = on_trial.model_copy(update={"trial": Trial(post=True, broadcom_newsroom=True)})
+    releases.on_new(proven, newsroom, results)
+    await releases.finish()
+    [poster] = posters
+    assert [kind for kind, _ in poster.calls] == ["send"]
+    assert f"Broadcom newsroom: <{results.url}>" in poster.calls[0][1]
+
+
+async def test_the_same_release_from_both_copies_of_a_feed_posts_once(
+    release_texts: dict[str, str],
+) -> None:
+    url = "https://www.globenewswire.com/news-release/2026/11/18/3400000/0/en/nvidia-results.html"
+    release_texts[url] = "the release"
+    poster, log = FakePoster(), io.StringIO()
+    nvda = Target(ticker="NVDA", expected=datetime(2026, 11, 18, 16, 20, tzinfo=ET), cik=1045810)
+    release = Release(nvda, poster, fetcher(), Journal(log), None, None)
+    results = Sighting(url, "NVIDIA Announces Financial Results", url, earnings=True)
+
+    release.add(RssFeed("globenewswire", GLOBENEWSWIRE_EARNINGS, ["NVIDIA"]), results)
+    release.add(RssFeed("globenewswire_busted", GLOBENEWSWIRE_EARNINGS, ["NVIDIA"], True), results)
+    await release.finish()
+
+    assert [kind for kind, _ in poster.calls] == ["send"]
+    assert f"GlobeNewswire: <{url}>" in poster.calls[0][1]
+    # The text is still fetched without a summarizer, to log when it arrives
+    events = [e["event"] for e in map(json.loads, log.getvalue().splitlines())]
+    assert events.count("body") == 1
+
+
+async def test_an_alert_for_a_release_already_out_says_so() -> None:
+    poster = FakePoster()
+    release = Release(uber(), poster, fetcher(), Journal(io.StringIO()), None, None)
+    index = FILING.rsplit("/", 1)[0] + "/0001543151-26-000040-index.htm"
+
+    release.add(
+        EdgarLatest(1543151),
+        Sighting("0001543151-26-000040", "8-K 2.02", index, earnings=True, caught_up=True),
+    )
+    await release.finish()
+
+    [(_, alert)] = poster.calls
+    assert "-# Already out when the bot started watching. First seen" in alert
 
 
 class UploadedLater(RoutedFetcher):
@@ -169,6 +257,7 @@ class UploadedLater(RoutedFetcher):
         url: str,
         headers: dict[str, str] | None = None,
         give_up_after: float | None = None,
+        urgent: bool = False,
     ) -> Response:
         if url != PDF:
             return await super().request(method, url, headers, give_up_after)

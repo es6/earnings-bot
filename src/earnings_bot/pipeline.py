@@ -6,7 +6,7 @@ import io
 import re
 import time
 from abc import ABC, abstractmethod
-from collections.abc import Coroutine
+from collections.abc import Callable, Coroutine
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -18,7 +18,15 @@ import discord
 from earnings_bot.estimates import Estimates, EstimatesError, fmp_estimates
 from earnings_bot.fetch import Fetcher, Response
 from earnings_bot.recorder import ET, Journal, Plan, Target, record
-from earnings_bot.sources import EdgarFilings, Q4FinancialReports, Q4PressReleases, Sighting, Source
+from earnings_bot.sources import (
+    BroadcomNewsroom,
+    EdgarFilings,
+    GuessedPage,
+    Q4FinancialReports,
+    Q4PressReleases,
+    Sighting,
+    Source,
+)
 from earnings_bot.summary import Summarizer, SummaryError
 from earnings_bot.text import release_text
 
@@ -85,10 +93,16 @@ def describe_source(source: Source) -> str:
         return "IR site"
     if isinstance(source, EdgarFilings):
         return "SEC 8-K"
+    if isinstance(source, BroadcomNewsroom):
+        return "Broadcom newsroom"
     if source.name.startswith("businesswire"):
         return "Business Wire"
-    if source.name == "prnewswire":
+    if source.name.startswith("prnewswire"):
         return "PR Newswire"
+    if source.name.startswith("globenewswire"):
+        return "GlobeNewswire"
+    if isinstance(source, GuessedPage):
+        return source.name.removeprefix("page:")
     if source.name.startswith("guess:"):
         return "guessed URL"
     return source.name.removeprefix("rss:")
@@ -130,7 +144,10 @@ class Release:
         self.attach_retry = ATTACH_RETRY_SECONDS
         self.first_seen: datetime | None = None
         self.first_seen_at = 0.0  # time.monotonic(), for timing the steps
+        # The first sighting was already out when the bot started watching (Sighting.caught_up)
+        self.caught_up = False
         self.posted = False
+        self.has_text = False  # some source has delivered the release's text
         self.summarizing = False
         self.lock = asyncio.Lock()  # one Discord edit at a time, in order
         self.tasks: set[asyncio.Task[None]] = set()
@@ -141,13 +158,14 @@ class Release:
         the work runs in the background."""
         if self.first_seen is None:
             self.first_seen, self.first_seen_at = self.journal.now(), time.monotonic()
+            self.caught_up = sighting.caught_up
         label = describe_source(source)
         is_file = urlsplit(sighting.url).path.lower().endswith(FILE_TYPES)
         self._spawn(self._link(_file_name(sighting.url) if is_file else label, sighting.url))
         if is_file:
             self._spawn(self._attach(sighting.url))
-        elif self.summarizer and not self.summarizing:
-            self._spawn(self._summarize(self.summarizer, source, sighting, label))
+        elif not self.has_text or (self.summarizer and not self.summarizing):
+            self._spawn(self._read(source, sighting, label))
 
     async def finish(self) -> None:
         """Waits for every pending step."""
@@ -168,9 +186,11 @@ class Release:
     def _content(self) -> str:
         seen = f"{self.first_seen.astimezone(ET):%H:%M:%S.%f}"[:-3] if self.first_seen else ""
         first_label = next(iter(self.links.values()), "")
+        # Not a race won: the release was already out when the bot started watching
+        late = "Already out when the bot started watching. " if self.caught_up else ""
         lines = [
             f"🚨 **${self.target.ticker} earnings are out**{self.note}",
-            f"-# First seen {seen} ET on the {first_label}",
+            f"-# {late}First seen {seen} ET on the {first_label}",
         ]
         lines += [f"{label}: <{url}>" for url, label in self.links.items()]
         content = "\n".join(lines)
@@ -224,6 +244,7 @@ class Release:
             source=label,
             seconds=self._since_first_seen(),
             live_seconds=live,
+            visible=stamp,
         )
         if event == "posted":
             self.journal.say(
@@ -252,6 +273,7 @@ class Release:
             file=name,
             seconds=self._since_first_seen(),
             live_seconds=self._live_after(stamp),
+            visible=stamp,
         )
         self.journal.say(f"{self.target.ticker}: attached {name}")
 
@@ -275,13 +297,30 @@ class Release:
                 continue  # keep the last answer and try again
         return response
 
-    async def _summarize(
-        self, summarizer: Summarizer, source: Source, sighting: Sighting, label: str
-    ) -> None:
+    async def _read(self, source: Source, sighting: Sighting, label: str) -> None:
+        """Gets the release's text from this sighting, logs when the first text arrives, and
+        starts the summary from it. Several sources can deliver the text; the first one wins."""
         text = await release_text(self.fetcher, source, sighting)
-        # Several sources can deliver the text; the first one wins
-        if text is None or self.summarizing:
+        if text is None:
             return
+        if not self.has_text:
+            self.has_text = True
+            self.journal.write(
+                "body",
+                ticker=self.target.ticker,
+                source=label,
+                via="poll" if sighting.body is not None else "fetch",
+                seconds=self._since_first_seen(),
+                chars=len(text),
+            )
+            self.journal.say(
+                f"{self.target.ticker}: got the release text from the {label} after "
+                f"{self._since_first_seen()}s"
+            )
+        if self.summarizer and not self.summarizing:
+            await self._summarize(self.summarizer, text, label)
+
+    async def _summarize(self, summarizer: Summarizer, text: str, label: str) -> None:
         self.summarizing = True
         estimates = await self.estimates
         started = time.monotonic()
@@ -304,6 +343,7 @@ class Release:
             ticker=self.target.ticker,
             seconds=self._since_first_seen(),
             live_seconds=self._live_after(stamp),
+            visible=stamp,
             claude_seconds=round(took, 1),
             source=label,
             text=summary.text,
@@ -326,18 +366,49 @@ async def watch_schedule(
     with log_path.open("a", encoding="utf-8") as file:
         journal = Journal(file)
         async with Fetcher(sec_user_agent) as fetcher:
-            releases: dict[str, Release] = {}
+            releases = Releases(
+                lambda: DiscordPoster(channel), fetcher, journal, summarizer, fmp_api_key
+            )
+            await record(plan, fetcher, journal, releases.on_new)
+            await releases.finish()
 
-            def on_new(target: Target, source: Source, sighting: Sighting) -> None:
-                if not sighting.earnings:
-                    return
-                if target.ticker not in releases:
-                    poster = DiscordPoster(channel)
-                    releases[target.ticker] = Release(
-                        target, poster, fetcher, journal, summarizer, fmp_api_key
-                    )
-                releases[target.ticker].add(source, sighting)
 
-            await record(plan, fetcher, journal, on_new)
-            for release in releases.values():
-                await release.finish()
+class Releases:
+    """Every release posted while a schedule runs, one per ticker."""
+
+    def __init__(
+        self,
+        new_poster: Callable[[], Poster],
+        fetcher: Fetcher,
+        journal: Journal,
+        summarizer: Summarizer | None,
+        fmp_api_key: str | None,
+    ) -> None:
+        self.new_poster = new_poster
+        self.fetcher = fetcher
+        self.journal = journal
+        self.summarizer = summarizer
+        self.fmp_api_key = fmp_api_key
+        self.by_ticker: dict[str, Release] = {}
+
+    def on_new(self, target: Target, source: Source, sighting: Sighting) -> None:
+        """Called by the recorder for each new item any source lists."""
+        if not sighting.earnings:
+            return
+        if source.trial and not target.trial.post:
+            return  # logged by the recorder, but not posted until the source is proven
+        release = self.by_ticker.get(target.ticker)
+        if release is None:
+            release = self.by_ticker[target.ticker] = Release(
+                target,
+                self.new_poster(),
+                self.fetcher,
+                self.journal,
+                self.summarizer,
+                self.fmp_api_key,
+            )
+        release.add(source, sighting)
+
+    async def finish(self) -> None:
+        for release in self.by_ticker.values():
+            await release.finish()

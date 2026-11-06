@@ -1,18 +1,31 @@
 import asyncio
 import io
+import itertools
 import json
 import time
 from collections import deque
-from datetime import datetime, timedelta
+from collections.abc import Hashable
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import cast
 
 import pytest
 
-from earnings_bot import clock
+from earnings_bot import clock, fetch
 from earnings_bot.clock import Sample
 from earnings_bot.fetch import Fetcher, Response
-from earnings_bot.recorder import ET, Journal, Watch, load_plan, sync_clock, watch
-from earnings_bot.sources import Sighting, Source
+from earnings_bot.recorder import (
+    ET,
+    Journal,
+    Polls,
+    Target,
+    Watch,
+    load_plan,
+    summarize,
+    sync_clock,
+    watch,
+)
+from earnings_bot.sources import GuessedFile, Sighting, Source
 
 
 class ListSource(Source):
@@ -32,9 +45,11 @@ class ListSource(Source):
 class FakeFetcher(Fetcher):
     """Serves canned responses in order, then repeats the last one."""
 
-    def __init__(self, *responses: tuple[int, str]) -> None:
+    def __init__(self, *responses: tuple[int, str], queued: float = 0.0) -> None:
         super().__init__("Test Person test@example.com")
         self.responses = deque(responses)
+        self.queued = queued  # how long each request waits for its host's turn
+        self.sent = 0
 
     async def request(
         self,
@@ -42,11 +57,13 @@ class FakeFetcher(Fetcher):
         url: str,
         headers: dict[str, str] | None = None,
         give_up_after: float | None = None,
+        urgent: bool = False,
     ) -> Response:
+        self.sent += 1
         status, body = self.responses[0] if len(self.responses) == 1 else self.responses.popleft()
         if status == 0:
             raise TimeoutError
-        return Response(url, status, {"age": "3"}, body.encode(), 0.02)
+        return Response(url, status, {"age": "3"}, body.encode(), 0.02, self.queued)
 
 
 def events(log: io.StringIO) -> list[dict[str, object]]:
@@ -104,8 +121,11 @@ async def test_watch_keeps_polling_after_a_timeout() -> None:
 
     [error] = [e for e in events(log) if e["event"] == "error"]
     assert error["message"] == "no answer within 3s"
+    assert error["timeout"] is True
     assert [e["key"] for e in events(log) if e["event"] == "new"] == ["b"]
     assert w.problem is None
+    # Counted apart from other errors, so a slow origin stays visible in the summary
+    assert (w.timeouts, w.errors) == (1, 0)
 
 
 async def test_fetcher_gives_up_on_a_server_that_never_answers() -> None:
@@ -234,3 +254,327 @@ async def test_watch_stops_polling_a_guess_once_found() -> None:
 
     assert w.polls == 2
     assert w.first_title == "Item page"
+
+
+def test_trial_sources_come_from_the_targets_trial_table(tmp_path: Path) -> None:
+    plan_file = tmp_path / "plan.toml"
+    plan_file.write_text(
+        '[[target]]\nticker = "AVGO"\nexpected = 2026-12-10T16:15:00\ncik = 1730168\n'
+        'prnewswire = ["Broadcom Inc"]\n'
+        "[target.trial]\nbroadcom_newsroom = true\n"
+        'globenewswire = ["Broadcom Inc"]\nprnewswire_semiconductors = ["Broadcom Inc"]\n'
+        'rss = ["https://ir.hubspot.com/rss/news-releases.xml"]\n'
+        'pages = ["https://news.example.com/q4-results", "https://news.example.com/q4.pdf"]\n'
+    )
+
+    [target] = load_plan(plan_file).target
+    sources = target.sources()
+
+    assert not target.trial.post
+    assert [(s.name, s.trial) for s in sources] == [
+        ("edgar", False),
+        ("edgar_latest", False),
+        ("prnewswire", False),
+        ("broadcom_newsroom", True),
+        ("rss:ir.hubspot.com", True),
+        ("globenewswire", True),
+        ("globenewswire_busted", True),  # both copies, to see whether busting helps
+        ("prnewswire_semiconductors", True),
+        ("page:news.example.com/q4-results", True),
+        ("page:news.example.com/q4.pdf", True),
+    ]
+    assert "_=" in sources[4].url()  # a company feed is always busted
+    assert "_=" not in sources[5].url() and "_=" in sources[6].url()
+
+
+class StampedSource(Source):
+    """Lists the items in a JSON body, each with its own timestamp."""
+
+    name = "stamped"
+    interval = 0.01
+
+    def url(self) -> str:
+        return "https://example.com/stamped"
+
+    def parse(self, response: Response) -> list[Sighting]:
+        return [
+            Sighting(
+                item["key"],
+                f"Item {item['key']}",
+                "",
+                published=item["published"],
+                earnings=item.get("earnings", True),
+            )
+            for item in json.loads(response.body)
+        ]
+
+
+async def test_a_late_start_catches_up_on_releases_published_inside_the_window() -> None:
+    log = io.StringIO()
+    journal = Journal(log)
+    now = journal.now()
+    late = {"key": "8-K", "published": (now - timedelta(minutes=2)).isoformat()}
+    listed = [
+        late,
+        late,  # listed twice, still new once
+        # Published before the window opened, so it's old news
+        {"key": "last quarter", "published": (now - timedelta(hours=1)).isoformat()},
+        # Q4's site-local time names no time zone, so it can't tell
+        {"key": "q4", "published": f"{now.astimezone(ET):%m/%d/%Y %H:%M:%S}"},
+        # Inside the window, but not the release
+        {"key": "webcast", "published": now.isoformat(), "earnings": False},
+    ]
+    w = Watch("ABNB", StampedSource(), (now - timedelta(minutes=10), now + timedelta(seconds=1)))
+    seen: list[Sighting] = []
+
+    await watch(
+        w,
+        FakeFetcher((200, json.dumps(listed))),
+        journal,
+        now + timedelta(seconds=0.1),
+        lambda source, item: seen.append(item),
+    )
+
+    new = [e for e in events(log) if e["event"] == "new"]
+    assert [(e["key"], e["caught_up"]) for e in new] == [("8-K", True)]
+    assert [(item.key, item.caught_up) for item in seen] == [("8-K", True)]
+    [ready] = [e for e in events(log) if e["event"] == "ready"]
+    assert (ready["listed"], ready["caught_up"]) == (5, 1)
+    # Not a measurement of how fast the source is
+    assert w.first is None
+    assert w.caught_up == "Item 8-K"
+
+
+async def test_items_listed_at_an_on_time_start_are_old_news() -> None:
+    log = io.StringIO()
+    journal = Journal(log)
+    now = journal.now()
+    listed = [{"key": "8-K", "published": (now - timedelta(minutes=2)).isoformat()}]
+    # The window opens now, so anything already listed came before it
+    w = Watch("ABNB", StampedSource(), (now, now + timedelta(minutes=30)))
+
+    await watch(w, FakeFetcher((200, json.dumps(listed))), journal, now + timedelta(seconds=0.1))
+
+    assert [e for e in events(log) if e["event"] == "new"] == []
+    assert w.caught_up == ""
+
+
+class SoftNotFound(GuessedFile):
+    """A guessed page whose site answers 200 for anything, stamped with the time of asking."""
+
+    interval = 0.01
+
+    def parse(self, response: Response) -> list[Sighting]:
+        now = datetime.now(UTC).isoformat()
+        return [Sighting(self.file_url, "Page", self.file_url, published=now, earnings=True)]
+
+
+async def test_a_guess_already_there_at_the_first_poll_isnt_caught_up() -> None:
+    log = io.StringIO()
+    journal = Journal(log)
+    now = journal.now()
+    w = Watch(
+        "UNH",
+        SoftNotFound("https://example.com/q4-results"),
+        (now - timedelta(minutes=10), now + timedelta(minutes=30)),
+    )
+
+    await watch(w, FakeFetcher((200, "")), journal, now + timedelta(seconds=0.1))
+
+    assert [e for e in events(log) if e["event"] == "new"] == []
+    assert w.polls == 1  # found at once, so it stops, as before
+
+
+async def test_an_item_listed_twice_is_new_once() -> None:
+    log = io.StringIO()
+    journal = Journal(log)
+    w = Watch("NET", ListSource())
+    seen: list[str] = []
+
+    await watch(
+        w,
+        FakeFetcher((200, "a"), (200, "a b b"), (200, "b a b")),
+        journal,
+        journal.now() + timedelta(seconds=0.1),
+        lambda source, item: seen.append(item.key),
+    )
+
+    assert [e["key"] for e in events(log) if e["event"] == "new"] == ["b"]
+    assert seen == ["b"]
+
+
+async def test_new_items_log_how_long_the_poll_waited_for_its_host() -> None:
+    log = io.StringIO()
+    journal = Journal(log)
+    w = Watch("AVGO", ListSource())
+    fetcher = FakeFetcher((200, "a"), (0, ""), (200, "a b"), queued=0.25)
+
+    await watch(w, fetcher, journal, end=journal.now() + timedelta(seconds=0.1))
+    target = Target(ticker="AVGO", expected=journal.now(), cik=1730168)
+    summarize(target, [w], journal)
+
+    [new] = [e for e in events(log) if e["event"] == "new"]
+    assert new["queued_ms"] == 250
+    [summary] = [e for e in events(log) if e["event"] == "summary"]
+    [row] = cast(list[dict[str, object]], summary["sources"])
+    assert (row["queued_median_ms"], row["queued_max_ms"]) == (250, 250)
+    assert (row["timeouts"], row["errors"], row["trial"]) == (1, 0, False)
+
+
+class PageSource(ListSource):
+    """Lists pages it downloaded whole."""
+
+    def parse(self, response: Response) -> list[Sighting]:
+        return [
+            Sighting(key, f"Page {key}", "", earnings=True, body=b"<html>the release</html>")
+            for key in response.body.decode().split()
+        ]
+
+
+async def test_a_poll_that_downloads_the_release_logs_its_text_arriving() -> None:
+    log = io.StringIO()
+    journal = Journal(log)
+    w = Watch("CRWD", PageSource())
+
+    await watch(
+        w, FakeFetcher((200, ""), (200, "page")), journal, journal.now() + timedelta(seconds=0.1)
+    )
+
+    [new] = [e for e in events(log) if e["event"] == "new"]
+    assert "body" not in new  # far too big for the log
+    [body] = [e for e in events(log) if e["event"] == "body"]
+    assert (body["key"], body["via"], body["bytes"]) == ("page", "poll", 24)
+
+
+class CompanyFeed(Source):
+    """One feed for every company, listing "TICKER:key" items, read for one company."""
+
+    name = "feed"
+    interval = 0.01
+
+    def __init__(self, ticker: str) -> None:
+        self.ticker = ticker
+
+    @property
+    def share_key(self) -> Hashable:
+        return self.name
+
+    def url(self) -> str:
+        return "https://example.com/feed"
+
+    def parse(self, response: Response) -> list[Sighting]:
+        items = response.body.decode().split()
+        return [Sighting(i, i, "", earnings=True) for i in items if i.startswith(self.ticker)]
+
+
+async def test_overlapping_windows_share_one_poll_of_a_feed() -> None:
+    log = io.StringIO()
+    journal = Journal(log)
+    fetcher = FakeFetcher((200, ""), (200, "NVDA:1 AMD:2"))
+    polls = Polls(fetcher, journal)
+    nvda, amd = Watch("NVDA", CompanyFeed("NVDA")), Watch("AMD", CompanyFeed("AMD"))
+    now = journal.now()
+
+    await asyncio.gather(
+        polls.watch(nvda, now + timedelta(seconds=0.1)),
+        polls.watch(amd, now + timedelta(seconds=0.25)),
+    )
+
+    # Every request went to both watches while both windows were open
+    assert fetcher.sent == amd.polls
+    assert 1 < nvda.polls < amd.polls
+    # Each watch still kept only its own company's items
+    assert (nvda.first_title, amd.first_title) == ("NVDA:1", "AMD:2")
+    new = [(e["ticker"], e["key"]) for e in events(log) if e["event"] == "new"]
+    assert new == [("NVDA", "NVDA:1"), ("AMD", "AMD:2")]
+    # Once both windows close, nothing polls the feed
+    await asyncio.sleep(0.05)
+    sent = fetcher.sent
+    await asyncio.sleep(0.05)
+    assert fetcher.sent == sent
+
+
+class CountingFetcher(FakeFetcher):
+    """Says when it has answered a given number of requests."""
+
+    def __init__(self, *responses: tuple[int, str], after: int) -> None:
+        super().__init__(*responses)
+        self.after = after
+        self.answered = asyncio.Event()
+
+    async def request(
+        self,
+        method: str,
+        url: str,
+        headers: dict[str, str] | None = None,
+        give_up_after: float | None = None,
+        urgent: bool = False,
+    ) -> Response:
+        response = await super().request(method, url, headers, give_up_after, urgent)
+        if self.sent == self.after:
+            self.answered.set()
+        return response
+
+
+async def test_a_window_opening_later_joins_the_feeds_poll() -> None:
+    log = io.StringIO()
+    journal = Journal(log)
+    old, new = (200, "AMD:old"), (200, "AMD:old AMD:new")
+    fetcher = CountingFetcher(old, old, old, new, after=2)
+    polls = Polls(fetcher, journal)
+    first, later = Watch("NVDA", CompanyFeed("NVDA")), Watch("AMD", CompanyFeed("AMD"))
+    end = journal.now() + timedelta(seconds=0.2)
+
+    async def join_later() -> None:
+        await fetcher.answered.wait()  # the feed has been polled twice
+        await polls.watch(later, end)
+
+    await asyncio.gather(polls.watch(first, end), join_later())
+
+    assert fetcher.sent == first.polls > later.polls
+    # Its first poll is only a baseline, even though the feed had been polled before it joined
+    assert [e["key"] for e in events(log) if e["event"] == "new"] == ["AMD:new"]
+
+
+async def test_an_urgent_request_takes_the_hosts_next_turn_but_keeps_its_gap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(fetch, "host_gap", lambda host: 0.05)
+    fetcher = Fetcher("Test Person test@example.com")
+    turns: list[tuple[str, float]] = []
+
+    async def take_turn(name: str, urgent: bool = False) -> None:
+        await fetcher.wait_turn("example.com", urgent)
+        turns.append((name, time.monotonic()))
+
+    await take_turn("poll")  # the host is free, so this goes at once
+    queued = [asyncio.create_task(take_turn(f"poll {i}")) for i in range(3)]
+    await asyncio.sleep(0)  # they line up behind it
+    await take_turn("release text", urgent=True)
+    await asyncio.gather(*queued)
+
+    assert [name for name, _ in turns] == ["poll", "release text", "poll 0", "poll 1", "poll 2"]
+    gaps = [b - a for (_, a), (_, b) in itertools.pairwise(turns)]
+    assert min(gaps) >= 0.045
+
+
+async def test_fetcher_reports_how_long_a_request_waited_for_its_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(fetch, "host_gap", lambda host: 0.2)
+
+    async def answer(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        await reader.readuntil(b"\r\n\r\n")
+        writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+        await writer.drain()
+        writer.close()
+
+    server = await asyncio.start_server(answer, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    async with server, Fetcher("Test Person test@example.com") as fetcher:
+        url = f"http://127.0.0.1:{port}/"
+        first, second = await asyncio.gather(
+            fetcher.request("GET", url), fetcher.request("GET", url)
+        )
+    assert first.queued < 0.05
+    assert 0.15 < second.queued < 0.4

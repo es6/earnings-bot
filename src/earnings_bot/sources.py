@@ -10,8 +10,10 @@ import re
 import time
 import xml.etree.ElementTree as ET
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Hashable, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
+from email.utils import parsedate_to_datetime
 from urllib.parse import urljoin, urlsplit
 
 from earnings_bot.fetch import Response
@@ -22,6 +24,23 @@ BUSINESS_WIRE_EARNINGS = "https://feed.businesswire.com/rss/home/?rss=G1QFDERJXk
 PR_NEWSWIRE_EARNINGS = (
     "https://www.prnewswire.com/rss/financial-services-latest-news/earnings-list.rss"
 )
+# PR Newswire's Semiconductors category, another place Broadcom's releases are filed. Also
+# cached for 60 s.
+PR_NEWSWIRE_SEMICONDUCTORS = (
+    "https://www.prnewswire.com/rss/business-technology-latest-news/semiconductors-list.rss"
+)
+# GlobeNewswire's Earnings Releases and Operating Results subject: 20 items, cached for 60 s.
+# A cache-buster reaches its server, but on Nov 6, 2026 that server returned the same build
+# as the cached copy, so whether busting gets news sooner is still unmeasured.
+GLOBENEWSWIRE_EARNINGS = "https://rss.globenewswire.com/RssFeed/subjectcode/13"
+# Broadcom's own newsroom, as JSON: every financial release, newest first (196 items and about
+# 150 KB on Nov 6, 2026; it takes no paging parameters). Cloudflare served a copy 445 s old
+# despite the no-cache headers, and a cache-buster got a fresh one.
+BROADCOM_NEWSROOM = (
+    "https://www.broadcom.com/api/news/newsroom?parent=bltf3a3dd90a030e144&source_mode=Both"
+    "&category=Financial&locale=en-us&microsite=broadcom"
+)
+BROADCOM_RELEASE = "https://www.broadcom.com/api/getmetadata?url={path}&locale=en-us"
 
 # Matches "Uber Announces Results for Third Quarter 2026" and "Palantir Reports Q2 2026 U.S. Comm
 # Revenue Growth of 149%", but not the earlier "Uber Announces Date of Third Quarter 2026 Results
@@ -45,6 +64,22 @@ def _bust_cache(url: str) -> str:
     return f"{url}{'&' if '?' in url else '?'}_={time.time_ns()}"
 
 
+def published_time(stamp: str | None) -> datetime | None:
+    """A source's timestamp as a moment in time, or None when it doesn't say which time zone
+    it's in. RSS and HTTP dates and ISO times with an offset or Z qualify. Q4's site-local
+    "08/05/2026 06:55:00" doesn't."""
+    if not stamp:
+        return None
+    try:
+        moment = datetime.fromisoformat(stamp.strip())
+    except ValueError:
+        try:
+            moment = parsedate_to_datetime(stamp)
+        except (TypeError, ValueError, IndexError):
+            return None
+    return moment if moment.tzinfo else None
+
+
 @dataclass(frozen=True)
 class Sighting:
     """One item a source lists: a press release, a filing or a file."""
@@ -55,6 +90,10 @@ class Sighting:
     published: str | None = None  # the source's own timestamp, exactly as it gives it
     earnings: bool = False  # whether it looks like the earnings release itself
     details: dict[str, str] = field(default_factory=dict)
+    # The page or file itself, when the poll already downloaded it, so nobody fetches it again
+    body: bytes | None = field(default=None, repr=False, compare=False)
+    # Already listed when the bot started watching, but published inside the window
+    caught_up: bool = False
 
 
 class Source(ABC):
@@ -68,6 +107,13 @@ class Source(ABC):
     method = "GET"
     ok_statuses = frozenset({200})
     stop_when_found = False  # stop polling once the source lists anything
+    # A source on trial is recorded but doesn't post to Discord unless the schedule asks
+    trial = False
+
+    @property
+    def share_key(self) -> Hashable | None:
+        """Watches whose sources have the same key share one poll; None never shares."""
+        return None
 
     @abstractmethod
     def url(self) -> str: ...
@@ -267,6 +313,11 @@ class RssFeed(Source):
         names = "|".join(re.escape(_straight_quotes(company)) for company in companies)
         self._match = re.compile(rf"\b(?:{names})\b", re.IGNORECASE) if companies else None
 
+    @property
+    def share_key(self) -> Hashable:
+        # Each watch narrows the feed to its own company when it parses the shared response
+        return (type(self).__name__, self.name, self.feed_url, self.bust_cache)
+
     def url(self) -> str:
         return _bust_cache(self.feed_url) if self.bust_cache else self.feed_url
 
@@ -383,3 +434,78 @@ class GuessedFile(Source):
                 details={"size": response.headers.get("content-length", "")},
             )
         ]
+
+
+class GuessedPage(GuessedFile):
+    """A page (or file) the release is expected at, fetched whole on every poll, so that once it
+    exists the poll that found it already has the release. For hosts with plain 404s and small
+    404 pages: CrowdStrike's copy on FinancialContent, McDonald's MediaRoom, Airbnb's newsroom."""
+
+    method = "GET"
+
+    def __init__(self, page_url: str) -> None:
+        super().__init__(page_url)
+        self.name = "page:" + (urlsplit(page_url).hostname or "")
+
+    def parse(self, response: Response) -> list[Sighting]:
+        if response.status != 200:
+            return []
+        is_pdf = urlsplit(self.file_url).path.lower().endswith(".pdf")
+        content_type = response.headers.get("content-type", "")
+        if (is_pdf and not response.body.startswith(b"%PDF-")) or (
+            not is_pdf and not content_type.startswith("text/html")
+        ):
+            return []  # an error page in place of the file, or a file in place of the page
+        return [
+            Sighting(
+                key=self.file_url,
+                title=_page_title(response.body) or self.file_url,
+                url=self.file_url,
+                published=response.headers.get("last-modified"),
+                earnings=True,
+                details={"size": str(len(response.body))},
+                body=response.body,
+            )
+        ]
+
+
+def _page_title(body: bytes) -> str:
+    match = re.search(rb"<title[^>]*>(.*?)</title>", body[:200_000], re.IGNORECASE | re.DOTALL)
+    if match is None:
+        return ""
+    return re.sub(r"\s+", " ", match.group(1).decode(errors="replace")).strip()[:200]
+
+
+class BroadcomNewsroom(Source):
+    """Broadcom's newsroom JSON (see BROADCOM_NEWSROOM). Each release's full text comes from a
+    second call, BROADCOM_RELEASE."""
+
+    name = "broadcom_newsroom"
+    interval = 1.0
+
+    @property
+    def share_key(self) -> Hashable:
+        return self.name
+
+    def url(self) -> str:
+        return _bust_cache(BROADCOM_NEWSROOM)
+
+    def parse(self, response: Response) -> list[Sighting]:
+        releases = json.loads(response.body)
+        if not isinstance(releases, list):
+            raise ValueError("not a list of releases")
+        sightings = []
+        for release in releases:
+            title = str(release["title"]).strip()
+            sightings.append(
+                Sighting(
+                    key=str(release["content_id"]),
+                    title=title,
+                    url=urljoin("https://www.broadcom.com/", release["url"]),
+                    # UTC, and the release's real time. The detail's own date is 7 hours off.
+                    published=release.get("publish_date"),
+                    earnings=looks_like_earnings(title),
+                    details={"path": release["url"]},
+                )
+            )
+        return sightings
