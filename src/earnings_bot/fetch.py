@@ -11,6 +11,8 @@ from urllib.parse import urlsplit
 
 import aiohttp
 
+from earnings_bot.browser import DesktopChrome
+
 # Says who we are, in the same form search engine crawlers use
 USER_AGENT = "Mozilla/5.0 (compatible; earnings-bot/0.1; +https://github.com/es6/earnings-bot)"
 
@@ -63,6 +65,7 @@ class Fetcher:
         self._session: aiohttp.ClientSession | None = None
         self._hosts: dict[str, _HostQueue] = {}
         self._arrivals = itertools.count()
+        self._browser: DesktopChrome | None = None
 
     async def __aenter__(self) -> Self:
         self._session = aiohttp.ClientSession(
@@ -76,11 +79,26 @@ class Fetcher:
         return self
 
     async def __aexit__(self, *exc_info: object) -> None:
-        for queue in self._hosts.values():
-            if queue.dispatcher is not None:
-                queue.dispatcher.cancel()
-        if self._session is not None:
-            await self._session.close()
+        try:
+            if self._browser is not None:
+                await self._browser.close()
+        finally:
+            for queue in self._hosts.values():
+                if queue.dispatcher is not None:
+                    queue.dispatcher.cancel()
+            if self._session is not None:
+                await self._session.close()
+
+    async def browser_request(
+        self, url: str, warmup: str, give_up_after: float, *, urgent: bool = False
+    ) -> Response:
+        if self._session is None:
+            raise RuntimeError("Fetcher must be used with 'async with'")
+        if self._browser is None:
+            self._browser = DesktopChrome()
+        return await self._browser.request(
+            url, warmup, give_up_after, lambda host: self.wait_turn(host, urgent)
+        )
 
     async def request(
         self,
@@ -89,6 +107,8 @@ class Fetcher:
         headers: dict[str, str] | None = None,
         give_up_after: float | None = None,
         urgent: bool = False,
+        *,
+        allow_redirects: bool = True,
     ) -> Response:
         """Raises TimeoutError if the whole response hasn't arrived within `give_up_after`
         seconds (the Fetcher's own timeout if None). Waiting for this host's turn doesn't count,
@@ -106,7 +126,9 @@ class Fetcher:
             self._timeout if give_up_after is None else aiohttp.ClientTimeout(total=give_up_after)
         )
         started = time.monotonic()
-        async with self._session.request(method, url, headers=headers, timeout=limit) as r:
+        async with self._session.request(
+            method, url, headers=headers, timeout=limit, allow_redirects=allow_redirects
+        ) as r:
             body = await r.read()
             headers = {name.lower(): value for name, value in r.headers.items()}
         return Response(

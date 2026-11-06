@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 import pytest
 
 from earnings_bot import pipeline
+from earnings_bot.browser_sources import BrowserPDF
 from earnings_bot.estimates import Estimates
 from earnings_bot.fetch import Response
 from earnings_bot.pipeline import Poster, Release, Releases, describe_source
@@ -258,6 +259,8 @@ class UploadedLater(RoutedFetcher):
         headers: dict[str, str] | None = None,
         give_up_after: float | None = None,
         urgent: bool = False,
+        *,
+        allow_redirects: bool = True,
     ) -> Response:
         if url != PDF:
             return await super().request(method, url, headers, give_up_after)
@@ -294,3 +297,21 @@ async def test_a_missing_file_isnt_retried_after_the_window_closes() -> None:
 
     assert files.pdf_requests == 1
     assert [kind for kind, _ in poster.calls] == ["send"]
+
+
+async def test_browser_pdf_attaches_already_verified_bytes_without_another_get() -> None:
+    warmup = "https://corporate.mcdonalds.com/"
+    url = warmup + "release.pdf"
+    source = BrowserPDF(url, warmup)
+    payload = Response(url, 200, {}, b"%PDF-1.7\n", 0.04)
+    sighting = source.parse(payload)[0]
+    raw = RoutedFetcher({})
+    poster = FakePoster()
+    release = Release(uber(), poster, raw, Journal(io.StringIO()), None, None)
+
+    release.add(source, sighting)
+    release.add(source, sighting)
+    await release.finish()
+
+    assert raw.requests == []
+    assert [kind for kind, _ in poster.calls] == ["send", "attach"]

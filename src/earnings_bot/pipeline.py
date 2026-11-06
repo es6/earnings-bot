@@ -141,6 +141,7 @@ class Release:
         self.note = note
         self.links: dict[str, str] = {}  # url -> label, in the order they turned up
         self.files: set[str] = set()
+        self._downloading: set[str] = set()
         self.attach_retry = ATTACH_RETRY_SECONDS
         self.first_seen: datetime | None = None
         self.first_seen_at = 0.0  # time.monotonic(), for timing the steps
@@ -163,7 +164,7 @@ class Release:
         is_file = urlsplit(sighting.url).path.lower().endswith(FILE_TYPES)
         self._spawn(self._link(_file_name(sighting.url) if is_file else label, sighting.url))
         if is_file:
-            self._spawn(self._attach(sighting.url))
+            self._spawn(self._attach(sighting.url, sighting.body))
         elif not self.has_text or (self.summarizer and not self.summarizing):
             self._spawn(self._read(source, sighting, label))
 
@@ -253,20 +254,30 @@ class Release:
         else:
             self.journal.say(f"{self.target.ticker}: added the {label} link, live after {live}s")
 
-    async def _attach(self, url: str) -> None:
+    async def _attach(self, url: str, body: bytes | None = None) -> None:
         name = _file_name(url)
         if name in self.files:
             return
-        self.files.add(name)
-        response = await self._download(url, name)
-        if response.status != 200 or len(response.body) > MAX_FILE_BYTES:
+        status = 200
+        if body is None:
+            if name in self._downloading:
+                return
+            self._downloading.add(name)
+            try:
+                response = await self._download(url, name)
+                status, body = response.status, response.body
+            finally:
+                self._downloading.discard(name)
+        if status != 200 or len(body) > MAX_FILE_BYTES:
             self.journal.say(
-                f"{self.target.ticker}: couldn't attach {name} (HTTP "
-                f"{response.status}, {len(response.body):,} bytes)"
+                f"{self.target.ticker}: couldn't attach {name} (HTTP {status}, {len(body):,} bytes)"
             )
             return
         async with self.lock:
-            stamp = await self.poster.attach(name, response.body)
+            if name in self.files:
+                return
+            stamp = await self.poster.attach(name, body)
+            self.files.add(name)
         self.journal.write(
             "attached",
             ticker=self.target.ticker,

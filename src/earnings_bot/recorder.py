@@ -26,6 +26,8 @@ from zoneinfo import ZoneInfo
 import aiohttp
 from pydantic import BaseModel, ValidationError, field_validator
 
+from earnings_bot.browser import BrowserError, BrowserUnavailable
+from earnings_bot.browser_sources import IRTrial
 from earnings_bot.clock import TrustedClock
 from earnings_bot.config import RecorderSettings
 from earnings_bot.fetch import Fetcher, Response
@@ -69,6 +71,7 @@ class Trial(BaseModel):
     # Names to look for in PR Newswire's Semiconductors feed
     prnewswire_semiconductors: list[str] = []
     pages: list[str] = []  # exact URLs of the release page or file, fetched whole
+    ir: IRTrial | None = None  # issuer browser listings and official PDFs
 
     def sources(self) -> list[Source]:
         sources: list[Source] = []
@@ -90,6 +93,8 @@ class Trial(BaseModel):
                 )
             )
         sources += _named_apart([GuessedPage(url) for url in self.pages])
+        if self.ir:
+            sources += self.ir.sources()
         for source in sources:
             source.trial = True
         return sources
@@ -215,8 +220,8 @@ class Watch:
     known: set[str] | None = None  # keys of the items listed so far; None before the first poll
     first: datetime | None = None  # when the first new earnings item showed up
     first_title: str = ""
-    # The first earnings item that was already listed at the first poll but published inside
-    # the window. It doesn't say how fast the source is, so it never sets `first`.
+    # The first earnings item that was already available at the first poll and matches this
+    # window or scheduled release. It doesn't say how fast the source is, so it never sets `first`.
     caught_up: str = ""
     previous: datetime | None = None  # when the last answered poll went out
     problem: str | None = None  # the current error, so a failing source reports it only once
@@ -240,7 +245,11 @@ class PollError(Exception):
 async def fetch(source: Source, fetcher: Fetcher) -> Response:
     """One poll's request. Raises PollError when the answer can't be used."""
     try:
-        response = await fetcher.request(source.method, source.url(), give_up_after=source.timeout)
+        response = await source.fetch(fetcher)
+    except BrowserUnavailable as error:
+        raise PollError(f"desktop Chrome unavailable: {error}", fatal=True) from error
+    except BrowserError as error:
+        raise PollError(f"desktop Chrome: {error}") from error
     except TimeoutError as error:
         raise PollError(f"no answer within {source.timeout:g}s", timeout=True) from error
     except aiohttp.ClientError as error:
@@ -306,14 +315,14 @@ def record_items(
         known.add(item.key)
         if not first_poll:
             new.append(item)
-        elif _caught_up(w, item):
+        elif w.source.report_initial or _caught_up(w, item):
             new.append(replace(item, caught_up=True))
     if first_poll:
         w.known = known
         journal.write(
             "ready", ticker=w.ticker, source=w.source.name, listed=len(items), caught_up=len(new)
         )
-        late = f", {len(new)} published since the window opened" if new else ""
+        late = f", {len(new)} already out" if new else ""
         journal.say(f"{w.ticker} {w.source.name}: ready, {len(items)} listed{late}")
     for item in new:
         seen = journal.now()
