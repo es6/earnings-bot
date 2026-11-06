@@ -2,8 +2,10 @@
 pacing so that a busy evening can't hammer any one site."""
 
 import asyncio
+import heapq
+import itertools
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Self
 from urllib.parse import urlsplit
 
@@ -40,6 +42,16 @@ class Response:
     headers: dict[str, str]  # names in lowercase
     body: bytes
     elapsed: float  # seconds from sending the request to reading the whole body
+    queued: float = 0.0  # seconds spent waiting for the host's turn before sending
+
+
+@dataclass
+class _HostQueue:
+    """Requests waiting for one host's turn: urgent ones first, then in order of arrival."""
+
+    next_turn: float = 0.0  # time.monotonic() from which the host can take another request
+    waiting: list[tuple[int, int, asyncio.Future[None]]] = field(default_factory=list)
+    dispatcher: asyncio.Task[None] | None = None
 
 
 class Fetcher:
@@ -49,7 +61,8 @@ class Fetcher:
         self._sec_user_agent = sec_user_agent
         self._timeout = aiohttp.ClientTimeout(total=timeout)
         self._session: aiohttp.ClientSession | None = None
-        self._next_slot: dict[str, float] = {}
+        self._hosts: dict[str, _HostQueue] = {}
+        self._arrivals = itertools.count()
 
     async def __aenter__(self) -> Self:
         self._session = aiohttp.ClientSession(
@@ -63,6 +76,9 @@ class Fetcher:
         return self
 
     async def __aexit__(self, *exc_info: object) -> None:
+        for queue in self._hosts.values():
+            if queue.dispatcher is not None:
+                queue.dispatcher.cancel()
         if self._session is not None:
             await self._session.close()
 
@@ -72,14 +88,17 @@ class Fetcher:
         url: str,
         headers: dict[str, str] | None = None,
         give_up_after: float | None = None,
+        urgent: bool = False,
     ) -> Response:
         """Raises TimeoutError if the whole response hasn't arrived within `give_up_after`
         seconds (the Fetcher's own timeout if None). Waiting for this host's turn doesn't count,
-        which is why this isn't left to the caller's `asyncio.timeout`."""
+        which is why this isn't left to the caller's `asyncio.timeout`. An urgent request, such
+        as fetching a release that just turned up, takes the host's next turn ahead of polls."""
         if self._session is None:
             raise RuntimeError("Fetcher must be used with `async with`")
         host = urlsplit(url).hostname or ""
-        await self._wait_turn(host)
+        asked = time.monotonic()
+        await self.wait_turn(host, urgent)
         user_agent = self._sec_user_agent if _on_domain(host, "sec.gov") else USER_AGENT
         headers = {"User-Agent": user_agent, **(headers or {})}
         # aiohttp rounds a timeout of 5 s or more up to a whole second; shorter ones are exact
@@ -90,12 +109,31 @@ class Fetcher:
         async with self._session.request(method, url, headers=headers, timeout=limit) as r:
             body = await r.read()
             headers = {name.lower(): value for name, value in r.headers.items()}
-        return Response(url, r.status, headers, body, time.monotonic() - started)
+        return Response(
+            url, r.status, headers, body, time.monotonic() - started, queued=started - asked
+        )
 
-    async def _wait_turn(self, host: str) -> None:
-        # Book the next free slot for this host, then sleep until it comes up. Nothing awaits
-        # between reading and booking, so concurrent callers always get distinct slots.
+    async def wait_turn(self, host: str, urgent: bool = False) -> None:
+        """Returns once it's the caller's turn to send the host a request."""
+        queue = self._hosts.setdefault(host, _HostQueue())
         now = time.monotonic()
-        slot = max(now, self._next_slot.get(host, now))
-        self._next_slot[host] = slot + host_gap(host)
-        await asyncio.sleep(slot - now)
+        if not queue.waiting and now >= queue.next_turn:
+            queue.next_turn = now + host_gap(host)
+            return
+        turn: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        heapq.heappush(queue.waiting, (0 if urgent else 1, next(self._arrivals), turn))
+        if queue.dispatcher is None or queue.dispatcher.done():
+            queue.dispatcher = asyncio.create_task(self._dispatch(host, queue))
+        # A caller that gets cancelled cancels its turn too, and the dispatcher skips it
+        await turn
+
+    async def _dispatch(self, host: str, queue: _HostQueue) -> None:
+        # Hands out the host's turns one gap apart, best waiter first, until nobody's waiting
+        while queue.waiting:
+            await asyncio.sleep(max(0.0, queue.next_turn - time.monotonic()))
+            while queue.waiting:
+                _, _, turn = heapq.heappop(queue.waiting)
+                if not turn.done():
+                    queue.next_turn = time.monotonic() + host_gap(host)
+                    turn.set_result(None)
+                    break

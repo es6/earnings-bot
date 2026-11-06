@@ -12,9 +12,15 @@
 #            unknown
 # eightk     acceptance times of the last four item 2.02 8-Ks, HH:MM US Eastern, newest first.
 #            A few may be other filings under that item. Tesla's leaves out its delivery reports.
-# guess      URL templates. {yyyy} {mm} {dd} are the release date. {fy} {fyy} {fq} are the
-#            fiscal year and quarter as the company labels them. {nth} is first to fourth,
-#            and {ord} is 1st to 4th.
+# guess      URL templates. {yyyy} {mm} {dd} are the release date, and {m} {d} the same
+#            without a leading zero. {fy} {fyy} {fq} are the fiscal year and quarter as the
+#            company labels them. {nth} is first to fourth, {NTH} the same in capitals, and
+#            {ord} is 1st to 4th. {q4:TEXT} is TEXT in a fourth quarter and nothing otherwise,
+#            for headlines that add "and Full Year" then.
+# trial      sources being tried out, recorded on release days but not posted to Discord
+#            until they prove right and fast: broadcom_newsroom, rss (company feeds),
+#            globenewswire and prnewswire_semiconductors (names to match in those feeds), and
+#            pages (URL templates of the release page, fetched whole)
 
 [company.AAPL]
 name = "Apple"
@@ -53,9 +59,12 @@ guess = [
     "https://s26.q4cdn.com/656283129/files/doc_financials/{fy}/q{fq}/Airbnb_Q{fq}-{fy}-Shareholder-Letter.pdf",
     "https://s26.q4cdn.com/656283129/files/doc_financials/{fy}/q{fq}/Airbnb_Q{fq}-{fy}-Shareholder-Letter_Final.pdf",
 ]
-evidence = "Over four quarters the 8-K (4:00:27 to 4:02:53 PM) came 7 s to 2m33s before PR Newswire's 4:03 PM release, and its exhibit 99.1 is the whole shareholder letter. The wire and IR releases only point to the letter. The letter PDF went up 14 to 41 s after 4:03 (Last-Modified), named with a hyphen in Q2 2026, an underscore before that, and _Final from Q3 2024 to Q1 2025. The -FINAL and -FINAL-1 names the feeds list now are corrections uploaded days later. investors.airbnb.com is behind Cloudflare, which challenged 1 of 90 polls at one a second with a 403. Q3 2026 (Nov 5): 8-K accepted 4:02:09 PM, and the letter went up at 4:03:20 in files/content_files/ instead of the quarter's folder. The bot started too late to time the sources, but the IR site answered its first polls with 429 and a 403 at 4:13."
-todo = "Time the 8-K against PR Newswire live; Nov 5 was missed."
-checked = 2026-11-05
+evidence = "Over four quarters the 8-K (4:00:27 to 4:02:53 PM) came 7 s to 2m33s before PR Newswire's 4:03 PM release, and its exhibit 99.1 is the whole shareholder letter. The wire and IR releases only point to the letter. The letter PDF went up 14 to 41 s after 4:03 (Last-Modified), named with a hyphen in Q2 2026, an underscore before that, and _Final from Q3 2024 to Q1 2025. The -FINAL and -FINAL-1 names the feeds list now are corrections uploaded days later. investors.airbnb.com is behind Cloudflare, which challenged 1 of 90 polls at one a second with a 403. Q3 2026 (Nov 5): 8-K accepted 4:02:09 PM, and the letter went up at 4:03:20 in files/content_files/ instead of the quarter's folder. The bot started too late to time the sources, but the IR site answered its first polls with 429 and a 403 at 4:13. Nov 6, 2026: Airbnb's newsroom has the release at news.airbnb.com/airbnb-q3-2026-financial-results/ and answers us. The URL without the trailing slash redirects to it."
+todo = "Time the 8-K against PR Newswire and the newsroom page live; Nov 5 was missed."
+checked = 2026-11-06
+
+[company.ABNB.trial]
+pages = ["https://news.airbnb.com/airbnb-q{fq}-{fy}-financial-results"]
 
 [company.ADBE]
 name = "Adobe"
@@ -72,6 +81,7 @@ checked = 2026-10-31
 
 [company.AMD]
 name = "AMD"
+names = ["AMD", "Advanced Micro Devices"]
 cik = 2488
 platform = "equisolve"
 reachable = true
@@ -80,8 +90,11 @@ release_time = "16:15"
 eightk = ["16:16", "16:16", "16:16", "16:16"]
 fastest = "company-rss"
 rss = ["https://ir.amd.com/news-events/press-releases/rss"]
-evidence = "Q2 2026: RSS item at 4:15 PM. The 8-K has come at 4:16 PM four quarters running. GlobeNewswire's feed refuses automated reads. The feed sits behind CloudFront, which ignores cache-busting; how stale it gets is measured on November 3, 2026."
-checked = 2026-10-31
+evidence = "Q2 2026: RSS item at 4:15 PM. The 8-K has come at 4:16 PM four quarters running. GlobeNewswire's feed refuses automated reads. The feed sits behind CloudFront, which ignores cache-busting; how stale it gets is measured on November 3, 2026. Nov 6, 2026: GlobeNewswire's RSS host, rss.globenewswire.com, answers us, unlike www.globenewswire.com, and names each release's company in dc:contributor."
+checked = 2026-11-06
+
+[company.AMD.trial]
+globenewswire = ["AMD", "Advanced Micro Devices"]
 
 [company.AMZN]
 name = "Amazon.com"
@@ -99,15 +112,21 @@ checked = 2026-10-31
 
 [company.AVGO]
 name = "Broadcom"
+names = ["Broadcom Inc"]
 cik = 1730168
 platform = "notified"
 reachable = false
-wire = "none"
+wire = "PR Newswire"
+release_time = "16:15"
 eightk = ["16:26", "16:21", "16:16", "16:17"]
-fastest = "sec-8k"
-evidence = "No newswire: not on Business Wire, GlobeNewswire or PR Newswire. investors.broadcom.com blocks automated reads, and its release PDFs are regenerated later, so their Last-Modified dates say nothing. 8-K at 4:16 to 4:26 PM."
-todo = "Find out whether the IR site posts before the 8-K, by watching it live."
-checked = 2026-10-31
+fastest = "newswire"
+evidence = "investors.broadcom.com blocks automated reads, and its release PDFs are regenerated later, so their Last-Modified dates say nothing. 8-K at 4:16 to 4:26 PM. Nov 6, 2026: the releases are on PR Newswire as \"Broadcom Inc.\", which the Oct 31 check missed. Broadcom's own newsroom JSON on www.broadcom.com answers us and lists every financial release with its UTC time: Q3 FY26 at 4:15 PM ET on Sept 2. Cloudflare served a copy 445 s old until it was cache-busted. /api/getmetadata gives a release's full text in `body`, and answers 200 with a stub that has no body for an ID it doesn't know."
+todo = "Time PR Newswire's Earnings and Semiconductors feeds, the newsroom JSON and the 8-K at the mid-December release."
+checked = 2026-11-06
+
+[company.AVGO.trial]
+broadcom_newsroom = true
+prnewswire_semiconductors = ["Broadcom Inc"]
 
 [company.BA]
 name = "Boeing"
@@ -189,8 +208,14 @@ wire = "Business Wire"
 release_time = "16:05"
 eightk = ["16:07", "16:06", "16:06", "16:11"]
 fastest = "newswire"
-evidence = "Q2 FY27: Business Wire 4:05 PM, 8-K 4:07:02 PM, and the IR site's release PDF (/node/17376/pdf) 4:09:12 PM. The IR site blocks automated reads. 8-K at 4:06 to 4:11 PM over four quarters."
-checked = 2026-10-31
+evidence = "Q2 FY27: Business Wire 4:05 PM, 8-K 4:07:02 PM, and the IR site's release PDF (/node/17376/pdf) 4:09:12 PM. The IR site blocks automated reads. 8-K at 4:06 to 4:11 PM over four quarters. Nov 6, 2026: FinancialContent republishes the Business Wire release at a predictable URL and answers us, with plain 404s for pages that don't exist yet: bizwire-2026-8-26-crowdstrike-reports-second-quarter-fiscal-year-2027-financial-results for Q2 FY27. A fourth quarter's headline adds \"and Fiscal Year\"."
+todo = "Time the FinancialContent page against Business Wire and the 8-K at the early-December release."
+checked = 2026-11-06
+
+[company.CRWD.trial]
+pages = [
+    "https://markets.financialcontent.com/stocks/article/bizwire-{yyyy}-{m}-{d}-crowdstrike-reports-{nth}-quarter{q4:-and}-fiscal-year-{fy}-financial-results",
+]
 
 [company.DIS]
 name = "Disney"
@@ -276,8 +301,11 @@ wire = "Business Wire"
 release_time = "16:05"
 eightk = ["16:15", "16:12", "16:10", "16:20"]
 fastest = "newswire"
-evidence = "Q2 2026: Business Wire 4:05 PM, 8-K 4:15:17 PM. 8-Ks at 4:10 to 4:20 PM over four quarters (a 2026-10-06 layoff 8-K also listed item 2.02 and is left out). ir.hubspot.com is Notified (/node/<id>/html pages) behind Cloudflare, which answers 403 to automated reads, robots.txt included, so file URLs can't be found or guessed. Headlines vary: \"HubSpot Reports Q2 2026 Results\", \"HubSpot Reports Strong Q1 2026 Results\"."
-checked = 2026-11-04
+evidence = "Q2 2026: Business Wire 4:05 PM, 8-K 4:15:17 PM. 8-Ks at 4:10 to 4:20 PM over four quarters (a 2026-10-06 layoff 8-K also listed item 2.02 and is left out). ir.hubspot.com is Notified (/node/<id>/html pages) behind Cloudflare, which answers 403 to automated reads, robots.txt included, so file URLs can't be found or guessed. Headlines vary: \"HubSpot Reports Q2 2026 Results\", \"HubSpot Reports Strong Q1 2026 Results\". Nov 6, 2026: the IR site's press release feed, ir.hubspot.com/rss/news-releases.xml, answers us and stamped the Q3 release 4:05 PM. Its CDN may keep a copy for 30 days (s-maxage=2592000), so it's cache-busted."
+checked = 2026-11-06
+
+[company.HUBS.trial]
+rss = ["https://ir.hubspot.com/rss/news-releases.xml"]
 
 [company.INTC]
 name = "Intel"
@@ -361,8 +389,14 @@ wire = "PR Newswire"
 release_time = "07:00"
 eightk = ["07:01", "07:01", "16:02", "07:01"]
 fastest = "newswire"
-evidence = "Q2 2026: PR Newswire 7:00 AM, 8-K 7:01:40 AM. The release PDF went up on the IR site at 6:46 AM, 14 minutes before the release, but that host blocks automated reads (Akamai)."
-checked = 2026-10-31
+evidence = "Q2 2026: PR Newswire 7:00 AM, 8-K 7:01:40 AM. The release PDF went up on the IR site at 6:46 AM, 14 minutes before the release, but that host blocks automated reads (Akamai). Nov 6, 2026: the release is also on McDonald's MediaRoom newsroom, which answers us: Q3 2026's was mcdonalds.mediaroom.com/2026-11-04-McDONALDS-REPORTS-THIRD-QUARTER-2026-RESULTS. A fourth quarter's reads FOURTH-QUARTER-AND-FULL-YEAR. Its origin sometimes takes 11 to 16 s to answer."
+todo = "Time the MediaRoom page against PR Newswire and the 8-K at the next release."
+checked = 2026-11-06
+
+[company.MCD.trial]
+pages = [
+    "https://mcdonalds.mediaroom.com/{yyyy}-{mm}-{dd}-McDONALDS-REPORTS-{NTH}-QUARTER{q4:-AND-FULL-YEAR}-{fy}-RESULTS",
+]
 
 [company.META]
 name = "Meta"
@@ -467,9 +501,12 @@ wire = "GlobeNewswire"
 eightk = ["16:21", "16:21", "16:31", "16:20"]
 fastest = "unknown"
 rss = ["https://nvidianews.nvidia.com/rss.xml"]
-evidence = "Releases go out on GlobeNewswire, whose feed refuses automated reads, and on nvidianews.nvidia.com, whose RSS feed stamped the Oct 28 call notice at 5:00 PM, the same minute as GlobeNewswire. The Q4 press feed lists only the call notice. 8-K at 4:20 to 4:31 PM."
-todo = "Measure the newsroom feed against the 8-K live on November 17, 2026. Its 20 items had already dropped the August results."
-checked = 2026-10-31
+evidence = "Releases go out on GlobeNewswire, whose feed refuses automated reads, and on nvidianews.nvidia.com, whose RSS feed stamped the Oct 28 call notice at 5:00 PM, the same minute as GlobeNewswire. The Q4 press feed lists only the call notice. 8-K at 4:20 to 4:31 PM. Nov 6, 2026: GlobeNewswire's RSS host, rss.globenewswire.com, answers us, unlike www.globenewswire.com, and names each release's company in dc:contributor."
+todo = "Measure the newsroom feed and GlobeNewswire against the 8-K live at the November release. The newsroom feed's 20 items had already dropped the August results."
+checked = 2026-11-06
+
+[company.NVDA.trial]
+globenewswire = ["NVIDIA"]
 
 [company.ORCL]
 name = "Oracle"

@@ -10,6 +10,8 @@ import argparse
 import json
 import sys
 import tomllib
+from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import date, datetime
 from functools import cache
 from pathlib import Path
@@ -18,13 +20,13 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from earnings_bot.recorder import ET, Target
+from earnings_bot.recorder import ET, Target, Trial
 
 COMPANIES = Path(__file__).with_name("companies.toml")
 NTH = ("first", "second", "third", "fourth")
 ORD = ("1st", "2nd", "3rd", "4th")
-# The placeholders a guess template may use; companies.toml explains each one
-FIELDS = frozenset({"yyyy", "mm", "dd", "fy", "fyy", "fq", "nth", "ord"})
+# The placeholders a URL template may use; companies.toml explains each one
+FIELDS = frozenset({"yyyy", "mm", "dd", "m", "d", "fy", "fyy", "fq", "nth", "NTH", "ord", "q4"})
 
 
 class KnownCompany(BaseModel):
@@ -41,6 +43,7 @@ class KnownCompany(BaseModel):
     fastest: Literal["ir-feed", "company-rss", "company-page", "newswire", "sec-8k", "unknown"]
     rss: list[str] = []
     guess: list[str] = []  # URL templates
+    trial: Trial = Trial()  # sources on trial; `pages` holds URL templates here
     evidence: str
     todo: str = ""
     checked: date
@@ -57,27 +60,50 @@ def template_fields(template: str) -> set[str]:
     return {name for _, name, _, _ in Formatter().parse(template) if name is not None}
 
 
-def guess_urls(
-    company: KnownCompany, released: date, fiscal_year: int, fiscal_quarter: int
+@dataclass(frozen=True)
+class _InQ4:
+    """`{q4:TEXT}` in a template is TEXT for a fourth-quarter release and nothing otherwise, for
+    headlines that add "and Full Year" once a year."""
+
+    fourth: bool
+
+    def __format__(self, text: str) -> str:
+        return text if self.fourth else ""
+
+
+def fill(
+    templates: Sequence[str], released: date, fiscal_year: int, fiscal_quarter: int
 ) -> list[str]:
-    """The company's guess templates filled in for one release. The fiscal year and quarter are
-    the company's own labels, e.g. Walmart's Q2 FY27 is reported in August 2026."""
+    """URL templates filled in for one release. The fiscal year and quarter are the company's
+    own labels, e.g. Walmart's Q2 FY27 is reported in August 2026."""
     values = {
         "yyyy": f"{released:%Y}",
         "mm": f"{released:%m}",
         "dd": f"{released:%d}",
+        "m": str(released.month),
+        "d": str(released.day),
         "fy": str(fiscal_year),
         "fyy": f"{fiscal_year % 100:02d}",
         "fq": str(fiscal_quarter),
         "nth": NTH[fiscal_quarter - 1],
+        "NTH": NTH[fiscal_quarter - 1].upper(),
         "ord": ORD[fiscal_quarter - 1],
+        "q4": _InQ4(fiscal_quarter == 4),
     }
-    return [template.format(**values) for template in company.guess]
+    return [template.format(**values) for template in templates]
+
+
+def guess_urls(
+    company: KnownCompany, released: date, fiscal_year: int, fiscal_quarter: int
+) -> list[str]:
+    """The company's guess templates filled in for one release."""
+    return fill(company.guess, released, fiscal_year, fiscal_quarter)
 
 
 def to_target(ticker: str, expected: datetime, fiscal_year: int, fiscal_quarter: int) -> Target:
     """A schedule entry for one release, built from what we know about the company."""
     company = known_companies()[ticker]
+    pages = fill(company.trial.pages, expected.date(), fiscal_year, fiscal_quarter)
     return Target(
         ticker=ticker,
         expected=expected,
@@ -91,6 +117,7 @@ def to_target(ticker: str, expected: datetime, fiscal_year: int, fiscal_quarter:
         guess=[]
         if company.soft_404
         else guess_urls(company, expected.date(), fiscal_year, fiscal_quarter),
+        trial=company.trial.model_copy(update={"pages": pages}),
     )
 
 
@@ -102,10 +129,24 @@ def target_toml(target: Target) -> str:
     if target.q4_host:
         lines.append(f'q4_host = "{target.q4_host}"')
     for key in ("newswire", "prnewswire", "rss", "guess"):
-        values: list[str] = getattr(target, key)
-        if values:
-            lines += [f"{key} = [", *(f"    {json.dumps(v)}," for v in values), "]"]
+        lines += _toml_list(key, getattr(target, key))
+    trial = target.trial
+    if trial != Trial(post=trial.post):
+        lines += [
+            "",
+            "# Recorded on trial. Set post = true once release days show these are right and fast.",
+            "[target.trial]",
+            f"post = {json.dumps(trial.post)}",
+        ]
+        if trial.broadcom_newsroom:
+            lines.append("broadcom_newsroom = true")
+        for key in ("rss", "globenewswire", "prnewswire_semiconductors", "pages"):
+            lines += _toml_list(key, getattr(trial, key))
     return "\n".join(lines)
+
+
+def _toml_list(key: str, values: list[str]) -> list[str]:
+    return [f"{key} = [", *(f"    {json.dumps(v)}," for v in values), "]"] if values else []
 
 
 def main() -> None:

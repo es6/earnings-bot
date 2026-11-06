@@ -9,16 +9,21 @@ import aiohttp
 
 from earnings_bot.fetch import Fetcher
 from earnings_bot.sources import (
+    BROADCOM_RELEASE,
+    BroadcomNewsroom,
     EdgarFilings,
     GuessedFile,
     Q4PressReleases,
     RssFeed,
     Sighting,
     Source,
+    _bust_cache,
 )
 
 # Shorter than any real earnings release, so error pages and teasers don't count
 MIN_RELEASE_CHARS = 2000
+# Newswires whose article pages don't let us in, so their items give no text
+BLOCKED_ARTICLES = ("businesswire.com", "globenewswire.com")
 
 # Tags that start a new line
 _BLOCK = re.compile(
@@ -96,10 +101,21 @@ def pick_exhibit(files: list[dict[str, str]], primary: str) -> str | None:
 
 
 async def _get_text(fetcher: Fetcher, url: str) -> str | None:
-    response = await fetcher.request("GET", url)
+    # The release just turned up, so this goes ahead of the host's polls
+    response = await fetcher.request("GET", url, urgent=True)
     if response.status != 200:
         return None
     return response.body.decode(errors="replace")
+
+
+async def _broadcom_body(fetcher: Fetcher, sighting: Sighting) -> str | None:
+    # An ID Broadcom doesn't know yet still answers 200, with a stub that has no "body". This is
+    # busted like the listing, in case Cloudflare kept that stub.
+    url = _bust_cache(BROADCOM_RELEASE.format(path=sighting.details["path"]))
+    page = await _get_text(fetcher, url)
+    release = json.loads(page) if page else None
+    body = release.get("body") if isinstance(release, dict) else None
+    return body if isinstance(body, str) and body else None
 
 
 async def _q4_body(fetcher: Fetcher, source: Q4PressReleases, release_id: str) -> str | None:
@@ -125,15 +141,24 @@ async def release_text(fetcher: Fetcher, source: Source, sighting: Sighting) -> 
     """The release's text from wherever this sighting points, or None if this source can't
     provide it."""
     try:
-        if isinstance(source, Q4PressReleases):
+        if sighting.body is not None:
+            # The poll already downloaded the page. A PDF needs no reading, because a
+            # release's HTML version always comes too.
+            if sighting.body.startswith(b"%PDF-"):
+                return None
+            html = sighting.body.decode(errors="replace")
+        elif isinstance(source, Q4PressReleases):
             html = await _q4_body(fetcher, source, sighting.key)
+        elif isinstance(source, BroadcomNewsroom):
+            html = await _broadcom_body(fetcher, sighting) if sighting.earnings else None
         elif isinstance(source, EdgarFilings):
             html = await _edgar_exhibit(fetcher, sighting) if sighting.earnings else None
         elif isinstance(source, GuessedFile | RssFeed):
             host = urlsplit(sighting.url).hostname or ""
-            # Business Wire's article pages drop automated requests, and PDFs need no reading
-            # because a release's HTML version always comes too
-            if host.endswith("businesswire.com") or sighting.url.lower().endswith(".pdf"):
+            # Business Wire's article pages drop automated requests, and GlobeNewswire's answer
+            # 403 (only its RSS host lets us in). PDFs need no reading, because a release's HTML
+            # version always comes too.
+            if host.endswith(BLOCKED_ARTICLES) or sighting.url.lower().endswith(".pdf"):
                 return None
             html = await _get_text(fetcher, sighting.url)
         else:

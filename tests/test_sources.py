@@ -1,20 +1,25 @@
 import itertools
 import json
+from datetime import UTC, datetime, timedelta, timezone
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
 from earnings_bot.fetch import Response, host_gap
 from earnings_bot.sources import (
+    GLOBENEWSWIRE_EARNINGS,
     PR_NEWSWIRE_EARNINGS,
     Q4_REFRESH_SECONDS,
+    BroadcomNewsroom,
     EdgarFilings,
     EdgarLatest,
     GuessedFile,
+    GuessedPage,
     Q4FinancialReports,
     Q4PressReleases,
     RssFeed,
     looks_like_earnings,
+    published_time,
 )
 
 
@@ -439,3 +444,112 @@ def test_atom_feed() -> None:
     assert entry.published == "2026-11-02T21:30:00.000Z"
     assert entry.details == {"feed_built": "2026-11-02T21:30:01.000Z"}
     assert entry.earnings
+
+
+CRWD_PAGE = (
+    "https://markets.financialcontent.com/stocks/article/bizwire-2026-12-2-crowdstrike-reports-"
+    "third-quarter-fiscal-year-2027-financial-results"
+)
+HTML = {"content-type": "text/html; charset=utf-8"}
+
+
+def test_guessed_page_isnt_there_until_it_answers_with_a_page() -> None:
+    page = GuessedPage(CRWD_PAGE)
+    release = b"<html><head><title>\n CrowdStrike Reports Third Quarter </title></head>...</html>"
+
+    assert page.name == "page:markets.financialcontent.com"
+    assert page.method == "GET"
+    assert page.stop_when_found
+    assert page.parse(response(b"<html>Not found</html>", status=404, headers=HTML)) == []
+    # Something other than a page, such as a JSON error, isn't the release either
+    assert page.parse(response(b"{}", headers={"content-type": "application/json"})) == []
+    [found] = page.parse(response(release, headers=HTML))
+    assert found.key == found.url == CRWD_PAGE
+    assert found.title == "CrowdStrike Reports Third Quarter"
+    assert found.earnings
+    assert found.body == release  # the poll already has the release, so nobody fetches it again
+    assert found.details == {"size": str(len(release))}
+
+
+def test_guessed_pdf_page_must_be_a_pdf() -> None:
+    pdf = GuessedPage("https://example.com/files/Q3-Earnings-Release.pdf")
+
+    assert pdf.parse(response(b"<html>Page Not Found</html>", headers=HTML)) == []
+    assert pdf.parse(response(b"", status=404)) == []
+    [found] = pdf.parse(response(b"%PDF-1.7 ...", headers={"content-type": "application/pdf"}))
+    assert found.body == b"%PDF-1.7 ..."
+
+
+BROADCOM = [
+    {
+        "content_id": "64786",
+        "title": "Bank of America, Blackstone, Citi and Morgan Stanley Announce Landmark Financing",
+        "publish_date": "2026-10-26T20:15:00Z",
+        "url": "/company/news/financial-releases/64786",
+    },
+    {
+        "content_id": "64671",
+        "title": " Broadcom Inc. Announces Third Quarter Fiscal Year 2026 Financial Results ",
+        "publish_date": "2026-09-02T20:15:00Z",
+        "url": "/company/news/financial-releases/64671",
+    },
+    {
+        "content_id": "64621",
+        "title": "Broadcom Inc. to Announce Third Quarter Fiscal Year 2026 Financial Results",
+        "publish_date": "2026-08-03T12:00:00Z",
+        "url": "/company/news/financial-releases/64621",
+    },
+]
+
+
+def test_broadcom_newsroom() -> None:
+    source = BroadcomNewsroom()
+
+    sightings = source.parse(response(json.dumps(BROADCOM)))
+
+    assert [s.earnings for s in sightings] == [False, True, False]
+    results = sightings[1]
+    assert results.key == "64671"
+    assert results.title == BROADCOM[1]["title"].strip()
+    assert results.url == "https://www.broadcom.com/company/news/financial-releases/64671"
+    assert results.details == {"path": "/company/news/financial-releases/64671"}
+    assert published_time(results.published) == datetime(2026, 9, 2, 20, 15, tzinfo=UTC)
+    # Cloudflare kept a copy 445 s old until it was busted
+    assert "&_=" in source.url()
+    with pytest.raises(ValueError, match="not a list"):
+        source.parse(response(json.dumps({"error": "busy"})))
+
+
+@pytest.mark.parametrize(
+    ("stamp", "moment"),
+    [
+        ("2026-09-02T20:15:00Z", datetime(2026, 9, 2, 20, 15, tzinfo=UTC)),  # Broadcom
+        ("2026-11-05T21:09:54.000Z", datetime(2026, 11, 5, 21, 9, 54, tzinfo=UTC)),  # EDGAR
+        (
+            "2026-11-05T16:09:54-05:00",  # EDGAR's latest-filings feed
+            datetime(2026, 11, 5, 16, 9, 54, tzinfo=timezone(timedelta(hours=-5))),
+        ),
+        # Business Wire, then GlobeNewswire
+        ("Wed, 04 Nov 2026 21:15:00 UT", datetime(2026, 11, 4, 21, 15, tzinfo=UTC)),
+        ("Fri, 06 Nov 2026 22:08 GMT", datetime(2026, 11, 6, 22, 8, tzinfo=UTC)),
+        ("08/05/2026 06:55:00", None),  # Q4's site-local time names no zone
+        ("2026-11-05T16:09:54", None),
+        ("", None),
+        (None, None),
+        ("soon", None),
+    ],
+)
+def test_published_time(stamp: str | None, moment: datetime | None) -> None:
+    assert published_time(stamp) == moment
+
+
+def test_one_feed_watched_for_several_companies_is_polled_once() -> None:
+    nvidia = RssFeed("globenewswire", GLOBENEWSWIRE_EARNINGS, ["NVIDIA"])
+    amd = RssFeed("globenewswire", GLOBENEWSWIRE_EARNINGS, ["AMD"])
+    busted = RssFeed("globenewswire_busted", GLOBENEWSWIRE_EARNINGS, ["AMD"], bust_cache=True)
+
+    assert nvidia.share_key == amd.share_key
+    assert busted.share_key != amd.share_key
+    assert BroadcomNewsroom().share_key == BroadcomNewsroom().share_key
+    assert GuessedPage(CRWD_PAGE).share_key is None
+    assert EdgarFilings(1).share_key is None
