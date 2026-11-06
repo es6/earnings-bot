@@ -11,6 +11,7 @@ class RoutedFetcher(Fetcher):
         self.routes = routes
         self.headers = headers or {}
         self.requests: list[tuple[str, str, dict[str, str] | None]] = []
+        self.no_redirect: list[str] = []
         self.urgent: list[str] = []  # URLs asked for ahead of the host's polls
 
     async def request(
@@ -20,8 +21,12 @@ class RoutedFetcher(Fetcher):
         headers: dict[str, str] | None = None,
         give_up_after: float | None = None,
         urgent: bool = False,
+        *,
+        allow_redirects: bool = True,
     ) -> Response:
         self.requests.append((method, url, headers))
+        if not allow_redirects:
+            self.no_redirect.append(url)
         if urgent:
             self.urgent.append(url)
         for part, (status, body) in self.routes.items():

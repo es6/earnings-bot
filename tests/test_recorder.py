@@ -58,6 +58,8 @@ class FakeFetcher(Fetcher):
         headers: dict[str, str] | None = None,
         give_up_after: float | None = None,
         urgent: bool = False,
+        *,
+        allow_redirects: bool = True,
     ) -> Response:
         self.sent += 1
         status, body = self.responses[0] if len(self.responses) == 1 else self.responses.popleft()
@@ -509,6 +511,8 @@ class CountingFetcher(FakeFetcher):
         headers: dict[str, str] | None = None,
         give_up_after: float | None = None,
         urgent: bool = False,
+        *,
+        allow_redirects: bool = True,
     ) -> Response:
         response = await super().request(method, url, headers, give_up_after, urgent)
         if self.sent == self.after:

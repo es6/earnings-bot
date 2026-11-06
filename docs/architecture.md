@@ -217,17 +217,15 @@ latest quarter only. The details per company, with the last four 8-K times, are 
 - **Some own sites have predictable URLs** for the release page or PDF: UnitedHealth, Target,
   Walmart, Goldman Sachs and Microsoft. These are guess templates in `companies.toml`. Others
   name files by random IDs: JPMorgan, Bank of America, and Walmart's PDFs.
-- **Tesla is the biggest gap.** It uses no wire, and its update deck sits on hosts that block
-  automated requests: `ir.tesla.com`, and the deck's own host `assets-ir.tesla.com` (both Akamai
-  403). That holds even though the deck's name is predictable (`TSLA-Q3-2026-Update.pdf`). So
-  the 8-K is the first source we can read. It came at 4:35 and 4:41 PM in the last two quarters,
-  and 4:06 to 4:14 PM before that.
-- **Blocked sites stay blocked.** For FICO, CrowdStrike, HubSpot, Lilly, Home Depot, Broadcom,
-  McDonald's and Tesla, a person can check by hand how early the site posted, using
-  [manual checks](manual-checks.md). The bot itself never reads those sites. Some of these
-  companies also publish where we're let in: CrowdStrike's release on FinancialContent,
-  McDonald's on its MediaRoom newsroom, Broadcom's on its own newsroom, and HubSpot's press
-  release feed. Those are on trial (see [Sources](#sources)).
+- **Tesla's update deck** has a predictable URL. The default HTTP client gets 403, so the
+  8-K is the regular source. The [IR trial](browser-ir.md) can also watch the deck URL
+  with a Tesla-specific User-Agent that identifies earnings-bot.
+- **Issuer IR sources on trial.** The [desktop Chrome trial](browser-ir.md) covers the
+  release listings for FICO, CrowdStrike, HubSpot, Lilly and Broadcom, plus exact PDF URLs
+  for Home Depot and McDonald's. CrowdStrike's copy on FinancialContent, McDonald's
+  MediaRoom newsroom, Broadcom's newsroom API and HubSpot's release feed are independent
+  trials (see [Sources](#sources)). The [manual checks](manual-checks.md) document earlier
+  release times.
 
 ### How fresh feeds are
 
@@ -491,9 +489,9 @@ What it tells us:
 
 - Identify ourselves honestly in the User-Agent. Stay within the rate limits, and back off when we
   get errors.
-- If a site blocks automated requests, cover it through EDGAR and newswires. We don't try to get
-  around the block, whether by faking a browser User-Agent or by scripting a real browser.
-  FICO's IR site is behind Akamai bot protection, and even its `robots.txt` returns 403.
+- Default HTTP sources stop on a 403 and let the other sources continue. The explicitly scheduled
+  [public IR trial](browser-ir.md) uses stock desktop Chrome on an inactive Windows desktop.
+  It keeps the normal browser identity and uses a dedicated temporary profile.
 
 ## Tracking companies
 

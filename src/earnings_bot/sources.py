@@ -16,7 +16,7 @@ from datetime import datetime
 from email.utils import parsedate_to_datetime
 from urllib.parse import urljoin, urlsplit
 
-from earnings_bot.fetch import Response
+from earnings_bot.fetch import Fetcher, Response
 
 BUSINESS_WIRE_EARNINGS = "https://feed.businesswire.com/rss/home/?rss=G1QFDERJXkJeEF9YXA=="
 # The latest 20 releases PR Newswire files under Earnings. Its CDN keeps a copy for up to 60 s
@@ -109,6 +109,10 @@ class Source(ABC):
     stop_when_found = False  # stop polling once the source lists anything
     # A source on trial is recorded but doesn't post to Discord unless the schedule asks
     trial = False
+    report_initial = False  # the source can verify that this is the scheduled release
+
+    async def fetch(self, fetcher: Fetcher) -> Response:
+        return await fetcher.request(self.method, self.url(), give_up_after=self.timeout)
 
     @property
     def share_key(self) -> Hashable | None:
