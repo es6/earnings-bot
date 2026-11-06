@@ -7,7 +7,7 @@ import re
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Coroutine
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -16,7 +16,7 @@ import aiohttp
 import discord
 
 from earnings_bot.estimates import Estimates, EstimatesError, fmp_estimates
-from earnings_bot.fetch import Fetcher
+from earnings_bot.fetch import Fetcher, Response
 from earnings_bot.recorder import ET, Journal, Plan, Target, record
 from earnings_bot.sources import EdgarFilings, Q4FinancialReports, Q4PressReleases, Sighting, Source
 from earnings_bot.summary import Summarizer, SummaryError
@@ -26,6 +26,9 @@ FILE_TYPES = (".pdf", ".xlsx", ".xls")
 # Discord's upload limit for bots in servers without boosts. Earnings PDFs are well under 1 MB.
 MAX_FILE_BYTES = 10 * 1024 * 1024
 MAX_CONTENT = 2000  # Discord's limit for a message's text
+# Seconds between tries for a file that a feed lists before it's uploaded. Cloudflare's Q3 2026
+# supplement was listed at 4:15:32 PM and went up at 4:38:11.
+ATTACH_RETRY_SECONDS = 30.0
 
 
 class Poster(ABC):
@@ -124,6 +127,7 @@ class Release:
         self.note = note
         self.links: dict[str, str] = {}  # url -> label, in the order they turned up
         self.files: set[str] = set()
+        self.attach_retry = ATTACH_RETRY_SECONDS
         self.first_seen: datetime | None = None
         self.first_seen_at = 0.0  # time.monotonic(), for timing the steps
         self.posted = False
@@ -233,7 +237,7 @@ class Release:
         if name in self.files:
             return
         self.files.add(name)
-        response = await self.fetcher.request("GET", url)
+        response = await self._download(url, name)
         if response.status != 200 or len(response.body) > MAX_FILE_BYTES:
             self.journal.say(
                 f"{self.target.ticker}: couldn't attach {name} (HTTP "
@@ -250,6 +254,26 @@ class Release:
             live_seconds=self._live_after(stamp),
         )
         self.journal.say(f"{self.target.ticker}: attached {name}")
+
+    async def _download(self, url: str, name: str) -> Response:
+        """Gets a file. A feed can list a file before it's uploaded, so a 404 gets tried again
+        until the target's window closes."""
+        response = await self.fetcher.request("GET", url)
+        _, end = self.target.window
+        retry = timedelta(seconds=self.attach_retry)
+        if response.status != 404 or self.journal.now() + retry >= end:
+            return response
+        self.journal.say(
+            f"{self.target.ticker}: {name} isn't up yet (HTTP 404), so trying again every "
+            f"{self.attach_retry:g}s until {end.astimezone(ET):%H:%M} ET"
+        )
+        while response.status == 404 and self.journal.now() + retry < end:
+            await asyncio.sleep(self.attach_retry)
+            try:
+                response = await self.fetcher.request("GET", url)
+            except (aiohttp.ClientError, TimeoutError):
+                continue  # keep the last answer and try again
+        return response
 
     async def _summarize(
         self, summarizer: Summarizer, source: Source, sighting: Sighting, label: str

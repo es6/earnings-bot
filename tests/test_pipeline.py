@@ -6,6 +6,7 @@ import pytest
 
 from earnings_bot import pipeline
 from earnings_bot.estimates import Estimates
+from earnings_bot.fetch import Response
 from earnings_bot.pipeline import Poster, Release, describe_source
 from earnings_bot.recorder import ET, Journal, Target
 from earnings_bot.sources import (
@@ -13,6 +14,7 @@ from earnings_bot.sources import (
     EdgarFilings,
     EdgarLatest,
     GuessedFile,
+    Q4FinancialReports,
     Q4PressReleases,
     RssFeed,
     Sighting,
@@ -152,3 +154,54 @@ async def test_only_one_summary_when_several_sources_have_the_text(
 
     assert len(summarizer.calls) == 1
     assert summarizer.calls[0][1] is None  # no FMP key, no estimates
+
+
+class UploadedLater(RoutedFetcher):
+    """The PDF answers 404 until its third request."""
+
+    def __init__(self) -> None:
+        super().__init__({})
+        self.pdf_requests = 0
+
+    async def request(
+        self,
+        method: str,
+        url: str,
+        headers: dict[str, str] | None = None,
+        give_up_after: float | None = None,
+    ) -> Response:
+        if url != PDF:
+            return await super().request(method, url, headers, give_up_after)
+        self.pdf_requests += 1
+        if self.pdf_requests < 3:
+            return Response(url, 404, {}, b"Not found", 0.01)
+        return Response(url, 200, {}, b"%PDF-1.7", 0.01)
+
+
+def listed_pdf() -> Sighting:
+    return Sighting(PDF, "Third Quarter 2026: Earnings release", PDF, earnings=True)
+
+
+async def test_a_file_listed_before_its_upload_is_attached_once_it_goes_up() -> None:
+    poster, files = FakePoster(), UploadedLater()
+    tonight = Target(ticker="UBER", expected=datetime.now(ET), cik=1543151)
+    release = Release(tonight, poster, files, Journal(io.StringIO()), None, None)
+    release.attach_retry = 0.01
+
+    release.add(Q4FinancialReports("investor.uber.com"), listed_pdf())
+    await release.finish()
+
+    assert files.pdf_requests == 3
+    assert [kind for kind, _ in poster.calls] == ["send", "attach"]
+
+
+async def test_a_missing_file_isnt_retried_after_the_window_closes() -> None:
+    poster, files = FakePoster(), UploadedLater()
+    release = Release(uber(), poster, files, Journal(io.StringIO()), None, None)  # Nov 4
+    release.attach_retry = 0.01
+
+    release.add(Q4FinancialReports("investor.uber.com"), listed_pdf())
+    await release.finish()
+
+    assert files.pdf_requests == 1
+    assert [kind for kind, _ in poster.calls] == ["send"]

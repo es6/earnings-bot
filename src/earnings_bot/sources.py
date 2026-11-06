@@ -90,7 +90,7 @@ _Q4_REPORTS = (
 
 class Q4PressReleases(Source):
     """The press release list on an IR site run by Q4 Inc. Its CDN can serve a copy up to 10
-    seconds old, so every request busts the cache."""
+    seconds old. Every request busts the cache, though by Nov 5, 2026 the CDN ignored that."""
 
     name = "q4_press"
     interval = 1.0

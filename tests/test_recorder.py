@@ -121,6 +121,50 @@ async def test_fetcher_gives_up_on_a_server_that_never_answers() -> None:
         assert time.monotonic() - started < 1
 
 
+async def test_fetcher_reads_a_header_longer_than_aiohttps_default() -> None:
+    # Some of cloudflare.com's 404 pages carry a 13 KB policy header
+    policy = "script-src 'self' " + "cdn.example " * 1200
+
+    async def answer(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        await reader.readuntil(b"\r\n\r\n")
+        writer.write(
+            "HTTP/1.1 404 Not Found\r\n"
+            f"Content-Security-Policy-Report-Only: {policy}\r\n"
+            "Content-Length: 0\r\nConnection: close\r\n\r\n".encode()
+        )
+        await writer.drain()
+        writer.close()
+
+    server = await asyncio.start_server(answer, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    async with server, Fetcher("Test Person test@example.com") as fetcher:
+        response = await fetcher.request("HEAD", f"http://127.0.0.1:{port}/")
+    assert response.status == 404
+    assert len(response.headers["content-security-policy-report-only"]) > 13_000
+
+
+async def test_fetcher_doesnt_send_cookies_back() -> None:
+    # cloudflare.com answers 500 to requests that carry the cookies it set
+    requests: list[bytes] = []
+
+    async def answer(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        requests.append(await reader.readuntil(b"\r\n\r\n"))
+        writer.write(
+            b"HTTP/1.1 200 OK\r\nSet-Cookie: visitor=1; Path=/\r\n"
+            b"Content-Length: 0\r\nConnection: close\r\n\r\n"
+        )
+        await writer.drain()
+        writer.close()
+
+    server = await asyncio.start_server(answer, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    async with server, Fetcher("Test Person test@example.com") as fetcher:
+        for _ in range(2):
+            await fetcher.request("GET", f"http://127.0.0.1:{port}/")
+    assert len(requests) == 2
+    assert b"cookie" not in requests[1].lower()
+
+
 async def test_watch_stops_when_blocked() -> None:
     log = io.StringIO()
     journal = Journal(log)
