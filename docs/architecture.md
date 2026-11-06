@@ -207,7 +207,7 @@ the request reached the origin:
 
 | Feed | Caching | Does busting reach the origin? |
 |---|---|---|
-| Q4 JSON feeds | 10 s | Yes on Oct 31. No by Nov 5: busted requests to five Q4 sites (Airbnb, Atlassian, Cloudflare, Amazon, Uber) were all `HIT`s, so the CDN leaves our parameter out of the cache key and a feed can be up to 10 s old |
+| Q4 JSON feeds | 10 s | Yes on Oct 31. No by Nov 5: busted requests to five Q4 sites (Airbnb, Atlassian, Cloudflare, Amazon, Uber) were all `HIT`s. On Nov 6 the cache key counted only the feed's own parameters: `_=`, `cb=`, `zzz=` and `no-cache` all got the shared copy, but `pageSize=6` got its own |
 | Business Wire RSS | 300 s at the CDN | Yes: the busted request took 389 ms against 101 ms. But the origin only rebuilds the feed about every 4.5 minutes (Nov 4) |
 | PR Newswire RSS | 60 s (Cloudflare) | No: busted and `no-cache` requests were both cache hits, 47 s old |
 | Intel's RSS feed | 30 s plus stale-while-revalidate (CloudFront) | No, and one copy was 113 s old |
@@ -217,6 +217,22 @@ the request reached the origin:
 
 `no-cache` made no difference anywhere. What we can do about the rest:
 
+- **Q4 feeds:** each length of the press release list is its own copy with its own 10-second
+  timer. So polls take turns with five longer lists (`pageSize` 6 to 10), each asked for again
+  only once its copy has expired, and only the first 5 items are read. A fresh copy comes in
+  every 2 or 3 seconds. Each turn replaces a normal poll, so the site gets no more requests from
+  us. Measured live on Nov 6 for 90 s each:
+
+  | | Average wait for a new release | 90% within | Requests reaching Q4's servers |
+  |---|---|---|---|
+  | Normal list only, once a second | 5.2 s | 9.0 s | about 1 every 10 s |
+  | Plus 3 longer lists (Atlassian) | 1.6 s | 3.0 s | about 0.4 a second |
+  | Plus 5 longer lists (Amazon) | 1.0 s | 1.8 s | about 0.6 a second |
+  | `_=` busting, before Nov 5 | about 0.5 s | about 1 s | 1 a second |
+
+  Most of the requests that reach Q4's servers are `REVALIDATED`, a "not modified" answer with
+  no body. Requests keep the `_=` buster even though Q4's CDN ignores it, because Palantir's
+  own Fastly cache in front of Q4 keeps a copy for an hour and still honors it.
 - **Business Wire:** on Nov 4 the plain copy trailed the busted one by 2m10s for both releases,
   so only the busted copy is polled now. The origin's 4.5-minute rebuild timer is what's left,
   and nothing we send changes it.
@@ -341,8 +357,9 @@ What it tells us:
   listed the release 44 s after the 4:05:00 stamp, 4 minutes before the wire and the 8-K.
 - **@earnings_guy beat us on Cloudflare by 3.2 s.** The copy of the feed that had the release
   was a cache `HIT`, and so was Atlassian's. That evening, busted requests to five Q4 sites
-  were all `HIT`s, so a Q4 feed can be up to 10 s old wherever we read it (see "How fresh feeds
-  are"). Getting past the cache is out of bounds, so any gain has to come from another source.
+  were all `HIT`s, so a Q4 feed could be up to 10 s old. On Nov 6 we found that a different
+  list length gets its own copy, and taking turns with five longer lists cut the average wait
+  from 5.2 s to 1.0 s (see "How fresh feeds are").
 - **Airbnb got no alert.** By 4:04:46 its 8-K and PR Newswire release were already listed, and
   the bot treats anything listed when it starts as old news. EDGAR's latest-filings feed listed
   the other two 8-Ks 27 and 30 s after acceptance, so Airbnb's would likely have reached us
@@ -380,8 +397,8 @@ What it tells us:
   detected or the window times out. Each source is polled about once a second, and once every
   few seconds for newswire RSS, which serves every company from one URL. IR feeds get a
   cache-busting query parameter, because their CDN can otherwise serve a copy up to 10 seconds
-  old. Q4's CDN stopped honoring it by Nov 5, so on Q4 sites the copy can still be that old. We
-  cap this at one request per second per company.
+  old. Q4's CDN stopped honoring it by Nov 5, so Q4 polls take turns with longer lists instead
+  (see "How fresh feeds are"). We cap this at one request per second per company.
 - **Cold polling.** Outside hot windows, every source is polled every few minutes to catch
   unscheduled or early releases.
 - **Rate limits are per host and shared across companies.** On a busy evening, a dozen companies
@@ -691,3 +708,4 @@ This starts after the Nov 2–4 runs, whose results feed into it.
 | 2026-11-04 | Every poll gives up after 3 seconds and the next goes out at once. Other requests, such as file downloads, keep the 10-second limit |
 | 2026-11-05 | The fetcher keeps no cookies, so each request stands alone. Sending back cloudflare.com's cookies got a 500 every time |
 | 2026-11-05 | A file a feed lists but answers 404 gets tried again every 30 s until the window closes |
+| 2026-11-06 | Q4's CDN ignores cache-busters now, so Q4 press release polls take turns with five longer lists, each once its 10 s copy has expired. The site gets no extra requests, and Q4's servers about one every 2 s. Faking headers or a browser's identity stays out |
