@@ -94,14 +94,18 @@ class Fetcher:
 
     async def __aexit__(self, *exc_info: object) -> None:
         try:
-            if self._browser is not None:
-                await self._browser.close()
+            await self.close_browser()
         finally:
             for queue in self._queues.values():
                 if queue.dispatcher is not None:
                     queue.dispatcher.cancel()
             if self._session is not None:
                 await self._session.close()
+
+    async def close_browser(self) -> None:
+        if self._browser is not None:
+            browser, self._browser = self._browser, None
+            await browser.close()
 
     async def browser_request(
         self, url: str, warmup: str, give_up_after: float, *, urgent: bool = False

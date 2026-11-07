@@ -108,6 +108,7 @@ def to_target(ticker: str, expected: datetime, fiscal_year: int, fiscal_quarter:
         ticker=ticker,
         expected=expected,
         cik=company.cik,
+        period=f"FY{fiscal_year}Q{fiscal_quarter}",
         q4_host=company.q4_host if company.reachable else None,
         # A company with no known wire is still matched on Business Wire, the most common one
         newswire=company.names if company.wire in ("Business Wire", "unknown") else [],
@@ -126,6 +127,8 @@ def target_toml(target: Target) -> str:
     local = target.expected.astimezone(ET).replace(tzinfo=None)
     lines.append(f"expected = {local.isoformat(timespec='seconds')}")
     lines.append(f"cik = {target.cik}")
+    if target.period:
+        lines.append(f'period = "{target.period}"')
     if target.q4_host:
         lines.append(f'q4_host = "{target.q4_host}"')
     for key in ("newswire", "prnewswire", "rss", "guess"):

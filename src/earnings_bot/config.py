@@ -28,6 +28,7 @@ class Settings(BaseSettings):
 
     # The rest is for watching a schedule (`uv run earnings-bot schedules/<day>.toml`)
     discord_channel_id: int | None = None  # where releases get posted
+    discord_status_channel_id: int | None = None  # optional watcher updates
     sec_user_agent: str | None = Field(None, pattern=_SEC_USER_AGENT)
     anthropic_api_key: SecretStr | None = None  # without it, posts have no summary
     fmp_api_key: SecretStr | None = None  # without it, summaries have no estimates

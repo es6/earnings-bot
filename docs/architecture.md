@@ -696,14 +696,16 @@ stays a JSONL file.
 
 ### From schedule files to an automatic schedule
 
-Today someone writes a schedule file for each day and starts the bot with it. The bot reads the
-file once, so adding a company on the day means restarting it, as HubSpot did on 2026-11-04.
-That's a stopgap. The steps away from it, in the [build order](#build-order):
+A single schedule file still works for one-off runs. Directory mode watches every TOML
+with one fetcher and shared polling coordinator. It retains the last valid copy of a malformed
+schedule and keeps pending deliveries and message IDs in SQLite. An expired window with
+no recorded watch is surfaced in the status log when it falls inside a recorded monitoring gap.
+The next stages are in the [build order](#build-order).
 
 | Stage | Who decides what to watch | Restart to add a company? |
 |---|---|---|
-| Now | A schedule file per day, named when the bot starts | Yes |
-| Step 2 | Every file in `schedules/`, read again when one is added or changed | No |
+| Single-file mode | A schedule file named when the bot starts | Yes |
+| Directory mode | Every file in `schedules/`, read again when one is added or changed | No |
 | Step 3 | The daily planner, from companies added with `/track` and a date | No |
 | Step 4 | The daily planner, with dates it finds by itself | No, and no dates to type in |
 
@@ -766,9 +768,9 @@ This starts after the Nov 2–4 runs, whose results feed into it.
 1. **Fix what the 2026-10-31 checks found.** Guesses need to recognize a soft 404 by checking
    the content type, and the title for pages. Then UnitedHealth's guesses can go back in. PR
    Newswire should be read from two or three feeds per company.
-2. **Run unattended:** `scripts/run-bot.ps1`, the Task Scheduler task, the status channel and
-   self-updates. From here the bot is always on. It reads every file in `schedules/` and picks
-   up new or changed ones without a restart.
+2. **Run unattended:** directory reload, `scripts/run-bot.ps1`, the status channel and
+   restart-safe delivery. Register the Windows task and measure real releases before adding
+   automatic updates.
 3. **Storage, the daily planner, and `/track` for companies already in `companies.toml`,** with
    the date and time given in the command. Add `/tracked` and `/untrack` too. Schedule files
    become optional.
