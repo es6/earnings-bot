@@ -3,7 +3,14 @@ host keeps its own queue."""
 
 import asyncio
 import itertools
+import socket
 import time
+from typing import Any
+
+import aiohttp
+import pytest
+from aiohttp import web
+from aiohttp.abc import AbstractResolver, ResolveResult
 
 from earnings_bot.fetch import Fetcher, host_gap, queue_key
 from earnings_bot.sources import EdgarFilings, EdgarLatest, Sighting
@@ -113,3 +120,74 @@ async def test_other_hosts_dont_wait_behind_a_full_sec_queue() -> None:
         assert sum(turn.done() for turn in sec_turns) <= 1
         for turn in sec_turns:
             turn.cancel()
+
+
+class _LoopbackResolver(AbstractResolver):
+    async def resolve(
+        self, host: str, port: int = 0, family: socket.AddressFamily = socket.AF_INET
+    ) -> list[ResolveResult]:
+        return [
+            ResolveResult(
+                hostname=host, host="127.0.0.1", port=port, family=socket.AF_INET, proto=0, flags=0
+            )
+        ]
+
+    async def close(self) -> None:
+        pass
+
+
+async def test_sec_redirects_and_connection_retries_wait_for_the_shared_queue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    arrivals: list[tuple[float, str, str]] = []
+    retried = False
+
+    async def respond(request: web.Request) -> web.Response:
+        nonlocal retried
+        arrivals.append((time.monotonic(), request.host.split(":")[0], request.path))
+        if request.path == "/start":
+            raise web.HTTPFound(f"http://www.sec.gov:{request.url.port}/exhibit")
+        if request.path == "/exhibit" and not retried:
+            retried = True
+            assert request.transport is not None
+            request.transport.abort()
+        return web.Response(text=request.headers["User-Agent"])
+
+    app = web.Application()
+    app.router.add_get("/{step}", respond)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    port = runner.addresses[0][1]
+    session_class = aiohttp.ClientSession
+
+    def local_session(**kwargs: Any) -> aiohttp.ClientSession:
+        connector = aiohttp.TCPConnector(resolver=_LoopbackResolver())
+        return session_class(connector=connector, **kwargs)
+
+    monkeypatch.setattr(aiohttp, "ClientSession", local_session)
+    try:
+        async with Fetcher("Test SEC client") as fetcher:
+            response = await fetcher.request(
+                "GET", f"http://data.sec.gov:{port}/start", urgent=True
+            )
+            assert response.body == b"Test SEC client"
+            assert response.queued >= 2 * SEC_GAP - 0.03
+
+            # A publisher can also redirect a release link into EDGAR. That hop must use
+            # SEC's queue and identity even though the first request was on another site.
+            response = await fetcher.request("GET", f"http://news.example.com:{port}/start")
+            assert response.body == b"Test SEC client"
+    finally:
+        await runner.cleanup()
+
+    assert [(host, path) for _, host, path in arrivals] == [
+        ("data.sec.gov", "/start"),
+        ("www.sec.gov", "/exhibit"),
+        ("www.sec.gov", "/exhibit"),
+        ("news.example.com", "/start"),
+        ("www.sec.gov", "/exhibit"),
+    ]
+    sec_times = [at for at, host, _ in arrivals if host.endswith(".sec.gov")]
+    assert min(b - a for a, b in itertools.pairwise(sec_times)) >= SEC_GAP - 0.02
