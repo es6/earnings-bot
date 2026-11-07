@@ -159,6 +159,73 @@ async def test_both_sec_sources_give_the_filing_one_link() -> None:
     assert f"SEC 8-K: <{index}>" in poster.calls[0][1]
 
 
+FOLDER = FILING.rsplit("/", 1)[0]
+
+
+def filing_routes() -> dict[str, tuple[int, bytes]]:
+    """The filing's file list and its press release exhibit."""
+    files = ["uber-20261104.htm", "ex99-1.htm", "0001543151-26-000040-index.htm"]
+    items = [{"name": f, "size": "90000" if "99" in f else "9000"} for f in files]
+    paragraph = "<p>Uber Announces Results for Third Quarter 2026. Gross bookings grew 21%.</p>"
+    return {
+        "index.json": (200, json.dumps({"directory": {"item": items}}).encode()),
+        "ex99-1.htm": (200, f"<html><body>{paragraph * 40}</body></html>".encode()),
+    }
+
+
+def both_sec_sightings(release: Release) -> None:
+    accession = "0001543151-26-000040"
+    index = f"{FOLDER}/{accession}-index.htm"
+    release.add(EdgarLatest(1543151), Sighting(accession, "8-K 2.02", index, earnings=True))
+    release.add(EdgarFilings(1543151), Sighting(accession, "8-K 2.02", FILING, earnings=True))
+
+
+async def test_both_sec_sources_download_the_filings_exhibit_once() -> None:
+    sec, summarizer, log = RoutedFetcher(filing_routes()), FakeSummarizer(), io.StringIO()
+    release = Release(uber(), FakePoster(), sec, Journal(log), summarizer, None)
+
+    both_sec_sightings(release)  # before any text has arrived
+    await release.finish()
+
+    assert sec.urgent == [f"{FOLDER}/index.json", f"{FOLDER}/ex99-1.htm"]
+    assert len(summarizer.calls) == 1
+    events = [e for e in map(json.loads, log.getvalue().splitlines()) if e["event"] == "body"]
+    assert [e["source"] for e in events] == ["SEC 8-K"]
+
+
+class ListedLate(RoutedFetcher):
+    """The filing's file list answers 404 the first time, as if SEC hadn't put it up yet."""
+
+    async def request(
+        self,
+        method: str,
+        url: str,
+        headers: dict[str, str] | None = None,
+        give_up_after: float | None = None,
+        urgent: bool = False,
+        *,
+        allow_redirects: bool = True,
+    ) -> Response:
+        response = await super().request(
+            method, url, headers, give_up_after, urgent, allow_redirects=allow_redirects
+        )
+        if url.endswith("/index.json") and self.urgent.count(url) == 1:
+            return Response(url, 404, {}, b"", 0.01)
+        return response
+
+
+async def test_the_other_sec_source_tries_again_when_the_first_read_gets_nothing() -> None:
+    sec, log = ListedLate(filing_routes()), io.StringIO()
+    release = Release(uber(), FakePoster(), sec, Journal(log), None, None)
+
+    both_sec_sightings(release)
+    await release.finish()
+
+    assert sec.urgent == [f"{FOLDER}/index.json", f"{FOLDER}/index.json", f"{FOLDER}/ex99-1.htm"]
+    events = [e for e in map(json.loads, log.getvalue().splitlines()) if e["event"] == "body"]
+    assert [e["source"] for e in events] == ["SEC 8-K"]
+
+
 async def test_only_one_summary_when_several_sources_have_the_text(
     release_texts: dict[str, str],
 ) -> None:

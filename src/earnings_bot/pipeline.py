@@ -108,12 +108,20 @@ def describe_source(source: Source) -> str:
     return source.name.removeprefix("rss:")
 
 
+_FILING_FOLDER = re.compile(r"https://www\.sec\.gov/Archives/edgar/data/\d+/\d+/")
+
+
+def _filing_folder(url: str) -> str | None:
+    """The SEC filing folder a link points into, or None for any other link."""
+    match = _FILING_FOLDER.match(url)
+    return match.group(0) if match else None
+
+
 def _same_filing(a: str, b: str) -> bool:
     """Whether two SEC links point into one filing's folder: one SEC source links its index page
     and the other its main document."""
-    folder = re.compile(r"https://www\.sec\.gov/Archives/edgar/data/\d+/\d+/")
-    match_a, match_b = folder.match(a), folder.match(b)
-    return bool(match_a and match_b and match_a.group(0) == match_b.group(0))
+    folder = _filing_folder(a)
+    return folder is not None and folder == _filing_folder(b)
 
 
 def _file_name(url: str) -> str:
@@ -149,6 +157,10 @@ class Release:
         self.caught_up = False
         self.posted = False
         self.has_text = False  # some source has delivered the release's text
+        # Both SEC sources list the same 8-K. These make sure its exhibit is read once: one lock
+        # per filing folder, and the text each folder's exhibit gave.
+        self._filing_locks: dict[str, asyncio.Lock] = {}
+        self._filing_texts: dict[str, str] = {}
         self.summarizing = False
         self.lock = asyncio.Lock()  # one Discord edit at a time, in order
         self.tasks: set[asyncio.Task[None]] = set()
@@ -311,7 +323,7 @@ class Release:
     async def _read(self, source: Source, sighting: Sighting, label: str) -> None:
         """Gets the release's text from this sighting, logs when the first text arrives, and
         starts the summary from it. Several sources can deliver the text; the first one wins."""
-        text = await release_text(self.fetcher, source, sighting)
+        text = await self._release_text(source, sighting)
         if text is None:
             return
         if not self.has_text:
@@ -330,6 +342,21 @@ class Release:
             )
         if self.summarizer and not self.summarizing:
             await self._summarize(self.summarizer, text, label)
+
+    async def _release_text(self, source: Source, sighting: Sighting) -> str | None:
+        """release_text, except that each SEC filing's exhibit is downloaded once. When both SEC
+        sources list one 8-K, the second sighting waits for the first one's read and takes its
+        text. If that read got nothing, the second sighting tries again."""
+        folder = _filing_folder(sighting.url) if isinstance(source, EdgarFilings) else None
+        if folder is None:
+            return await release_text(self.fetcher, source, sighting)
+        async with self._filing_locks.setdefault(folder, asyncio.Lock()):
+            if folder not in self._filing_texts:
+                text = await release_text(self.fetcher, source, sighting)
+                if text is None:
+                    return None
+                self._filing_texts[folder] = text
+            return self._filing_texts[folder]
 
     async def _summarize(self, summarizer: Summarizer, text: str, label: str) -> None:
         self.summarizing = True
