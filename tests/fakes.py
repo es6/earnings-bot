@@ -47,10 +47,21 @@ class RoutedFetcher(Fetcher):
 Answer = Callable[[str, str], Awaitable[tuple[int, dict[str, str], bytes]]]
 
 
+def sec_filing_detail(primary: str, exhibit: str) -> bytes:
+    return f'''
+<table summary="Document Format Files">
+<tr><th>Seq</th><th>Description</th><th>Document</th><th>Type</th><th>Size</th></tr>
+<tr><td>1</td><td>Current report</td><td><a href="/ix?doc={primary}">{primary}</a>
+    <span>iXBRL</span></td><td>8-K</td><td>90000</td></tr>
+<tr><td>2</td><td></td><td><a href="{exhibit}">{exhibit}</a></td><td>EX-99.1</td>
+    <td>50000</td></tr>
+</table>'''.encode()
+
+
 class FakeSession:
     """Stands in for aiohttp's ClientSession under a real Fetcher, so a test goes through the
-    Fetcher's pacing and priorities but never touches the network. `sent` lists each request
-    as it leaves the Fetcher: (time.monotonic(), method, url)."""
+    Fetcher's pacing and priorities but never touches the network. It returns fixture responses
+    directly, without redirecting or retrying. `sent` records (time.monotonic(), method, url)."""
 
     def __init__(self, answer: Answer) -> None:
         self.answer = answer
@@ -64,6 +75,7 @@ class FakeSession:
         headers: dict[str, str] | None = None,
         timeout: aiohttp.ClientTimeout | None = None,
         allow_redirects: bool = True,
+        middlewares: tuple[aiohttp.ClientMiddlewareType, ...] = (),
     ) -> "_FakeReply":
         return _FakeReply(self, method, url, timeout.total if timeout else None)
 

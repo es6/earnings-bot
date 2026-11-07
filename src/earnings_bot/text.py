@@ -128,12 +128,72 @@ async def _q4_body(fetcher: Fetcher, source: Q4PressReleases, release_id: str) -
     return None
 
 
+class _FilingDocuments(HTMLParser):
+    """Read the exhibit rows in an EDGAR Filing Detail page's document table."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.exhibits: list[dict[str, str]] = []
+        self._in_table = False
+        self._row: list[str] = []
+        self._cell: list[str] | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag == "table":
+            self._in_table = dict(attrs).get("summary") == "Document Format Files"
+        elif self._in_table and tag == "tr":
+            self._row = []
+        elif self._in_table and tag == "td":
+            self._cell = []
+
+    def handle_data(self, data: str) -> None:
+        if self._cell is not None:
+            self._cell.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "table":
+            self._in_table = False
+        elif tag == "td" and self._cell is not None:
+            self._row.append("".join(self._cell).strip())
+            self._cell = None
+        elif tag == "tr" and self._in_table and len(self._row) == 5:
+            _, description, document, form, size = self._row
+            name = document.split(maxsplit=1)[0] if document else ""
+            # Use the SEC's exhibit type. The 8-K itself is a separate row in the same table.
+            if re.fullmatch(r"EX-99(?:\.\d+)?", form) and re.fullmatch(
+                r"[\w.-]+\.html?", name, re.IGNORECASE
+            ):
+                self.exhibits.append(
+                    {
+                        "name": name,
+                        "size": size.replace(",", ""),
+                        "description": description,
+                        "form": form,
+                    }
+                )
+
+
 async def _edgar_exhibit(fetcher: Fetcher, sighting: Sighting) -> str | None:
     folder, primary = sighting.url.rsplit("/", 1)
-    listing = await _get_text(fetcher, f"{folder}/index.json")
-    if listing is None:
-        return None
-    exhibit = pick_exhibit(json.loads(listing)["directory"]["item"], primary)
+    if urlsplit(sighting.url).path.lower().endswith(("-index.htm", "-index.html")):
+        # The latest-filings link is an index, so it doesn't give us the primary filename.
+        detail = await _get_text(fetcher, sighting.url)
+        if detail is None:
+            return None
+        parser = _FilingDocuments()
+        parser.feed(detail)
+        results = [
+            row
+            for row in parser.exhibits
+            if re.search(r"\b(?:earnings|results)\b", row["description"], re.IGNORECASE)
+        ]
+        exhibit_991 = [row for row in parser.exhibits if row["form"] == "EX-99.1"]
+        exhibit = pick_exhibit(results or exhibit_991 or parser.exhibits, primary)
+    else:
+        listing = await _get_text(fetcher, f"{folder}/index.json")
+        if listing is None:
+            return None
+        exhibit = pick_exhibit(json.loads(listing)["directory"]["item"], primary)
     return await _get_text(fetcher, f"{folder}/{exhibit}") if exhibit else None
 
 

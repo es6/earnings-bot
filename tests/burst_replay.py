@@ -53,7 +53,7 @@ from earnings_bot.fetch import Response
 from earnings_bot.pipeline import Poster, Releases
 from earnings_bot.recorder import ET, Journal, Plan, Target, record
 from earnings_bot.sources import EdgarFilings, Source
-from tests.fakes import FakeSession, SessionFetcher
+from tests.fakes import FakeSession, SessionFetcher, sec_filing_detail
 
 # Simulated response times in seconds, before the random factor
 LATENCY = {
@@ -328,6 +328,8 @@ class World:
             files = ["form8-k.htm", "ex99-1.htm", f"{c.accession}-index.htm"]
             items = [{"name": f, "size": "90000" if "99" in f else "9000"} for f in files]
             return 200, json.dumps({"directory": {"item": items}}).encode()
+        if name == f"{c.accession}-index.htm":
+            return 200, sec_filing_detail("form8-k.htm", "ex99-1.htm")
         if name == "ex99-1.htm":
             return 200, release_html(c).encode()
         return 200, b"<html><body>Form 8-K</body></html>"

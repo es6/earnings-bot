@@ -26,7 +26,7 @@ from earnings_bot.sources import (
     Source,
 )
 from earnings_bot.summary import Summarizer, Summary
-from tests.fakes import RoutedFetcher
+from tests.fakes import RoutedFetcher, sec_filing_detail
 
 PDF = "https://s23.q4cdn.com/1/files/Uber-Q3-26-Earnings-Press-Release.pdf"
 IR_PAGE = "https://investor.uber.com/news/uber-announces-results/default.aspx"
@@ -159,42 +159,53 @@ async def test_both_sec_sources_give_the_filing_one_link() -> None:
     assert f"SEC 8-K: <{index}>" in poster.calls[0][1]
 
 
-FOLDER = FILING.rsplit("/", 1)[0]
+FOLDER, PRIMARY = FILING.rsplit("/", 1)
+ACCESSION = "0001543151-26-000040"
+FILING_INDEX = f"{ACCESSION}-index.htm"
 
 
-def filing_routes() -> dict[str, tuple[int, bytes]]:
-    """The filing's file list and its press release exhibit."""
-    files = ["uber-20261104.htm", "ex99-1.htm", "0001543151-26-000040-index.htm"]
-    items = [{"name": f, "size": "90000" if "99" in f else "9000"} for f in files]
+def filing_routes(exhibit: str = "ex99-1.htm") -> dict[str, tuple[int, bytes]]:
+    """The filing's file lists, primary document and press release exhibit."""
+    items = [{"name": PRIMARY, "size": "90000"}, {"name": exhibit, "size": "50000"}]
     paragraph = "<p>Uber Announces Results for Third Quarter 2026. Gross bookings grew 21%.</p>"
     return {
+        FILING_INDEX: (
+            200,
+            sec_filing_detail(PRIMARY, exhibit).replace(
+                b"</table>",
+                b"<tr><td>3</td><td>Press release announcing cash dividend</td>"
+                b"<td>dividend-release.htm</td><td>EX-99.2</td><td>100000</td></tr></table>",
+            ),
+        ),
         "index.json": (200, json.dumps({"directory": {"item": items}}).encode()),
-        "ex99-1.htm": (200, f"<html><body>{paragraph * 40}</body></html>".encode()),
+        PRIMARY: (200, ("<p>" + "Form 8-K cover text. " * 120 + "</p>").encode()),
+        exhibit: (200, f"<html><body>{paragraph * 40}</body></html>".encode()),
     }
 
 
 def both_sec_sightings(release: Release) -> None:
-    accession = "0001543151-26-000040"
-    index = f"{FOLDER}/{accession}-index.htm"
-    release.add(EdgarLatest(1543151), Sighting(accession, "8-K 2.02", index, earnings=True))
-    release.add(EdgarFilings(1543151), Sighting(accession, "8-K 2.02", FILING, earnings=True))
+    index = f"{FOLDER}/{FILING_INDEX}"
+    release.add(EdgarLatest(1543151), Sighting(ACCESSION, "8-K 2.02", index, earnings=True))
+    release.add(EdgarFilings(1543151), Sighting(ACCESSION, "8-K 2.02", FILING, earnings=True))
 
 
-async def test_both_sec_sources_download_the_filings_exhibit_once() -> None:
-    sec, summarizer, log = RoutedFetcher(filing_routes()), FakeSummarizer(), io.StringIO()
+@pytest.mark.parametrize("exhibit", ["ex99-1.htm", "report.htm"])
+async def test_both_sec_sources_download_the_filings_exhibit_once(exhibit: str) -> None:
+    sec, summarizer, log = RoutedFetcher(filing_routes(exhibit)), FakeSummarizer(), io.StringIO()
     release = Release(uber(), FakePoster(), sec, Journal(log), summarizer, None)
 
     both_sec_sightings(release)  # before any text has arrived
     await release.finish()
 
-    assert sec.urgent == [f"{FOLDER}/index.json", f"{FOLDER}/ex99-1.htm"]
-    assert len(summarizer.calls) == 1
+    assert sec.urgent == [f"{FOLDER}/{FILING_INDEX}", f"{FOLDER}/{exhibit}"]
+    [(text, _)] = summarizer.calls
+    assert "Gross bookings grew 21%" in text
     events = [e for e in map(json.loads, log.getvalue().splitlines()) if e["event"] == "body"]
     assert [e["source"] for e in events] == ["SEC 8-K"]
 
 
 class ListedLate(RoutedFetcher):
-    """The filing's file list answers 404 the first time, as if SEC hadn't put it up yet."""
+    """The filing's detail page is still missing when the latest-filings source reads it."""
 
     async def request(
         self,
@@ -209,7 +220,7 @@ class ListedLate(RoutedFetcher):
         response = await super().request(
             method, url, headers, give_up_after, urgent, allow_redirects=allow_redirects
         )
-        if url.endswith("/index.json") and self.urgent.count(url) == 1:
+        if url.endswith(f"/{FILING_INDEX}"):
             return Response(url, 404, {}, b"", 0.01)
         return response
 
@@ -221,7 +232,11 @@ async def test_the_other_sec_source_tries_again_when_the_first_read_gets_nothing
     both_sec_sightings(release)
     await release.finish()
 
-    assert sec.urgent == [f"{FOLDER}/index.json", f"{FOLDER}/index.json", f"{FOLDER}/ex99-1.htm"]
+    assert sec.urgent == [
+        f"{FOLDER}/{FILING_INDEX}",
+        f"{FOLDER}/index.json",
+        f"{FOLDER}/ex99-1.htm",
+    ]
     events = [e for e in map(json.loads, log.getvalue().splitlines()) if e["event"] == "body"]
     assert [e["source"] for e in events] == ["SEC 8-K"]
 

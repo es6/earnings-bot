@@ -34,6 +34,7 @@ MAX_HEADER_BYTES = 64 * 1024
 
 
 def _on_domain(host: str, domain: str) -> bool:
+    host = host.rstrip(".")
     return host == domain or host.endswith("." + domain)
 
 
@@ -55,8 +56,8 @@ class Response:
     status: int
     headers: dict[str, str]  # names in lowercase
     body: bytes
-    elapsed: float  # seconds from sending the request to reading the whole body
-    queued: float = 0.0  # seconds spent waiting for the host's turn before sending
+    elapsed: float  # seconds to read the whole response, excluding pacing waits
+    queued: float = 0.0  # seconds spent waiting for request slots
 
 
 @dataclass
@@ -124,8 +125,8 @@ class Fetcher:
         allow_redirects: bool = True,
     ) -> Response:
         """Raises TimeoutError if the whole response hasn't arrived within `give_up_after`
-        seconds (the Fetcher's own timeout if None). Waiting for this host's turn doesn't count,
-        which is why this isn't left to the caller's `asyncio.timeout`. An urgent request, such
+        seconds (the Fetcher's own timeout if None). Waiting for the initial slot doesn't count,
+        but redirects and retries share the same HTTP deadline. An urgent request, such
         as fetching a release that just turned up, takes the host's next turn ahead of polls.
         SEC's hosts take turns together, so an exhibit download from www.sec.gov also goes
         ahead of polls of data.sec.gov."""
@@ -134,20 +135,53 @@ class Fetcher:
         host = urlsplit(url).hostname or ""
         asked = time.monotonic()
         await self.wait_turn(host, urgent)
-        user_agent = self._sec_user_agent if _on_domain(host, "sec.gov") else USER_AGENT
+        sec = _on_domain(host, "sec.gov")
+        user_agent = self._sec_user_agent if sec else USER_AGENT
         headers = {"User-Agent": user_agent, **(headers or {})}
+        followup_wait = 0.0
+        first_attempt = True
+
+        async def pace_followup(
+            request: aiohttp.ClientRequest, send: aiohttp.ClientHandlerType
+        ) -> aiohttp.ClientResponse:
+            nonlocal first_attempt, followup_wait
+            # aiohttp invokes middleware for each redirect and connection retry.
+            if not first_attempt:
+                attempt_host = request.url.host or ""
+                attempt_sec = _on_domain(attempt_host, "sec.gov")
+                if attempt_sec != sec:
+                    request.headers["User-Agent"] = (
+                        self._sec_user_agent if attempt_sec else USER_AGENT
+                    )
+                if attempt_sec:
+                    waiting = time.monotonic()
+                    await self.wait_turn(attempt_host, urgent)
+                    followup_wait += time.monotonic() - waiting
+            first_attempt = False
+            return await send(request)
+
         # aiohttp rounds a timeout of 5 s or more up to a whole second; shorter ones are exact
         limit = (
             self._timeout if give_up_after is None else aiohttp.ClientTimeout(total=give_up_after)
         )
         started = time.monotonic()
         async with self._session.request(
-            method, url, headers=headers, timeout=limit, allow_redirects=allow_redirects
+            method,
+            url,
+            headers=headers,
+            timeout=limit,
+            allow_redirects=allow_redirects,
+            middlewares=(pace_followup,),
         ) as r:
             body = await r.read()
             headers = {name.lower(): value for name, value in r.headers.items()}
         return Response(
-            url, r.status, headers, body, time.monotonic() - started, queued=started - asked
+            url,
+            r.status,
+            headers,
+            body,
+            time.monotonic() - started - followup_wait,
+            queued=started - asked + followup_wait,
         )
 
     async def wait_turn(self, host: str, urgent: bool = False) -> None:
