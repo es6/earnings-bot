@@ -2,8 +2,10 @@
 release files as they appear, then the summary edited in."""
 
 import asyncio
+import hashlib
 import io
 import re
+import secrets
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Coroutine
@@ -15,6 +17,7 @@ from urllib.parse import urlsplit
 import aiohttp
 import discord
 
+from earnings_bot.delivery import DeliveryStore, retry_delivery
 from earnings_bot.estimates import Estimates, EstimatesError, fmp_estimates
 from earnings_bot.fetch import Fetcher, Response
 from earnings_bot.recorder import ET, Journal, Plan, Target, record
@@ -43,6 +46,8 @@ class Poster(ABC):
     """Where a release gets posted: one message, created once and then edited. Each step returns
     the time the platform put on the change, when it gives one."""
 
+    resumed = False
+
     @abstractmethod
     async def send(self, content: str) -> datetime | None: ...
 
@@ -59,6 +64,7 @@ class Poster(ABC):
 class DiscordPoster(Poster):
     def __init__(self, channel: discord.abc.Messageable) -> None:
         self.channel = channel
+        self.nonce = secrets.token_hex(12)
         self.message: discord.Message | None = None
 
     def _sent(self) -> discord.Message:
@@ -67,7 +73,7 @@ class DiscordPoster(Poster):
         return self.message
 
     async def send(self, content: str) -> datetime | None:
-        self.message = await self.channel.send(content)
+        self.message = await self.channel.send(content, nonce=self.nonce)
         return self.message.created_at
 
     async def edit(self, content: str) -> datetime | None:
@@ -86,6 +92,71 @@ class DiscordPoster(Poster):
         embed.set_footer(text=footer)
         self.message = await self._sent().edit(embed=embed)
         return self.message.edited_at
+
+
+class DurableDiscordPoster(DiscordPoster):
+    def __init__(
+        self,
+        channel: discord.abc.Messageable,
+        store: DeliveryStore,
+        key: str,
+        author_id: int,
+    ) -> None:
+        super().__init__(channel)
+        self.store = store
+        self.key = key
+        self.author_id = author_id
+        self.nonce = hashlib.blake2s(
+            f"{store.channel_id}:{key}".encode(), digest_size=12
+        ).hexdigest()
+
+    async def send(self, content: str) -> datetime | None:
+        async with self.store.lock(self.key):
+            return await self._deliver(content)
+
+    async def _deliver(self, content: str) -> datetime | None:
+        saved = self.store.get(self.key)
+        if saved is None:
+            saved = self.store.prepare(self.key, content)
+        elif saved.message_id is not None:
+            self.message = await self.channel.fetch_message(saved.message_id)
+        else:
+            # Discord's nonce protection is short-lived. After a crash, look for the
+            # exact persisted initial message before sending again.
+            after = saved.prepared - timedelta(seconds=5)
+            async for message in self.channel.history(limit=None, after=after):
+                if message.author.id == self.author_id and message.content == saved.content:
+                    self.message = message
+                    break
+        self.resumed = self.message is not None
+        if self.message is None:
+            self.message = await self.channel.send(saved.content, nonce=self.nonce)
+        self.store.delivered(self.key, self.message.id)
+        if content != self.message.content:
+            await self.edit(content)
+        return None if self.resumed else self.message.created_at
+
+    async def edit(self, content: str) -> datetime | None:
+        message = self._sent()
+        lines = message.content.splitlines()
+        urls = [line.rsplit("<", 1)[-1].rstrip(">") for line in lines[2:]]
+        for line in content.splitlines()[2:]:
+            url = line.rsplit("<", 1)[-1].rstrip(">")
+            if url not in urls and not any(_same_filing(url, known) for known in urls):
+                lines.append(line)
+                urls.append(url)
+        merged = "\n".join(lines)
+        if len(merged) > MAX_CONTENT:
+            merged = merged[: MAX_CONTENT - 1] + "…"
+        if merged == message.content:
+            return message.edited_at
+        return await super().edit(merged)
+
+    async def attach(self, name: str, data: bytes) -> datetime | None:
+        message = self._sent()
+        if any(attachment.filename == name for attachment in message.attachments):
+            return message.edited_at
+        return await super().attach(name, data)
 
 
 def describe_source(source: Source) -> str:
@@ -243,13 +314,17 @@ class Release:
             if url in self.links or any(_same_filing(url, known) for known in self.links):
                 return
             self.links[url] = label
-            if self.posted:
-                stamp = await self.poster.edit(self._content())
-                event = "linked"
-            else:
-                stamp = await self.poster.send(self._content())
-                self.posted = True
-                event = "posted"
+            try:
+                if self.posted:
+                    stamp = await retry_delivery(lambda: self.poster.edit(self._content()))
+                    event = "linked"
+                else:
+                    stamp = await retry_delivery(lambda: self.poster.send(self._content()))
+                    self.posted = True
+                    event = "resumed" if self.poster.resumed else "posted"
+            except Exception:
+                del self.links[url]
+                raise
         live = self._live_after(stamp)
         self.journal.write(
             event,
@@ -263,6 +338,8 @@ class Release:
             self.journal.say(
                 f"{self.target.ticker}: posted the alert ({label}), live after {live}s"
             )
+        elif event == "resumed":
+            self.journal.say(f"{self.target.ticker}: resumed the existing alert")
         else:
             self.journal.say(f"{self.target.ticker}: added the {label} link, live after {live}s")
 
@@ -412,7 +489,7 @@ async def watch_schedule(
 
 
 class Releases:
-    """Every release posted while a schedule runs, one per ticker."""
+    """The releases posted while schedules are active."""
 
     def __init__(
         self,
@@ -421,13 +498,15 @@ class Releases:
         journal: Journal,
         summarizer: Summarizer | None,
         fmp_api_key: str | None,
+        durable_poster: Callable[[Target], Poster] | None = None,
     ) -> None:
         self.new_poster = new_poster
+        self.durable_poster = durable_poster
         self.fetcher = fetcher
         self.journal = journal
         self.summarizer = summarizer
         self.fmp_api_key = fmp_api_key
-        self.by_ticker: dict[str, Release] = {}
+        self.active: dict[str, Release] = {}
 
     def on_new(self, target: Target, source: Source, sighting: Sighting) -> None:
         """Called by the recorder for each new item any source lists."""
@@ -435,11 +514,12 @@ class Releases:
             return
         if source.trial and not target.trial.post:
             return  # logged by the recorder, but not posted until the source is proven
-        release = self.by_ticker.get(target.ticker)
+        key = target.release_key
+        release = self.active.get(key)
         if release is None:
-            release = self.by_ticker[target.ticker] = Release(
+            release = self.active[key] = Release(
                 target,
-                self.new_poster(),
+                self.durable_poster(target) if self.durable_poster else self.new_poster(),
                 self.fetcher,
                 self.journal,
                 self.summarizer,
@@ -447,6 +527,11 @@ class Releases:
             )
         release.add(source, sighting)
 
+    async def finish_target(self, target: Target) -> None:
+        if release := self.active.get(target.release_key):
+            await release.finish()
+            del self.active[target.release_key]
+
     async def finish(self) -> None:
-        for release in self.by_ticker.values():
+        for release in self.active.values():
             await release.finish()

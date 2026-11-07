@@ -1,0 +1,41 @@
+# November 17, 2026. Times are US Eastern.
+# Home Depot confirmed a 9 AM call. The 6 AM release time is inferred from prior quarters.
+# https://ir.homedepot.com/news-releases/2026/11-03-2026-130236805
+[[target]]
+ticker = "HD"
+expected = 2026-11-17T06:00:00
+cik = 354950
+period = "FY2026Q3"
+prnewswire = [
+    "The Home Depot",
+]
+before_minutes = 15
+after_minutes = 45
+
+[target.trial]
+post = false
+
+[target.trial.ir]
+warmup = "https://ir.homedepot.com/financial-reports/quarterly-earnings/2026"
+pdfs = [
+    "https://ir.homedepot.com/~/media/Files/H/HomeDepot-IR/press-release/q3-2026-earnings-release.pdf",
+]
+
+# NVIDIA announced results at approximately 1:20 PM Pacific and the call at 2 PM.
+# https://investor.nvidia.com/news/press-release-details/2026/NVIDIA-Sets-Conference-Call-for-Third-Quarter-Financial-Results/default.aspx
+[[target]]
+ticker = "NVDA"
+expected = 2026-11-17T16:20:00
+cik = 1045810
+period = "FY2027Q3"
+q4_host = "investor.nvidia.com"
+rss = [
+    "https://nvidianews.nvidia.com/rss.xml",
+]
+
+# Recorded on trial. Set post = true once release days show these are right and fast.
+[target.trial]
+post = false
+globenewswire = [
+    "NVIDIA",
+]

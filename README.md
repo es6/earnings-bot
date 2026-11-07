@@ -73,6 +73,35 @@ version for you.
    uv run earnings-bot-replay schedules/2026-11-04.toml UBER --date 2026-08-05 --q4-release 1585 --edgar 0001543151-26-000027
    ```
 
+### Run continuously on Windows
+
+Run `uv run earnings-bot schedules` to watch every TOML in the directory. Edits and new files
+are picked up within a few seconds. A malformed edit keeps the last valid version active.
+Use `/watch_status` for the next watch window and the last successful schedule scan. Set
+`DISCORD_STATUS_CHANNEL_ID` to a separate channel to receive window reports there. Reports
+are also written to `schedules/watch.jsonl`.
+
+Give the bot **Read Message History** in the releases channel. Directory mode keeps a local
+`schedules/.earnings-state.sqlite3` file so a restart resumes the original Discord message.
+Keep that file with the schedules. New entries should specify `period = "FY2027Q3"` (using
+the issuer's fiscal year and quarter) so moving a window to another day keeps the same
+identity. Older entries use the issuer's CIK and Eastern release date.
+
+For Windows Task Scheduler, create a task that starts at system startup and launches
+`powershell.exe` with arguments like
+`-NoProfile -File "C:\earnings-bot\scripts\run-bot.ps1"`. Use the bot owner's Windows
+account, with access to the checkout, its `.env`, and `uv`. Select **Run whether user is
+logged on or not** for startup monitoring, and **Do not start a new instance** for
+overlapping task launches. Disable the task's execution time limit. The script restarts
+the bot after it exits and
+writes its console output to `recordings/`. Run the script manually first to check its
+configuration, then stop that copy before starting the scheduled task.
+
+[Chrome IR trials](docs/browser-ir.md) are opt-in per release and record-only by default.
+For the first Chrome trial, use an **At log on** trigger with **Run only when user is logged
+on**, unless you've already verified Chrome under the unattended startup account. Use a single
+task. Other sources keep running if Chrome cannot start.
+
 ## Development
 
 ```bash

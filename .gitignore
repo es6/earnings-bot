@@ -25,4 +25,5 @@ Thumbs.db
 
 # Latency recorder logs
 schedules/*.jsonl
+schedules/.earnings-state.sqlite3*
 recordings/

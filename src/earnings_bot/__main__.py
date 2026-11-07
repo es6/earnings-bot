@@ -22,7 +22,7 @@ def main() -> None:
         "schedule",
         nargs="?",
         type=Path,
-        help="releases to watch and post, e.g. schedules/2026-11-04.toml",
+        help="a schedule file, or a schedule directory to watch continuously",
     )
     args = parser.parse_args()
 
@@ -41,9 +41,12 @@ def main() -> None:
         if missing:
             sys.exit(f"To watch a schedule, set {' and '.join(missing)} in .env")
         try:
-            load_plan(args.schedule)  # catch mistakes now rather than when a window opens
+            if not args.schedule.is_dir():
+                load_plan(args.schedule)  # validate single files before starting
         except (OSError, tomllib.TOMLDecodeError, ValidationError) as error:
             sys.exit(f"Can't read {args.schedule}: {error}")
+        if settings.discord_status_channel_id == settings.discord_channel_id:
+            sys.exit("DISCORD_STATUS_CHANNEL_ID must differ from DISCORD_CHANNEL_ID")
         if settings.anthropic_api_key is None:
             log.warning("ANTHROPIC_API_KEY isn't set, so posts won't get a summary")
         if settings.fmp_api_key is None:

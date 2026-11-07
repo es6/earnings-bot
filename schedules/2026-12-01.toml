@@ -1,0 +1,20 @@
+# CrowdStrike confirmed December 1 after market close. 4:05 PM ET is based on prior releases.
+# https://ir.crowdstrike.com/news-releases/news-release-details/crowdstrike-announces-date-fiscal-third-quarter-2027-financial
+[[target]]
+ticker = "CRWD"
+expected = 2026-12-01T16:05:00
+cik = 1535527
+period = "FY2027Q3"
+newswire = [
+    "CrowdStrike",
+]
+
+# Recorded on trial. Set post = true once release days show these are right and fast.
+[target.trial]
+post = false
+pages = [
+    "https://markets.financialcontent.com/stocks/article/bizwire-2026-12-1-crowdstrike-reports-third-quarter-fiscal-year-2027-financial-results",
+]
+[target.trial.ir]
+listing = "https://ir.crowdstrike.com/press-releases"
+headline = 'CrowdStrike Reports Third Quarter Fiscal(?: Year)? 2027 Financial Results'

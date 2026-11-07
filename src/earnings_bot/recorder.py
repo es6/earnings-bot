@@ -24,7 +24,7 @@ from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 import aiohttp
-from pydantic import BaseModel, ValidationError, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from earnings_bot.browser import BrowserError, BrowserUnavailable
 from earnings_bot.browser_sources import IRTrial
@@ -123,6 +123,7 @@ class Target(BaseModel):
     ticker: str
     expected: datetime  # US Eastern unless it carries a UTC offset
     cik: int
+    period: str | None = Field(default=None, pattern=r"^FY\d{4}Q[1-4]$")
     q4_host: str | None = None
     newswire: list[str] = []  # names to look for in Business Wire's earnings feed
     prnewswire: list[str] = []  # names to look for in PR Newswire's earnings feed
@@ -136,6 +137,10 @@ class Target(BaseModel):
     @classmethod
     def _eastern(cls, value: datetime) -> datetime:
         return value if value.tzinfo else value.replace(tzinfo=ET)
+
+    @property
+    def release_key(self) -> str:
+        return f"{self.cik}:{self.period or self.expected.astimezone(ET).date()}"
 
     @property
     def window(self) -> tuple[datetime, datetime]:
@@ -461,8 +466,9 @@ class SharedPoll:
             await member.left
         finally:
             self._leave(member)
-            if not self.members and self.task is not None and not self.task.done():
+            if not self.members and self.task is not None:
                 self.task.cancel()
+                self.task = None
 
     def _leave(self, member: _Member) -> None:
         if member in self.members:
@@ -621,11 +627,11 @@ async def record_target(
     journal: Journal,
     on_new: OnNew | None = None,
     polls: Polls | None = None,
-) -> None:
+) -> list[Watch]:
     start, end = target.window
     if journal.now() >= end:
         journal.say(f"{target.ticker}: its window closed at {_clock(end)} ET, skipping")
-        return
+        return []
     if journal.now() < start:
         journal.say(f"{target.ticker}: waiting until {_clock(start)} ET")
     # Wait on the system clock, which catches up after the computer sleeps, in short naps so a
@@ -654,6 +660,7 @@ async def record_target(
                 group.create_task(polls.watch(w, end, notify))
     finally:
         summarize(target, watches, journal)
+    return watches
 
 
 async def record(
