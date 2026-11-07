@@ -1,5 +1,5 @@
-"""One HTTP client for every source: a shared connection pool, honest User-Agents, and per-host
-pacing so that a busy evening can't hammer any one site."""
+"""One HTTP client for every source: a shared connection pool, honest User-Agents, and pacing
+per host (per site, for SEC) so that a busy evening can't hammer any one site."""
 
 import asyncio
 import heapq
@@ -16,11 +16,17 @@ from earnings_bot.browser import DesktopChrome
 # Says who we are, in the same form search engine crawlers use
 USER_AGENT = "Mozilla/5.0 (compatible; earnings-bot/0.1; +https://github.com/es6/earnings-bot)"
 
-# Minimum seconds between requests to one host. SEC allows 10 a second across everything we send
-# it. The file CDN serves many companies, and Apple's newsroom is a few guessed URLs plus a feed
-# on one very large site. Every other host gets one request a second.
+# Minimum seconds between requests to one host, or to one site whose hosts share a queue. SEC
+# allows 10 requests a second across everything we send it, so all of sec.gov gets 8 a second,
+# leaving headroom. The file CDN serves many companies, and Apple's newsroom is a few guessed URLs
+# plus a feed on one very large site. Every other host gets one request a second.
 _HOST_GAPS = {"sec.gov": 0.125, "q4cdn.com": 0.2, "apple.com": 0.25}
 _DEFAULT_GAP = 1.0
+# Sites whose hosts all wait in one queue, because the site's limit covers them together:
+# www.sec.gov (the latest-filings feed, filings and exhibits) and data.sec.gov (each company's
+# submissions) count against SEC's one limit. Every other host has its own queue, so each of
+# the file CDN's hosts (s1.q4cdn.com, s23.q4cdn.com, ...) is paced apart.
+_SHARED_QUEUES: tuple[str, ...] = ("sec.gov",)
 
 # aiohttp stops at 8190 bytes for any one header line. cloudflare.com's 404 pages sometimes
 # carry a 13 KB Content-Security-Policy-Report-Only header, which made every guess there fail.
@@ -37,6 +43,12 @@ def host_gap(host: str) -> float:
     )
 
 
+def queue_key(host: str) -> str:
+    """The queue a host's requests wait in: its site's, if the site's hosts share one, else the
+    host's own."""
+    return next((site for site in _SHARED_QUEUES if _on_domain(host, site)), host)
+
+
 @dataclass(frozen=True)
 class Response:
     url: str
@@ -49,7 +61,8 @@ class Response:
 
 @dataclass
 class _HostQueue:
-    """Requests waiting for one host's turn: urgent ones first, then in order of arrival."""
+    """Requests waiting for one host's turn (or one site's, see queue_key): urgent ones first,
+    then in order of arrival."""
 
     next_turn: float = 0.0  # time.monotonic() from which the host can take another request
     waiting: list[tuple[int, int, asyncio.Future[None]]] = field(default_factory=list)
@@ -63,7 +76,7 @@ class Fetcher:
         self._sec_user_agent = sec_user_agent
         self._timeout = aiohttp.ClientTimeout(total=timeout)
         self._session: aiohttp.ClientSession | None = None
-        self._hosts: dict[str, _HostQueue] = {}
+        self._queues: dict[str, _HostQueue] = {}  # by queue_key
         self._arrivals = itertools.count()
         self._browser: DesktopChrome | None = None
 
@@ -83,7 +96,7 @@ class Fetcher:
             if self._browser is not None:
                 await self._browser.close()
         finally:
-            for queue in self._hosts.values():
+            for queue in self._queues.values():
                 if queue.dispatcher is not None:
                     queue.dispatcher.cancel()
             if self._session is not None:
@@ -113,7 +126,9 @@ class Fetcher:
         """Raises TimeoutError if the whole response hasn't arrived within `give_up_after`
         seconds (the Fetcher's own timeout if None). Waiting for this host's turn doesn't count,
         which is why this isn't left to the caller's `asyncio.timeout`. An urgent request, such
-        as fetching a release that just turned up, takes the host's next turn ahead of polls."""
+        as fetching a release that just turned up, takes the host's next turn ahead of polls.
+        SEC's hosts take turns together, so an exhibit download from www.sec.gov also goes
+        ahead of polls of data.sec.gov."""
         if self._session is None:
             raise RuntimeError("Fetcher must be used with `async with`")
         host = urlsplit(url).hostname or ""
@@ -137,25 +152,29 @@ class Fetcher:
 
     async def wait_turn(self, host: str, urgent: bool = False) -> None:
         """Returns once it's the caller's turn to send the host a request."""
-        queue = self._hosts.setdefault(host, _HostQueue())
+        key = queue_key(host)
+        queue = self._queues.setdefault(key, _HostQueue())
         now = time.monotonic()
         if not queue.waiting and now >= queue.next_turn:
-            queue.next_turn = now + host_gap(host)
+            queue.next_turn = now + host_gap(key)
             return
         turn: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         heapq.heappush(queue.waiting, (0 if urgent else 1, next(self._arrivals), turn))
         if queue.dispatcher is None or queue.dispatcher.done():
-            queue.dispatcher = asyncio.create_task(self._dispatch(host, queue))
+            queue.dispatcher = asyncio.create_task(self._dispatch(key, queue))
         # A caller that gets cancelled cancels its turn too, and the dispatcher skips it
         await turn
 
-    async def _dispatch(self, host: str, queue: _HostQueue) -> None:
-        # Hands out the host's turns one gap apart, best waiter first, until nobody's waiting
+    async def _dispatch(self, key: str, queue: _HostQueue) -> None:
+        # Hands out the queue's turns one gap apart, best waiter first, until nobody's waiting
         while queue.waiting:
-            await asyncio.sleep(max(0.0, queue.next_turn - time.monotonic()))
+            # asyncio can wake a sleeper up to its clock's resolution early, and a turn must
+            # never come sooner than the gap, or SEC could see 9 requests in one second
+            while (wait := queue.next_turn - time.monotonic()) > 0:  # noqa: ASYNC110
+                await asyncio.sleep(wait)
             while queue.waiting:
                 _, _, turn = heapq.heappop(queue.waiting)
                 if not turn.done():
-                    queue.next_turn = time.monotonic() + host_gap(host)
+                    queue.next_turn = time.monotonic() + host_gap(key)
                     turn.set_result(None)
                     break

@@ -440,8 +440,10 @@ What it tells us:
 - **Cold polling.** Outside hot windows, every source is polled every few minutes to catch
   unscheduled or early releases.
 - **Rate limits are per host and shared across companies.** On a busy evening, a dozen companies
-  report at 4 PM and all of them share SEC's 10 requests per second. See
-  [Sharing SEC's limit](#sharing-secs-limit). Requests wait their turn for a host in order,
+  report at 4 PM and all of them share SEC's 10 requests per second. SEC's limit covers all of
+  sec.gov, so www.sec.gov (the latest-filings feed, filings and exhibits) and data.sec.gov (the
+  submissions JSON) wait in one queue at 8 requests a second together. Every other host has its
+  own queue. See [Sharing SEC's limit](#sharing-secs-limit). Requests wait their turn in order,
   except that fetching the text of a release that just turned up is urgent: it takes the
   host's next turn, ahead of polls, and the host's gap between requests stays the same. Each
   `new` event logs how long its poll waited (`queued_ms`), and the summary gives the median and
@@ -609,11 +611,48 @@ A SQLite file holds:
 
 ### Sharing SEC's limit
 
-With up to 50 companies, a busy evening can put a dozen or more in the same window. When n
-companies' windows overlap, each one's SEC poll runs every n/8 seconds (never more than once a
-second), which keeps us under SEC's 10 requests per second. EDGAR's list of the latest filings
-would cover every company in one request. We'll measure how quickly it updates before relying
-on it.
+With up to 50 companies, a busy evening can put a dozen or more in the same window. Each company
+has two SEC polls: EDGAR's latest-filings feed on www.sec.gov and the submissions JSON on
+data.sec.gov. SEC's limit of 10 requests a second covers everything we send it, so all of
+sec.gov waits in one queue at 8 requests a second, filing and exhibit downloads included. Until
+Nov 6 each host had its own queue at 8 a second, so together they could send 16. When n
+companies' windows overlap, each SEC poll runs about every 2n/8 seconds (never more than once a
+second). Downloading an 8-K's exhibit for the release text is urgent, so it goes ahead of both
+hosts' polls. EDGAR's list of the latest filings would cover every company in one request.
+We'll measure how quickly it updates before relying on it.
+
+`tests/burst_replay.py` replays 20 releases landing at the same moment, entirely on this PC. It
+runs the real recorder, Fetcher and alert pipeline, with every server played by local fixtures
+and Discord by a fake poster. Its docstring says how to rerun it. Ten companies use a Q4 IR site
+and Business Wire, six their own feed and PR Newswire, and four only Business Wire, whose
+articles block us, so their text comes from the 8-K. Every company has both SEC polls. Results
+from Nov 6, 2026, in seconds after the releases went up (median / p95 / worst, server response
+times simulated; a second seed agreed, and main's own code matched the "before" column):
+
+| | Before: a queue per host | After: one queue for sec.gov |
+|---|---|---|
+| SEC requests in the busiest second | 16 | 8 |
+| First alert | 0.28 / 0.35 / 0.35 | 0.24 / 0.24 / 0.27 |
+| First seen on SEC | 1.43 / 2.60 / 2.77 | 3.79 / 6.29 / 6.84 |
+| SEC polls' wait for a turn | 2.54 / 2.65 / 6.36 | 4.95 / 7.00 / 7.39 |
+| Release text, SEC-only companies | 3.76 / 4.06 / 4.06 | 4.33 / 6.67 / 6.67 |
+| Release text, IR companies | 1.44 / 1.58 / 1.58 | 1.48 / 1.59 / 1.59 |
+| Release text, own-feed companies | 1.25 / 1.38 / 1.38 | 1.25 / 1.34 / 1.34 |
+
+- **Alerts don't wait for SEC.** A run with no SEC polls at all alerted no sooner, IR and
+  newswire polls waited as long for their turns in every run, and the event loop was never more
+  than 16 ms late. Each IR site and newswire has its own queue.
+- **SEC itself is slower.** 40 SEC polls share 8 requests a second, so each goes about every
+  5 s instead of 2.5 s, and urgent exhibit downloads take turns first. The text for companies
+  whose only text source is the 8-K came about 0.5 s later at the median and 2 to 2.6 s later
+  at worst.
+- No alert was missed or posted twice. A 40-second run used under 0.4 s of CPU and peaked at
+  about 103 MB.
+- Both SEC sources can download the same exhibit when they see the 8-K before any text has
+  arrived: 2 to 4 of 26 to 28 urgent SEC downloads before the change, and 0 to 2 of 12 to 16
+  after.
+- PR Newswire's article downloads hold up its feed polls, since they share its one request a
+  second: the feed waited up to 5 s while six articles downloaded, with or without SEC.
 
 ## Posting and summaries
 
@@ -739,7 +778,8 @@ This starts after the Nov 2–4 runs, whose results feed into it.
 6. **Scale:** share SEC's limit across overlapping windows, and learn from each release.
    Polling each newswire feed once for every company whose window is open was done on Nov 6
    (before that, with three windows open at once, Business Wire's one request a second
-   stretched each window's polls to 3 s).
+   stretched each window's polls to 3 s). So was one queue for all of sec.gov (see
+   [Sharing SEC's limit](#sharing-secs-limit)). Left: fetching each 8-K's exhibit once.
 
 ## Decision log
 
@@ -776,3 +816,4 @@ This starts after the Nov 2–4 runs, whose results feed into it.
 | 2026-11-06 | Q4's CDN ignores cache-busters now, so Q4 press release polls take turns with five longer lists, each once its 10 s copy has expired. The site gets no extra requests, and Q4's servers about one every 2 s. Faking headers or a browser's identity stays out |
 | 2026-11-06 | New sources go on trial first: recorded on release days, but posted only when the schedule's `[target.trial]` table says `post = true`. On trial now: Broadcom's newsroom JSON, GlobeNewswire's earnings RSS (plain and busted), PR Newswire's Semiconductors feed, HubSpot's press release feed, and release pages for CrowdStrike (FinancialContent), McDonald's (MediaRoom) and Airbnb (its newsroom). Broadcom is matched on PR Newswire as "Broadcom Inc". Yahoo, Home Depot, Tesla's deck, McDonald's PDFs, scripted browsers and any way around a block stay out, and every site gets the same honest User-Agent |
 | 2026-11-06 | Overlapping windows share one poll of each feed. Fetching a release's text takes the host's next turn ahead of polls, keeping the host's gap. A late start catches up on earnings items stamped inside the window, posted as already out and not counted as a latency measurement |
+| 2026-11-06 | www.sec.gov and data.sec.gov wait in one queue at 8 requests a second together, filings and exhibits included, since SEC's limit of 10 a second covers everything we send it. Before, each host had its own queue, so a busy evening could send 16 a second. A local replay of 20 releases at once (`tests/burst_replay.py`) checks the limit and what it costs |
