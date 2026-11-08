@@ -12,5 +12,5 @@
 ticker = "AMD"
 expected = 2026-11-03T16:15:00
 cik = 2488
-# AMD's own feed. Its releases go out on GlobeNewswire, whose feed refuses automated reads.
+# AMD's own feed. The catalog also has a GlobeNewswire RSS trial for AMD.
 rss = ["https://ir.amd.com/news-events/press-releases/rss"]

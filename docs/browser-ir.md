@@ -1,18 +1,29 @@
 # Public IR browser trial
 
-The trial uses stock desktop Chrome on a separate inactive Windows desktop with
-a temporary profile. It leaves the user's browser session alone. Chrome and
-ordinary HTTP requests share the existing per-host pacing. During a watch
-window, the first browser poll warms the issuer tab. Later polls fetch from
-that tab without reloading the page. The bot keeps the complete response in
-memory for attachments or summaries.
+The trial uses headful Chrome on a separate inactive Windows desktop with
+a temporary profile. During a watch window, Chrome and ordinary HTTP
+requests share per-host pacing. The first browser poll warms the issuer tab.
+Later polls fetch from that tab without reloading the page. The bot keeps
+the complete response in memory for attachments or summaries.
 
 Use the recorder first. These tests exercised an active Windows login session.
 Check Chrome startup under the intended Task Scheduler account before counting
 on this source after a reboot. A browser startup failure is reported for that
 source. The other sources continue watching.
 
-## Enable a source for one schedule
+## Automatic trials for tracked issuers
+
+For supported listings, `/track` can use Chrome to read an issuer's date notice.
+It can also observe same-origin JSON requested by the public IR page. The
+scorecard distinguishes responses that matched the last release from endpoint
+leads. A new route can be added as a source through a dedicated adapter.
+
+The planner can prepare a listing trial after retrieving the previous quarter's
+full report. It checks the upcoming fiscal period and requires usable financial
+results text before recording a sighting. Automatically prepared trials record
+timing alongside the other sources.
+
+## Configure a source for one schedule
 
 Add an `[target.trial.ir]` section after the matching `[[target]]` entry. The
 following are examples using historical releases. Set the target's expected time
@@ -33,7 +44,8 @@ headline = 'FICO Announces Earnings of .+ for Fourth Quarter Fiscal 2026'
 The headline is a case-insensitive full-match regex. Include the issuer and
 fiscal period. The listing must link to the result by that title. A webcast or
 a date announcement won't count. The recorder waits until the linked article
-contains the title and enough text to pass the release check.
+contains the title and enough text to pass the release check. Set `verify_text = true`
+to require financial results text, as automatic trials do.
 
 Other listing starting points for the same trial:
 
