@@ -14,6 +14,7 @@ from pydantic import ValidationError
 
 from earnings_bot.benchmark import BenchmarkResult, EarningsBenchmark
 from earnings_bot.calendar import Calendar
+from earnings_bot.date_discovery import DateDiscovery
 from earnings_bot.delivery import DeliveryStore, retry_delivery
 from earnings_bot.fetch import Fetcher
 from earnings_bot.pipeline import DiscordPoster, DurableDiscordPoster, Releases
@@ -55,6 +56,7 @@ class DirectoryWatcher:
         self.store = store
         self.calendar = Calendar(store)
         self.planned: dict[str, Target] = {}
+        self.dates = DateDiscovery(self.calendar, fetcher, journal.now, self.busy, status)
         self.status = status
         self.benchmark = benchmark
         self.latest_benchmark: str | None = None
@@ -64,6 +66,13 @@ class DirectoryWatcher:
         self.last_scan: datetime | None = None
         self.since = store.last_scan() or journal.now()
         self.closed: set[tuple[str, datetime]] = set()
+
+    def busy(self) -> bool:
+        now = self.journal.now()
+        return any(
+            target.window[0] - timedelta(minutes=2) <= now <= target.window[1]
+            for target in self.planned.values()
+        )
 
     def health(self) -> str:
         now = self.journal.now()
@@ -241,11 +250,14 @@ class DirectoryWatcher:
         return outcome
 
     async def run(self) -> None:
+        dates = asyncio.create_task(self.dates.run())
         try:
             while True:
                 await self.scan()
                 await asyncio.sleep(SCAN_SECONDS)
         finally:
+            dates.cancel()
+            await asyncio.gather(dates, return_exceptions=True)
             for window in self.windows.values():
                 window.task.cancel()
             await asyncio.gather(
