@@ -11,7 +11,7 @@ from pydantic import BaseModel, model_validator
 from earnings_bot.browser import browser_host
 from earnings_bot.fetch import Fetcher, Response
 from earnings_bot.sources import GuessedFile, Sighting, Source, looks_like_earnings
-from earnings_bot.text import MIN_RELEASE_CHARS, html_to_text
+from earnings_bot.text import MIN_RELEASE_CHARS, html_to_text, verified_report
 
 _TESLA_AGENT = "earnings-bot/0.1 (public earnings release monitor)"
 _TESLA_PATH = re.compile(r"/tesla-contents/IR/TSLA-Q[1-4]-\d{4}-Update\.pdf")
@@ -37,6 +37,7 @@ class IRTrial(BaseModel):
 
     listing: str | None = None
     headline: str | None = None
+    verify_text: bool = False
     warmup: str | None = None
     pdfs: list[str] = []
     tesla_deck: str | None = None
@@ -69,7 +70,9 @@ class IRTrial(BaseModel):
     def sources(self) -> list[Source]:
         sources: list[Source] = []
         if self.listing and self.headline:
-            sources.append(BrowserRelease(self.listing, self.headline))
+            sources.append(
+                BrowserRelease(self.listing, self.headline, verify_text=self.verify_text)
+            )
         warmup = self.warmup or self.listing
         if warmup:
             sources.extend(BrowserPDF(url, warmup) for url in self.pdfs)
@@ -110,8 +113,9 @@ class BrowserRelease(Source):
     stop_when_found = True
     ok_statuses = frozenset({200, 404})
 
-    def __init__(self, listing: str, headline: str) -> None:
+    def __init__(self, listing: str, headline: str, *, verify_text: bool = False) -> None:
         self.listing = listing
+        self.verify_text = verify_text
         self._host = browser_host(listing)
         self._headline = re.compile(headline, re.IGNORECASE)
         self._candidate: Sighting | None = None
@@ -150,6 +154,7 @@ class BrowserRelease(Source):
         text = html_to_text(response.body.decode(errors="replace"))
         if (
             len(text) < MIN_RELEASE_CHARS
+            or (self.verify_text and not verified_report(text))
             or candidate.title.casefold() not in " ".join(text.split()).casefold()
         ):
             return []

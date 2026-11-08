@@ -7,6 +7,7 @@ from pydantic import ValidationError
 from earnings_bot.browser import BrowserUnavailable
 from earnings_bot.browser_sources import BrowserPDF, BrowserRelease, IRTrial, TeslaDeck
 from earnings_bot.fetch import Response
+from earnings_bot.ir_research import quarter_headline
 from earnings_bot.recorder import ET, Journal, PollError, Target, Watch, poll, take
 from earnings_bot.sources import Sighting
 from earnings_bot.text import release_text
@@ -35,7 +36,14 @@ class BrowserFake(RoutedFetcher):
         return Response(url, status, {}, body, 0.015)
 
 
-async def test_only_scheduled_issuer_article_is_fetched_and_reused() -> None:
+@pytest.mark.parametrize(
+    ("headline", "verify_text"),
+    [(PATTERN, False), (quarter_headline(2026, 4), True)],
+    ids=["configured", "automatic"],
+)
+async def test_only_scheduled_issuer_article_is_fetched_and_reused(
+    headline: str, verify_text: bool
+) -> None:
     listing = (
         '<a href="https://example.org/not-issuer">' + TITLE + "</a>"
         '<a href="/announced-date">FICO Announces Date for Fourth Quarter 2026 Results</a>'
@@ -44,7 +52,7 @@ async def test_only_scheduled_issuer_article_is_fetched_and_reused() -> None:
     ).encode()
     body = f"<h1>{TITLE}</h1><p>{'Revenue and earnings per share. ' * 120}</p>".encode()
     fetcher = BrowserFake([(200, listing), (200, body)])
-    source = BrowserRelease(FICO, PATTERN)
+    source = BrowserRelease(FICO, headline, verify_text=verify_text)
 
     _, items = await poll(source, fetcher)
 

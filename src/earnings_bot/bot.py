@@ -13,6 +13,7 @@ from earnings_bot.config import Settings
 from earnings_bot.pipeline import watch_schedule
 from earnings_bot.recorder import load_plan
 from earnings_bot.summary import Summarizer
+from earnings_bot.tracking_commands import TrackingCommands
 from earnings_bot.unattended import DirectoryWatcher, watch_directory
 
 log = logging.getLogger(__name__)
@@ -35,6 +36,14 @@ class EarningsBot(discord.Client):
                 name="watch_status", description="Check earnings monitoring", callback=self._status
             )
         )
+
+        if self.directory_mode:
+            TrackingCommands(self._calendar_watcher).register(self.tree)
+
+    def _calendar_watcher(self) -> DirectoryWatcher | None:
+        if self.watcher is None or self.watcher.done():
+            return None
+        return self.directory_watcher
 
     async def setup_hook(self) -> None:
         # Runs once after login, before the Gateway connection opens
@@ -78,7 +87,12 @@ class EarningsBot(discord.Client):
                 except discord.HTTPException:
                     log.exception("Can't open the status channel. Continuing with local logs.")
                 else:
-                    if isinstance(candidate, discord.abc.Messageable):
+                    if (
+                        isinstance(candidate, discord.abc.Messageable)
+                        and isinstance(candidate, discord.abc.GuildChannel | discord.Thread)
+                        and isinstance(channel, discord.abc.GuildChannel | discord.Thread)
+                        and candidate.guild.id == channel.guild.id
+                    ):
                         status_channel = candidate
                     else:
                         log.error("Status channel cannot receive messages. Using local logs.")

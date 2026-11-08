@@ -12,11 +12,18 @@ import aiohttp
 import discord
 from pydantic import ValidationError
 
+from earnings_bot.benchmark import BenchmarkResult, EarningsBenchmark
+from earnings_bot.calendar import Calendar
+from earnings_bot.date_discovery import DateDiscovery
 from earnings_bot.delivery import DeliveryStore, retry_delivery
 from earnings_bot.fetch import Fetcher
 from earnings_bot.pipeline import DiscordPoster, DurableDiscordPoster, Releases, keep_warm
 from earnings_bot.recorder import ET, Journal, Plan, Polls, Target, Watch, record_target
+from earnings_bot.source_audit import audit_sources
+from earnings_bot.sources import Sighting, Source
 from earnings_bot.summary import Summarizer
+from earnings_bot.text import release_text, verified_report
+from earnings_bot.track_progress import TrackProgress
 
 SCAN_SECONDS = 3.0
 
@@ -43,6 +50,7 @@ class DirectoryWatcher:
         releases: Releases,
         store: DeliveryStore,
         status: Callable[[str], None],
+        benchmark: EarningsBenchmark | None = None,
     ) -> None:
         self.directory = directory
         self.fetcher = fetcher
@@ -50,7 +58,14 @@ class DirectoryWatcher:
         self.polls = Polls(fetcher, journal)
         self.releases = releases
         self.store = store
+        self.calendar = Calendar(store)
+        self.planned: dict[str, Target] = {}
+        self.dates = DateDiscovery(self.calendar, fetcher, journal.now, self.busy, journal.say)
         self.status = status
+        self.benchmark = benchmark
+        self.latest_benchmark: str | None = None
+        self.progress: TrackProgress | None = None
+        self.guild_id: int | None = None
         self.schedules: dict[Path, _Schedule] = {}
         self.windows: dict[str, _Window] = {}
         self.problems: dict[str, str] = {}
@@ -61,6 +76,13 @@ class DirectoryWatcher:
     def open_windows(self) -> Iterator[tuple[datetime, datetime]]:
         """The windows of the targets being watched, for keep_warm."""
         return (w.target.window for w in self.windows.values() if not w.task.done())
+
+    def busy(self) -> bool:
+        now = self.journal.now()
+        return any(
+            target.window[0] - timedelta(minutes=2) <= now <= target.window[1]
+            for target in self.planned.values()
+        )
 
     def health(self) -> str:
         now = self.journal.now()
@@ -76,6 +98,8 @@ class DirectoryWatcher:
             lines.append(f"Last scan: {self.last_scan.astimezone(ET):%H:%M:%S} ET.")
         if self.problems:
             lines.append(f"Problems: {len(self.problems)}. See the status log.")
+        if self.latest_benchmark:
+            lines.append(self.latest_benchmark)
         return "\n".join(lines)
 
     def _problem(self, name: str, message: str | None) -> None:
@@ -136,6 +160,8 @@ class DirectoryWatcher:
         targets = self._targets()
         if targets is None:
             return
+        targets = self.calendar.plan(targets)
+        self.planned = targets
         now = self.journal.now()
         for key, window in list(self.windows.items()):
             if window.target != targets.get(key) or window.task.done():
@@ -182,24 +208,106 @@ class DirectoryWatcher:
         # The next scan retries a failed window within seconds, so a lasting failure is
         # reported once, not every 3 s
         problem = f"{target.ticker} monitoring"
+        trial_reads: dict[str, asyncio.Task[None]] = {}
+
+        def on_new(target: Target, source: Source, sighting: Sighting) -> None:
+            measure = self.calendar.contains(target.cik)
+            self.releases.on_new(target, source, sighting, measure=measure)
+            if (
+                measure
+                and source.trial
+                and not target.trial.post
+                and sighting.earnings
+                and not sighting.caught_up
+                and source.name not in trial_reads
+            ):
+                trial_reads[source.name] = asyncio.create_task(
+                    self._measure_trial(target, source, sighting)
+                )
+
+        benchmark = None
+        if self.benchmark:
+            benchmark = asyncio.create_task(self.benchmark.watch(target.ticker, *target.window))
         try:
-            watches = await record_target(
-                target, self.fetcher, self.journal, self.releases.on_new, self.polls
-            )
+            watches = await record_target(target, self.fetcher, self.journal, on_new, self.polls)
             self._problem(problem, None)
             self.store.close_window(target.release_key, target.expected)
-            self.status(_window_report(target, watches))
+            comparison = ""
+            if benchmark is not None:
+                comparison = await self._compare(target, watches, benchmark)
+            self.status(_window_report(target, watches, comparison))
             await self.releases.finish_target(target)
+            await asyncio.gather(*trial_reads.values(), return_exceptions=True)
+            if self.calendar.contains(target.cik):
+                self.calendar.clear_review(target.cik)
+                if self.progress:
+                    self.progress.next_attempt.pop(target.cik, None)
+                    self.progress.changed.set()
         except Exception as error:
             self.journal.write("error", ticker=target.ticker, message=repr(error))
             self._problem(problem, f"failed and will retry: {error!r}")
+        finally:
+            for read in trial_reads.values():
+                if not read.done():
+                    read.cancel()
+            await asyncio.gather(*trial_reads.values(), return_exceptions=True)
+            if benchmark is not None:
+                benchmark.cancel()
+                await asyncio.gather(benchmark, return_exceptions=True)
+
+    async def _measure_trial(self, target: Target, source: Source, sighting: Sighting) -> None:
+        if verified_report(await release_text(self.fetcher, source, sighting)):
+            self.journal.write(
+                "source_body",
+                ticker=target.ticker,
+                source=source.name,
+                key=sighting.key,
+                url=sighting.url,
+            )
+
+    async def _compare(
+        self, target: Target, watches: list[Watch], task: asyncio.Task[BenchmarkResult]
+    ) -> str:
+        try:
+            result = await asyncio.wait_for(task, timeout=30)
+        except Exception as error:
+            self.journal.write("benchmark_error", ticker=target.ticker, message=repr(error))
+            result = BenchmarkResult("unavailable")
+        delivered = self.store.get(target.release_key)
+        alert = (
+            discord.utils.snowflake_time(delivered.message_id)
+            if delivered and delivered.message_id is not None
+            else None
+        )
+        release = self.releases.active.get(target.release_key)
+        first_text = release.first_text_at if release else None
+        first_seen = min((w.first for w in watches if w.first), default=None)
+        post = result.post
+        self.journal.write(
+            "benchmark",
+            ticker=target.ticker,
+            period=target.period,
+            account="earnings_guy",
+            state=result.state,
+            x_post=post.url if post else None,
+            x_posted=post.posted if post else None,
+            first_seen=first_seen,
+            first_text=first_text,
+            discord_alert=alert,
+        )
+        outcome = _benchmark_report(result, alert)
+        self.latest_benchmark = f"{target.ticker}: {outcome}"
+        return outcome
 
     async def run(self) -> None:
+        dates = asyncio.create_task(self.dates.run())
         try:
             while True:
                 await self.scan()
                 await asyncio.sleep(SCAN_SECONDS)
         finally:
+            dates.cancel()
+            await asyncio.gather(dates, return_exceptions=True)
             for window in self.windows.values():
                 window.task.cancel()
             await asyncio.gather(
@@ -208,7 +316,30 @@ class DirectoryWatcher:
             await self.releases.finish()
 
 
-def _window_report(target: Target, watches: list[Watch]) -> str:
+def _benchmark_report(result: BenchmarkResult, alert: datetime | None) -> str:
+    if result.post is None:
+        state = {
+            "no_post_found": "no post found",
+            "unavailable": "lookup unavailable",
+            "unverified": "candidate could not be verified",
+        }
+        return f"@earnings_guy: {state.get(result.state, 'lookup unavailable')}."
+    post = result.post
+    local = f"{post.posted.astimezone(ET):%H:%M:%S.%f}"[:-3]
+    text = f"@earnings_guy posted at {local} ET"
+    if alert:
+        delta = (alert - post.posted).total_seconds()
+        if abs(delta) < 0.005:
+            text += ". Our Discord alert tied"
+        else:
+            direction = "earlier" if delta < 0 else "later"
+            text += f". Our Discord alert was {abs(delta):.2f}s {direction}"
+    else:
+        text += ". No Discord alert recorded"
+    return f"{text}. <{post.url}>"
+
+
+def _window_report(target: Target, watches: list[Watch], comparison: str = "") -> str:
     def label(watch: Watch) -> str:
         return watch.source.name + (" (trial)" if watch.source.trial else "")
 
@@ -228,7 +359,10 @@ def _window_report(target: Target, watches: list[Watch]) -> str:
     stopped = ", ".join(label(w) for w in watches if w.stopped)
     if stopped:
         outcome += f". Stopped sources: {stopped}"
-    return f"{target.ticker} window closed. {outcome}."
+    heading = f"{target.ticker} window closed."
+    if comparison:
+        heading += f" {comparison}"
+    return f"{heading} {outcome}."
 
 
 async def watch_directory(
@@ -243,7 +377,10 @@ async def watch_directory(
     ready: Callable[[DirectoryWatcher], None],
     ping: Callable[[], Awaitable[object]] | None = None,
 ) -> None:
+    progress_channel = status_channel or channel
+    progress_id = getattr(progress_channel, "id", channel_id)
     with (
+        DeliveryStore(directory / ".tracking-progress.sqlite3", progress_id) as progress_store,
         (directory / "watch.jsonl").open("a", encoding="utf-8") as file,
         DeliveryStore(directory / ".earnings-state.sqlite3", channel_id) as store,
     ):
@@ -285,10 +422,28 @@ async def watch_directory(
                 fmp_api_key,
                 lambda target: DurableDiscordPoster(channel, store, target.release_key, author_id),
             )
-            watcher = DirectoryWatcher(directory, fetcher, journal, releases, store, status)
+            benchmark = EarningsBenchmark(fetcher, journal.now)
+            watcher = DirectoryWatcher(
+                directory, fetcher, journal, releases, store, status, benchmark
+            )
+            if isinstance(channel, discord.abc.GuildChannel | discord.Thread):
+                watcher.guild_id = channel.guild.id
+            watcher.progress = TrackProgress(
+                watcher.calendar,
+                progress_store,
+                progress_channel,
+                author_id,
+                lambda: watcher.planned,
+                journal.now,
+                watcher.busy,
+                partial(audit_sources, fetcher, directory, benchmark=benchmark),
+            )
             ready(watcher)
             status(f"Earnings monitoring started. Reading {directory.name}/.")
-            tasks = [asyncio.create_task(recover_pending())]
+            tasks = [
+                asyncio.create_task(recover_pending()),
+                asyncio.create_task(watcher.progress.run()),
+            ]
             if status_channel is not None:
                 tasks.append(asyncio.create_task(report(status_channel)))
             if ping is not None:

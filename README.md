@@ -7,19 +7,18 @@ A Discord bot that posts company earnings the moment they're released, pulled st
 investor relations pages and SEC filings, along with a summary of the numbers and KPIs that
 matter for each company.
 
-> **Status: early development.** The bot watches the releases listed in a schedule file and
-> posts each one: an alert with links within seconds, then the release files, then a summary
-> written by Claude. Adding companies with a slash command comes next. See
-> [docs/architecture.md](docs/architecture.md) for the design.
+In directory mode, `/track` adds a catalog issuer to the earnings calendar. The bot
+finds the next release date, prepares the sources, and keeps an editable Discord
+scorecard. See the [calendar guide](docs/unattended.md) and [architecture](docs/architecture.md).
 
 ## Features
 
-- Watches investor relations sites, SEC EDGAR, Business Wire and guessed file URLs at once,
-  and posts as soon as any of them shows the release
+- Races configured IR, newswire and SEC sources in parallel and alerts on the first eligible
+  release. Trial sources can record separate timing.
 - Attaches the release files (press release, supplemental data) as they appear
 - Edits in a summary of results, guidance and the KPIs that matter for that company, with
   consensus estimates from [Financial Modeling Prep](https://site.financialmodelingprep.com/)
-- Planned: request and manage tracked companies with slash commands
+- Tracks the latest release timing by source and compares Discord alerts with @earnings_guy
 
 ## Run your own copy
 
@@ -73,6 +72,12 @@ version for you.
    uv run earnings-bot-replay schedules/2026-11-04.toml UBER --date 2026-08-05 --q4-release 1585 --edgar 0001543151-26-000027
    ```
 
+### Earnings calendar commands
+
+Use `/track ticker:NVDA` in directory mode. `/upcoming` shows the next seven days and issuers
+awaiting a date. Members with Manage Server can set a release time or remove a subscription
+with `/untrack`. See the [command reference](docs/unattended.md#commands) for exact syntax.
+
 ### Run continuously on Windows
 
 Run `uv run earnings-bot schedules` to watch every TOML in the directory. Edits and new files
@@ -81,9 +86,18 @@ Use `/watch_status` for the next watch window and the last successful schedule s
 `DISCORD_STATUS_CHANNEL_ID` to a separate channel to receive window reports there. Reports
 are also written to `schedules/watch.jsonl`.
 
-Give the bot **Read Message History** in the releases channel. Directory mode keeps a local
-`schedules/.earnings-state.sqlite3` file so a restart resumes the original Discord message.
-Keep that file with the schedules. New entries should specify `period = "FY2027Q3"` (using
+Window reports use **@earnings_guy** as the main external speed benchmark. The runner
+checks a shared public RSS timeline during release windows and verifies candidate results
+posts through X's public embed service. It compares the X post's creation time with the
+actual Discord alert time. The most recent comparison is in `/watch_status`. The journal
+records the X link, first sighting and when usable release text arrived. The status distinguishes
+an unmatched post from an unavailable lookup or an unverified candidate. Benchmark requests
+run alongside the release watchers.
+
+Give the bot **Read Message History** in the earnings and status channels. Keep
+`schedules/.earnings-state.sqlite3` and `schedules/.tracking-progress.sqlite3` with the
+schedules so a restart resumes alerts and scorecards. New TOML entries should specify
+`period = "FY2027Q3"` (using
 the issuer's fiscal year and quarter) so moving a window to another day keeps the same
 identity. Older entries use the issuer's CIK and Eastern release date.
 
@@ -97,7 +111,8 @@ the bot after it exits and
 writes its console output to `recordings/`. Run the script manually first to check its
 configuration, then stop that copy before starting the scheduled task.
 
-[Chrome IR trials](docs/browser-ir.md) are opt-in per release and record-only by default.
+[Chrome IR trials](docs/browser-ir.md) can be prepared by the planner or configured per release.
+They record timing by default.
 For the first Chrome trial, use an **At log on** trigger with **Run only when user is logged
 on**, unless you've already verified Chrome under the unattended startup account. Use a single
 task. Other sources keep running if Chrome cannot start.
