@@ -21,6 +21,7 @@ from earnings_bot.delivery import DeliveryStore, retry_delivery
 from earnings_bot.estimates import Estimates, EstimatesError, fmp_estimates
 from earnings_bot.fetch import Fetcher, Response
 from earnings_bot.recorder import ET, Journal, Plan, Target, record
+from earnings_bot.source_audit import verified_report
 from earnings_bot.sources import (
     BroadcomNewsroom,
     EdgarFilings,
@@ -238,7 +239,7 @@ class Release:
         self.tasks: set[asyncio.Task[None]] = set()
         self.estimates = asyncio.create_task(self._estimates(fmp_api_key))
 
-    def add(self, source: Source, sighting: Sighting) -> None:
+    def add(self, source: Source, sighting: Sighting, *, measure: bool = False) -> None:
         """Called by the poller for each new item that looks like the release. Returns at once;
         the work runs in the background."""
         if self.first_seen is None:
@@ -249,8 +250,8 @@ class Release:
         self._spawn(self._link(_file_name(sighting.url) if is_file else label, sighting.url))
         if is_file:
             self._spawn(self._attach(sighting.url, sighting.body))
-        elif not self.has_text or (self.summarizer and not self.summarizing):
-            self._spawn(self._read(source, sighting, label))
+        elif measure or not self.has_text or (self.summarizer and not self.summarizing):
+            self._spawn(self._read(source, sighting, label, measure))
 
     async def finish(self) -> None:
         """Waits for every pending step."""
@@ -398,12 +399,22 @@ class Release:
                 continue  # keep the last answer and try again
         return response
 
-    async def _read(self, source: Source, sighting: Sighting, label: str) -> None:
+    async def _read(
+        self, source: Source, sighting: Sighting, label: str, measure: bool = False
+    ) -> None:
         """Gets the release's text from this sighting, logs when the first text arrives, and
         starts the summary from it. Several sources can deliver the text; the first one wins."""
         text = await self._release_text(source, sighting)
         if text is None:
             return
+        if measure and not sighting.caught_up and verified_report(text):
+            self.journal.write(
+                "source_body",
+                ticker=self.target.ticker,
+                source=source.name,
+                key=sighting.key,
+                url=sighting.url,
+            )
         if not self.has_text:
             self.has_text = True
             self.first_text_at = self.journal.now()
@@ -510,7 +521,9 @@ class Releases:
         self.fmp_api_key = fmp_api_key
         self.active: dict[str, Release] = {}
 
-    def on_new(self, target: Target, source: Source, sighting: Sighting) -> None:
+    def on_new(
+        self, target: Target, source: Source, sighting: Sighting, *, measure: bool = False
+    ) -> None:
         """Called by the recorder for each new item any source lists."""
         if not sighting.earnings:
             return
@@ -527,7 +540,7 @@ class Releases:
                 self.summarizer,
                 self.fmp_api_key,
             )
-        release.add(source, sighting)
+        release.add(source, sighting, measure=measure)
 
     async def finish_target(self, target: Target) -> None:
         if release := self.active.get(target.release_key):

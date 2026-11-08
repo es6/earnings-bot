@@ -19,7 +19,10 @@ from earnings_bot.delivery import DeliveryStore, retry_delivery
 from earnings_bot.fetch import Fetcher
 from earnings_bot.pipeline import DiscordPoster, DurableDiscordPoster, Releases
 from earnings_bot.recorder import ET, Journal, Plan, Polls, Target, Watch, record_target
+from earnings_bot.source_audit import verified_report
+from earnings_bot.sources import Sighting, Source
 from earnings_bot.summary import Summarizer
+from earnings_bot.text import release_text
 
 SCAN_SECONDS = 3.0
 
@@ -195,25 +198,55 @@ class DirectoryWatcher:
             await self.fetcher.close_browser()
 
     async def _watch(self, target: Target) -> None:
+        measure = any(row.cik == target.cik for row in self.calendar.entries())
+        trial_reads: dict[str, asyncio.Task[None]] = {}
+
+        def on_new(target: Target, source: Source, sighting: Sighting) -> None:
+            self.releases.on_new(target, source, sighting, measure=measure)
+            if (
+                measure
+                and source.trial
+                and not target.trial.post
+                and sighting.earnings
+                and not sighting.caught_up
+                and source.name not in trial_reads
+            ):
+                trial_reads[source.name] = asyncio.create_task(
+                    self._measure_trial(target, source, sighting)
+                )
+
         benchmark = None
         if self.benchmark:
             benchmark = asyncio.create_task(self.benchmark.watch(target.ticker, *target.window))
         try:
-            watches = await record_target(
-                target, self.fetcher, self.journal, self.releases.on_new, self.polls
-            )
+            watches = await record_target(target, self.fetcher, self.journal, on_new, self.polls)
             self.store.close_window(target.release_key, target.expected)
             comparison = ""
             if benchmark is not None:
                 comparison = await self._compare(target, watches, benchmark)
             self.status(_window_report(target, watches, comparison))
             await self.releases.finish_target(target)
+            await asyncio.gather(*trial_reads.values())
         except Exception as error:
             self.status(f"{target.ticker}: monitoring failed and will retry: {error!r}")
         finally:
+            for read in trial_reads.values():
+                if not read.done():
+                    read.cancel()
+            await asyncio.gather(*trial_reads.values(), return_exceptions=True)
             if benchmark is not None:
                 benchmark.cancel()
                 await asyncio.gather(benchmark, return_exceptions=True)
+
+    async def _measure_trial(self, target: Target, source: Source, sighting: Sighting) -> None:
+        if verified_report(await release_text(self.fetcher, source, sighting)):
+            self.journal.write(
+                "source_body",
+                ticker=target.ticker,
+                source=source.name,
+                key=sighting.key,
+                url=sighting.url,
+            )
 
     async def _compare(
         self, target: Target, watches: list[Watch], task: asyncio.Task[BenchmarkResult]
