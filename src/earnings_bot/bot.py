@@ -12,6 +12,7 @@ from earnings_bot.config import Settings
 from earnings_bot.pipeline import watch_schedule
 from earnings_bot.recorder import load_plan
 from earnings_bot.summary import Summarizer
+from earnings_bot.tracking_commands import TrackingCommands
 from earnings_bot.unattended import DirectoryWatcher, watch_directory
 
 log = logging.getLogger(__name__)
@@ -34,6 +35,14 @@ class EarningsBot(discord.Client):
                 name="watch_status", description="Check earnings monitoring", callback=self._status
             )
         )
+
+        if self.directory_mode:
+            TrackingCommands(self._calendar_watcher).register(self.tree)
+
+    def _calendar_watcher(self) -> DirectoryWatcher | None:
+        if self.watcher is None or self.watcher.done():
+            return None
+        return self.directory_watcher
 
     async def setup_hook(self) -> None:
         # Runs once after login, before the Gateway connection opens

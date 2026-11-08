@@ -13,6 +13,7 @@ import discord
 from pydantic import ValidationError
 
 from earnings_bot.benchmark import BenchmarkResult, EarningsBenchmark
+from earnings_bot.calendar import Calendar
 from earnings_bot.delivery import DeliveryStore, retry_delivery
 from earnings_bot.fetch import Fetcher
 from earnings_bot.pipeline import DiscordPoster, DurableDiscordPoster, Releases
@@ -52,6 +53,8 @@ class DirectoryWatcher:
         self.polls = Polls(fetcher, journal)
         self.releases = releases
         self.store = store
+        self.calendar = Calendar(store)
+        self.planned: dict[str, Target] = {}
         self.status = status
         self.benchmark = benchmark
         self.latest_benchmark: str | None = None
@@ -138,6 +141,8 @@ class DirectoryWatcher:
         targets = self._targets()
         if targets is None:
             return
+        targets = self.calendar.plan(targets)
+        self.planned = targets
         now = self.journal.now()
         for key, window in list(self.windows.items()):
             if window.target != targets.get(key) or window.task.done():

@@ -73,6 +73,14 @@ version for you.
    uv run earnings-bot-replay schedules/2026-11-04.toml UBER --date 2026-08-05 --q4-release 1585 --edgar 0001543151-26-000027
    ```
 
+### Earnings calendar commands
+
+In directory mode, use `/track ticker:NVDA` to add an issuer to the server calendar.
+`/upcoming` shows the next seven days and subscriptions awaiting a date. A member with
+Manage Server can set `when:2026-11-17T16:20 period:FY2027Q3` or use `/untrack`.
+The running watcher reads the calendar within a few seconds and reuses matching schedule
+files, including their trial sources.
+
 ### Run continuously on Windows
 
 Run `uv run earnings-bot schedules` to watch every TOML in the directory. Edits and new files
