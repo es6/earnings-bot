@@ -11,7 +11,7 @@ from pydantic import ValidationError
 
 from earnings_bot.bot import EarningsBot
 from earnings_bot.config import Settings
-from earnings_bot.recorder import load_plan
+from earnings_bot.recorder import configure_console, load_plan
 
 log = logging.getLogger("earnings_bot")
 
@@ -25,6 +25,7 @@ def main() -> None:
         help="a schedule file, or a schedule directory to watch continuously",
     )
     args = parser.parse_args()
+    configure_console()
 
     # Pyright can't see that BaseSettings reads its fields from the environment
     settings = Settings()  # pyright: ignore[reportCallIssue]

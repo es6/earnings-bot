@@ -10,6 +10,7 @@ the plan, and a summary prints when each watch window closes.
 import argparse
 import asyncio
 import contextlib
+import io
 import json
 import statistics
 import sys
@@ -208,6 +209,15 @@ class Journal:
         print(f"{_clock(self.now())}  {message}", flush=True)
 
 
+def configure_console() -> None:
+    """Makes printing to the console unable to fail. When output goes to a file or pipe, as
+    scripts/run-bot.ps1 sends it, Windows Python encodes it as cp1252 and raises on anything
+    outside it. A headline with a zero-width space would then crash the poll that found it."""
+    for stream in (sys.stdout, sys.stderr):
+        if isinstance(stream, io.TextIOWrapper):
+            stream.reconfigure(errors="backslashreplace")
+
+
 @dataclass(eq=False)
 class Watch:
     """What one source has shown for one target so far."""
@@ -350,6 +360,17 @@ def record_items(
             w.caught_up = w.caught_up or item.title
         elif item.earnings and w.first is None:
             w.first, w.first_title = seen, item.title
+        if on_new:
+            # Before anything else can go wrong with this item. The poster only schedules its
+            # work, and a bug in it mustn't stop this source, or a shared poll's other
+            # companies, from polling.
+            try:
+                on_new(w.source, item)
+            except Exception as error:
+                journal.write(
+                    "post_error", ticker=w.ticker, source=w.source.name, message=repr(error)
+                )
+                journal.say(f"{w.ticker} {w.source.name}: couldn't post {item.key}: {error!r}")
         late = " (published before we started)" if item.caught_up else ""
         star = " *" if item.earnings else ""
         journal.say(f"{w.ticker} {w.source.name}: NEW{star} {item.title}{late}")
@@ -363,8 +384,6 @@ def record_items(
                 via="poll",
                 bytes=len(item.body),
             )
-        if on_new:
-            on_new(w.source, item)
 
 
 def _failed(w: Watch, error: PollError, journal: Journal) -> float:
@@ -428,7 +447,9 @@ async def watch(
         pause = take(w, sent, await _poll_once(w.source, fetcher), journal, on_new)
         if w.done:
             return
-        await asyncio.sleep(max(0.0, next_poll + pause - time.monotonic()))
+        # A long Retry-After mustn't hold the window open past its end
+        left = (end - journal.now()).total_seconds()
+        await asyncio.sleep(max(0.0, min(next_poll + pause - time.monotonic(), left)))
 
 
 @dataclass(eq=False)
@@ -477,6 +498,7 @@ class SharedPoll:
             member.left.set_result(None)
 
     async def _run(self) -> None:
+        next_poll = time.monotonic()  # the interval, plus any Retry-After, from the last poll
         try:
             while True:
                 sent = self.journal.now()
@@ -484,6 +506,12 @@ class SharedPoll:
                     self._leave(member)
                 if not self.members:
                     return
+                if (wait := next_poll - time.monotonic()) > 0:
+                    # Wake when the next window closes, so its watch leaves on time even
+                    # during a long Retry-After
+                    closes = (min(m.end for m in self.members) - sent).total_seconds()
+                    await asyncio.sleep(min(wait, closes))
+                    continue
                 next_poll = time.monotonic() + self.source.interval
                 outcome = await _poll_once(self.source, self.fetcher)
                 pause = 0.0
@@ -492,7 +520,7 @@ class SharedPoll:
                     pause = max(pause, take(w, sent, outcome, self.journal, member.on_new))
                     if w.done:
                         self._leave(member)
-                await asyncio.sleep(max(0.0, next_poll + pause - time.monotonic()))
+                next_poll += pause
         except Exception as error:
             # Every watch fails the way it would have polling on its own
             for member in self.members:
@@ -537,10 +565,14 @@ def summarize(target: Target, watches: list[Watch], journal: Journal) -> None:
     winner = rows[0].first if rows else None
     width = max(len(w.source.name) for w in watches)
     lines = [
-        f"{target.ticker}: expected {_clock(target.expected)} ET. First seen is the first item"
-        " that looks like the release. Queued is the median wait for the host's turn.",
-        f"  {'source':<{width}}  {'first seen':<12}  {'vs expected':>11}  {'vs first':>9}"
-        f"  {'polls':>5}  {'errors':>6}  {'timeouts':>8}  {'median':>7}  {'queued':>7}",
+        (
+            f"{target.ticker}: expected {_clock(target.expected)} ET. First seen is the first"
+            " item that looks like the release. Queued is the median wait for the host's turn."
+        ),
+        (
+            f"  {'source':<{width}}  {'first seen':<12}  {'vs expected':>11}  {'vs first':>9}"
+            f"  {'polls':>5}  {'errors':>6}  {'timeouts':>8}  {'median':>7}  {'queued':>7}"
+        ),
     ]
     for w in rows:
         median = f"{statistics.median(w.elapsed) * 1000:.0f} ms" if w.elapsed else "-"
@@ -691,6 +723,7 @@ def main() -> None:
     parser.add_argument("plan", type=Path, help="TOML file listing the releases to watch")
     parser.add_argument("--log", type=Path, help="where to append events (default: PLAN.jsonl)")
     args = parser.parse_args()
+    configure_console()
 
     try:
         # Pyright can't see that BaseSettings reads its fields from the environment

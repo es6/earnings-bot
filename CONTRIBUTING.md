@@ -13,7 +13,10 @@ larger changes before you start on them.
 ## Making a change
 
 1. Create a branch off `main`.
-2. Make your change and add or update tests in `tests/`.
+2. Make your change and add or update tests in `tests/`. Check that each new test fails
+   without your change (undo the fix, run the test, put the fix back): a test that passes
+   either way doesn't protect anything. For changes that could affect how fast a release is
+   seen, compare `uv run python -m tests.burst_replay` before and after.
 3. Run the same checks CI runs:
 
    ```bash

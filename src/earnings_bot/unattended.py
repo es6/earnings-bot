@@ -2,7 +2,7 @@
 
 import asyncio
 import tomllib
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from functools import partial
@@ -17,7 +17,7 @@ from earnings_bot.calendar import Calendar
 from earnings_bot.date_discovery import DateDiscovery
 from earnings_bot.delivery import DeliveryStore, retry_delivery
 from earnings_bot.fetch import Fetcher
-from earnings_bot.pipeline import DiscordPoster, DurableDiscordPoster, Releases
+from earnings_bot.pipeline import DiscordPoster, DurableDiscordPoster, Releases, keep_warm
 from earnings_bot.recorder import ET, Journal, Plan, Polls, Target, Watch, record_target
 from earnings_bot.source_audit import audit_sources
 from earnings_bot.sources import Sighting, Source
@@ -73,6 +73,10 @@ class DirectoryWatcher:
         self.since = store.last_scan() or journal.now()
         self.closed: set[tuple[str, datetime]] = set()
 
+    def open_windows(self) -> Iterator[tuple[datetime, datetime]]:
+        """The windows of the targets being watched, for keep_warm."""
+        return (w.target.window for w in self.windows.values() if not w.task.done())
+
     def busy(self) -> bool:
         now = self.journal.now()
         return any(
@@ -93,7 +97,7 @@ class DirectoryWatcher:
         if self.last_scan:
             lines.append(f"Last scan: {self.last_scan.astimezone(ET):%H:%M:%S} ET.")
         if self.problems:
-            lines.append(f"Schedule problems: {len(self.problems)}. See the status log.")
+            lines.append(f"Problems: {len(self.problems)}. See the status log.")
         if self.latest_benchmark:
             lines.append(self.latest_benchmark)
         return "\n".join(lines)
@@ -201,6 +205,9 @@ class DirectoryWatcher:
             await self.fetcher.close_browser()
 
     async def _watch(self, target: Target) -> None:
+        # The next scan retries a failed window within seconds, so a lasting failure is
+        # reported once, not every 3 s
+        problem = f"{target.ticker} monitoring"
         trial_reads: dict[str, asyncio.Task[None]] = {}
 
         def on_new(target: Target, source: Source, sighting: Sighting) -> None:
@@ -223,6 +230,7 @@ class DirectoryWatcher:
             benchmark = asyncio.create_task(self.benchmark.watch(target.ticker, *target.window))
         try:
             watches = await record_target(target, self.fetcher, self.journal, on_new, self.polls)
+            self._problem(problem, None)
             self.store.close_window(target.release_key, target.expected)
             comparison = ""
             if benchmark is not None:
@@ -236,7 +244,8 @@ class DirectoryWatcher:
                     self.progress.next_attempt.pop(target.cik, None)
                     self.progress.changed.set()
         except Exception as error:
-            self.status(f"{target.ticker}: monitoring failed and will retry: {error!r}")
+            self.journal.write("error", ticker=target.ticker, message=repr(error))
+            self._problem(problem, f"failed and will retry: {error!r}")
         finally:
             for read in trial_reads.values():
                 if not read.done():
@@ -366,6 +375,7 @@ async def watch_directory(
     fmp_api_key: str | None,
     status_channel: discord.abc.Messageable | None,
     ready: Callable[[DirectoryWatcher], None],
+    ping: Callable[[], Awaitable[object]] | None = None,
 ) -> None:
     progress_channel = status_channel or channel
     progress_id = getattr(progress_channel, "id", channel_id)
@@ -436,6 +446,8 @@ async def watch_directory(
             ]
             if status_channel is not None:
                 tasks.append(asyncio.create_task(report(status_channel)))
+            if ping is not None:
+                tasks.append(asyncio.create_task(keep_warm(ping, watcher.open_windows, journal)))
             try:
                 await watcher.run()
             finally:

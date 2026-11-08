@@ -25,7 +25,7 @@ IR_LISTINGS = {
     "NVDA": "https://investor.nvidia.com/financial-info/financial-reports-and-sec-filings/",
 }
 _ERRORS = (BrowserError, aiohttp.ClientError, TimeoutError, ValueError, KeyError)
-_NEWS = re.compile(r"press|release|earnings|report|financial|news", re.I)
+_NEWS = re.compile(r"press|release|earnings|report|financial|news", re.IGNORECASE)
 
 
 def issuer_links(url: str, body: bytes) -> list[tuple[str, str]]:
@@ -125,7 +125,7 @@ async def verified_browser_trial(fetcher: Fetcher, ticker: str, period: str) -> 
         return None
     year, quarter = int(period[2:6]), int(period[-1])
     prior_year, prior_quarter = (year - 1, 4) if quarter == 1 else (year, quarter - 1)
-    pattern = re.compile(quarter_headline(prior_year, prior_quarter), re.I)
+    pattern = re.compile(quarter_headline(prior_year, prior_quarter), re.IGNORECASE)
     try:
         async with fetcher.research_browser() as browser:
             url = listing

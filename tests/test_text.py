@@ -1,6 +1,13 @@
 import json
 
-from earnings_bot.sources import BroadcomNewsroom, GuessedFile, GuessedPage, RssFeed, Sighting
+from earnings_bot.sources import (
+    BroadcomNewsroom,
+    GuessedFile,
+    GuessedPage,
+    Q4PressReleases,
+    RssFeed,
+    Sighting,
+)
 from earnings_bot.text import html_to_text, pick_exhibit, release_text
 from tests.fakes import RoutedFetcher
 
@@ -98,6 +105,8 @@ def test_pick_exhibit_prefers_the_press_release() -> None:
         {"name": "R1.htm", "size": "38314"},
         {"name": "uber-20260805.htm", "size": "24475"},
         {"name": "uberq226earningspressrelea.htm", "size": "447114"},
+        # Bigger, but not named like a release, so the release still wins
+        {"name": "uber-investor-presentation.htm", "size": "912000"},
         {"name": "MetaLinks.json", "size": "19403"},
     ]
 
@@ -112,3 +121,50 @@ def test_pick_exhibit_falls_back_to_the_biggest_document() -> None:
     ]
 
     assert pick_exhibit(files, "fico-20260805.htm") == "a2026q3exhibit.htm"
+
+
+def q4_list(*releases: tuple[int, str]) -> bytes:
+    return json.dumps(
+        {
+            "GetPressReleaseListResult": [
+                {"PressReleaseId": n, "Headline": f"Release {n}", "Body": body}
+                for n, body in releases
+            ]
+        }
+    ).encode()
+
+
+async def test_q4_text_comes_from_the_newest_release_alone() -> None:
+    fetcher = RoutedFetcher({"pageSize=1&": (200, q4_list((1700, RELEASE)))})
+    sighting = Sighting("1700", "Uber Announces Results", "https://investor.uber.com/news/1700")
+
+    text = await release_text(fetcher, Q4PressReleases("investor.uber.com"), sighting)
+
+    assert text == html_to_text(RELEASE)
+    assert [url for _, url, _ in fetcher.requests] == [fetcher.urgent[0]]
+    assert "bodyType=1" in fetcher.urgent[0]
+
+
+async def test_q4_text_falls_back_to_the_normal_list_when_the_newest_isnt_it() -> None:
+    # Another release went up at the same moment, or the CDN's copy of the one-item list is a
+    # few seconds old
+    fetcher = RoutedFetcher(
+        {
+            "pageSize=1&": (200, q4_list((1701, "<p>Other news</p>"))),
+            "pageSize=5&": (200, q4_list((1701, "<p>Other news</p>"), (1700, RELEASE))),
+        }
+    )
+    sighting = Sighting("1700", "Uber Announces Results", "https://investor.uber.com/news/1700")
+
+    text = await release_text(fetcher, Q4PressReleases("investor.uber.com"), sighting)
+
+    assert text == html_to_text(RELEASE)
+    assert len(fetcher.urgent) == 2
+
+
+async def test_a_page_too_short_to_be_a_release_has_no_text() -> None:
+    # An error page or a teaser that answered 200
+    url = "https://news.airbnb.com/airbnb-q3-2026-financial-results"
+    teaser = Sighting(url, "Airbnb", url, earnings=True, body=b"<p>Coming soon</p>")
+
+    assert await release_text(RoutedFetcher({}), GuessedPage(url), teaser) is None

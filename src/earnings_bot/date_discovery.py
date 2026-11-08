@@ -54,12 +54,12 @@ _TIME = re.compile(
     re.IGNORECASE,
 )
 _AFTER = re.compile(
-    r"after (?:the )?(?:(?:US|U S) )?(?:market close|market closes|closing bell)", re.I
+    r"after (?:the )?(?:(?:US|U S) )?(?:market close|market closes|closing bell)", re.IGNORECASE
 )
 _BEFORE = re.compile(
-    r"before (?:the )?(?:(?:US|U S) )?(?:market open|market opens|opening bell)", re.I
+    r"before (?:the )?(?:(?:US|U S) )?(?:market open|market opens|opening bell)", re.IGNORECASE
 )
-_CALL = re.compile(r"\b(?:conference call|webcast)\b", re.I)
+_CALL = re.compile(r"\b(?:conference call|webcast)\b", re.IGNORECASE)
 
 
 def _is_notice(title: str) -> bool:
@@ -105,7 +105,7 @@ def parse_notice(
     if not _is_notice(title):
         return None
     text = " ".join(html_to_text(body).split())
-    text = re.sub(r"\b([ap])\.m\.", r"\1m", text, flags=re.I).replace("U.S.", "US")
+    text = re.sub(r"\b([ap])\.m\.", r"\1m", text, flags=re.IGNORECASE).replace("U.S.", "US")
     period = _PERIOD.search(f"{title} {text}")
     if period is None:
         return None
@@ -161,8 +161,8 @@ def parse_notice(
 async def find_date(fetcher: Fetcher, ticker: str, now: datetime) -> tuple[Target, str] | None:
     company = known_companies()[ticker]
     if company.q4_host and company.reachable:
-        source = Q4PressReleases(company.q4_host, page_size=20)
-        url = source.url(with_bodies=True)
+        source = Q4PressReleases(company.q4_host)
+        url = source.bodies_url(20)
         try:
             reply = await fetcher.request("GET", url, give_up_after=4, allow_redirects=False)
             if reply.status == 200:

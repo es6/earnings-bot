@@ -31,7 +31,7 @@ def test_issuer_listing_keeps_same_origin_links() -> None:
 
 
 def test_browser_headline_requires_the_scheduled_fiscal_period() -> None:
-    pattern = re.compile(quarter_headline(2027, 3), re.I)
+    pattern = re.compile(quarter_headline(2027, 3), re.IGNORECASE)
     assert pattern.fullmatch("CrowdStrike Reports Third Quarter Fiscal Year 2027 Financial Results")
     assert pattern.fullmatch("CrowdStrike Reports Q3 FY27 Results")
     assert not pattern.fullmatch("CrowdStrike Announces Date of Fiscal Third Quarter 2027 Results")

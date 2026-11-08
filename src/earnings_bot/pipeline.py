@@ -2,13 +2,14 @@
 release files as they appear, then the summary edited in."""
 
 import asyncio
+import contextlib
 import hashlib
 import io
 import re
 import secrets
 import time
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Coroutine
+from collections.abc import Awaitable, Callable, Coroutine, Iterable
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -17,7 +18,7 @@ from urllib.parse import urlsplit
 import aiohttp
 import discord
 
-from earnings_bot.delivery import DeliveryStore, retry_delivery
+from earnings_bot.delivery import Delivery, DeliveryStore, retry_delivery
 from earnings_bot.estimates import Estimates, EstimatesError, fmp_estimates
 from earnings_bot.fetch import Fetcher, Response
 from earnings_bot.recorder import ET, Journal, Plan, Target, record
@@ -40,6 +41,27 @@ MAX_CONTENT = 2000  # Discord's limit for a message's text
 # Seconds between tries for a file that a feed lists before it's uploaded. Cloudflare's Q3 2026
 # supplement was listed at 4:15:32 PM and went up at 4:38:11.
 ATTACH_RETRY_SECONDS = 30.0
+# Seconds between requests that keep the connection to Discord open while a window is open.
+# discord.py's HTTP client closes a connection after 15 s idle, and opening a new one cost 86 to
+# 175 ms from the owner's PC, against 24 ms on an open one: a third of the 0.2 to 0.4 s from
+# detection to a visible alert in the November live runs.
+KEEP_WARM_SECONDS = 10.0
+
+
+async def keep_warm(
+    ping: Callable[[], Awaitable[object]],
+    windows: Callable[[], Iterable[tuple[datetime, datetime]]],
+    journal: Journal,
+) -> None:
+    """Calls `ping`, a cheap Discord request, every KEEP_WARM_SECONDS while any window is open,
+    so the alert doesn't have to open a connection first. Runs until cancelled."""
+    while True:
+        now = journal.now()
+        if any(start <= now < end for start, end in windows()):
+            # A failed ping costs nothing but the warm connection
+            with contextlib.suppress(discord.DiscordException, aiohttp.ClientError, OSError):
+                await ping()
+        await asyncio.sleep(KEEP_WARM_SECONDS)
 
 
 class Poster(ABC):
@@ -106,9 +128,12 @@ class DurableDiscordPoster(DiscordPoster):
         self.store = store
         self.key = key
         self.author_id = author_id
-        self.nonce = hashlib.blake2s(
-            f"{store.channel_id}:{key}".encode(), digest_size=12
-        ).hexdigest()
+
+    def _nonce(self, saved: Delivery) -> str:
+        """The same for every try at one stored alert, across restarts, so Discord drops a
+        repeat. A new alert for the key, after the old one was deleted, gets a new one."""
+        intent = f"{self.store.channel_id}:{self.key}:{saved.prepared.isoformat()}"
+        return hashlib.blake2s(intent.encode(), digest_size=12).hexdigest()
 
     async def send(self, content: str) -> datetime | None:
         async with self.store.lock(self.key):
@@ -116,11 +141,16 @@ class DurableDiscordPoster(DiscordPoster):
 
     async def _deliver(self, content: str) -> datetime | None:
         saved = self.store.get(self.key)
+        if saved is not None and saved.message_id is not None:
+            try:
+                self.message = await self.channel.fetch_message(saved.message_id)
+            except discord.NotFound:
+                # Someone deleted the alert. Post a new one, or every sighting would fail here.
+                self.store.forget(self.key)
+                saved = None
         if saved is None:
             saved = self.store.prepare(self.key, content)
-        elif saved.message_id is not None:
-            self.message = await self.channel.fetch_message(saved.message_id)
-        else:
+        elif self.message is None:
             # Discord's nonce protection is short-lived. After a crash, look for the
             # exact persisted initial message before sending again.
             after = saved.prepared - timedelta(seconds=5)
@@ -130,7 +160,7 @@ class DurableDiscordPoster(DiscordPoster):
                     break
         self.resumed = self.message is not None
         if self.message is None:
-            self.message = await self.channel.send(saved.content, nonce=self.nonce)
+            self.message = await self.channel.send(saved.content, nonce=self._nonce(saved))
         self.store.delivered(self.key, self.message.id)
         if content != self.message.content:
             await self.edit(content)
@@ -236,7 +266,8 @@ class Release:
         self.summarizing = False
         self.lock = asyncio.Lock()  # one Discord edit at a time, in order
         self.tasks: set[asyncio.Task[None]] = set()
-        self.estimates = asyncio.create_task(self._estimates(fmp_api_key))
+        # Only the summary uses estimates
+        self.estimates = asyncio.create_task(self._estimates(fmp_api_key if summarizer else None))
 
     def add(self, source: Source, sighting: Sighting, *, measure: bool = False) -> None:
         """Called by the poller for each new item that looks like the release. Returns at once;
@@ -488,16 +519,24 @@ async def watch_schedule(
     sec_user_agent: str,
     summarizer: Summarizer | None,
     fmp_api_key: str | None,
+    ping: Callable[[], Awaitable[object]] | None = None,
 ) -> None:
-    """Runs the schedule and posts each release to the channel."""
+    """Runs the schedule and posts each release to the channel. `ping`, a cheap Discord request,
+    keeps the connection open during windows (see keep_warm)."""
     with log_path.open("a", encoding="utf-8") as file:
         journal = Journal(file)
         async with Fetcher(sec_user_agent) as fetcher:
             releases = Releases(
                 lambda: DiscordPoster(channel), fetcher, journal, summarizer, fmp_api_key
             )
-            await record(plan, fetcher, journal, releases.on_new)
-            await releases.finish()
+            windows = [target.window for target in plan.target]
+            warm = asyncio.create_task(keep_warm(ping, lambda: windows, journal)) if ping else None
+            try:
+                await record(plan, fetcher, journal, releases.on_new)
+                await releases.finish()
+            finally:
+                if warm:
+                    warm.cancel()
 
 
 class Releases:

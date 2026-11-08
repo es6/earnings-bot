@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from functools import partial
 from pathlib import Path
 
 import discord
@@ -74,6 +75,9 @@ class EarningsBot(discord.Client):
         fmp_key = settings.fmp_api_key
         summarizer = Summarizer(key.get_secret_value()) if key else None
         api_key = fmp_key.get_secret_value() if fmp_key else None
+        # Reading the channel is about the cheapest request there is, and goes over the same
+        # connection the alert will use
+        ping = partial(self.fetch_channel, settings.discord_channel_id)
         log.info("Watching %s, posting to #%s", schedule, getattr(channel, "name", channel))
         if self.directory_mode:
             status_channel = None
@@ -104,6 +108,7 @@ class EarningsBot(discord.Client):
                 api_key,
                 status_channel,
                 self._watch_ready,
+                ping,
             )
             return
         await watch_schedule(
@@ -113,6 +118,7 @@ class EarningsBot(discord.Client):
             settings.sec_user_agent,
             summarizer,
             api_key,
+            ping,
         )
         log.info("Every window in %s has closed", schedule)
 

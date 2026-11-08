@@ -112,13 +112,14 @@ def test_q4_polls_take_turns_with_longer_lists_once_their_copies_expire() -> Non
     assert len(asked[5]) == 120 - len(turns)
 
 
-def test_q4_bodies_come_from_the_normal_list() -> None:
+def test_q4_bodies_url_asks_for_full_html_at_the_given_length() -> None:
     source = Q4PressReleases("investor.uber.com")
 
-    url = source.url(with_bodies=True)
+    url = source.bodies_url(1)
 
-    assert page_size(url) == 5
+    assert page_size(url) == 1
     assert "bodyType=1" in url
+    assert "bodyType=0" not in url
 
 
 def test_q4_reads_only_the_normal_lists_length() -> None:
@@ -243,17 +244,30 @@ def test_edgar_flags_item_2_02_8ks() -> None:
         {
             "filings": {
                 "recent": {
-                    "accessionNumber": ["0001543151-26-000027", "0001543151-26-000020"],
-                    "form": ["8-K", "4"],
-                    "items": ["2.02,9.01", ""],
-                    "acceptanceDateTime": ["2026-08-05T11:00:28.000Z", "2026-08-01T20:00:00.000Z"],
-                    "primaryDocument": ["uber-20260805.htm", "xslF345X05/wk-form4.xml"],
+                    "accessionNumber": [
+                        "0001543151-26-000027",
+                        "0001543151-26-000024",
+                        "0001543151-26-000020",
+                    ],
+                    "form": ["8-K", "8-K", "4"],
+                    # An officer leaving (5.02) is an 8-K too, but not the earnings release
+                    "items": ["2.02,9.01", "5.02", ""],
+                    "acceptanceDateTime": [
+                        "2026-08-05T11:00:28.000Z",
+                        "2026-08-04T20:00:00.000Z",
+                        "2026-08-01T20:00:00.000Z",
+                    ],
+                    "primaryDocument": [
+                        "uber-20260805.htm",
+                        "uber-20260804.htm",
+                        "xslF345X05/wk-form4.xml",
+                    ],
                 }
             }
         }
     )
 
-    earnings, form4 = source.parse(response(body))
+    earnings, officer, form4 = source.parse(response(body))
 
     assert source.url() == "https://data.sec.gov/submissions/CIK0001543151.json"
     assert earnings.title == "8-K 2.02,9.01"
@@ -262,6 +276,7 @@ def test_edgar_flags_item_2_02_8ks() -> None:
     )
     assert earnings.published == "2026-08-05T11:00:28.000Z"
     assert earnings.earnings
+    assert not officer.earnings
     assert not form4.earnings
 
 
@@ -553,3 +568,11 @@ def test_one_feed_watched_for_several_companies_is_polled_once() -> None:
     assert BroadcomNewsroom().share_key == BroadcomNewsroom().share_key
     assert GuessedPage(CRWD_PAGE).share_key is None
     assert EdgarFilings(1).share_key is None
+
+
+def test_backup_and_cached_feeds_dont_take_turns_from_the_fast_ones() -> None:
+    # SEC's polls share one 8-a-second queue, and the submissions JSON trails the live feed
+    assert EdgarFilings(1).interval > EdgarLatest(1).interval == 1.0
+    # Q4's CDN keeps the reports feed for 10 s, so polling it sooner only steals the IR host's
+    # turns from the press release list
+    assert Q4FinancialReports("investor.uber.com").interval >= Q4_REFRESH_SECONDS

@@ -87,7 +87,7 @@ What this tells us:
      requests to it took more than 10 seconds, while the submissions JSON never failed. Slow
      answers do come (after 7 and 12 seconds in a test that evening, against a median of 0.09
      seconds), and asking again is quicker. So every poll gives up after 3 seconds and the next
-     one goes out at once.
+     one goes out at once. As a backup it's polled every 3 s, the feed every second.
 
    New 8-Ks reached the feed 19 to 35 seconds after SEC accepted them (15 filings on Nov 3;
    HubSpot's and FICO's took 28 and 35 seconds on Nov 4).
@@ -459,6 +459,11 @@ What it tells us:
   a legacy schedule).
 - Posting happens in stages: an alert with a link within seconds, then files as they appear,
   then the summary.
+- **The connection to Discord stays open while a window is open.** discord.py's HTTP client
+  closes a connection after 15 s idle, and opening a new one took 86 to 175 ms from the owner's
+  PC on Nov 7, against 24 ms on an open one, a third of the 0.2 to 0.4 s from detection to a
+  visible alert in the live runs. So during a window the bot reads the channel every 10 s, and
+  the alert goes out on a connection that's already open.
 - Each step logs two times after the first sighting. `live_seconds` comes from Discord's own
   timestamp on the message or edit, which is when people could see it, and that timestamp is
   logged too, as `visible`. `seconds` is when Discord's reply reached the bot. They differ when
@@ -617,6 +622,18 @@ times simulated; a second seed agreed, and main's own code matched the "before" 
 - PR Newswire's article downloads hold up its feed polls, since they share its one request a
   second: the feed waited up to 5 s while six articles downloaded, with or without SEC.
 
+On Nov 7 the replay started listing an 8-K in the submissions JSON 20 s after the
+latest-filings feed (`SUBMISSIONS_LAG`), as live runs measured, rather than at the same moment.
+That showed the backup costing the feed half of SEC's turns. Polling the submissions JSON every
+3 s instead of every second, and Q4's reports feed every 10.5 s instead of 5 (its CDN copy lasts
+10 s anyway), gave in two seeds (seconds after R, median / p95 / worst):
+
+| | Before | After |
+|---|---|---|
+| First seen on SEC | 4.02–4.32 / 6.79–7.04 / 7.21–7.35 | 4.04–4.28 / 5.49–5.68 / 5.83–5.96 |
+| Release text, SEC-only companies | 4.70–5.03 / 7.27–7.55 / 7.27–7.55 | 4.09–4.20 / 5.66–5.70 / 5.66–5.70 |
+| First seen on IR | 0.26–0.28 / 0.33 / 0.33 | 0.21–0.28 / 0.27–0.31 / 0.27–0.31 |
+
 ## Posting and summaries
 
 One Discord message per release, edited as more arrives:
@@ -655,7 +672,7 @@ calendar windows, retains the last valid copy of a malformed schedule, and recov
 Discord alerts across restarts. For one-off monitoring, pass a single TOML file instead.
 
 On Windows, Task Scheduler can start `scripts/run-bot.ps1` at startup. The supervisor prevents
-multiple local instances, writes console logs under `recordings/`, and restarts the process
+multiple local instances, writes UTF-8 console logs under `recordings/`, and restarts the process
 15 seconds after it exits by default. Updating the checkout is a separate operator step.
 See the [setup and recovery guide](unattended.md#run-and-recover).
 
@@ -704,3 +721,6 @@ onboarding, including international listings, and more live samples for source r
 | 2026-11-06 | www.sec.gov and data.sec.gov wait in one queue at 8 requests a second together, filings and exhibits included, since SEC's limit of 10 a second covers everything we send it. Before, each host had its own queue, so a busy evening could send 16 a second. A local replay of 20 releases at once (`tests/burst_replay.py`) checks the limit and what it costs |
 | 2026-11-07 | Directory mode serves the catalog calendar, discovers dates from issuer notices and keeps one durable Discord scorecard per issuer. The latest-release audit separates measured availability from archive estimates and uses @earnings_guy as the main external benchmark. |
 | 2026-11-07 | Selected public IR listings can use Windows desktop Chrome for research and record-only trials. Newly observed JSON routes enter the scorecard as leads until validated. |
+| 2026-11-07 | Keep the connection to Discord open during windows with a cheap request every 10 s, since opening one costs 60 to 150 ms more at the moment the alert goes out |
+| 2026-11-07 | Poll the submissions JSON every 3 s, as the backup it is, and Q4's reports feed every 10.5 s, its CDN copy's lifetime. EDGAR's latest-filings feed gets the SEC turns that frees |
+| 2026-11-07 | The desktop Chrome IR trial and Tesla's deck User-Agent are the route for sites that block the default client. It's public information either way |
