@@ -15,7 +15,20 @@ concurrency:
 
 jobs:
   checks:
+    # Keep the existing required check name and make it depend on both platforms.
     name: Lint, type check, test
+    needs: [linux, windows]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require both platforms to pass
+        env:
+          LINUX_RESULT: ${{ needs.linux.result }}
+          WINDOWS_RESULT: ${{ needs.windows.result }}
+        run: test "$LINUX_RESULT" = success && test "$WINDOWS_RESULT" = success
+
+  linux:
+    name: Lint, type check, test on Linux
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

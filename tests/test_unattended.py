@@ -21,6 +21,11 @@ from tests.fakes import RoutedFetcher
 from tests.test_pipeline import FakePoster, uber
 
 
+def unknown_message() -> discord.NotFound:
+    response = SimpleNamespace(status=404, reason="Not Found")
+    return discord.NotFound(cast(Any, response), {"message": "Unknown Message", "code": 10008})
+
+
 @dataclass
 class FakeMessage:
     id: int
@@ -29,10 +34,20 @@ class FakeMessage:
     edited_at: datetime | None = None
     author: SimpleNamespace = field(default_factory=lambda: SimpleNamespace(id=42))
     attachments: list[Any] = field(default_factory=list)
+    embed: discord.Embed | None = None
+    deleted: bool = False
 
     async def edit(
-        self, *, content: str | None = None, attachments: list[Any] | None = None
+        self,
+        *,
+        content: str | None = None,
+        attachments: list[Any] | None = None,
+        embed: discord.Embed | None = None,
     ) -> "FakeMessage":
+        if self.deleted:
+            raise unknown_message()
+        if embed is not None:
+            self.embed = embed
         if content is not None:
             self.content = content
         if attachments is not None:
@@ -66,9 +81,11 @@ class FakeDiscord:
 
     async def fetch_message(self, message_id: int) -> FakeMessage:
         if message_id not in self.messages:
-            response = SimpleNamespace(status=404, reason="Not Found")
-            raise discord.NotFound(cast(Any, response), "Unknown Message")
+            raise unknown_message()
         return self.messages[message_id]
+
+    def delete(self, message_id: int) -> None:
+        self.messages.pop(message_id).deleted = True
 
     async def history(self, *, limit: int | None, after: datetime) -> AsyncIterator[FakeMessage]:
         for message in self.messages.values():
@@ -134,7 +151,8 @@ async def test_restart_recovers_message_accepted_before_the_id_was_saved(tmp_pat
     assert channel.attempts == 1
 
 
-async def test_an_alert_someone_deleted_is_posted_again(tmp_path: Path) -> None:
+@pytest.mark.parametrize("reuse_poster", [False, True], ids=["fresh", "reused"])
+async def test_an_alert_someone_deleted_is_posted_again(tmp_path: Path, reuse_poster: bool) -> None:
     target = uber()
     channel = FakeDiscord()
     feed = RssFeed("issuer", "https://issuer.example/rss")
@@ -146,17 +164,66 @@ async def test_an_alert_someone_deleted_is_posted_again(tmp_path: Path) -> None:
         )
         first.add(feed, sighting)
         await first.finish()
-        del channel.messages[1]
+        channel.delete(1)
 
-        again = Release(
-            target, channel.poster(store, target), RoutedFetcher({}), journal, None, None
-        )
+        poster = first.poster if reuse_poster else channel.poster(store, target)
+        again = Release(target, poster, RoutedFetcher({}), journal, None, None)
         again.add(feed, sighting)
         await again.finish()
         saved = store.get(target.release_key)
 
     assert again.posted
     assert list(channel.messages) == [2]
+    assert saved is not None and saved.message_id == 2
+
+
+async def test_a_later_sighting_recreates_the_active_alert_and_keeps_links(tmp_path: Path) -> None:
+    target = uber()
+    channel = FakeDiscord()
+    feed = RssFeed("issuer", "https://issuer.example/rss")
+    first = "https://issuer.example/results"
+    second = "https://wire.example/results"
+    journal = Journal(io.StringIO())
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        release = Release(
+            target, channel.poster(store, target), RoutedFetcher({}), journal, None, None
+        )
+        release.add(feed, Sighting("one", "Results", first, earnings=True))
+        await release.finish()
+        channel.delete(1)
+        release.add(feed, Sighting("two", "Results", second, earnings=True))
+        await release.finish()
+        saved = store.get(target.release_key)
+
+    assert list(channel.messages) == [2]
+    assert first in channel.messages[2].content and second in channel.messages[2].content
+    assert saved is not None and saved.message_id == 2
+
+
+@pytest.mark.parametrize("update", ["attachment", "summary"])
+async def test_an_update_recreates_a_deleted_alert_and_is_applied(
+    tmp_path: Path, update: str
+) -> None:
+    target = uber()
+    channel = FakeDiscord()
+    content = "Earnings alert\nTimestamp\nIssuer: <https://issuer.example/results>"
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        poster = channel.poster(store, target)
+        await poster.send(content)
+        channel.delete(1)
+
+        if update == "attachment":
+            await poster.attach("release.pdf", b"%PDF-1.7")
+            assert channel.messages[2].attachments[0].filename == "release.pdf"
+        else:
+            await poster.set_summary("Results summary", "Source")
+            embed = channel.messages[2].embed
+            assert embed and embed.description == "Results summary"
+
+        saved = store.get(target.release_key)
+
+    assert list(channel.messages) == [2]
+    assert channel.messages[2].content == content
     assert saved is not None and saved.message_id == 2
 
 

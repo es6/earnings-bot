@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from earnings_bot.sources import (
     BroadcomNewsroom,
     GuessedFile,
@@ -145,12 +147,23 @@ async def test_q4_text_comes_from_the_newest_release_alone() -> None:
     assert "bodyType=1" in fetcher.urgent[0]
 
 
-async def test_q4_text_falls_back_to_the_normal_list_when_the_newest_isnt_it() -> None:
-    # Another release went up at the same moment, or the CDN's copy of the one-item list is a
-    # few seconds old
+@pytest.mark.parametrize(
+    "one_item",
+    [
+        q4_list((1701, "<p>Other news</p>")),
+        q4_list((1700, "")),
+        q4_list((1700, "<p>Coming soon</p>")),
+        b"<html>CDN error</html>",
+        b'{"GetPressReleaseListResult": null}',
+    ],
+    ids=["stale", "empty", "teaser", "malformed", "wrong-shape"],
+)
+async def test_q4_text_falls_back_when_the_one_item_response_has_no_release(
+    one_item: bytes,
+) -> None:
     fetcher = RoutedFetcher(
         {
-            "pageSize=1&": (200, q4_list((1701, "<p>Other news</p>"))),
+            "pageSize=1&": (200, one_item),
             "pageSize=5&": (200, q4_list((1701, "<p>Other news</p>"), (1700, RELEASE))),
         }
     )

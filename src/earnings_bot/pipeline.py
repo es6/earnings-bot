@@ -11,6 +11,7 @@ import time
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable, Coroutine, Iterable
 from datetime import datetime, timedelta
+from functools import partial
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -37,6 +38,7 @@ from earnings_bot.text import release_text, verified_report
 FILE_TYPES = (".pdf", ".xlsx", ".xls")
 # Discord's upload limit for bots in servers without boosts. Earnings PDFs are well under 1 MB.
 MAX_FILE_BYTES = 10 * 1024 * 1024
+UNKNOWN_MESSAGE = 10008  # Discord's error code for a missing message
 MAX_CONTENT = 2000  # Discord's limit for a message's text
 # Seconds between tries for a file that a feed lists before it's uploaded. Cloudflare's Q3 2026
 # supplement was listed at 4:15:32 PM and went up at 4:38:11.
@@ -139,36 +141,63 @@ class DurableDiscordPoster(DiscordPoster):
         async with self.store.lock(self.key):
             return await self._deliver(content)
 
+    async def _send_prepared(self, saved: Delivery) -> datetime:
+        self.message = await self.channel.send(saved.content, nonce=self._nonce(saved))
+        self.store.delivered(self.key, self.message.id)
+        return self.message.created_at
+
     async def _deliver(self, content: str) -> datetime | None:
         saved = self.store.get(self.key)
+        message = None
         if saved is not None and saved.message_id is not None:
             try:
-                self.message = await self.channel.fetch_message(saved.message_id)
-            except discord.NotFound:
-                # Someone deleted the alert. Post a new one, or every sighting would fail here.
+                message = await self.channel.fetch_message(saved.message_id)
+            except discord.NotFound as error:
+                if error.code != UNKNOWN_MESSAGE:
+                    raise
+                # Keep the cached links when this poster watched the deleted alert.
+                cached = self.message
+                prior = (
+                    cached.content if cached and cached.id == saved.message_id else saved.content
+                )
+                content = self._merge_content(prior, content)
                 self.store.forget(self.key)
                 saved = None
         if saved is None:
             saved = self.store.prepare(self.key, content)
-        elif self.message is None:
+        elif message is None:
             # Discord's nonce protection is short-lived. After a crash, look for the
             # exact persisted initial message before sending again.
             after = saved.prepared - timedelta(seconds=5)
-            async for message in self.channel.history(limit=None, after=after):
-                if message.author.id == self.author_id and message.content == saved.content:
-                    self.message = message
+            async for candidate in self.channel.history(limit=None, after=after):
+                if candidate.author.id == self.author_id and candidate.content == saved.content:
+                    message = candidate
                     break
-        self.resumed = self.message is not None
-        if self.message is None:
-            self.message = await self.channel.send(saved.content, nonce=self._nonce(saved))
-        self.store.delivered(self.key, self.message.id)
-        if content != self.message.content:
-            await self.edit(content)
-        return None if self.resumed else self.message.created_at
+        self.resumed = message is not None
+        if message is None:
+            created = await self._send_prepared(saved)
+            message = self._sent()
+        else:
+            created = None
+            self.message = message
+            self.store.delivered(self.key, message.id)
+        if content == message.content:
+            return created
+        merged = self._merge_content(message.content, content)
+        if merged != message.content:
+            try:
+                await super().edit(merged)
+            except discord.NotFound as error:
+                if error.code != UNKNOWN_MESSAGE:
+                    raise
+                # The message was deleted between loading it and editing it.
+                self.store.forget(self.key)
+                self.resumed = False
+                return await self._send_prepared(self.store.prepare(self.key, merged))
+        return created
 
-    async def edit(self, content: str) -> datetime | None:
-        message = self._sent()
-        lines = message.content.splitlines()
+    def _merge_content(self, existing: str, content: str) -> str:
+        lines = existing.splitlines()
         urls = [line.rsplit("<", 1)[-1].rstrip(">") for line in lines[2:]]
         for line in content.splitlines()[2:]:
             url = line.rsplit("<", 1)[-1].rstrip(">")
@@ -176,17 +205,44 @@ class DurableDiscordPoster(DiscordPoster):
                 lines.append(line)
                 urls.append(url)
         merged = "\n".join(lines)
-        if len(merged) > MAX_CONTENT:
-            merged = merged[: MAX_CONTENT - 1] + "…"
+        return merged if len(merged) <= MAX_CONTENT else merged[: MAX_CONTENT - 1] + "…"
+
+    async def _update(
+        self,
+        action: Callable[[], Awaitable[datetime | None]],
+        content: str,
+        *,
+        retry_after_replacement: bool = False,
+    ) -> datetime | None:
+        try:
+            return await action()
+        except discord.NotFound as error:
+            if error.code != UNKNOWN_MESSAGE:
+                raise
+        posted = await retry_delivery(partial(self.send, content))
+        return await action() if retry_after_replacement else posted
+
+    async def edit(self, content: str) -> datetime | None:
+        message = self._sent()
+        merged = self._merge_content(message.content, content)
         if merged == message.content:
             return message.edited_at
-        return await super().edit(merged)
+        return await self._update(partial(super().edit, merged), merged)
 
     async def attach(self, name: str, data: bytes) -> datetime | None:
         message = self._sent()
         if any(attachment.filename == name for attachment in message.attachments):
             return message.edited_at
-        return await super().attach(name, data)
+        return await self._update(
+            partial(super().attach, name, data), message.content, retry_after_replacement=True
+        )
+
+    async def set_summary(self, text: str, footer: str) -> datetime | None:
+        return await self._update(
+            partial(super().set_summary, text, footer),
+            self._sent().content,
+            retry_after_replacement=True,
+        )
 
 
 def describe_source(source: Source) -> str:

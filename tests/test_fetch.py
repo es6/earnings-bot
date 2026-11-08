@@ -139,12 +139,22 @@ class _LoopbackResolver(AbstractResolver):
 async def test_sec_redirects_and_connection_retries_wait_for_the_shared_queue(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    arrivals: list[tuple[float, str, str]] = []
+    arrivals: list[tuple[str, str]] = []
+    turns: list[tuple[str, float]] = []
+    wait_turn = Fetcher.wait_turn
+
+    async def record_turn(fetcher: Fetcher, host: str, urgent: bool = False) -> None:
+        await wait_turn(fetcher, host, urgent)
+        # Observe the grant recorded by the queue. Connection setup and server arrival
+        # times vary independently, even over loopback.
+        turns.append((host, fetcher._queues[queue_key(host)].next_turn))
+
+    monkeypatch.setattr(Fetcher, "wait_turn", record_turn)
     retried = False
 
     async def respond(request: web.Request) -> web.Response:
         nonlocal retried
-        arrivals.append((time.monotonic(), request.host.split(":")[0], request.path))
+        arrivals.append((request.host.split(":")[0], request.path))
         if request.path == "/start":
             raise web.HTTPFound(f"http://www.sec.gov:{request.url.port}/exhibit")
         if request.path == "/exhibit" and not retried:
@@ -173,7 +183,6 @@ async def test_sec_redirects_and_connection_retries_wait_for_the_shared_queue(
                 "GET", f"http://data.sec.gov:{port}/start", urgent=True
             )
             assert response.body == b"Test SEC client"
-            assert response.queued >= 2 * SEC_GAP - 0.03
 
             # A publisher can also redirect a release link into EDGAR. That hop must use
             # SEC's queue and identity even though the first request was on another site.
@@ -182,12 +191,13 @@ async def test_sec_redirects_and_connection_retries_wait_for_the_shared_queue(
     finally:
         await runner.cleanup()
 
-    assert [(host, path) for _, host, path in arrivals] == [
+    assert arrivals == [
         ("data.sec.gov", "/start"),
         ("www.sec.gov", "/exhibit"),
         ("www.sec.gov", "/exhibit"),
         ("news.example.com", "/start"),
         ("www.sec.gov", "/exhibit"),
     ]
-    sec_times = [at for at, host, _ in arrivals if host.endswith(".sec.gov")]
-    assert min(b - a for a, b in itertools.pairwise(sec_times)) >= SEC_GAP - 0.02
+    assert [host for host, _ in turns] == [host for host, _ in arrivals]
+    sec_turns = [at for host, at in turns if host.endswith(".sec.gov")]
+    assert all(b - a >= SEC_GAP - 1e-6 for a, b in itertools.pairwise(sec_turns))

@@ -132,18 +132,24 @@ async def _broadcom_body(fetcher: Fetcher, sighting: Sighting) -> str | None:
     return body if isinstance(body, str) and body else None
 
 
-async def _q4_body(fetcher: Fetcher, source: Q4PressReleases, release_id: str) -> str | None:
+async def _q4_text(fetcher: Fetcher, source: Q4PressReleases, release_id: str) -> str | None:
     # The release that just turned up is nearly always the newest, so ask for it alone first:
     # Uber's list of five came to 459 KB and 0.76 s, its newest alone to 10 KB and 0.2 s. Each
     # length is its own copy on Q4's CDN, so if that copy is a few seconds too old to have the
     # release, the normal list is a second chance.
-    for page_size in (1, source.page_size):
-        page = await _get_text(fetcher, source.bodies_url(page_size))
-        if page is None:
+    for page_size in dict.fromkeys((1, source.page_size)):
+        try:
+            page = await _get_text(fetcher, source.bodies_url(page_size))
+            releases = json.loads(page)["GetPressReleaseListResult"] if page else []
+        except (aiohttp.ClientError, TimeoutError, ValueError, KeyError, TypeError):
             continue
-        for release in json.loads(page)["GetPressReleaseListResult"]:
-            if str(release["PressReleaseId"]) == release_id:
-                return release.get("Body") or None
+        if not isinstance(releases, list):
+            continue
+        for release in releases:
+            if isinstance(release, dict) and str(release.get("PressReleaseId")) == release_id:
+                body = release.get("Body")
+                if isinstance(body, str) and (text := await _usable_text(body)):
+                    return text
     return None
 
 
@@ -227,7 +233,7 @@ async def release_text(fetcher: Fetcher, source: Source, sighting: Sighting) -> 
                 return None
             html = sighting.body.decode(errors="replace")
         elif isinstance(source, Q4PressReleases):
-            html = await _q4_body(fetcher, source, sighting.key)
+            return await _q4_text(fetcher, source, sighting.key)
         elif isinstance(source, BroadcomNewsroom):
             html = await _broadcom_body(fetcher, sighting) if sighting.earnings else None
         elif isinstance(source, EdgarFilings):
@@ -244,6 +250,10 @@ async def release_text(fetcher: Fetcher, source: Source, sighting: Sighting) -> 
             return None
     except (aiohttp.ClientError, TimeoutError, ValueError, KeyError, TypeError):
         return None
+    return await _usable_text(html)
+
+
+async def _usable_text(html: str | None) -> str | None:
     # Parsing an 8-K exhibit takes about 30 ms of pure Python. In a thread, the event loop gets
     # the interpreter back every few milliseconds, so other windows' polls don't wait on it.
     text = await asyncio.to_thread(html_to_text, html) if html else ""
