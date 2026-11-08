@@ -5,6 +5,8 @@ import asyncio
 import heapq
 import itertools
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Self
 from urllib.parse import urlsplit
@@ -80,6 +82,7 @@ class Fetcher:
         self._queues: dict[str, _HostQueue] = {}  # by queue_key
         self._arrivals = itertools.count()
         self._browser: DesktopChrome | None = None
+        self._research_lock = asyncio.Lock()
 
     async def __aenter__(self) -> Self:
         self._session = aiohttp.ClientSession(
@@ -101,6 +104,15 @@ class Fetcher:
                     queue.dispatcher.cancel()
             if self._session is not None:
                 await self._session.close()
+
+    @asynccontextmanager
+    async def research_browser(self) -> AsyncIterator[DesktopChrome]:
+        async with self._research_lock:
+            browser = DesktopChrome()
+            try:
+                yield browser
+            finally:
+                await browser.close()
 
     async def close_browser(self) -> None:
         if self._browser is not None:

@@ -11,6 +11,7 @@ from typing import Any
 
 from earnings_bot.benchmark import EarningsBenchmark
 from earnings_bot.fetch import Fetcher
+from earnings_bot.ir_research import inspect_issuer
 from earnings_bot.known import known_companies
 from earnings_bot.recorder import ET, PollError, Target, poll
 from earnings_bot.sources import (
@@ -170,6 +171,7 @@ async def audit_sources(
     heads, bodies, comparison = await asyncio.to_thread(_measurements, directory, ticker, day)
     estimates = []
     verified = []
+    titles: set[str] = set()
     if verified_report(await release_text(fetcher, sec, filing)):
         estimates.append(Timing("SEC acceptance", accepted, filing.url))
         verified.append(sec.name)
@@ -180,6 +182,7 @@ async def audit_sources(
             if not verified_report(await release_text(fetcher, source, item)):
                 continue
             verified.append(source.name)
+            titles.add(item.title)
             if at := published_time(item.published):
                 estimates.append(Timing(source.name, at, item.url))
             break
@@ -196,13 +199,15 @@ async def audit_sources(
                     f"@earnings_guy | {post.posted.astimezone(ET):%H:%M:%S} ET <{post.url}>"
                 )
                 break
-    return "\n".join(
-        [
-            f"**Last release | {day:%b %d, %Y}**",
-            _rank("Measured report text", bodies),
-            _rank("Measured headlines", heads),
-            _rank("Archive times (estimates)", estimates),
-            "Verified archive bodies | " + (", ".join(dict.fromkeys(verified)) or "none found"),
-            comparison or "@earnings_guy | no verified post in the available history",
-        ]
-    )
+    browser = await inspect_issuer(fetcher, ticker, day, titles)
+    lines = [
+        f"**Last release | {day:%b %d, %Y}**",
+        _rank("Measured report text", bodies),
+        _rank("Measured headlines", heads),
+        _rank("Archive times (estimates)", estimates),
+        "Verified archive bodies | " + (", ".join(dict.fromkeys(verified)) or "none found"),
+        comparison or "@earnings_guy | no verified post in the available history",
+    ]
+    if browser:
+        lines.append(browser)
+    return "\n".join(lines)

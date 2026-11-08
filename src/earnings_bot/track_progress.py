@@ -85,7 +85,7 @@ class TrackProgress:
         else:
             lines.append("Waiting for a confirmed issuer date. The calendar will recheck.")
         if checking:
-            lines.append("Checking the last release and @earnings_guy.")
+            lines.append("Checking the last release, issuer endpoints and @earnings_guy.")
         elif not result:
             lines.append("Source audit queued. Active release windows take priority.")
         if result:

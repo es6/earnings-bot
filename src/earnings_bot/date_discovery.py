@@ -2,23 +2,27 @@
 
 import asyncio
 import json
+import os
 import re
 import time
 from calendar import month_name
 from collections.abc import Callable
 from contextlib import suppress
+from dataclasses import replace
 from datetime import date, datetime, timedelta
 from urllib.parse import urljoin, urlsplit
 from zoneinfo import ZoneInfo
 
 import aiohttp
 
+from earnings_bot.browser import BrowserError
 from earnings_bot.calendar import Calendar, describe
 from earnings_bot.fetch import Fetcher
+from earnings_bot.ir_research import IR_LISTINGS, issuer_links
 from earnings_bot.known import NTH, ORD, KnownCompany, known_companies, to_target
-from earnings_bot.recorder import ET, Target
-from earnings_bot.sources import Q4PressReleases, RssFeed
-from earnings_bot.text import html_to_text
+from earnings_bot.recorder import ET, PollError, Target, poll
+from earnings_bot.sources import BroadcomNewsroom, Q4PressReleases, RssFeed
+from earnings_bot.text import html_to_text, release_text
 
 PT = ZoneInfo("America/Los_Angeles")
 _MONTHS = {name.lower(): i for i, name in enumerate(month_name) if name}
@@ -192,6 +196,43 @@ async def find_date(fetcher: Fetcher, ticker: str, now: datetime) -> tuple[Targe
                         return target, f"{evidence} <{item.url}>"
         except (aiohttp.ClientError, TimeoutError, ValueError, KeyError, TypeError, AttributeError):
             continue
+    if company.trial.broadcom_newsroom:
+        source = BroadcomNewsroom()
+        try:
+            _, releases = await poll(source, fetcher)
+            for item in [item for item in releases if _is_notice(item.title)][:3]:
+                body = await release_text(fetcher, source, replace(item, earnings=True))
+                if body and (result := parse_notice(ticker, company, item.title, body, now)):
+                    target, evidence = result
+                    return target, f"{evidence} <{item.url}>"
+        except PollError:
+            pass
+    return await _browser_date(fetcher, ticker, company, now)
+
+
+async def _browser_date(
+    fetcher: Fetcher, ticker: str, company: KnownCompany, now: datetime
+) -> tuple[Target, str] | None:
+    listing = IR_LISTINGS.get(ticker)
+    if os.name != "nt" or listing is None:
+        return None
+    try:
+        async with fetcher.research_browser() as browser:
+            page = await browser.request(listing, listing, 4, fetcher.wait_turn)
+            if page.status != 200:
+                return None
+            notices = [
+                (url, title) for url, title in issuer_links(listing, page.body) if _is_notice(title)
+            ]
+            for url, title in notices[:3]:
+                page = await browser.request(url, listing, 4, fetcher.wait_turn)
+                if page.status == 200:
+                    body = page.body.decode(errors="replace")
+                    if result := parse_notice(ticker, company, title, body, now):
+                        target, evidence = result
+                        return target, f"{evidence} <{url}>"
+    except (BrowserError, aiohttp.ClientError, TimeoutError, ValueError, KeyError):
+        return None
     return None
 
 
