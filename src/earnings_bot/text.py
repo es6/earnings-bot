@@ -66,6 +66,17 @@ class _TextParser(HTMLParser):
             self.parts.append(re.sub(r"\s+", " ", data))
 
 
+def verified_report(text: str | None) -> bool:
+    return bool(
+        text
+        and len(text) >= MIN_RELEASE_CHARS
+        and re.search(r"\b(?:revenue|net sales)\b", text, re.I)
+        and re.search(
+            r"\b(?:net (?:income|loss|earnings)|per (?:diluted )?share|EPS)\b", text, re.I
+        )
+    )
+
+
 def html_to_text(html: str) -> str:
     """Plain text with one line per paragraph and table row. Cells are joined with " | " so
     financial tables keep their columns."""

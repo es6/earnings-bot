@@ -22,10 +22,8 @@ from earnings_bot.sources import (
     looks_like_earnings,
     published_time,
 )
-from earnings_bot.text import release_text
+from earnings_bot.text import release_text, verified_report
 
-_REVENUE = re.compile(r"\b(?:revenue|net sales)\b", re.I)
-_PROFIT = re.compile(r"\b(?:net (?:income|loss)|per (?:diluted )?share|EPS)\b", re.I)
 _ARCHIVE = re.compile(r"\d{4}-\d{2}-\d{2}\.jsonl")
 
 
@@ -34,10 +32,6 @@ class Timing:
     source: str
     at: datetime
     url: str = ""
-
-
-def verified_report(text: str | None) -> bool:
-    return bool(text and _REVENUE.search(text) and _PROFIT.search(text))
 
 
 def local_day(stamp: str | None) -> date | None:
@@ -154,7 +148,7 @@ async def audit_sources(
     now: datetime,
     benchmark: EarningsBenchmark | None,
 ) -> str:
-    """Use an earnings 8-K to anchor the day. Publisher times are estimates of availability."""
+    """Use the latest dated results. Publisher times are estimates of availability."""
     sec = EdgarFilings(known_companies()[ticker].cik, limit=150)
     filings = [
         (at, item)
@@ -164,28 +158,62 @@ async def audit_sources(
         and (at := published_time(item.published))
         and at <= now
     ]
-    if not filings:
-        return "Most recent release could not be anchored to a dated earnings filing."
-    accepted, filing = max(filings, key=lambda pair: pair[0])
-    day = accepted.astimezone(ET).date()
-    heads, bodies, comparison = await asyncio.to_thread(_measurements, directory, ticker, day)
-    estimates = []
-    verified = []
+    snapshots = [
+        (source, await _list(fetcher, source)) for source in _archived_sources(ticker, now)
+    ]
+    estimates: list[Timing] = []
+    verified: list[str] = []
     titles: set[str] = set()
-    if verified_report(await release_text(fetcher, sec, filing)):
-        estimates.append(Timing("SEC acceptance", accepted, filing.url))
-        verified.append(sec.name)
-    for source in _archived_sources(ticker, now):
-        for item in await _list(fetcher, source):
-            if not item.earnings or local_day(item.published) != day:
-                continue
-            if not verified_report(await release_text(fetcher, source, item)):
-                continue
-            verified.append(source.name)
-            titles.add(item.title)
-            if at := published_time(item.published):
-                estimates.append(Timing(source.name, at, item.url))
+    anchor: date | None = None
+    confidence = False
+    for candidate in sorted(filings, key=lambda pair: pair[0], reverse=True)[:4]:
+        accepted, filing = candidate
+        exhibit = await release_text(fetcher, sec, filing)
+        if exhibit is None or verified_report(exhibit):
+            anchor = accepted.astimezone(ET).date()
+            if exhibit is not None:
+                confidence = True
+                estimates.append(Timing("SEC acceptance", accepted, filing.url))
+                verified.append(sec.name)
             break
+
+    archives = sorted(
+        (
+            (day, source, item)
+            for source, items in snapshots
+            for item in items
+            if item.earnings
+            and (day := local_day(item.published))
+            and day <= now.astimezone(ET).date()
+            and (anchor is None or day >= anchor)
+        ),
+        key=lambda row: row[0],
+        reverse=True,
+    )
+    checked: set[tuple[str, date]] = set()
+    for day, source, item in archives[:30]:
+        if anchor and day < anchor:
+            break
+        token = (source.name, day)
+        if token in checked:
+            continue
+        checked.add(token)
+        if not verified_report(await release_text(fetcher, source, item)):
+            continue
+        if anchor != day:
+            anchor = day
+            estimates.clear()
+            verified.clear()
+        confidence = True
+        verified.append(source.name)
+        titles.add(item.title)
+        if at := published_time(item.published):
+            estimates.append(Timing(source.name, at, item.url))
+
+    if anchor is None:
+        return "Most recent release could not be anchored to a dated report."
+    day = anchor
+    heads, bodies, comparison = await asyncio.to_thread(_measurements, directory, ticker, day)
 
     if benchmark and not comparison:
         candidates = [
@@ -200,8 +228,9 @@ async def audit_sources(
                 )
                 break
     browser = await inspect_issuer(fetcher, ticker, day, titles)
+    heading = "Last release" if confidence else "Likely last release (8-K date)"
     lines = [
-        f"**Last release | {day:%b %d, %Y}**",
+        f"**{heading} | {day:%b %d, %Y}**",
         _rank("Measured report text", bodies),
         _rank("Measured headlines", heads),
         _rank("Archive times (estimates)", estimates),

@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 import os
 import re
 import time
@@ -16,14 +17,15 @@ from zoneinfo import ZoneInfo
 import aiohttp
 
 from earnings_bot.browser import BrowserError
-from earnings_bot.calendar import Calendar, describe
+from earnings_bot.calendar import Calendar, Tracked, describe, same_release
 from earnings_bot.fetch import Fetcher
-from earnings_bot.ir_research import IR_LISTINGS, issuer_links
+from earnings_bot.ir_research import IR_LISTINGS, issuer_links, verified_browser_trial
 from earnings_bot.known import NTH, ORD, KnownCompany, known_companies, to_target
 from earnings_bot.recorder import ET, PollError, Target, poll
 from earnings_bot.sources import BroadcomNewsroom, Q4PressReleases, RssFeed
 from earnings_bot.text import html_to_text, release_text
 
+log = logging.getLogger(__name__)
 PT = ZoneInfo("America/Los_Angeles")
 _MONTHS = {name.lower(): i for i, name in enumerate(month_name) if name}
 _DATE = re.compile(
@@ -256,22 +258,46 @@ class DateDiscovery:
             for row in self.calendar.entries():
                 if self.busy():
                     break
-                if (
-                    row.evidence == "Manual override"
-                    and row.target
-                    and row.target.window[1] > self.now()
-                ):
-                    continue
                 if time.monotonic() < self.checked.get(row.cik, 0):
                     continue
                 self.checked[row.cik] = time.monotonic() + 3600
-                if row.ticker not in known_companies():
-                    continue
-                result = await find_date(self.fetcher, row.ticker, self.now())
-                if result and row in self.calendar.entries():
-                    target, evidence = result
-                    if row.target != target or row.evidence != evidence:
-                        self.calendar.set_target(target, evidence)
-                        self.status(describe(target, evidence))
+                try:
+                    async with asyncio.timeout(50):
+                        await self._check(row)
+                except Exception:
+                    log.exception("Date discovery failed for %s", row.ticker)
             with suppress(TimeoutError):
                 await asyncio.wait_for(self.changed.wait(), timeout=60)
+
+    async def _check(self, row: Tracked) -> None:
+        if row.ticker not in known_companies():
+            return
+        now = self.now()
+        if row.evidence == "Manual override" and row.target and row.target.window[1] > now:
+            target, evidence = row.target, row.evidence
+        elif result := await find_date(self.fetcher, row.ticker, now):
+            target, evidence = result
+        elif row.target and row.evidence and row.target.window[1] > now:
+            target, evidence = row.target, row.evidence
+        else:
+            return
+        if self.busy() or row not in self.calendar.entries():
+            return
+        if row.target and row.target.trial.ir and same_release(target, row.target):
+            target.trial.ir = row.target.trial.ir
+        if row.target != target or row.evidence != evidence:
+            self.calendar.set_target(target, evidence)
+            self.status(describe(target, evidence))
+        if target.trial.ir or target.trial.post or not target.period:
+            return
+        trial = await verified_browser_trial(self.fetcher, row.ticker, target.period)
+        if (
+            trial
+            and not self.busy()
+            and any(
+                tracked.target == target and tracked.evidence == evidence
+                for tracked in self.calendar.entries()
+            )
+        ):
+            prepared = target.trial.model_copy(update={"ir": trial})
+            self.calendar.set_target(target.model_copy(update={"trial": prepared}), evidence)
