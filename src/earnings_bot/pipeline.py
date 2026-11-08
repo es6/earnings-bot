@@ -21,7 +21,6 @@ from earnings_bot.delivery import DeliveryStore, retry_delivery
 from earnings_bot.estimates import Estimates, EstimatesError, fmp_estimates
 from earnings_bot.fetch import Fetcher, Response
 from earnings_bot.recorder import ET, Journal, Plan, Target, record
-from earnings_bot.source_audit import verified_report
 from earnings_bot.sources import (
     BroadcomNewsroom,
     EdgarFilings,
@@ -32,7 +31,7 @@ from earnings_bot.sources import (
     Source,
 )
 from earnings_bot.summary import Summarizer, SummaryError
-from earnings_bot.text import release_text
+from earnings_bot.text import release_text, verified_report
 
 FILE_TYPES = (".pdf", ".xlsx", ".xls")
 # Discord's upload limit for bots in servers without boosts. Earnings PDFs are well under 1 MB.

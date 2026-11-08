@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+from earnings_bot.browser_sources import IRTrial
 from earnings_bot.calendar import Calendar, manual_target, upcoming
 from earnings_bot.delivery import DeliveryStore
 from earnings_bot.known import to_target
@@ -51,3 +52,23 @@ def test_override_requires_a_valid_fiscal_period_and_future_time() -> None:
         manual_target("NVDA", "2026-11-17T16:20", "FY2027Q0", NOW)
     with pytest.raises(ValueError, match="future"):
         manual_target("NVDA", "2026-11-01T16:20", "FY2027Q3", NOW)
+
+
+def test_auto_browser_trial_preserves_existing_schedule_choices(tmp_path: Path) -> None:
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        calendar = Calendar(store)
+        calendar.add("NVDA", 1, NOW)
+        target = to_target("NVDA", datetime(2026, 11, 17, 16, 20, tzinfo=ET), 2027, 3)
+        target.trial.ir = IRTrial(
+            listing="https://investor.nvidia.com/news/", headline="Q3", verify_text=True
+        )
+        calendar.set_target(target, "Issuer notice")
+        file = target.model_copy(update={"trial": Trial(globenewswire=["NVIDIA"])})
+        [effective] = calendar.plan({file.release_key: file}).values()
+        assert effective.trial.ir == target.trial.ir
+        assert effective.trial.globenewswire == ["NVIDIA"]
+        assert not effective.trial.post
+        file.trial.post = True
+        [effective] = calendar.plan({file.release_key: file}).values()
+        assert effective.trial.ir is None
+        assert effective.trial.post

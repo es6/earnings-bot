@@ -1,3 +1,4 @@
+# Unattended earnings calendar
 
 In directory mode, `/track NVDA` adds a catalog issuer and starts looking for its
 next earnings notice. `/upcoming` shows the next seven days and issuers awaiting
@@ -19,3 +20,8 @@ desktop Chrome worker. The source audit observes same-origin JSON requests
 made by those public pages and lists matched results separately from leads.
 Newly discovered routes are research evidence pending a dedicated adapter
 and live latency measurements.
+
+For supported listings, the planner can verify the preceding fiscal period's
+article and prepare the next exact-period browser source as a recorded trial.
+The trial requires usable results text. File-configured source choices and
+existing alert-enabled trials keep their settings.

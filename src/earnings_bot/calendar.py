@@ -59,6 +59,14 @@ class Calendar:
             )
         ]
 
+    def contains(self, cik: int) -> bool:
+        return (
+            self.db.execute(
+                "SELECT 1 FROM tracked WHERE channel = ? AND cik = ?", (self.channel, cik)
+            ).fetchone()
+            is not None
+        )
+
     def add(self, ticker: str, user_id: int, now: datetime) -> tuple[Tracked, bool]:
         cik = company_cik(ticker)
         entries = self.entries()
@@ -111,8 +119,10 @@ class Calendar:
             )
 
     def remove(self, cik: int) -> bool:
-        self.clear_review(cik)
         with self.db:
+            self.db.execute(
+                "DELETE FROM tracking_reviews WHERE channel = ? AND cik = ?", (self.channel, cik)
+            )
             return (
                 self.db.execute(
                     "DELETE FROM tracked WHERE channel = ? AND cik = ?", (self.channel, cik)
@@ -129,14 +139,18 @@ class Calendar:
             existing = next((t for t in files.values() if same_release(t, target)), None)
             if existing is None:
                 result[target.release_key] = target
-            elif row.evidence == "Manual override":
-                result[existing.release_key] = existing.model_copy(
-                    update={
-                        "expected": target.expected,
-                        "before_minutes": target.before_minutes,
-                        "after_minutes": target.after_minutes,
-                    }
-                )
+            else:
+                updates = {}
+                if row.evidence == "Manual override":
+                    updates.update(
+                        expected=target.expected,
+                        before_minutes=target.before_minutes,
+                        after_minutes=target.after_minutes,
+                    )
+                if target.trial.ir and not existing.trial.ir and not existing.trial.post:
+                    updates["trial"] = existing.trial.model_copy(update={"ir": target.trial.ir})
+                if updates:
+                    result[existing.release_key] = existing.model_copy(update=updates)
         return result
 
 

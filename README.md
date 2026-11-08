@@ -75,7 +75,8 @@ version for you.
 
 ### Earnings calendar commands
 
-In directory mode, use `/track ticker:NVDA` to add an issuer to the server calendar.
+In directory mode, use `/track ticker:NVDA` to add an issuer to the server calendar. See the
+[tracking workflow](docs/unattended.md) for automatic dates and the source scorecard.
 `/upcoming` shows the next seven days and subscriptions awaiting a date. A member with
 Manage Server can set `when:2026-11-17T16:20 period:FY2027Q3` or use `/untrack`.
 The running watcher reads the calendar within a few seconds and reuses matching schedule

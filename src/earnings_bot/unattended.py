@@ -19,10 +19,10 @@ from earnings_bot.delivery import DeliveryStore, retry_delivery
 from earnings_bot.fetch import Fetcher
 from earnings_bot.pipeline import DiscordPoster, DurableDiscordPoster, Releases
 from earnings_bot.recorder import ET, Journal, Plan, Polls, Target, Watch, record_target
-from earnings_bot.source_audit import audit_sources, verified_report
+from earnings_bot.source_audit import audit_sources
 from earnings_bot.sources import Sighting, Source
 from earnings_bot.summary import Summarizer
-from earnings_bot.text import release_text
+from earnings_bot.text import release_text, verified_report
 from earnings_bot.track_progress import TrackProgress
 
 SCAN_SECONDS = 3.0
@@ -201,10 +201,10 @@ class DirectoryWatcher:
             await self.fetcher.close_browser()
 
     async def _watch(self, target: Target) -> None:
-        measure = any(row.cik == target.cik for row in self.calendar.entries())
         trial_reads: dict[str, asyncio.Task[None]] = {}
 
         def on_new(target: Target, source: Source, sighting: Sighting) -> None:
+            measure = self.calendar.contains(target.cik)
             self.releases.on_new(target, source, sighting, measure=measure)
             if (
                 measure
@@ -230,7 +230,7 @@ class DirectoryWatcher:
             self.status(_window_report(target, watches, comparison))
             await self.releases.finish_target(target)
             await asyncio.gather(*trial_reads.values(), return_exceptions=True)
-            if measure:
+            if self.calendar.contains(target.cik):
                 self.calendar.clear_review(target.cik)
                 if self.progress:
                     self.progress.next_attempt.pop(target.cik, None)
