@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from earnings_bot.delivery import DeliveryStore
+from earnings_bot.ir_research import IR_LISTINGS, quarter_headline
 from earnings_bot.known import known_companies, to_target
 from earnings_bot.recorder import ET, Target
 
@@ -51,7 +52,7 @@ class Calendar:
             Tracked(
                 row["ticker"],
                 row["cik"],
-                Target.model_validate_json(row["target"]) if row["target"] else None,
+                _read_target(row["target"]),
                 row["evidence"],
             )
             for row in self.db.execute(
@@ -152,6 +153,24 @@ class Calendar:
                 if updates:
                     result[existing.release_key] = existing.model_copy(update=updates)
         return result
+
+
+def _read_target(saved: str | None) -> Target | None:
+    if saved is None:
+        return None
+    target = Target.model_validate_json(saved)
+    browser = target.trial.ir
+    if (
+        target.period
+        and browser
+        and browser.verify_text
+        and browser.listing == IR_LISTINGS.get(target.ticker)
+    ):
+        headline = quarter_headline(int(target.period[2:6]), int(target.period[-1]))
+        # Only repair the exact zero-width pattern stored by the original planner.
+        if browser.headline == headline.removesuffix(".*"):
+            browser.headline = headline
+    return target
 
 
 def same_release(first: Target, second: Target) -> bool:

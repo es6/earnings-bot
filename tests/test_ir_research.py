@@ -32,8 +32,8 @@ def test_issuer_listing_keeps_same_origin_links() -> None:
 
 def test_browser_headline_requires_the_scheduled_fiscal_period() -> None:
     pattern = re.compile(quarter_headline(2027, 3), re.I)
-    assert pattern.search("CrowdStrike Reports Third Quarter Fiscal Year 2027 Financial Results")
-    assert pattern.search("CrowdStrike Reports Q3 FY27 Results")
-    assert not pattern.search("CrowdStrike Announces Date of Fiscal Third Quarter 2027 Results")
-    assert not pattern.search("CrowdStrike Reports Second Quarter Fiscal Year 2027 Results")
-    assert not pattern.search("CrowdStrike Reports Third Quarter Fiscal Year 2026 Results")
+    assert pattern.fullmatch("CrowdStrike Reports Third Quarter Fiscal Year 2027 Financial Results")
+    assert pattern.fullmatch("CrowdStrike Reports Q3 FY27 Results")
+    assert not pattern.fullmatch("CrowdStrike Announces Date of Fiscal Third Quarter 2027 Results")
+    assert not pattern.fullmatch("CrowdStrike Reports Second Quarter Fiscal Year 2027 Results")
+    assert not pattern.fullmatch("CrowdStrike Reports Third Quarter Fiscal Year 2026 Results")

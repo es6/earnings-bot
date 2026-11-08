@@ -114,7 +114,7 @@ def quarter_headline(year: int, quarter: int) -> str:
     return (
         r"^(?!.*\b(?:webcast|conference call|to host|to announce|will report|date|schedule)\b)"
         rf"(?=.*\b(?:{label})\b)(?=.*\b(?:FY\s*{year % 100:02d}|(?:FY\s*)?{year})\b)"
-        r"(?=.*\b(?:financial results|earnings|quarterly results|reports?.*results)\b)"
+        r"(?=.*\b(?:financial results|earnings|quarterly results|reports?.*results)\b).*"
     )
 
 
@@ -140,7 +140,7 @@ async def verified_browser_trial(fetcher: Fetcher, ticker: str, period: str) -> 
                     return None
                 links = issuer_links(url, page.body)
                 for link, title in links:
-                    if not pattern.search(title):
+                    if not pattern.fullmatch(title):
                         continue
                     article = await browser.request(link, listing, 4, fetcher.wait_turn)
                     text = html_to_text(article.body.decode(errors="replace"))
