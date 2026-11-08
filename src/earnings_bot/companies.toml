@@ -3,7 +3,7 @@
 #
 # names      how wire headlines name the company, for matching newswire feeds
 # platform   q4, equisolve, notified, investis, own-site or unknown
-# reachable  whether the IR site answers automated requests (we never work around a block)
+# reachable  whether the IR site answers the default HTTP client
 # soft_404   the site answers 200 for pages that don't exist, so guesses stay out of
 #            schedules until the bot can tell
 # wire       Business Wire, PR Newswire, GlobeNewswire, none or unknown
@@ -90,7 +90,7 @@ release_time = "16:15"
 eightk = ["16:16", "16:16", "16:16", "16:16"]
 fastest = "company-rss"
 rss = ["https://ir.amd.com/news-events/press-releases/rss"]
-evidence = "Q2 2026: RSS item at 4:15 PM. The 8-K has come at 4:16 PM four quarters running. GlobeNewswire's feed refuses automated reads. The feed sits behind CloudFront, which ignores cache-busting; how stale it gets is measured on November 3, 2026. Nov 6, 2026: GlobeNewswire's RSS host, rss.globenewswire.com, answers us, unlike www.globenewswire.com, and names each release's company in dc:contributor."
+evidence = "Q2 2026: RSS item at 4:15 PM. The 8-K has come at 4:16 PM four quarters running. The AMD RSS feed sits behind CloudFront, which ignored cache-busting in testing. Nov 6, 2026: GlobeNewswire's RSS host, rss.globenewswire.com, answers us, unlike www.globenewswire.com, and names each release's company in dc:contributor."
 checked = 2026-11-06
 
 [company.AMD.trial]
@@ -501,7 +501,7 @@ wire = "GlobeNewswire"
 eightk = ["16:21", "16:21", "16:31", "16:20"]
 fastest = "unknown"
 rss = ["https://nvidianews.nvidia.com/rss.xml"]
-evidence = "Releases go out on GlobeNewswire, whose feed refuses automated reads, and on nvidianews.nvidia.com, whose RSS feed stamped the Oct 28 call notice at 5:00 PM, the same minute as GlobeNewswire. The Q4 press feed lists only the call notice. 8-K at 4:20 to 4:31 PM. Nov 6, 2026: GlobeNewswire's RSS host, rss.globenewswire.com, answers us, unlike www.globenewswire.com, and names each release's company in dc:contributor."
+evidence = "Releases go out on GlobeNewswire and nvidianews.nvidia.com, whose RSS feed stamped the Oct 28 call notice at 5:00 PM, the same minute as GlobeNewswire. The Q4 press feed lists only the call notice. 8-K at 4:20 to 4:31 PM. Nov 6, 2026: GlobeNewswire's RSS host, rss.globenewswire.com, answers us, unlike www.globenewswire.com, and names each release's company in dc:contributor."
 todo = "Measure the newsroom feed and GlobeNewswire against the 8-K live at the November release. The newsroom feed's 20 items had already dropped the August results."
 checked = 2026-11-06
 

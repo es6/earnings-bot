@@ -1,36 +1,32 @@
 # Architecture
 
-This is a living document. Sections marked **Open** haven't been decided yet.
+The overview, scheduling, tracking and unattended sections describe the current implementation.
+The dated measurements and decision log record the research that led to it. See the
+[calendar guide](unattended.md) for commands and operator steps.
 
 ## Goal
 
-Post a company's earnings to Discord before anyone else does, then follow up with the release
-files and a formatted summary of the numbers.
+Post a company's earnings to Discord as soon as a source makes them available. Follow up with its
+release files and a formatted summary of the numbers.
 
 ## Overview
 
 ```mermaid
 flowchart TD
-    cal["Calendar<br/>earnings dates · usual release times · manual override"]
-    q4["Q4 IR feeds"]
-    sec["SEC EDGAR"]
-    guess["Guessed file URLs"]
-    wire["Newswire RSS"]
-    other["Other IR platforms<br/>(later)"]
-    det["Detector<br/>hot/cold polling · per-host rate limits · dedupe"]
-    pipe["Pipeline<br/>1. alert + link · 2. files · 3. summary"]
-    discord[("Discord channels")]
-    log[("Latency log")]
-
-    cal -->|opens hot windows| det
-    q4 --> det
-    sec --> det
-    guess --> det
-    wire --> det
-    other -.-> det
-    det -->|first source wins| pipe
-    pipe --> discord
-    det --> log
+    track["Discord calendar commands"] --> state[("Calendar and delivery state")]
+    state --> discovery["Issuer date discovery"]
+    catalog["Ticker catalog and issuer notices"] --> discovery
+    discovery --> state
+    state --> watcher["Directory watcher"]
+    files["Optional TOML schedules"] --> watcher
+    sources["IR, newswires, SEC and prepared trials"] -->|poll in parallel during each window| watcher
+    watcher -->|first eligible sighting| alert["Discord alert, files and summary"]
+    watcher --> journal[("Release timing journal")]
+    journal --> audit["Latest-release source audit"]
+    ir["Issuer archives and Chrome research"] --> audit
+    x["@earnings_guy verified X posts"] --> audit
+    audit --> scorecard["One Discord scorecard per tracked issuer"]
+    state --> scorecard
 ```
 
 ## Release detection
@@ -74,7 +70,7 @@ What this tells us:
 1. **Q4 IR feeds.** The main source for companies whose IR site runs on Q4 Inc. Q4 sites expose
    undocumented JSON feeds under `/feed/`:
    - `PressRelease.svc/GetPressReleaseList`: detects the release
-   - `Event.svc/GetEventList`: earnings call dates (for the calendar) and attached files
+   - `Event.svc/GetEventList`: earnings call dates and attached files, useful for research
    - `FinancialReport.svc/GetFinancialReportList`: the release, slides, supplemental data and 10-Q for each quarter
 
    Feed timestamps use each site's local time zone, and that isn't consistent even within one
@@ -96,7 +92,8 @@ What this tells us:
    New 8-Ks reached the feed 19 to 35 seconds after SEC accepted them (15 filings on Nov 3;
    HubSpot's and FICO's took 28 and 35 seconds on Nov 4).
 
-   Both point to the same filing folder, so the alert gets one SEC link. SEC allows at most 10
+   Both point to the same filing folder. The alert gets one SEC link and the release pipeline
+   shares a successful exhibit read across both sightings. SEC allows at most 10
    requests per second across everything we send it, and requires a User-Agent with a name and
    contact email (`SEC_USER_AGENT` in `.env`).
 3. **Guessed file URLs.** File names follow per-company patterns that we learn from past
@@ -146,10 +143,10 @@ What this tells us:
      McDonald's origin sometimes takes 11 to 16 s to answer. Polls still give up after 3 s,
      and the summary counts timeouts apart from other errors so that stays visible.
 
-   These stay out, by the owner's decision: Yahoo, Home Depot, Tesla's deck (it would need a
-   different User-Agent), McDonald's PDFs, any scripted browser, and any way around a site
-   that blocks us.
-6. **Later:** adapters for other IR platforms.
+6. **Desktop Chrome IR trials.** Selected issuer listings can run in stock Chrome on a separate
+   inactive Windows desktop. A file can opt into a listing, exact PDF candidates, or the separate
+   Tesla HTTP deck trial. For tracked issuers, the planner can prepare a record-only listing
+   after verifying the previous quarter's article. See [browser IR](browser-ir.md).
 
 ### IR platforms
 
@@ -208,7 +205,7 @@ latest quarter only. The details per company, with the last four 8-K times, are 
 - **Release files on blocked sites mostly come after the wire.** By their `Last-Modified`
   stamps, Lilly's PDF went up 2 minutes after PR Newswire, Home Depot's 5 minutes after it, and
   CrowdStrike's 2 minutes after its 8-K. McDonald's is the exception: its PDF was uploaded at
-  6:46 AM, 14 minutes before the 7:00 AM release, but that host refuses automated requests.
+  6:46 AM, 14 minutes before the 7:00 AM release, while the default client received HTTP 403.
 - **PR Newswire is a source,** for Lilly, Home Depot, Target, McDonald's and S&P Global. Its
   earnings feed holds the latest 20 earnings releases, so it's polled every 2 seconds: twenty
   items can turn over within a minute at 4 PM on a busy day. Its CDN keeps a copy for up to 60
@@ -428,17 +425,17 @@ What it tells us:
 
 ### Scheduling
 
-- **Calendar.** [Report dates](#report-dates) covers where dates come from. Each company's past
-  release times tell us when in the day to look: Amazon has used 4:01:00 PM ET for nine straight
-  quarters, Uber 6:55:00 AM ET, and FICO 4:15:00 PM ET.
-- **Hot window.** Starts a few minutes before the expected release and runs until the release is
-  detected or the window times out. Each source is polled about once a second, and once every
-  few seconds for newswire RSS, which serves every company from one URL. IR feeds get a
-  cache-busting query parameter, because their CDN can otherwise serve a copy up to 10 seconds
-  old. Q4's CDN stopped honoring it by Nov 5, so Q4 polls take turns with longer lists instead
-  (see "How fresh feeds are"). We cap this at one request per second per company.
-- **Cold polling.** Outside hot windows, every source is polled every few minutes to catch
-  unscheduled or early releases.
+- **Calendar.** The directory watcher combines optional TOML schedules with persisted windows
+  from [report dates](#report-dates). A matching file retains its source configuration and
+  release key. A Manage Server override can move the window.
+- **Release windows.** Standard windows open 10 minutes before the expected time and close
+  30 minutes after it. A confirmed day with an approximate time gets 60 minutes before
+  and 90 minutes after. Configured sources race in parallel and continue recording until
+  the window closes or their own stop condition is met. Source intervals vary. Q4 press
+  polls rotate list sizes and newswire readers can share a poll.
+- **Between windows.** The runner scans schedules, checks upcoming issuer notices and audits
+  source history. Release polling begins when a scheduled window opens.
+
 - **Rate limits are per host and shared across companies.** On a busy evening, a dozen companies
   report at 4 PM and all of them share SEC's 10 requests per second. SEC's limit covers all of
   sec.gov, so www.sec.gov (the latest-filings feed, filings and exhibits) and data.sec.gov (the
@@ -457,8 +454,9 @@ What it tells us:
 
 ### From detection to Discord
 
-- The first source to fire triggers the pipeline. Later sources are merged into the same
-  release by (ticker, fiscal period) and only add what's missing, such as more files.
+- The first alert-enabled source to see the release triggers the pipeline. Later sightings add
+  links and files to the same release, keyed by CIK and fiscal period (or Eastern date for
+  a legacy schedule).
 - Posting happens in stages: an alert with a link within seconds, then files as they appear,
   then the summary.
 - Each step logs two times after the first sighting. `live_seconds` comes from Discord's own
@@ -481,29 +479,27 @@ What it tells us:
   every multi-second wait came from discord.py's rate limiter: about 4 seconds on reads, once a
   bucket ran out. In one replay, Discord stamped the alert 0.12 seconds after the sighting, but
   the reply reached the bot only at 2.54 seconds.
-- Every source records when it first saw each release. This latency log shows which source
-  wins for each company and lets us compare against public timestamps such as X posts.
-- Until the detector exists, `earnings-bot-record` takes the same measurements for scheduled
-  releases. It polls every source during a window around the expected time. The first run is
-  November 2, 2026: Palantir at 4:05 PM ET and Apple at 4:30 PM ET.
+- For tracked issuers, a `source_body` event records when each source yields verified report text.
+  The audit ranks those live report times separately from headline sightings. The one-off
+  `earnings-bot-record` command uses the same release window and source pollers for local tests.
 
-### Ground rules
+### HTTP and Chrome workers
 
-- Identify ourselves honestly in the User-Agent. Stay within the rate limits, and back off when we
-  get errors.
-- Default HTTP sources stop on a 403 and let the other sources continue. The explicitly scheduled
-  [public IR trial](browser-ir.md) uses stock desktop Chrome on an inactive Windows desktop.
-  It keeps the normal browser identity and uses a dedicated temporary profile.
+HTTP requests share host queues and handle timeouts and backoff per source. A source that returns
+403 can stop independently while the other watchers continue. The [Chrome worker](browser-ir.md)
+runs on a separate Windows desktop with a dedicated temporary profile.
 
 ## Tracking companies
 
-Designed on 2026-10-31, to be built after the November 4 test. Until then the bot watches a
-hand-written schedule file. Schedule files stay afterwards, for tests and replays. The build
-order is part of the automation plan in [Running unattended](#running-unattended).
+`/track` runs in directory mode and starts from the current [ticker catalog](../src/earnings_bot/companies.toml).
+A subscription is persistent and deduplicated by issuer CIK in the earnings channel. The catalog
+supplies the source adapters, wire names, URL patterns and typical release times. The bot checks
+each tracked issuer for its next notice and audits the most recent actual results independently.
+A TOML schedule remains available for an operator-specified window or source configuration.
 
 ### What SEC's data gives us
 
-Checked on 2026-10-31:
+Research for future ticker onboarding, checked on 2026-10-31:
 
 - **SEC's ticker list** (`company_tickers.json`) has 10,423 tickers, each with its CIK.
 - **SEC's `website` and `investorWebsite` fields** were empty for all seven companies in the
@@ -528,86 +524,53 @@ Acceptance times of the last five earnings 8-Ks:
 | AMD | 4:16 PM all five times |
 | MSFT | 4:03–4:07 PM |
 
-### What `/track` works out
-
-`/track TICKER` starts from `src/earnings_bot/companies.toml` when the company is in it. That
-file holds what we've already checked for 45 companies: CIK, platform, which wire, feeds, URL
-templates, recent 8-K times and the fastest source. Until `/track` exists,
-`uv run python -m earnings_bot.known TICKER TIME --fiscal-year YYYY --quarter Q` prints a
-schedule entry from it. For any other company, `/track` fills in everything a schedule file
-holds today:
-
-- **CIK and name** from SEC's ticker list. A ticker that isn't on it is rejected.
-- **IR site.** We use the IR host named in the last earnings release. If it names only the main
-  site, we try `investor.`, `investors.` and `ir.` in front of it. Each candidate is probed for
-  Q4's feeds and for Equisolve's press release RSS feed. A site that blocks us, like FICO's, is
-  left out, and the company is covered by EDGAR and the newswires.
-- **Names to match on newswires.** The SEC name without suffixes such as Inc. or Corp., plus the
-  name in the company's own release headlines. Fair Isaac files with SEC as "FAIR ISAAC CORP",
-  but its headlines say "FICO". Since few releases name their wire, every newswire feed is
-  matched against every company. Each feed is one URL for all companies, so this costs a few
-  requests, not a few per company.
-- **File patterns.** On Q4 sites, the last three quarters' file names from the financial reports
-  feed. When they follow one pattern, the bot guesses next quarter's URLs. When they don't, it
-  doesn't guess.
-- **Time of day** from past 8-K acceptance times.
-
-The reply lists what was found and what wasn't. Optional `ir_site`, `date` and `time` arguments
-fill in or correct what the lookup missed.
-
 ### Report dates
 
-We don't use a calendar service. FMP's free plan returned only 12 companies for November 1–6,
-2026, and we chose not to add another provider. Dates come from these sources, most trusted
-first:
+A Manage Server override with an ISO `when` and fiscal `period` takes precedence for that release.
+Otherwise the planner looks for an issuer's results notice in its Q4 press feed or company RSS,
+Broadcom's newsroom API, or a supported public listing through desktop Chrome on Windows.
+The notice must identify a future date and fiscal period. An explicit release time is used
+when available. For an approximate time, the planner uses the issuer's market-open/close
+wording and the catalog's typical time to place a wider window. A call-only notice leaves the
+ticker awaiting a date.
 
-1. A date and time given in `/track`
-2. The Q4 events feed, which lists the next earnings call
-3. The company's date announcement. Most companies put one out two to four weeks ahead: FICO
-   announced its November 4 date on October 21. The bot looks for these in sources it already
-   polls, meaning the company's IR or RSS feed and newswire items matched to it. It reads the
-   date, plus either a time or "before the market opens" or "after the market closes".
-4. An estimate: the same quarter's date a year earlier, from EDGAR. Estimated dates get no hot
-   window, so cold polling catches the release, a few minutes later. `/upcoming` marks the date
-   as estimated so someone can fix it.
+The watcher scans for changes every three seconds. Date checks start on registration and repeat
+roughly hourly outside release windows. After a release, the subscription remains active for
+the next fiscal period.
 
-Every morning the bot refreshes the dates and builds that day's hot windows. A window opens 30
-minutes before the earliest of the last four 8-K times and closes 30 minutes after the latest,
-because the release can come well before the 8-K (up to 24 minutes before, for Amazon). When an
-announcement or `/track` gives a time, the window goes around that time instead, the same way a
-schedule file's expected time does today.
+### Source audit and preparation
+
+- Start from the most recent dated report found in the issuer archives or an earnings 8-K.
+  A filing date alone is labeled tentative when the exhibit is unreadable.
+- Rank verified report-text times and headline sightings from the release journal separately.
+  Exclude replay and catch-up observations. Show publisher timestamps as estimates of source
+  availability.
+- Compare with `@earnings_guy` when X verifies a matching original post. During a release
+  window the benchmark runs alongside the watchers. Its result uses the post's creation time
+  and Discord's message timestamp.
+- For selected issuer pages, Chrome inspects the public JSON they request and reports matching
+  routes or research leads. A new route needs an adapter and live timing before it can join the
+  polling set. The planner can prepare a record-only browser listing after it retrieves the
+  previous fiscal period's actual report. The new trial checks the exact upcoming fiscal period
+  and usable results text.
+- Keep the configured IR, newswire and SEC sources in the same race. The scorecard provides
+  evidence for source tuning, and trial promotion is controlled by the schedule.
 
 ### Commands and limits
 
-| Command | Who can use it | What it does |
-|---|---|---|
-| `/track TICKER` | Anyone, up to 5 a day each | Starts tracking, with optional `ir_site`, `date` and `time` |
-| `/untrack TICKER` | Members with Manage Server | Stops tracking |
-| `/tracked` | Anyone | Lists the tracked companies |
-| `/upcoming` | Anyone | Who reports in the next 7 days, and when |
-
-- At most 50 companies are tracked at once.
-- Changing a company that's already tracked (its date, time or IR site) also needs Manage Server,
-  so nobody can quietly move another company's window.
-- `/untrack` is registered with Manage Server as its default permission, so other members don't
-  see it. Server admins can change that under Server Settings → Integrations.
-
-### One server per copy
-
-Each copy of the bot serves one server and posts to one channel (`DISCORD_GUILD_ID` and
-`DISCORD_CHANNEL_ID`). Other people run their own copy from this repository, with their own SEC
-contact and their own share of SEC's limit. If the bot is added to another server, it leaves.
-Turning off **Public Bot** in the Developer Portal stops other people from adding it at all.
+The [calendar command reference](unattended.md#commands) covers syntax and permissions. Tracking
+commands apply to the server that contains the configured earnings channel. The limits are five
+new issuers per member per Eastern calendar day and 50 subscriptions per earnings channel.
+`DISCORD_GUILD_ID` optionally scopes slash command registration to one server.
 
 ### Storage
 
-A SQLite file holds:
-
-- each tracked company and what `/track` found
-- its next date, and where that date came from
-- who added it and when, for the daily limit
-- each release's Discord message, so a restarted bot keeps editing the same post instead of
-  posting a second alert
+| Path in the schedule directory | Contents |
+|---|---|
+| `.earnings-state.sqlite3` | Subscriptions, next windows and date evidence, daily add counts, audit results, scan state and release delivery IDs |
+| `.tracking-progress.sqlite3` | Delivery intents and message IDs for issuer scorecards |
+| `watch.jsonl` | Window reports, sightings, source timing, benchmark results and status events |
+| `*.toml` | Optional operator-supplied windows and per-release source settings |
 
 ### Sharing SEC's limit
 
@@ -673,7 +636,7 @@ Where the text comes from:
 | Guessed or newsroom pages | The page itself | Apple's newsroom |
 | Pages on trial | The page the poll already downloaded | No second request |
 | Broadcom's newsroom (trial) | The `body` field of `/api/getmetadata` | An ID that isn't up yet answers 200 with a stub that has no body, so no text |
-| Business Wire, GlobeNewswire | None | Their article pages drop or refuse automated requests |
+| Business Wire, GlobeNewswire | None | The default HTTP client could not retrieve their articles |
 
 The summary comes from Claude (`claude-opus-5-5`, effort `medium`). It gets the release text,
 consensus EPS and revenue from Financial Modeling Prep's earnings calendar, and a style guide
@@ -687,101 +650,25 @@ losing accuracy (effort `low`, or a smaller model).
 
 ## Running unattended
 
-The plan for the bot to run day after day without anyone starting it, written on 2026-10-31.
-The goal is a bot that's left running permanently and builds its own schedule, so nobody writes
-a schedule file or restarts it to add a company. It runs on the owner's Windows PC, not on a
-paid server. CI still builds the Docker image for anyone who'd rather host it. Tracked
-companies, dates and posts go in a SQLite file (see [Storage](#storage)), and the latency log
-stays a JSONL file.
+Run `uv run earnings-bot schedules` for the continuous watcher. It reloads TOML and persisted
+calendar windows, retains the last valid copy of a malformed schedule, and recovers pending
+Discord alerts across restarts. For one-off monitoring, pass a single TOML file instead.
 
-### From schedule files to an automatic schedule
+On Windows, Task Scheduler can start `scripts/run-bot.ps1` at startup. The supervisor prevents
+multiple local instances, writes console logs under `recordings/`, and restarts the process
+15 seconds after it exits by default. Updating the checkout is a separate operator step.
+See the [setup and recovery guide](unattended.md#run-and-recover).
 
-A single schedule file still works for one-off runs. Directory mode watches every TOML
-with one fetcher and shared polling coordinator. It retains the last valid copy of a malformed
-schedule and keeps pending deliveries and message IDs in SQLite. An expired window with
-no recorded watch is surfaced in the status log when it falls inside a recorded monitoring gap.
-The next stages are in the [build order](#build-order).
+The optional status channel receives startup, schedule problem and window-close reports.
+Per-issuer scorecards show the next date, prepared sources and the latest source audit. In
+the absence of a status channel the scorecards go to the earnings channel, and status events
+stay in the journal. `/watch_status` shows active tickers, the next window, the last scan and
+the latest benchmark comparison.
 
-| Stage | Who decides what to watch | Restart to add a company? |
-|---|---|---|
-| Single-file mode | A schedule file named when the bot starts | Yes |
-| Directory mode | Every file in `schedules/`, read again when one is added or changed | No |
-| Step 3 | The daily planner, from companies added with `/track` and a date | No |
-| Step 4 | The daily planner, with dates it finds by itself | No, and no dates to type in |
-
-From step 4 the bot only needs `/track` once per company. Schedule files stay as a way to add a
-one-off window by hand.
-
-### On the owner's PC
-
-- **It starts itself.** A Task Scheduler task runs `scripts/run-bot.ps1` when Windows starts.
-  The script loops: update if asked to, run the bot, and if the bot exits, wait 30 seconds and
-  start it again. Task Scheduler restarts the script itself if that dies. Running the task "when
-  Windows starts" rather than "at log on" means it comes back after an overnight update restart
-  without anyone logging in. Windows asks the owner for their password once, when the task is
-  saved.
-- **It updates itself.** Once a day, at an hour with no window coming up, the bot checks whether
-  `main` has new commits whose CI passed. If it does, the bot exits with a code the script reads
-  as "update": `git pull --ff-only`, `uv sync`, then start again. Merging a PR is the deploy.
-- **The PC stays ready.** Its power plan already never sleeps. In busy report weeks, pause
-  Windows Update, or set its active hours to cover 6 AM to 6 PM Eastern.
-- **Time and secrets stay as they are:** network time through `TrustedClock`, keys in `.env`.
-
-**Open.** What to do about a release the bot missed while the PC was off or offline: post it
-late, marked as late, or only note the gap in the status channel. Since Nov 6, a release that
-came out inside its window before the bot started is posted, marked as already out. One that
-came out before the window opened, or while the PC was off for the whole window, is still
-open.
-
-### Status messages
-
-These go to a separate channel, such as `#bot-status`, so `#stocks` only gets releases:
-
-- started, stopped and updated (with the commit)
-- each morning, the day's windows
-- problems: a source failing for a whole window (403s, timeouts), a window closing with nothing
-  seen, or a Discord post failing
-- after each window, which source saw the release first and by how much
-
-If the PC is off, nothing can post. Discord still shows the bot as offline, which is the one
-signal that doesn't need the bot running.
-
-### Daily planner
-
-Each morning at 5:00 AM Eastern, and at startup, the bot builds the day's windows from the
-tracked companies and their [report dates](#report-dates), the way a schedule file does today.
-
-### Learning from each release
-
-After a window closes, the bot stores which source saw the release first, when, and how far
-ahead of the 8-K. Those update the company's stored notes (fastest source, usual release
-minute), so windows and source choices follow what actually happens. Changes worth keeping in
-`companies.toml` come back as a PR.
-
-### Build order
-
-This starts after the Nov 2–4 runs, whose results feed into it.
-
-0. **Read the Nov 2–4 logs.** Check Business Wire's real delay, AMD's feed, whether the window
-   sizes were right, and how Discord held up. Update `companies.toml` and this doc. Business
-   Wire's delay and AMD's feed are done (see [Live runs](#live-runs)).
-1. **Fix what the 2026-10-31 checks found.** Guesses need to recognize a soft 404 by checking
-   the content type, and the title for pages. Then UnitedHealth's guesses can go back in. PR
-   Newswire should be read from two or three feeds per company.
-2. **Run unattended:** directory reload, `scripts/run-bot.ps1`, the status channel and
-   restart-safe delivery. Register the Windows task and measure real releases before adding
-   automatic updates.
-3. **Storage, the daily planner, and `/track` for companies already in `companies.toml`,** with
-   the date and time given in the command. Add `/tracked` and `/untrack` too. Schedule files
-   become optional.
-4. **Find dates automatically:** the Q4 events feed, date announcements and estimates, plus
-   `/upcoming`.
-5. **`/track` for any company,** researching it the way it was done by hand on 2026-10-31.
-6. **Scale:** share SEC's limit across overlapping windows, and learn from each release.
-   Polling each newswire feed once for every company whose window is open was done on Nov 6
-   (before that, with three windows open at once, Business Wire's one request a second
-   stretched each window's polls to 3 s). So was one queue for all of sec.gov (see
-   [Sharing SEC's limit](#sharing-secs-limit)). Left: fetching each 8-K's exhibit once.
+If the bot starts after publication while the window is still open, supported sources can
+catch up using the release's own timestamp or a verified exact-period trial. A window that
+ended during an outage is reported as a gap. The scope for a future version is broader ticker
+onboarding, including international listings, and more live samples for source rankings.
 
 ## Decision log
 
@@ -797,25 +684,23 @@ This starts after the Nov 2–4 runs, whose results feed into it.
 | 2026-10-30 | Measure every source live with a latency recorder before building the detector, starting with Uber and FICO on 2026-11-04 |
 | 2026-10-30 | Post one message per release and edit it: alert with links, then files, then the summary as an embed |
 | 2026-10-30 | Write summaries with the Claude API (`claude-opus-5-5`) and check their numbers against the release. Consensus estimates come from Financial Modeling Prep |
-| 2026-10-30 | Until `/track` exists, the bot watches the releases in a schedule file, the same format the latency recorder uses |
-| 2026-10-31 | `/track` works out each company's CIK, IR site, newswire names, file patterns and usual time of day by itself, from SEC's data and the company's last earnings release |
-| 2026-10-31 | Report dates come from `/track`, the Q4 events feed and the companies' own date announcements. No calendar service. Estimated dates get no hot window |
 | 2026-10-31 | Anyone can `/track`, up to 5 companies a day each and 50 in all. `/untrack` and changes to a tracked company need Manage Server |
-| 2026-10-31 | One server and one channel per copy of the bot |
 | 2026-10-31 | Keep tracked companies, dates and posts in SQLite |
 | 2026-10-31 | Keep what we've researched about each company in `companies.toml`, checked into the repository, for `/track` to start from |
 | 2026-10-31 | Add PR Newswire's earnings feed as a source for the companies that use it, matched on headline, dateline and `dc:contributor` |
-| 2026-10-31 | Run the bot on the owner's Windows PC, started by Task Scheduler and updated from `main`, not on a paid server |
+| 2026-10-31 | Run the bot on Windows with Task Scheduler |
 | 2026-10-31 | Leave guesses out of schedules for sites that answer missing pages with 200, until the bot checks what it got back |
 | 2026-11-03 | Also poll EDGAR's latest-filings feed, which beat the submissions JSON by up to 56 s |
 | 2026-11-03 | A guessed file that comes back as a web page counts as not there yet |
-| 2026-11-04 | The bot is meant to run permanently and build its own schedule. Schedule files are a stopgap, and from build step 2 they're picked up without a restart |
+| 2026-11-04 | Directory mode reloads schedule files without a restart |
 | 2026-11-04 | Allow two requests a second to Business Wire, so two overlapping windows each still poll its feed every 2 s, until windows share one poll of each feed |
 | 2026-11-04 | Poll only the cache-busted copy of Business Wire's feed, since the plain one trailed it by 2 minutes. Business Wire goes back to one request a second |
 | 2026-11-04 | Every poll gives up after 3 seconds and the next goes out at once. Other requests, such as file downloads, keep the 10-second limit |
 | 2026-11-05 | The fetcher keeps no cookies, so each request stands alone. Sending back cloudflare.com's cookies got a 500 every time |
 | 2026-11-05 | A file a feed lists but answers 404 gets tried again every 30 s until the window closes |
-| 2026-11-06 | Q4's CDN ignores cache-busters now, so Q4 press release polls take turns with five longer lists, each once its 10 s copy has expired. The site gets no extra requests, and Q4's servers about one every 2 s. Faking headers or a browser's identity stays out |
-| 2026-11-06 | New sources go on trial first: recorded on release days, but posted only when the schedule's `[target.trial]` table says `post = true`. On trial now: Broadcom's newsroom JSON, GlobeNewswire's earnings RSS (plain and busted), PR Newswire's Semiconductors feed, HubSpot's press release feed, and release pages for CrowdStrike (FinancialContent), McDonald's (MediaRoom) and Airbnb (its newsroom). Broadcom is matched on PR Newswire as "Broadcom Inc". Yahoo, Home Depot, Tesla's deck, McDonald's PDFs, scripted browsers and any way around a block stay out, and every site gets the same honest User-Agent |
+| 2026-11-06 | Q4's CDN ignores cache-busters now, so Q4 press release polls take turns with five longer lists, each once its 10 s copy has expired. The site gets no extra requests, and Q4's servers about one every 2 s. |
+| 2026-11-06 | New sources go on trial first: recorded on release days, but posted only when the schedule's `[target.trial]` table says `post = true`. On trial now: Broadcom's newsroom JSON, GlobeNewswire's earnings RSS (plain and busted), PR Newswire's Semiconductors feed, HubSpot's press release feed, and release pages for CrowdStrike (FinancialContent), McDonald's (MediaRoom) and Airbnb (its newsroom). Broadcom is matched on PR Newswire as "Broadcom Inc". |
 | 2026-11-06 | Overlapping windows share one poll of each feed. Fetching a release's text takes the host's next turn ahead of polls, keeping the host's gap. A late start catches up on earnings items stamped inside the window, posted as already out and not counted as a latency measurement |
 | 2026-11-06 | www.sec.gov and data.sec.gov wait in one queue at 8 requests a second together, filings and exhibits included, since SEC's limit of 10 a second covers everything we send it. Before, each host had its own queue, so a busy evening could send 16 a second. A local replay of 20 releases at once (`tests/burst_replay.py`) checks the limit and what it costs |
+| 2026-11-07 | Directory mode serves the catalog calendar, discovers dates from issuer notices and keeps one durable Discord scorecard per issuer. The latest-release audit separates measured availability from archive estimates and uses @earnings_guy as the main external benchmark. |
+| 2026-11-07 | Selected public IR listings can use Windows desktop Chrome for research and record-only trials. Newly observed JSON routes enter the scorecard as leads until validated. |
