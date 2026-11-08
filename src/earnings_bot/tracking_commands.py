@@ -69,6 +69,7 @@ class TrackingCommands:
                     )
                 override = manual_target(ticker, when, period, now)
             row, added = watcher.calendar.add(ticker, interaction.user.id, now)
+            watcher.dates.changed.set()
             if override:
                 watcher.calendar.set_target(override, "Manual override")
                 message = describe(override, "Manual override")
