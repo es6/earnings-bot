@@ -83,7 +83,12 @@ class EarningsBot(discord.Client):
                 except discord.HTTPException:
                     log.exception("Can't open the status channel. Continuing with local logs.")
                 else:
-                    if isinstance(candidate, discord.abc.Messageable):
+                    if (
+                        isinstance(candidate, discord.abc.Messageable)
+                        and isinstance(candidate, discord.abc.GuildChannel | discord.Thread)
+                        and isinstance(channel, discord.abc.GuildChannel | discord.Thread)
+                        and candidate.guild.id == channel.guild.id
+                    ):
                         status_channel = candidate
                     else:
                         log.error("Status channel cannot receive messages. Using local logs.")

@@ -19,10 +19,11 @@ from earnings_bot.delivery import DeliveryStore, retry_delivery
 from earnings_bot.fetch import Fetcher
 from earnings_bot.pipeline import DiscordPoster, DurableDiscordPoster, Releases
 from earnings_bot.recorder import ET, Journal, Plan, Polls, Target, Watch, record_target
-from earnings_bot.source_audit import verified_report
+from earnings_bot.source_audit import audit_sources, verified_report
 from earnings_bot.sources import Sighting, Source
 from earnings_bot.summary import Summarizer
 from earnings_bot.text import release_text
+from earnings_bot.track_progress import TrackProgress
 
 SCAN_SECONDS = 3.0
 
@@ -59,10 +60,12 @@ class DirectoryWatcher:
         self.store = store
         self.calendar = Calendar(store)
         self.planned: dict[str, Target] = {}
-        self.dates = DateDiscovery(self.calendar, fetcher, journal.now, self.busy, status)
+        self.dates = DateDiscovery(self.calendar, fetcher, journal.now, self.busy, journal.say)
         self.status = status
         self.benchmark = benchmark
         self.latest_benchmark: str | None = None
+        self.progress: TrackProgress | None = None
+        self.guild_id: int | None = None
         self.schedules: dict[Path, _Schedule] = {}
         self.windows: dict[str, _Window] = {}
         self.problems: dict[str, str] = {}
@@ -226,7 +229,12 @@ class DirectoryWatcher:
                 comparison = await self._compare(target, watches, benchmark)
             self.status(_window_report(target, watches, comparison))
             await self.releases.finish_target(target)
-            await asyncio.gather(*trial_reads.values())
+            await asyncio.gather(*trial_reads.values(), return_exceptions=True)
+            if measure:
+                self.calendar.clear_review(target.cik)
+                if self.progress:
+                    self.progress.next_attempt.pop(target.cik, None)
+                    self.progress.changed.set()
         except Exception as error:
             self.status(f"{target.ticker}: monitoring failed and will retry: {error!r}")
         finally:
@@ -359,7 +367,10 @@ async def watch_directory(
     status_channel: discord.abc.Messageable | None,
     ready: Callable[[DirectoryWatcher], None],
 ) -> None:
+    progress_channel = status_channel or channel
+    progress_id = getattr(progress_channel, "id", channel_id)
     with (
+        DeliveryStore(directory / ".tracking-progress.sqlite3", progress_id) as progress_store,
         (directory / "watch.jsonl").open("a", encoding="utf-8") as file,
         DeliveryStore(directory / ".earnings-state.sqlite3", channel_id) as store,
     ):
@@ -405,9 +416,24 @@ async def watch_directory(
             watcher = DirectoryWatcher(
                 directory, fetcher, journal, releases, store, status, benchmark
             )
+            if isinstance(channel, discord.abc.GuildChannel | discord.Thread):
+                watcher.guild_id = channel.guild.id
+            watcher.progress = TrackProgress(
+                watcher.calendar,
+                progress_store,
+                progress_channel,
+                author_id,
+                lambda: watcher.planned,
+                journal.now,
+                watcher.busy,
+                partial(audit_sources, fetcher, directory, benchmark=benchmark),
+            )
             ready(watcher)
             status(f"Earnings monitoring started. Reading {directory.name}/.")
-            tasks = [asyncio.create_task(recover_pending())]
+            tasks = [
+                asyncio.create_task(recover_pending()),
+                asyncio.create_task(watcher.progress.run()),
+            ]
             if status_channel is not None:
                 tasks.append(asyncio.create_task(report(status_channel)))
             try:

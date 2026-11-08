@@ -32,6 +32,13 @@ class Calendar:
                 evidence TEXT,
                 PRIMARY KEY (channel, cik)
             );
+            CREATE TABLE IF NOT EXISTS tracking_reviews (
+                channel INTEGER NOT NULL,
+                cik INTEGER NOT NULL,
+                checked TEXT NOT NULL,
+                result TEXT NOT NULL,
+                PRIMARY KEY (channel, cik)
+            );
             CREATE TABLE IF NOT EXISTS tracking_adds (
                 channel INTEGER NOT NULL,
                 user_id INTEGER NOT NULL,
@@ -83,7 +90,28 @@ class Calendar:
                 (target.model_dump_json(), evidence, self.channel, target.cik),
             )
 
+    def review(self, cik: int) -> tuple[datetime | None, str | None]:
+        row = self.db.execute(
+            "SELECT checked, result FROM tracking_reviews WHERE channel = ? AND cik = ?",
+            (self.channel, cik),
+        ).fetchone()
+        return (datetime.fromisoformat(row["checked"]), row["result"]) if row else (None, None)
+
+    def save_review(self, cik: int, checked: datetime, result: str) -> None:
+        with self.db:
+            self.db.execute(
+                "INSERT OR REPLACE INTO tracking_reviews VALUES (?, ?, ?, ?)",
+                (self.channel, cik, checked.isoformat(), result),
+            )
+
+    def clear_review(self, cik: int) -> None:
+        with self.db:
+            self.db.execute(
+                "DELETE FROM tracking_reviews WHERE channel = ? AND cik = ?", (self.channel, cik)
+            )
+
     def remove(self, cik: int) -> bool:
+        self.clear_review(cik)
         with self.db:
             return (
                 self.db.execute(

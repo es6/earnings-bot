@@ -38,6 +38,12 @@ class TrackingCommands:
             )
         )
 
+    def _watcher(self, interaction: discord.Interaction) -> DirectoryWatcher | None:
+        watcher = self.get_watcher()
+        if watcher and watcher.guild_id == interaction.guild_id:
+            return watcher
+        return None
+
     @app_commands.guild_only()
     @app_commands.describe(
         ticker="Stock symbol in the ticker catalog",
@@ -51,7 +57,7 @@ class TrackingCommands:
         when: str | None = None,
         period: str | None = None,
     ) -> None:
-        watcher = self.get_watcher()
+        watcher = self._watcher(interaction)
         if watcher is None:
             await interaction.response.send_message(OFFLINE, ephemeral=True)
             return
@@ -88,13 +94,17 @@ class TrackingCommands:
                     describe(target, "Scheduled") if target else "Awaiting a confirmed date."
                 )
                 message = f"{state} **{row.ticker}**. {next_release}"
+            if watcher.progress:
+                watcher.progress.changed.set()
+                channel_id = watcher.progress.store.channel_id
+                message += f" Progress appears in <#{channel_id}>."
         except ValueError as error:
             message = str(error)
         await interaction.response.send_message(message, ephemeral=True)
 
     @app_commands.guild_only()
     async def upcoming(self, interaction: discord.Interaction) -> None:
-        watcher = self.get_watcher()
+        watcher = self._watcher(interaction)
         if watcher is None:
             message = OFFLINE
         else:
@@ -107,14 +117,18 @@ class TrackingCommands:
     @app_commands.guild_only()
     @app_commands.default_permissions(manage_guild=True)
     async def untrack(self, interaction: discord.Interaction, ticker: str) -> None:
-        watcher = self.get_watcher()
+        watcher = self._watcher(interaction)
         ticker = ticker.strip().upper()
         try:
             if watcher is None:
                 raise ValueError(OFFLINE)
             if not interaction.permissions.manage_guild:
                 raise ValueError("Manage Server is required to remove a ticker.")
-            removed = watcher.calendar.remove(company_cik(ticker))
+            cik = company_cik(ticker)
+            removed = watcher.calendar.remove(cik)
+            if removed and watcher.progress:
+                watcher.progress.removed[cik] = ticker
+                watcher.progress.changed.set()
             message = (
                 f"Removed **{ticker}** from the calendar."
                 if removed
