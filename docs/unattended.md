@@ -13,3 +13,9 @@ measured headlines and report text separately, along with archive timestamp
 estimates and the verified @earnings_guy comparison when available. Audits run
 one at a time outside active earnings windows. The separate
 `.tracking-progress.sqlite3` file retains the Discord message IDs across restarts.
+
+On Windows, selected issuer listings can supply notices through the isolated
+desktop Chrome worker. The source audit observes same-origin JSON requests
+made by those public pages and lists matched results separately from leads.
+Newly discovered routes are research evidence pending a dedicated adapter
+and live latency measurements.

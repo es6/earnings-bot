@@ -27,3 +27,4 @@ Thumbs.db
 schedules/*.jsonl
 schedules/.earnings-state.sqlite3*
 recordings/
+schedules/.tracking-progress.sqlite3*

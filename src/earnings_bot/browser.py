@@ -9,6 +9,7 @@ import socket
 import tempfile
 import time
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -24,6 +25,7 @@ if TYPE_CHECKING:
 
 BROWSER_HOSTS = frozenset(
     {
+        "investor.nvidia.com",
         "investors.fico.com",
         "ir.crowdstrike.com",
         "investor.lilly.com",
@@ -35,6 +37,14 @@ BROWSER_HOSTS = frozenset(
 )
 # Bound the bytes Chrome transfers through its local control socket.
 MAX_BROWSER_BYTES = 12 * 1024 * 1024
+MAX_JSON_BYTES = 1024 * 1024
+
+
+@dataclass(frozen=True)
+class BrowserJSON:
+    method: str
+    path: str
+    value: object
 
 
 class BrowserError(Exception):
@@ -194,9 +204,7 @@ class DesktopChrome:
                 await self.close()
                 raise
 
-    async def _warm(self, host: str, warmup: str) -> _Tab:
-        if tab := self._tabs.get(host):
-            return tab
+    async def _new_tab(self, host: str) -> _Tab:
         async with self.session.put(
             self._base + "/json/new?about%3Ablank", allow_redirects=False
         ) as response:
@@ -208,6 +216,13 @@ class DesktopChrome:
         )
         tab = _Tab(info["id"], ws)
         self._tabs[host] = tab
+        return tab
+
+    async def _warm(self, host: str, warmup: str) -> _Tab:
+        if tab := self._tabs.get(host):
+            return tab
+        tab = await self._new_tab(host)
+        ws = tab.socket
         try:
             async with asyncio.timeout(5):
                 navigation = await _command(ws, "Page.navigate", url=warmup)
@@ -235,6 +250,18 @@ class DesktopChrome:
                     pass
             except (aiohttp.ClientError, TimeoutError):
                 pass
+
+    async def inspect_json(self, url: str) -> list[BrowserJSON]:
+        """Observe public JSON requests from a normal navigation without replaying them."""
+        host = browser_host(url)
+        await self._start()
+        async with self._locks.setdefault(host, asyncio.Lock()):
+            await self._drop(host)
+            try:
+                tab = await self._new_tab(host)
+                return await _observe_json(tab.socket, url, host)
+            finally:
+                await self._drop(host)
 
     async def request(
         self,
@@ -300,3 +327,74 @@ class DesktopChrome:
         if self._profile:
             self._profile.cleanup()
             self._profile = None
+
+
+async def _observe_json(
+    ws: aiohttp.ClientWebSocketResponse, url: str, host: str
+) -> list[BrowserJSON]:
+    results: list[BrowserJSON] = []
+    requests: dict[str, str] = {}
+    responses: dict[str, tuple[str, str]] = {}
+    pending: dict[int, tuple[str, str]] = {}
+    command = 3
+    with suppress(TimeoutError):
+        async with asyncio.timeout(6):
+            await _command(
+                ws,
+                "Network.enable",
+                maxTotalBufferSize=4 * MAX_JSON_BYTES,
+                maxResourceBufferSize=MAX_JSON_BYTES,
+            )
+            await ws.send_json({"id": 2, "method": "Page.navigate", "params": {"url": url}})
+            while len(results) < 12:
+                message = await ws.receive_json()
+                method = message.get("method")
+                params = message.get("params", {})
+                rid = params.get("requestId", "")
+                if method == "Network.requestWillBeSent":
+                    request = params["request"]
+                    parts = urlsplit(request["url"])
+                    if parts.scheme == "https" and parts.netloc == host:
+                        requests[rid] = request["method"]
+                    else:
+                        requests.pop(rid, None)
+                elif method == "Network.responseReceived" and rid in requests:
+                    response = params["response"]
+                    parts = urlsplit(response["url"])
+                    mime = response["mimeType"].lower()
+                    if (
+                        params["type"] in ("XHR", "Fetch")
+                        and parts.scheme == "https"
+                        and parts.netloc == host
+                        and 200 <= response["status"] < 300
+                        and ("json" in mime or "text/plain" in mime)
+                        and requests[rid] in ("GET", "POST")
+                    ):
+                        responses[rid] = (requests[rid], parts.path)
+                elif method == "Network.loadingFinished" and rid in responses:
+                    candidate = responses.pop(rid)
+                    if params["encodedDataLength"] > MAX_JSON_BYTES or command >= 35:
+                        continue
+                    pending[command] = candidate
+                    await ws.send_json(
+                        {
+                            "id": command,
+                            "method": "Network.getResponseBody",
+                            "params": {"requestId": rid},
+                        }
+                    )
+                    command += 1
+                elif (response_id := message.get("id")) in pending:
+                    verb, path = pending.pop(response_id)
+                    body = message.get("result", {}).get("body", "")
+                    if len(body) > MAX_JSON_BYTES:
+                        continue
+                    try:
+                        if message["result"].get("base64Encoded"):
+                            body = base64.b64decode(body)
+                        value = json.loads(body)
+                    except (ValueError, KeyError):
+                        continue
+                    if isinstance(value, dict | list):
+                        results.append(BrowserJSON(verb, path, value))
+    return results
