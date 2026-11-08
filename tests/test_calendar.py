@@ -6,6 +6,7 @@ import pytest
 from earnings_bot.browser_sources import IRTrial
 from earnings_bot.calendar import Calendar, manual_target, upcoming
 from earnings_bot.delivery import DeliveryStore
+from earnings_bot.ir_research import IR_LISTINGS, quarter_headline
 from earnings_bot.known import to_target
 from earnings_bot.recorder import ET, Trial
 
@@ -72,3 +73,19 @@ def test_auto_browser_trial_preserves_existing_schedule_choices(tmp_path: Path) 
         [effective] = calendar.plan({file.release_key: file}).values()
         assert effective.trial.ir is None
         assert effective.trial.post
+
+
+def test_saved_automatic_browser_headline_is_repaired_after_restart(tmp_path: Path) -> None:
+    db = tmp_path / "state.db"
+    target = to_target("CRWD", datetime(2026, 12, 1, 16, 5, tzinfo=ET), 2027, 3)
+    headline = quarter_headline(2027, 3)
+    target.trial.ir = IRTrial(
+        listing=IR_LISTINGS["CRWD"], headline=headline.removesuffix(".*"), verify_text=True
+    )
+    with DeliveryStore(db, 7) as store:
+        calendar = Calendar(store)
+        calendar.add("CRWD", 1, NOW)
+        calendar.set_target(target, "Issuer notice")
+    with DeliveryStore(db, 7) as store:
+        [effective] = Calendar(store).plan({}).values()
+        assert effective.trial.ir and effective.trial.ir.headline == headline
