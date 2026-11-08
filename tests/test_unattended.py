@@ -177,6 +177,25 @@ async def test_an_alert_someone_deleted_is_posted_again(tmp_path: Path, reuse_po
     assert saved is not None and saved.message_id == 2
 
 
+async def test_a_resent_alert_keeps_links_edited_into_the_deleted_one(tmp_path: Path) -> None:
+    target = uber()
+    channel = FakeDiscord()
+    header = ["Earnings alert", "Timestamp"]
+    first, edited, later = (
+        f"{name}: <https://{name}.example/results>" for name in ("issuer", "wire", "sec")
+    )
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        poster = channel.poster(store, target)
+        await poster.send("\n".join([*header, first]))
+        await poster.edit("\n".join([*header, first, edited]))  # not in the saved first post
+        channel.delete(1)
+
+        await poster.send("\n".join([*header, later]))
+
+    assert list(channel.messages) == [2]
+    assert channel.messages[2].content.splitlines() == [*header, first, edited, later]
+
+
 async def test_a_later_sighting_recreates_the_active_alert_and_keeps_links(tmp_path: Path) -> None:
     target = uber()
     channel = FakeDiscord()
