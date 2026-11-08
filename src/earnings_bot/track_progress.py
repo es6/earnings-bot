@@ -11,7 +11,7 @@ import discord
 
 from earnings_bot.calendar import Calendar, Tracked, describe
 from earnings_bot.delivery import DeliveryStore
-from earnings_bot.pipeline import DiscordPoster, DurableDiscordPoster
+from earnings_bot.pipeline import DurableDiscordPoster
 from earnings_bot.recorder import Target
 
 log = logging.getLogger(__name__)
@@ -19,8 +19,8 @@ REFRESH = timedelta(days=1)
 
 
 class _ProgressPoster(DurableDiscordPoster):
-    async def edit(self, content: str) -> datetime | None:
-        return await DiscordPoster.edit(self, content)
+    def _merge_content(self, existing: str, content: str) -> str:
+        return content
 
 
 class TrackProgress:

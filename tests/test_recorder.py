@@ -634,6 +634,30 @@ async def test_a_long_retry_after_on_a_shared_feed_lets_each_window_close_on_tim
     assert fetcher.sent == 1  # nothing polled during the hour it asked for
 
 
+async def test_late_shared_watcher_closes_during_backoff_and_preserves_it() -> None:
+    journal = Journal(io.StringIO())
+    fetcher = RateLimitedFetcher()
+    polls = Polls(fetcher, journal)
+    first = asyncio.create_task(
+        polls.watch(Watch("NVDA", CompanyFeed("NVDA")), journal.now() + timedelta(seconds=5))
+    )
+    try:
+        await asyncio.sleep(0)  # the first member joins and starts the shared task
+        await asyncio.sleep(0)  # the shared task reads the 429 and starts backing off
+        assert fetcher.sent == 1
+        end = journal.now() + timedelta(seconds=0.1)
+        await asyncio.wait_for(polls.watch(Watch("AMD", CompanyFeed("AMD")), end), timeout=1)
+        assert not first.done()
+    finally:
+        first.cancel()
+        await asyncio.gather(first, return_exceptions=True)
+
+    # There are no other members now. A new window still honors the feed's Retry-After.
+    end = journal.now() + timedelta(seconds=0.1)
+    await asyncio.wait_for(polls.watch(Watch("AMD", CompanyFeed("AMD")), end), timeout=1)
+    assert fetcher.sent == 1
+
+
 async def test_a_bug_in_posting_doesnt_stop_the_source_polling() -> None:
     log = io.StringIO()
     journal = Journal(log)

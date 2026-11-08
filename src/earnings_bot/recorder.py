@@ -470,6 +470,7 @@ class SharedPoll:
         self.fetcher = fetcher
         self.journal = journal
         self.members: list[_Member] = []
+        self._next_poll = 0.0  # Keep backoff when the last watcher leaves.
         self.task: asyncio.Task[None] | None = None
 
     async def join(
@@ -484,7 +485,12 @@ class SharedPoll:
         if self.task is None or self.task.done():
             self.task = asyncio.create_task(self._run())
         try:
-            await member.left
+            # Each member owns its deadline, even if it joined during an in-flight poll or backoff.
+            while (remaining := (end - self.journal.now()).total_seconds()) > 0:
+                done, _ = await asyncio.wait((member.left,), timeout=remaining)
+                if done:
+                    member.left.result()
+                    return
         finally:
             self._leave(member)
             if not self.members and self.task is not None:
@@ -498,21 +504,17 @@ class SharedPoll:
             member.left.set_result(None)
 
     async def _run(self) -> None:
-        next_poll = time.monotonic()  # the interval, plus any Retry-After, from the last poll
         try:
-            while True:
+            while self.members:
+                if (wait := self._next_poll - time.monotonic()) > 0:
+                    await asyncio.sleep(wait)
+                    continue
                 sent = self.journal.now()
                 for member in [m for m in self.members if sent >= m.end]:
                     self._leave(member)
                 if not self.members:
                     return
-                if (wait := next_poll - time.monotonic()) > 0:
-                    # Wake when the next window closes, so its watch leaves on time even
-                    # during a long Retry-After
-                    closes = (min(m.end for m in self.members) - sent).total_seconds()
-                    await asyncio.sleep(min(wait, closes))
-                    continue
-                next_poll = time.monotonic() + self.source.interval
+                self._next_poll = time.monotonic() + self.source.interval
                 outcome = await _poll_once(self.source, self.fetcher)
                 pause = 0.0
                 for member in list(self.members):
@@ -520,7 +522,8 @@ class SharedPoll:
                     pause = max(pause, take(w, sent, outcome, self.journal, member.on_new))
                     if w.done:
                         self._leave(member)
-                next_poll += pause
+                if pause:
+                    self._next_poll = max(self._next_poll, time.monotonic()) + pause
         except Exception as error:
             # Every watch fails the way it would have polling on its own
             for member in self.members:
