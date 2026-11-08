@@ -81,6 +81,14 @@ Use `/watch_status` for the next watch window and the last successful schedule s
 `DISCORD_STATUS_CHANNEL_ID` to a separate channel to receive window reports there. Reports
 are also written to `schedules/watch.jsonl`.
 
+Window reports use **@earnings_guy** as the main external speed benchmark. The runner
+checks a shared public RSS timeline during release windows and verifies candidate results
+posts through X's public embed service. It compares the X post's creation time with the
+actual Discord alert time. The most recent comparison is in `/watch_status`, and the log
+keeps the X link, our first sighting, and when usable release text arrived. A missing result
+means no post was found in the available timeline. Benchmark requests run alongside the
+watchers and stay out of the alert path.
+
 Give the bot **Read Message History** in the releases channel. Directory mode keeps a local
 `schedules/.earnings-state.sqlite3` file so a restart resumes the original Discord message.
 Keep that file with the schedules. New entries should specify `period = "FY2027Q3"` (using

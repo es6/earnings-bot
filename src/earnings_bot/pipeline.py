@@ -228,6 +228,7 @@ class Release:
         self.caught_up = False
         self.posted = False
         self.has_text = False  # some source has delivered the release's text
+        self.first_text_at: datetime | None = None
         # Both SEC sources list the same 8-K. These make sure its exhibit is read once: one lock
         # per filing folder, and the text each folder's exhibit gave.
         self._filing_locks: dict[str, asyncio.Lock] = {}
@@ -405,6 +406,7 @@ class Release:
             return
         if not self.has_text:
             self.has_text = True
+            self.first_text_at = self.journal.now()
             self.journal.write(
                 "body",
                 ticker=self.target.ticker,
