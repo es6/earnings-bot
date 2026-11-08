@@ -24,6 +24,12 @@ class DeliveryStore:
     def __init__(self, path: Path, channel_id: int) -> None:
         self.db = sqlite3.connect(path)
         self.db.row_factory = sqlite3.Row
+        # The store commits on the event loop, once right before each alert goes out and once
+        # per schedule scan. The default journal syncs the disk at every commit, 2.4 ms here,
+        # against 0.02 ms in WAL mode. WAL survives the bot crashing; NORMAL can only lose the
+        # last commits if Windows itself goes down.
+        self.db.execute("PRAGMA journal_mode=WAL")
+        self.db.execute("PRAGMA synchronous=NORMAL")
         self.channel_id = channel_id
         self._locks: dict[str, asyncio.Lock] = {}
         self.db.execute("""
@@ -98,6 +104,13 @@ class DeliveryStore:
                 (self.channel_id, key, content, prepared.isoformat()),
             )
         return Delivery(key, content, prepared, None)
+
+    def forget(self, key: str) -> None:
+        with self.db:
+            self.db.execute(
+                "DELETE FROM alerts WHERE channel_id = ? AND release_key = ?",
+                (self.channel_id, key),
+            )
 
     def delivered(self, key: str, message_id: int) -> None:
         with self.db:

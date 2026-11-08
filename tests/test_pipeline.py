@@ -1,7 +1,9 @@
+import asyncio
 import io
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
+import aiohttp
 import pytest
 
 from earnings_bot import pipeline
@@ -25,7 +27,7 @@ from earnings_bot.sources import (
     Sighting,
     Source,
 )
-from earnings_bot.summary import Summarizer, Summary
+from earnings_bot.summary import Summarizer, Summary, SummaryError
 from tests.fakes import RoutedFetcher, sec_filing_detail
 
 PDF = "https://s23.q4cdn.com/1/files/Uber-Q3-26-Earnings-Press-Release.pdf"
@@ -397,3 +399,95 @@ async def test_browser_pdf_attaches_already_verified_bytes_without_another_get()
 
     assert raw.requests == []
     assert [kind for kind, _ in poster.calls] == ["send", "attach"]
+
+
+async def test_keep_warm_pings_discord_only_while_a_window_is_open(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(pipeline, "KEEP_WARM_SECONDS", 0.01)
+    journal = Journal(io.StringIO())
+    now = journal.now()
+    windows = [(now - timedelta(minutes=1), now + timedelta(minutes=1))]
+    pings = 0
+
+    async def ping() -> None:
+        nonlocal pings
+        pings += 1
+        if pings == 2:
+            raise aiohttp.ClientConnectionError("connection dropped")
+
+    warm = asyncio.create_task(pipeline.keep_warm(ping, lambda: windows, journal))
+    try:
+        await asyncio.sleep(0.1)
+        assert pings > 3  # it kept going after a failed ping
+        windows.clear()
+        await asyncio.sleep(0.02)
+        quiet = pings
+        await asyncio.sleep(0.1)
+        assert pings == quiet
+    finally:
+        warm.cancel()
+
+
+async def test_no_estimates_are_fetched_without_a_summarizer() -> None:
+    fetch = fetcher()
+    release = Release(uber(), FakePoster(), fetch, Journal(io.StringIO()), None, "key")
+    release.add(GuessedFile(PDF), Sighting(PDF, "Uber-Q3-26-Earnings-Press-Release.pdf", PDF))
+    await release.finish()
+    await release.estimates
+
+    assert not [url for _, url, _ in fetch.requests if "earnings-calendar" in url]
+
+
+async def test_a_file_too_big_for_discord_stays_a_link(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(pipeline, "MAX_FILE_BYTES", 1000)
+    poster = FakePoster()
+    big = RoutedFetcher({".pdf": (200, b"%PDF-1.7" + bytes(1000))})
+    release = Release(uber(), poster, big, Journal(io.StringIO()), None, None)
+
+    release.add(GuessedFile(PDF), Sighting(PDF, "Uber-Q3-26-Earnings-Press-Release.pdf", PDF))
+    await release.finish()
+
+    assert [kind for kind, _ in poster.calls] == ["send"]
+    assert PDF in poster.calls[0][1]
+
+
+class FailsOnceSummarizer(FakeSummarizer):
+    async def write(
+        self, ticker: str, release: str, estimates: Estimates | None, seconds: float = 0.0
+    ) -> Summary:
+        if not self.calls:
+            self.calls.append((release, estimates))
+            raise SummaryError("Claude API error 529: Overloaded")
+        return await super().write(ticker, release, estimates, seconds)
+
+
+async def test_a_failed_summary_is_tried_again_from_the_next_source(
+    release_texts: dict[str, str],
+) -> None:
+    release_texts[IR_PAGE], release_texts[FILING] = "from the IR site", "from the 8-K"
+    poster, summarizer = FakePoster(), FailsOnceSummarizer()
+    release = Release(uber(), poster, fetcher(), Journal(io.StringIO()), summarizer, None)
+
+    release.add(Q4PressReleases("investor.uber.com"), Sighting("1700", "Results", IR_PAGE))
+    await release.finish()
+    release.add(EdgarFilings(1543151), Sighting("acc", "8-K 2.02", FILING, earnings=True))
+    await release.finish()
+
+    assert [text for text, _ in summarizer.calls] == ["from the IR site", "from the 8-K"]
+    assert [kind for kind, _ in poster.calls].count("summary") == 1
+
+
+async def test_an_alert_with_too_many_links_is_cut_to_discords_limit() -> None:
+    poster = FakePoster()
+    release = Release(uber(), poster, fetcher(), Journal(io.StringIO()), None, None)
+    feed = RssFeed("issuer", "https://issuer.example/rss")
+
+    for n in range(40):
+        url = f"https://issuer.example/news/{n}/uber-announces-third-quarter-2026-results"
+        release.add(feed, Sighting(str(n), "Results", url, earnings=True))
+    await release.finish()
+
+    longest = max(len(content) for _, content in poster.calls)
+    assert longest == pipeline.MAX_CONTENT
+    assert poster.calls[-1][1].endswith("…")

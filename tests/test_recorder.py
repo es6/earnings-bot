@@ -2,12 +2,13 @@ import asyncio
 import io
 import itertools
 import json
+import sys
 import time
 from collections import deque
 from collections.abc import Hashable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -20,12 +21,13 @@ from earnings_bot.recorder import (
     Polls,
     Target,
     Watch,
+    configure_console,
     load_plan,
     summarize,
     sync_clock,
     watch,
 )
-from earnings_bot.sources import GuessedFile, Sighting, Source
+from earnings_bot.sources import GuessedFile, Sighting, Source, published_time
 
 
 class ListSource(Source):
@@ -182,7 +184,9 @@ async def test_fetcher_doesnt_send_cookies_back() -> None:
     port = server.sockets[0].getsockname()[1]
     async with server, Fetcher("Test Person test@example.com") as fetcher:
         for _ in range(2):
-            await fetcher.request("GET", f"http://127.0.0.1:{port}/")
+            # A host name, since aiohttp's usual cookie jar ignores cookies from IP addresses
+            # anyway, and this test would pass without the fix
+            await fetcher.request("GET", f"http://localhost:{port}/")
     assert len(requests) == 2
     assert b"cookie" not in requests[1].lower()
 
@@ -582,3 +586,87 @@ async def test_fetcher_reports_how_long_a_request_waited_for_its_host(
         )
     assert first.queued < 0.05
     assert 0.15 < second.queued < 0.4
+
+
+class RateLimitedFetcher(FakeFetcher):
+    """Answers every request with 429 and a Retry-After of an hour."""
+
+    async def request(
+        self,
+        method: str,
+        url: str,
+        headers: dict[str, str] | None = None,
+        give_up_after: float | None = None,
+        urgent: bool = False,
+        *,
+        allow_redirects: bool = True,
+    ) -> Response:
+        self.sent += 1
+        return Response(url, 429, {"retry-after": "3600"}, b"", 0.01)
+
+
+async def test_a_long_retry_after_is_honored_but_doesnt_hold_the_window_open() -> None:
+    journal = Journal(io.StringIO())
+    fetcher = RateLimitedFetcher()
+    w = Watch("ABNB", ListSource())
+
+    await asyncio.wait_for(watch(w, fetcher, journal, journal.now() + timedelta(seconds=0.2)), 2)
+
+    assert fetcher.sent == 1
+
+
+async def test_a_long_retry_after_on_a_shared_feed_lets_each_window_close_on_time() -> None:
+    journal = Journal(io.StringIO())
+    fetcher = RateLimitedFetcher()
+    polls = Polls(fetcher, journal)
+    nvda, amd = Watch("NVDA", CompanyFeed("NVDA")), Watch("AMD", CompanyFeed("AMD"))
+    now = journal.now()
+
+    closed: list[str] = []
+
+    async def until_closed(w: Watch, seconds: float) -> None:
+        await polls.watch(w, now + timedelta(seconds=seconds))
+        closed.append(w.ticker)
+
+    await asyncio.wait_for(asyncio.gather(until_closed(nvda, 0.1), until_closed(amd, 0.3)), 2)
+
+    assert closed == ["NVDA", "AMD"]
+    assert fetcher.sent == 1  # nothing polled during the hour it asked for
+
+
+async def test_a_bug_in_posting_doesnt_stop_the_source_polling() -> None:
+    log = io.StringIO()
+    journal = Journal(log)
+    w = Watch("UBER", ListSource())
+    fetcher = FakeFetcher((200, "a"), (200, "a b"), (200, "a b c"))
+    handed: list[str] = []
+
+    def on_new(source: Source, item: Sighting) -> None:
+        handed.append(item.key)
+        raise RuntimeError("bug in the poster")
+
+    await watch(w, fetcher, journal, journal.now() + timedelta(seconds=0.2), on_new)
+
+    assert handed == ["b", "c"]
+    errors = [e["message"] for e in events(log) if e["event"] == "post_error"]
+    assert errors == ["RuntimeError('bug in the poster')"] * 2
+
+
+def test_console_output_cant_fail_on_characters_its_encoding_lacks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # What Windows gives Python when run-bot.ps1 sends its output to a file
+    out, err = io.BytesIO(), io.BytesIO()
+    monkeypatch.setattr(sys, "stdout", io.TextIOWrapper(out, encoding="cp1252"))
+    monkeypatch.setattr(sys, "stderr", io.TextIOWrapper(err, encoding="cp1252"))
+
+    configure_console()
+    headline = f"Lilly{chr(0x200B)} reports results"  # a zero-width space, not in cp1252
+    Journal(io.StringIO()).say(f"LLY prnewswire: NEW * {headline}")
+
+    assert headline.encode("cp1252", errors="backslashreplace") in out.getvalue()
+
+
+def test_a_timestamp_that_isnt_text_has_no_time() -> None:
+    assert published_time(cast(Any, 1793394900)) is None
+    assert published_time("2026-11-04T16:15:00-05:00") == datetime(2026, 11, 4, 21, 15, tzinfo=UTC)

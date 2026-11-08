@@ -15,8 +15,9 @@ gaps and urgent turns), the alert pipeline (links, release text, attachments) an
 scheduling on this PC. What's simulated: every server. Each request gets its answer from local
 fixtures after a made-up response time (LATENCY, times 0.8 to 1.6 at random), no CDN caches
 anything, and Discord is a fake poster that answers at once. Every release becomes available
-at one moment, R: the IR site's list and files, the newswire item, both SEC listings and the
-filing's documents. All times are seconds after R.
+at one moment, R: the IR site's list and files, the newswire item, EDGAR's latest-filings feed
+and the filing's documents. The submissions JSON lists the 8-K SUBMISSIONS_LAG seconds later,
+as it did live. All times are seconds after R.
 
 The companies come in three kinds, like the real schedule's:
 - "ir": a Q4 IR site (press releases, and files that list two PDFs) and Business Wire
@@ -71,6 +72,10 @@ LATENCY = {
     "ir_page": 0.20,
     "unknown": 0.05,
 }
+# Seconds the submissions JSON lists an 8-K after EDGAR's latest-filings feed does. Measured
+# live: 0 to 56 s for six 8-Ks on Nov 3, 2026 (48 s for AMD's), 8 and 25 s on Nov 4, 19 and 24 s
+# on Nov 5. Everything else is out at R.
+SUBMISSIONS_LAG = 20.0
 PDF_BYTES = 300_000
 WORDS = [
     "Aster",
@@ -192,8 +197,10 @@ def plan_for(
 
 def release_html(c: Company) -> str:
     paragraphs = [
-        f"{c.name} today reported results for its third quarter of fiscal 2026. Revenue was "
-        f"${1_000 + 37 * c.index:,} million, up {8 + c.index % 9} percent from a year earlier."
+        (
+            f"{c.name} today reported results for its third quarter of fiscal 2026. Revenue was "
+            f"${1_000 + 37 * c.index:,} million, up {8 + c.index % 9} percent from a year earlier."
+        )
     ] + [
         f"Paragraph {n}: management discussed demand, margins and the outlook for the fourth "
         "quarter, and repeated that these figures are made up for a local replay."
@@ -238,7 +245,8 @@ class World:
         route = self.route(url)
         delay = LATENCY[route.name] * self.rng.uniform(0.8, 1.6)
         await asyncio.sleep(delay / 2)
-        status, body = route.respond(time.monotonic() >= self.released_at)
+        lag = SUBMISSIONS_LAG if route.name == "sec_submissions" else 0.0
+        status, body = route.respond(time.monotonic() >= self.released_at + lag)
         await asyncio.sleep(delay / 2)
         return status, {"content-type": "text/html" if status == 200 else "text/plain"}, body
 

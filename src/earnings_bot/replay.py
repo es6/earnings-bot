@@ -19,7 +19,7 @@ import discord
 from earnings_bot.config import Settings
 from earnings_bot.fetch import Fetcher
 from earnings_bot.pipeline import DiscordPoster, Release
-from earnings_bot.recorder import ET, Journal, Target, load_plan, sync_clock
+from earnings_bot.recorder import ET, Journal, Target, configure_console, load_plan, sync_clock
 from earnings_bot.sources import EdgarFilings, GuessedFile, Q4PressReleases, Sighting, Source
 from earnings_bot.summary import Summarizer
 
@@ -108,6 +108,7 @@ def main() -> None:
     parser.add_argument("--edgar", help="accession number of the earnings 8-K")
     parser.add_argument("--file", action="append", default=[], help="release file URL")
     args = parser.parse_args()
+    configure_console()
 
     # Pyright can't see that BaseSettings reads its fields from the environment
     settings = Settings()  # pyright: ignore[reportCallIssue]

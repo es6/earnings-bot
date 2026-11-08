@@ -1,11 +1,12 @@
 import asyncio
 import io
+import itertools
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 
 import discord
 import pytest
@@ -27,9 +28,15 @@ class FakeMessage:
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     edited_at: datetime | None = None
     author: SimpleNamespace = field(default_factory=lambda: SimpleNamespace(id=42))
+    attachments: list[Any] = field(default_factory=list)
 
-    async def edit(self, *, content: str) -> "FakeMessage":
-        self.content = content
+    async def edit(
+        self, *, content: str | None = None, attachments: list[Any] | None = None
+    ) -> "FakeMessage":
+        if content is not None:
+            self.content = content
+        if attachments is not None:
+            self.attachments = attachments
         self.edited_at = datetime.now(UTC)
         return self
 
@@ -37,6 +44,7 @@ class FakeMessage:
 class FakeDiscord:
     def __init__(self) -> None:
         self.messages: dict[int, FakeMessage] = {}
+        self.ids = itertools.count(1)  # never reused, like Discord's
         self.nonces: dict[str, FakeMessage] = {}
         self.attempts = 0
         self.fail_before_send = False
@@ -49,7 +57,7 @@ class FakeDiscord:
             raise TimeoutError("request timed out before delivery")
         if nonce in self.nonces:
             return self.nonces[nonce]
-        message = FakeMessage(len(self.messages) + 1, content)
+        message = FakeMessage(next(self.ids), content)
         self.messages[message.id] = self.nonces[nonce] = message
         if self.lose_response:
             self.lose_response = False
@@ -57,6 +65,9 @@ class FakeDiscord:
         return message
 
     async def fetch_message(self, message_id: int) -> FakeMessage:
+        if message_id not in self.messages:
+            response = SimpleNamespace(status=404, reason="Not Found")
+            raise discord.NotFound(cast(Any, response), "Unknown Message")
         return self.messages[message_id]
 
     async def history(self, *, limit: int | None, after: datetime) -> AsyncIterator[FakeMessage]:
@@ -121,6 +132,99 @@ async def test_restart_recovers_message_accepted_before_the_id_was_saved(tmp_pat
         assert poster.resumed
         assert not store.pending()
     assert channel.attempts == 1
+
+
+async def test_an_alert_someone_deleted_is_posted_again(tmp_path: Path) -> None:
+    target = uber()
+    channel = FakeDiscord()
+    feed = RssFeed("issuer", "https://issuer.example/rss")
+    sighting = Sighting("one", "Quarterly results", "https://issuer.example/q3", earnings=True)
+    journal = Journal(io.StringIO())
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        first = Release(
+            target, channel.poster(store, target), RoutedFetcher({}), journal, None, None
+        )
+        first.add(feed, sighting)
+        await first.finish()
+        del channel.messages[1]
+
+        again = Release(
+            target, channel.poster(store, target), RoutedFetcher({}), journal, None, None
+        )
+        again.add(feed, sighting)
+        await again.finish()
+        saved = store.get(target.release_key)
+
+    assert again.posted
+    assert list(channel.messages) == [2]
+    assert saved is not None and saved.message_id == 2
+
+
+async def test_a_window_that_keeps_failing_is_reported_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def broken(*args: object) -> list[Watch]:
+        raise RuntimeError("feed parser bug")
+
+    monkeypatch.setattr(unattended, "record_target", broken)
+    fetcher = RoutedFetcher({})
+    journal = Journal(io.StringIO())
+    status: list[str] = []
+    (tmp_path / "a.toml").write_text(
+        _plan("AAA", 1, datetime.now(UTC) + timedelta(minutes=5)), encoding="utf-8"
+    )
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        runner = unattended.DirectoryWatcher(
+            tmp_path,
+            fetcher,
+            journal,
+            Releases(FakePoster, fetcher, journal, None, None),
+            store,
+            status.append,
+        )
+        for _ in range(3):  # each scan retries the window that failed
+            await runner.scan()
+            await asyncio.gather(*(w.task for w in runner.windows.values()))
+
+    assert status == ["AAA monitoring: failed and will retry: RuntimeError('feed parser bug')"]
+
+
+async def test_a_resumed_alert_doesnt_attach_a_file_it_already_has(tmp_path: Path) -> None:
+    target = uber()
+    channel = FakeDiscord()
+    alert = "Earnings alert\nTimestamp\nIssuer: <https://issuer.example/earnings>"
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        await channel.poster(store, target).send(alert)
+        channel.messages[1].attachments = [SimpleNamespace(filename="release.pdf")]
+
+        resumed = channel.poster(store, target)  # after a restart
+        await resumed.send(alert)
+        await resumed.attach("release.pdf", b"%PDF-1.7")
+
+    assert resumed.resumed
+    assert channel.messages[1].edited_at is None
+
+
+async def test_a_resumed_alert_adds_only_the_links_it_lacks(tmp_path: Path) -> None:
+    target = uber()
+    channel = FakeDiscord()
+    folder = "https://www.sec.gov/Archives/edgar/data/1543151/000154315126000040"
+    first = ["Alert", "Seen", "IR site: <https://ir.example/q3>", f"SEC 8-K: <{folder}/index.htm>"]
+    wire = "Business Wire: <https://bw.example/q3>"
+    # The other SEC source links the same filing's main document
+    later = [*first[:3], f"SEC 8-K: <{folder}/uber-20261104.htm>", wire]
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        await channel.poster(store, target).send("\n".join(first))
+        resumed = channel.poster(store, target)  # after a restart
+        await resumed.send("\n".join(first))
+        await resumed.edit("\n".join(later))
+
+    assert channel.messages[1].content.splitlines() == [*first, wire]
+
+
+def test_the_store_commits_without_syncing_the_disk_each_time(tmp_path: Path) -> None:
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        assert store.db.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
 
 
 def _plan(ticker: str, cik: int, when: datetime) -> str:
@@ -235,3 +339,74 @@ async def test_a_twenty_release_burst_keeps_one_message_per_release_after_restar
     assert len(channel.messages) == 20
     assert channel.attempts == 20
     assert all("https://wire.example" in message.content for message in channel.messages.values())
+
+
+async def test_two_schedules_defining_one_release_use_the_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    started: list[str] = []
+
+    async def watch(target: Target, *args: object) -> list[Watch]:
+        started.append(target.ticker)
+        await asyncio.Event().wait()
+        return []
+
+    monkeypatch.setattr(unattended, "record_target", watch)
+    fetcher = RoutedFetcher({})
+    journal = Journal(io.StringIO())
+    when = datetime.now(UTC) + timedelta(hours=1)
+    # Same CIK and day, so the same release, under two tickers
+    (tmp_path / "a.toml").write_text(_plan("GOOGL", 1652044, when), encoding="utf-8")
+    (tmp_path / "b.toml").write_text(_plan("GOOG", 1652044, when), encoding="utf-8")
+    status: list[str] = []
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        runner = unattended.DirectoryWatcher(
+            tmp_path,
+            fetcher,
+            journal,
+            Releases(FakePoster, fetcher, journal, None, None),
+            store,
+            status.append,
+        )
+        try:
+            await runner.scan()
+            await asyncio.sleep(0)
+        finally:
+            for window in runner.windows.values():
+                window.task.cancel()
+            await asyncio.gather(
+                *(window.task for window in runner.windows.values()), return_exceptions=True
+            )
+
+    assert started == ["GOOGL"]
+    assert status[-1].endswith("b.toml also defines GOOG. Using the first schedule.")
+
+
+async def test_a_finished_window_isnt_watched_again_after_a_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    started: list[str] = []
+
+    async def watch(target: Target, *args: object) -> list[Watch]:
+        started.append(target.ticker)
+        return []
+
+    monkeypatch.setattr(unattended, "record_target", watch)
+    fetcher = RoutedFetcher({})
+    journal = Journal(io.StringIO())
+    when = datetime.now(UTC) + timedelta(minutes=5)
+    (tmp_path / "a.toml").write_text(_plan("AAA", 1, when), encoding="utf-8")
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        for _ in range(2):  # the second watcher is the bot after a restart
+            runner = unattended.DirectoryWatcher(
+                tmp_path,
+                fetcher,
+                journal,
+                Releases(FakePoster, fetcher, journal, None, None),
+                store,
+                lambda message: None,
+            )
+            await runner.scan()
+            await asyncio.gather(*(w.task for w in runner.windows.values()))
+
+    assert started == ["AAA"]

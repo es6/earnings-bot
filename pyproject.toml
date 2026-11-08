@@ -40,8 +40,14 @@ line-length = 100
 
 [tool.ruff.lint]
 # E/W: style, F: pyflakes, I: import order, B: bugbear, UP: modern syntax,
-# SIM: simplifications, ASYNC: asyncio pitfalls, RUF: ruff-specific
-select = ["E", "W", "F", "I", "B", "UP", "SIM", "ASYNC", "RUF"]
+# SIM: simplifications, ASYNC: asyncio pitfalls, RUF: ruff-specific, C4: comprehensions,
+# PIE/RET/FLY/FURB: needless or dated constructs, PERF: slow loops, PTH: pathlib,
+# LOG/G: logging calls, PL: pylint's errors and warnings, PGH: blanket ignores,
+# ISC: implicit string concatenation
+select = [
+    "E", "W", "F", "I", "B", "UP", "SIM", "ASYNC", "RUF",
+    "C4", "PIE", "RET", "FLY", "FURB", "PERF", "PTH", "LOG", "G", "PLE", "PLW", "PGH", "ISC",
+]
 
 [tool.pyright]
 include = ["src", "tests"]

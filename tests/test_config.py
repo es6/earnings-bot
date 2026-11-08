@@ -39,3 +39,14 @@ def test_missing_token_is_an_error(monkeypatch: pytest.MonkeyPatch) -> None:
 
     with pytest.raises(ValidationError):
         load_settings()
+
+
+def test_sec_user_agent_needs_a_contact_email(monkeypatch: pytest.MonkeyPatch) -> None:
+    # SEC answers 403 "Undeclared Automated Tool" to requests without one
+    monkeypatch.setenv("DISCORD_TOKEN", "not-a-real-token")
+    monkeypatch.setenv("SEC_USER_AGENT", "Jane Doe jane@example.com")
+    assert load_settings().sec_user_agent == "Jane Doe jane@example.com"
+
+    monkeypatch.setenv("SEC_USER_AGENT", "earnings-bot")
+    with pytest.raises(ValidationError):
+        load_settings()

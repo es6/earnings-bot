@@ -1,5 +1,6 @@
 """Getting the full text of a release, wherever it was first seen, for the summary."""
 
+import asyncio
 import json
 import re
 from html.parser import HTMLParser
@@ -17,7 +18,7 @@ from earnings_bot.sources import (
     RssFeed,
     Sighting,
     Source,
-    _bust_cache,
+    bust_cache,
 )
 
 # Shorter than any real earnings release, so error pages and teasers don't count
@@ -72,8 +73,8 @@ def html_to_text(html: str) -> str:
     parser = _TextParser()
     parser.feed(html)
     lines = []
-    for line in "".join(parser.parts).splitlines():
-        line = re.sub(r"\s+", " ", line).strip().strip("|").strip()
+    for raw in "".join(parser.parts).splitlines():
+        line = re.sub(r"\s+", " ", raw).strip().strip("|").strip()
         line = re.sub(r"(?:\s*\|\s*){2,}", " | ", line)  # empty cells
         if line:
             lines.append(line)
@@ -91,7 +92,9 @@ def pick_exhibit(files: list[dict[str, str]], primary: str) -> str | None:
         and "index" not in f["name"]
         and not re.fullmatch(r"R\d+\.htm", f["name"])
     ]
-    named = [f for f in pages if re.search(r"ex-?99|99-?1|press|release|earn", f["name"], re.I)]
+    named = [
+        f for f in pages if re.search(r"ex-?99|99-?1|press|release|earn", f["name"], re.IGNORECASE)
+    ]
 
     def size(f: dict[str, str]) -> int:
         return int(f["size"]) if str(f.get("size", "")).isdigit() else 0
@@ -111,7 +114,7 @@ async def _get_text(fetcher: Fetcher, url: str) -> str | None:
 async def _broadcom_body(fetcher: Fetcher, sighting: Sighting) -> str | None:
     # An ID Broadcom doesn't know yet still answers 200, with a stub that has no "body". This is
     # busted like the listing, in case Cloudflare kept that stub.
-    url = _bust_cache(BROADCOM_RELEASE.format(path=sighting.details["path"]))
+    url = bust_cache(BROADCOM_RELEASE.format(path=sighting.details["path"]))
     page = await _get_text(fetcher, url)
     release = json.loads(page) if page else None
     body = release.get("body") if isinstance(release, dict) else None
@@ -119,12 +122,17 @@ async def _broadcom_body(fetcher: Fetcher, sighting: Sighting) -> str | None:
 
 
 async def _q4_body(fetcher: Fetcher, source: Q4PressReleases, release_id: str) -> str | None:
-    body = await _get_text(fetcher, source.url(with_bodies=True))
-    if body is None:
-        return None
-    for release in json.loads(body)["GetPressReleaseListResult"]:
-        if str(release["PressReleaseId"]) == release_id:
-            return release.get("Body") or None
+    # The release that just turned up is nearly always the newest, so ask for it alone first:
+    # Uber's list of five came to 459 KB and 0.76 s, its newest alone to 10 KB and 0.2 s. Each
+    # length is its own copy on Q4's CDN, so if that copy is a few seconds too old to have the
+    # release, the normal list is a second chance.
+    for page_size in (1, source.page_size):
+        page = await _get_text(fetcher, source.bodies_url(page_size))
+        if page is None:
+            continue
+        for release in json.loads(page)["GetPressReleaseListResult"]:
+            if str(release["PressReleaseId"]) == release_id:
+                return release.get("Body") or None
     return None
 
 
@@ -225,5 +233,7 @@ async def release_text(fetcher: Fetcher, source: Source, sighting: Sighting) -> 
             return None
     except (aiohttp.ClientError, TimeoutError, ValueError, KeyError, TypeError):
         return None
-    text = html_to_text(html) if html else ""
+    # Parsing an 8-K exhibit takes about 30 ms of pure Python. In a thread, the event loop gets
+    # the interpreter back every few milliseconds, so other windows' polls don't wait on it.
+    text = await asyncio.to_thread(html_to_text, html) if html else ""
     return text if len(text) >= MIN_RELEASE_CHARS else None

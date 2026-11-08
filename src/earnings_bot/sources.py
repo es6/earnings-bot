@@ -59,7 +59,7 @@ def looks_like_earnings(headline: str) -> bool:
     return bool(_EARNINGS.search(headline)) and not _NOT_EARNINGS.search(headline)
 
 
-def _bust_cache(url: str) -> str:
+def bust_cache(url: str) -> str:
     # A query parameter the CDN hasn't seen before makes it fetch a fresh copy
     return f"{url}{'&' if '?' in url else '?'}_={time.time_ns()}"
 
@@ -68,7 +68,8 @@ def published_time(stamp: str | None) -> datetime | None:
     """A source's timestamp as a moment in time, or None when it doesn't say which time zone
     it's in. RSS and HTTP dates and ISO times with an offset or Z qualify. Q4's site-local
     "08/05/2026 06:55:00" doesn't."""
-    if not stamp:
+    # Stamps come straight from feeds' JSON, which could hold a number or null
+    if not isinstance(stamp, str) or not stamp:
         return None
     try:
         moment = datetime.fromisoformat(stamp.strip())
@@ -162,15 +163,15 @@ class Q4PressReleases(Source):
         self.clock = clock
         self._asked: list[float] | None = None  # when each longer list was last asked for
 
-    def url(self, with_bodies: bool = False) -> str:
-        if with_bodies:
-            # Each release comes with its full HTML, for the summary
-            path = self._path(self.page_size).replace("bodyType=0", "bodyType=1")
-        else:
-            path = self._path(self._next_page_size())
+    def url(self) -> str:
         # Q4's CDN ignores the buster, but Palantir's own CDN in front of it caches for an hour
         # and doesn't
-        return _bust_cache(f"https://{self.host}{path}")
+        return bust_cache(f"https://{self.host}{self._path(self._next_page_size())}")
+
+    def bodies_url(self, page_size: int) -> str:
+        """The newest `page_size` releases, each with its full HTML, for the summary."""
+        path = self._path(page_size).replace("bodyType=0", "bodyType=1")
+        return bust_cache(f"https://{self.host}{path}")
 
     def _path(self, page_size: int) -> str:
         return _Q4_PRESS.replace("pageSize=5", f"pageSize={page_size}")
@@ -208,13 +209,16 @@ class Q4FinancialReports(Source):
     """The files a Q4 IR site lists for each quarter: release, slides, supplemental data."""
 
     name = "q4_files"
-    interval = 5.0  # shares the IR host's one request a second with the press release list
+    # It shares the IR host's one request a second with the press release list, and each poll
+    # takes a turn from it. Q4's CDN keeps this feed for 10 s whatever we send, so asking more
+    # often than that only gets the same copy again.
+    interval = Q4_REFRESH_SECONDS
 
     def __init__(self, host: str) -> None:
         self.host = host
 
     def url(self) -> str:
-        return _bust_cache(f"https://{self.host}{_Q4_REPORTS}")
+        return bust_cache(f"https://{self.host}{_Q4_REPORTS}")
 
     def parse(self, response: Response) -> list[Sighting]:
         return [
@@ -236,7 +240,12 @@ class EdgarFilings(Source):
     """A company's latest SEC filings. Earnings 8-Ks report item 2.02."""
 
     name = "edgar"
-    interval = 1.0
+    # A backup: it listed every 8-K measured live 0 to 56 s after EDGAR's latest-filings feed
+    # (EdgarLatest). All SEC polls share 8 requests a second, so on a busy evening each poll of
+    # this one is a poll the faster feed doesn't get. In a replay of 20 releases at once,
+    # asking every 3 s instead of every second brought the slowest SEC sighting from 7.4 s to
+    # 6.0 s, and the slowest 8-K text from 7.6 s to 5.7 s.
+    interval = 3.0
 
     def __init__(self, cik: int, limit: int = 20) -> None:
         self.cik = cik
@@ -268,6 +277,7 @@ class EdgarLatest(EdgarFilings):
     2026-11-03 (48 s for AMD's earnings 8-K)."""
 
     name = "edgar_latest"
+    interval = 1.0
 
     def url(self) -> str:
         return (
@@ -323,7 +333,7 @@ class RssFeed(Source):
         return (type(self).__name__, self.name, self.feed_url, self.bust_cache)
 
     def url(self) -> str:
-        return _bust_cache(self.feed_url) if self.bust_cache else self.feed_url
+        return bust_cache(self.feed_url) if self.bust_cache else self.feed_url
 
     def parse(self, response: Response) -> list[Sighting]:
         try:
@@ -418,7 +428,7 @@ class GuessedFile(Source):
     def url(self) -> str:
         # Some sites (Apple's newsroom) cache a 404 for minutes, which would hide the page after
         # it goes up. The file CDN doesn't, but busting costs nothing until the file exists.
-        return _bust_cache(self.file_url)
+        return bust_cache(self.file_url)
 
     def parse(self, response: Response) -> list[Sighting]:
         if response.status != 200:
@@ -492,7 +502,7 @@ class BroadcomNewsroom(Source):
         return self.name
 
     def url(self) -> str:
-        return _bust_cache(BROADCOM_NEWSROOM)
+        return bust_cache(BROADCOM_NEWSROOM)
 
     def parse(self, response: Response) -> list[Sighting]:
         releases = json.loads(response.body)

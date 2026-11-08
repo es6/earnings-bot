@@ -91,7 +91,7 @@ What this tells us:
      requests to it took more than 10 seconds, while the submissions JSON never failed. Slow
      answers do come (after 7 and 12 seconds in a test that evening, against a median of 0.09
      seconds), and asking again is quicker. So every poll gives up after 3 seconds and the next
-     one goes out at once.
+     one goes out at once. As a backup it's polled every 3 s, the feed every second.
 
    New 8-Ks reached the feed 19 to 35 seconds after SEC accepted them (15 filings on Nov 3;
    HubSpot's and FICO's took 28 and 35 seconds on Nov 4).
@@ -146,9 +146,9 @@ What this tells us:
      McDonald's origin sometimes takes 11 to 16 s to answer. Polls still give up after 3 s,
      and the summary counts timeouts apart from other errors so that stays visible.
 
-   These stay out, by the owner's decision: Yahoo, Home Depot, Tesla's deck (it would need a
-   different User-Agent), McDonald's PDFs, any scripted browser, and any way around a site
-   that blocks us.
+   Sites that block the default HTTP client, such as Home Depot, McDonald's PDFs and Tesla's
+   deck, are read through the [IR trial](browser-ir.md) instead. Yahoo stays out because its
+   feed host's robots.txt disallows everything and its terms forbid automated collection.
 6. **Later:** adapters for other IR platforms.
 
 ### IR platforms
@@ -461,6 +461,11 @@ What it tells us:
   release by (ticker, fiscal period) and only add what's missing, such as more files.
 - Posting happens in stages: an alert with a link within seconds, then files as they appear,
   then the summary.
+- **The connection to Discord stays open while a window is open.** discord.py's HTTP client
+  closes a connection after 15 s idle, and opening a new one took 86 to 175 ms from the owner's
+  PC on Nov 7, against 24 ms on an open one, a third of the 0.2 to 0.4 s from detection to a
+  visible alert in the live runs. So during a window the bot reads the channel every 10 s, and
+  the alert goes out on a connection that's already open.
 - Each step logs two times after the first sighting. `live_seconds` comes from Discord's own
   timestamp on the message or edit, which is when people could see it, and that timestamp is
   logged too, as `visible`. `seconds` is when Discord's reply reached the bot. They differ when
@@ -654,6 +659,18 @@ times simulated; a second seed agreed, and main's own code matched the "before" 
 - PR Newswire's article downloads hold up its feed polls, since they share its one request a
   second: the feed waited up to 5 s while six articles downloaded, with or without SEC.
 
+On Nov 7 the replay started listing an 8-K in the submissions JSON 20 s after the
+latest-filings feed (`SUBMISSIONS_LAG`), as live runs measured, rather than at the same moment.
+That showed the backup costing the feed half of SEC's turns. Polling the submissions JSON every
+3 s instead of every second, and Q4's reports feed every 10.5 s instead of 5 (its CDN copy lasts
+10 s anyway), gave in two seeds (seconds after R, median / p95 / worst):
+
+| | Before | After |
+|---|---|---|
+| First seen on SEC | 4.02–4.32 / 6.79–7.04 / 7.21–7.35 | 4.04–4.28 / 5.49–5.68 / 5.83–5.96 |
+| Release text, SEC-only companies | 4.70–5.03 / 7.27–7.55 / 7.27–7.55 | 4.09–4.20 / 5.66–5.70 / 5.66–5.70 |
+| First seen on IR | 0.26–0.28 / 0.33 / 0.33 | 0.21–0.28 / 0.27–0.31 / 0.27–0.31 |
+
 ## Posting and summaries
 
 One Discord message per release, edited as more arrives:
@@ -715,8 +732,8 @@ one-off window by hand.
 ### On the owner's PC
 
 - **It starts itself.** A Task Scheduler task runs `scripts/run-bot.ps1` when Windows starts.
-  The script loops: update if asked to, run the bot, and if the bot exits, wait 30 seconds and
-  start it again. Task Scheduler restarts the script itself if that dies. Running the task "when
+  The script loops: update if asked to, run the bot, and if the bot exits, wait 15 seconds and
+  start it again. Its log in `recordings/` is UTF-8. Task Scheduler restarts the script itself if that dies. Running the task "when
   Windows starts" rather than "at log on" means it comes back after an overnight update restart
   without anyone logging in. Windows asks the owner for their password once, when the task is
   saved.
@@ -815,7 +832,10 @@ This starts after the Nov 2–4 runs, whose results feed into it.
 | 2026-11-04 | Every poll gives up after 3 seconds and the next goes out at once. Other requests, such as file downloads, keep the 10-second limit |
 | 2026-11-05 | The fetcher keeps no cookies, so each request stands alone. Sending back cloudflare.com's cookies got a 500 every time |
 | 2026-11-05 | A file a feed lists but answers 404 gets tried again every 30 s until the window closes |
-| 2026-11-06 | Q4's CDN ignores cache-busters now, so Q4 press release polls take turns with five longer lists, each once its 10 s copy has expired. The site gets no extra requests, and Q4's servers about one every 2 s. Faking headers or a browser's identity stays out |
-| 2026-11-06 | New sources go on trial first: recorded on release days, but posted only when the schedule's `[target.trial]` table says `post = true`. On trial now: Broadcom's newsroom JSON, GlobeNewswire's earnings RSS (plain and busted), PR Newswire's Semiconductors feed, HubSpot's press release feed, and release pages for CrowdStrike (FinancialContent), McDonald's (MediaRoom) and Airbnb (its newsroom). Broadcom is matched on PR Newswire as "Broadcom Inc". Yahoo, Home Depot, Tesla's deck, McDonald's PDFs, scripted browsers and any way around a block stay out, and every site gets the same honest User-Agent |
+| 2026-11-06 | Q4's CDN ignores cache-busters now, so Q4 press release polls take turns with five longer lists, each once its 10 s copy has expired. The site gets no extra requests, and Q4's servers about one every 2 s |
+| 2026-11-06 | New sources go on trial first: recorded on release days, but posted only when the schedule's `[target.trial]` table says `post = true`. On trial now: Broadcom's newsroom JSON, GlobeNewswire's earnings RSS (plain and busted), PR Newswire's Semiconductors feed, HubSpot's press release feed, and release pages for CrowdStrike (FinancialContent), McDonald's (MediaRoom) and Airbnb (its newsroom). Broadcom is matched on PR Newswire as "Broadcom Inc" |
 | 2026-11-06 | Overlapping windows share one poll of each feed. Fetching a release's text takes the host's next turn ahead of polls, keeping the host's gap. A late start catches up on earnings items stamped inside the window, posted as already out and not counted as a latency measurement |
 | 2026-11-06 | www.sec.gov and data.sec.gov wait in one queue at 8 requests a second together, filings and exhibits included, since SEC's limit of 10 a second covers everything we send it. Before, each host had its own queue, so a busy evening could send 16 a second. A local replay of 20 releases at once (`tests/burst_replay.py`) checks the limit and what it costs |
+| 2026-11-07 | Keep the connection to Discord open during windows with a cheap request every 10 s, since opening one costs 60 to 150 ms more at the moment the alert goes out |
+| 2026-11-07 | Poll the submissions JSON every 3 s, as the backup it is, and Q4's reports feed every 10.5 s, its CDN copy's lifetime. EDGAR's latest-filings feed gets the SEC turns that frees |
+| 2026-11-07 | Keep the desktop Chrome IR trial and Tesla's deck User-Agent, and use them for sites that block the default client. It's public information either way |
