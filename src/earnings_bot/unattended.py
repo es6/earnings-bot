@@ -17,6 +17,7 @@ from earnings_bot.calendar import Calendar
 from earnings_bot.date_discovery import DateDiscovery
 from earnings_bot.delivery import DeliveryStore, retry_delivery
 from earnings_bot.fetch import Fetcher
+from earnings_bot.issuers import Issuers
 from earnings_bot.pipeline import DiscordPoster, DurableDiscordPoster, Releases, keep_warm
 from earnings_bot.recorder import ET, Journal, Plan, Polls, Target, Watch, record_target
 from earnings_bot.source_audit import audit_sources
@@ -51,6 +52,7 @@ class DirectoryWatcher:
         store: DeliveryStore,
         status: Callable[[str], None],
         benchmark: EarningsBenchmark | None = None,
+        fmp_api_key: str | None = None,
     ) -> None:
         self.directory = directory
         self.fetcher = fetcher
@@ -60,7 +62,10 @@ class DirectoryWatcher:
         self.store = store
         self.calendar = Calendar(store)
         self.planned: dict[str, Target] = {}
-        self.dates = DateDiscovery(self.calendar, fetcher, journal.now, self.busy, journal.say)
+        self.dates = DateDiscovery(
+            self.calendar, fetcher, journal.now, self.busy, journal.say, fmp_api_key
+        )
+        self.issuers = Issuers(fetcher)
         self.status = status
         self.benchmark = benchmark
         self.latest_benchmark: str | None = None
@@ -424,7 +429,7 @@ async def watch_directory(
             )
             benchmark = EarningsBenchmark(fetcher, journal.now)
             watcher = DirectoryWatcher(
-                directory, fetcher, journal, releases, store, status, benchmark
+                directory, fetcher, journal, releases, store, status, benchmark, fmp_api_key
             )
             if isinstance(channel, discord.abc.GuildChannel | discord.Thread):
                 watcher.guild_id = channel.guild.id

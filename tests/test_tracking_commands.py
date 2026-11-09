@@ -19,14 +19,16 @@ from earnings_bot.calendar import describe
 from earnings_bot.clock import TrustedClock
 from earnings_bot.delivery import DeliveryStore
 from earnings_bot.fetch import Response
-from earnings_bot.known import known_companies, to_target
+from earnings_bot.known import KnownCompany, known_companies, to_target
 from earnings_bot.pipeline import Releases
 from earnings_bot.recorder import ET, Journal
+from earnings_bot.sources import PR_NEWSWIRE_EARNINGS
 from earnings_bot.track_progress import TrackProgress
 from earnings_bot.tracking_commands import OFFLINE, TrackingCommands
 from earnings_bot.unattended import DirectoryWatcher
 from tests.burst_replay import LocalClock
 from tests.fakes import RoutedFetcher
+from tests.sec_data import LCID_CIK, LCID_ROUTE, LCID_SUBMISSIONS, sec_routes
 from tests.test_pipeline import FakePoster
 from tests.test_unattended import FakeDiscord
 
@@ -51,34 +53,52 @@ async def call(
     user: int = 1,
     admin: bool = False,
     guild: int = GUILD,
+    events: list[str] | None = None,
     **options: str | None,
 ) -> str:
-    """Runs a command handler as one server member and returns its reply."""
+    """Runs a command handler as one server member and returns its one reply, sent at once or
+    after deferring. `events` records "defer" and "reply" in order."""
     replies: list[str] = []
+    events = [] if events is None else events
 
     async def send_message(content: str, *, ephemeral: bool = False) -> None:
         assert ephemeral, "calendar replies are only for the member who asked"
+        assert "defer" not in events, "Discord refuses a second response"
+        events.append("reply")
+        replies.append(content)
+
+    async def defer(*, ephemeral: bool = False, thinking: bool = False) -> None:
+        assert ephemeral and thinking, "only the member who asked sees the bot thinking"
+        assert not events, "Discord refuses a second response"
+        events.append("defer")
+
+    async def follow_up(content: str, *, ephemeral: bool = False) -> None:
+        assert ephemeral, "calendar replies are only for the member who asked"
+        assert "defer" in events, "a follow-up needs a deferred response"
+        events.append("reply")
         replies.append(content)
 
     interaction = SimpleNamespace(
         guild_id=guild,
         user=SimpleNamespace(id=user),
         permissions=discord.Permissions(manage_guild=admin),
-        response=SimpleNamespace(send_message=send_message),
+        response=SimpleNamespace(send_message=send_message, defer=defer),
+        followup=SimpleNamespace(send=follow_up),
     )
     await handler(cast(discord.Interaction, interaction), *args, **options)
     [reply] = replies
     return reply
 
 
-async def never_audit(ticker: str, when: datetime) -> str:
+async def never_audit(ticker: str, company: KnownCompany, when: datetime) -> str:
     raise AssertionError("these tests don't run the scorecard's source audit")
 
 
 @pytest.fixture
 def watcher(tmp_path: Path) -> Iterator[DirectoryWatcher]:
-    """A directory watcher with no schedule files, as the bot builds it, at a fixed time."""
-    fetcher = RoutedFetcher({})
+    """A directory watcher with no schedule files, as the bot builds it, at a fixed time. SEC
+    knows Lucid, which isn't in the catalog."""
+    fetcher = RoutedFetcher(sec_routes())
     journal = Journal(io.StringIO(), FixedClock(NOW))
     with (
         DeliveryStore(tmp_path / "state.db", 7) as store,
@@ -142,13 +162,91 @@ async def test_track_adds_a_catalog_ticker_once_and_wakes_the_calendar(
     assert tracked(watcher) == ["NVDA"]
 
 
-async def test_a_ticker_outside_the_catalog_is_refused(
-    watcher: DirectoryWatcher, commands: TrackingCommands
+class LoggedFetcher(RoutedFetcher):
+    """Records each request in `events`, to put it in order with the command's responses."""
+
+    def __init__(self, routes: dict[str, tuple[int, bytes]], events: list[str]) -> None:
+        super().__init__(routes)
+        self.events = events
+
+    async def request(
+        self,
+        method: str,
+        url: str,
+        headers: dict[str, str] | None = None,
+        give_up_after: float | None = None,
+        urgent: bool = False,
+        *,
+        allow_redirects: bool = True,
+    ) -> Response:
+        self.events.append("request")
+        return await super().request(
+            method, url, headers, give_up_after, urgent, allow_redirects=allow_redirects
+        )
+
+
+async def test_any_ticker_sec_lists_is_tracked_with_what_sec_says_about_it(
+    watcher: DirectoryWatcher, commands: TrackingCommands, tmp_path: Path
 ) -> None:
-    assert await call(commands.track, "zzzz") == "ZZZZ is outside the current ticker catalog."
-    assert await call(commands.track, "  ") == "That symbol is outside the current ticker catalog."
+    events: list[str] = []
+    watcher.issuers.fetcher = LoggedFetcher(sec_routes(), events)
+
+    reply = await call(commands.track, "lcid", events=events)
+
+    assert reply == "Tracking **LCID**. Awaiting a confirmed date. Progress appears in <#99>."
+    # Deferred before SEC is asked, since Discord gives up on a reply after 3 seconds
+    assert events == ["defer", "request", "request", "reply"]
+    [row] = watcher.calendar.entries()
+    assert (row.ticker, row.cik) == ("LCID", LCID_CIK)
+    assert row.company.names == ["Lucid Group", "NASDAQ: LCID", "NYSE: LCID"]
+    assert (row.company.release_time, row.company.fiscal_year_end) == ("16:05", "1231")
+    assert watcher.dates.changed.is_set()
+
+    # A repeat uses the saved facts without asking SEC again
+    events.clear()
+    assert (await call(commands.track, "LCID", user=2, events=events)).startswith(
+        "Already tracking **LCID**."
+    )
+    assert events == ["defer", "reply"]
+
+    # The facts are saved with the calendar, so a restart doesn't need SEC either
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        [restarted] = tracking_calendar.Calendar(store).entries()
+    assert restarted == row
+
+
+@pytest.mark.parametrize(
+    ("typed", "refusal"),
+    [
+        ("zzzz", "ZZZZ isn't on SEC's list of company tickers."),
+        ("  ", "Enter a ticker symbol, such as NVDA."),
+        ("NV DA", "Enter a ticker symbol, such as NVDA."),
+    ],
+)
+async def test_a_ticker_sec_doesnt_list_is_refused(
+    watcher: DirectoryWatcher, commands: TrackingCommands, typed: str, refusal: str
+) -> None:
+    assert await call(commands.track, typed) == refusal
     assert tracked(watcher) == []
     assert not watcher.dates.changed.is_set()
+    assert watcher.store.db.execute("SELECT count(*) FROM tracking_adds").fetchone()[0] == 0
+
+
+async def test_when_sec_doesnt_answer_nothing_is_saved_and_a_retry_works(
+    watcher: DirectoryWatcher, commands: TrackingCommands
+) -> None:
+    routes = sec_routes()
+    routes[LCID_ROUTE] = (503, b"")
+    watcher.issuers.fetcher = RoutedFetcher(routes)
+
+    reply = await call(commands.track, "LCID")
+
+    assert reply == "SEC's company data didn't load. Try again in a minute."
+    assert tracked(watcher) == []
+    assert watcher.store.db.execute("SELECT count(*) FROM tracking_adds").fetchone()[0] == 0
+
+    routes[LCID_ROUTE] = (200, json.dumps(LCID_SUBMISSIONS).encode())
+    assert (await call(commands.track, "LCID")).startswith("Tracking **LCID**")
 
 
 @pytest.mark.parametrize(
@@ -210,6 +308,26 @@ async def test_an_admin_override_pins_the_release_and_can_move_it(
     assert row.target and row.target.expected == datetime(2026, 11, 17, 16, 25, tzinfo=ET)
 
 
+async def test_an_admin_can_pin_a_ticker_outside_the_catalog(
+    watcher: DirectoryWatcher, commands: TrackingCommands
+) -> None:
+    reply = await call(
+        commands.track, "LCID", admin=True, when="2026-11-12T16:05", period="FY2026Q3"
+    )
+
+    [row] = watcher.calendar.entries()
+    assert row.target is not None
+    assert reply == describe(row.target, "Manual override") + " Progress appears in <#99>."
+    # Its wire isn't known, so both are watched, along with EDGAR
+    assert row.target.newswire == row.target.prnewswire == row.company.names
+    assert [s.name for s in row.target.sources()] == [
+        "edgar",
+        "edgar_latest",
+        "businesswire_busted",
+        "prnewswire",
+    ]
+
+
 async def test_the_daily_limit_and_the_calendar_cap_are_explained(
     watcher: DirectoryWatcher, commands: TrackingCommands, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -223,7 +341,7 @@ async def test_the_daily_limit_and_the_calendar_cap_are_explained(
     # The limit is per member
     assert (await call(commands.track, "NVDA", user=2)).startswith("Tracking **NVDA**")
 
-    # The catalog has fewer companies than the real cap, so lower it to reach it
+    # Lower the cap rather than track 50 companies
     monkeypatch.setattr(tracking_calendar, "MAX_TRACKED", 6)
     assert await call(commands.track, "TSLA", user=3) == "This calendar already tracks 6 companies."
     assert len(tracked(watcher)) == 6
@@ -264,9 +382,16 @@ async def test_untrack_needs_manage_server_and_tells_the_scorecard(
     assert watcher.progress.changed.is_set()
 
     assert await call(commands.untrack, "NVDA", admin=True) == "**NVDA** was already absent."
-    assert await call(commands.untrack, "ZZZZ", admin=True) == (
-        "ZZZZ is outside the current ticker catalog."
-    )
+    assert await call(commands.untrack, "ZZZZ", admin=True) == "**ZZZZ** was already absent."
+
+    # A company from outside the catalog is removed by its ticker, without asking SEC
+    await call(commands.track, "LCID")
+    fetcher = cast(RoutedFetcher, watcher.issuers.fetcher)
+    requests = len(fetcher.requests)
+    assert await call(commands.untrack, "lcid", admin=True) == "Removed **LCID** from the calendar."
+    assert tracked(watcher) == []
+    assert watcher.progress.removed == {NVDA_CIK: "NVDA", LCID_CIK: "LCID"}
+    assert len(fetcher.requests) == requests
 
 
 def test_only_managers_see_untrack_and_every_command_is_server_only() -> None:
@@ -425,3 +550,96 @@ async def test_a_tracked_issuer_with_no_schedule_file_gets_one_alert(tmp_path: P
         assert restarted.windows == {}
         assert status == []
         assert len(channel.messages) == 1
+
+
+LUCID_RELEASE = "https://www.prnewswire.com/news-releases/lucid-q3-2026-results-302600001.html"
+
+
+def _wire_item(title: str, lead: str, link: str) -> str:
+    return (
+        f"<item><title>{title}</title><link>{link}</link><guid>{link}</guid>"
+        f"<description>{lead}</description></item>"
+    )
+
+
+class WireDay(RoutedFetcher):
+    """SEC, and PR Newswire's earnings feed, which lists Lucid's results from `released_at`
+    (time.monotonic()) on. Another company's results are listed throughout."""
+
+    def __init__(self) -> None:
+        super().__init__(sec_routes())
+        self.released_at = float("inf")
+
+    async def request(
+        self,
+        method: str,
+        url: str,
+        headers: dict[str, str] | None = None,
+        give_up_after: float | None = None,
+        urgent: bool = False,
+        *,
+        allow_redirects: bool = True,
+    ) -> Response:
+        items = [
+            _wire_item(
+                "Acme Reports Third Quarter 2026 Results",
+                "AUSTIN, Texas /PRNewswire/ -- Acme Corp (NYSE: ACME), a Lucid supplier",
+                "https://www.prnewswire.com/news-releases/acme-q3-302600000.html",
+            )
+        ]
+        if time.monotonic() >= self.released_at:
+            items.insert(
+                0,
+                _wire_item(
+                    "Lucid Announces Third Quarter 2026 Results",
+                    "NEWARK, Calif., Nov. 9, 2026 /PRNewswire/ -- Lucid (Nasdaq: LCID), maker",
+                    LUCID_RELEASE,
+                ),
+            )
+        feed = '<rss version="2.0"><channel>' + "".join(items) + "</channel></rss>"
+        self.routes[PR_NEWSWIRE_EARNINGS] = (200, feed.encode())
+        return await super().request(
+            method, url, headers, give_up_after, urgent, allow_redirects=allow_redirects
+        )
+
+
+async def test_a_ticker_outside_the_catalog_gets_its_alert_from_the_wire(
+    tmp_path: Path,
+) -> None:
+    clock = ShiftedClock()
+    clock.sync()
+    journal = Journal(io.StringIO(), clock)
+    fetcher = WireDay()
+    channel = FakeDiscord()
+    status: list[str] = []
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        releases = Releases(
+            FakePoster, fetcher, journal, None, None, lambda t: channel.poster(store, t)
+        )
+        bot = DirectoryWatcher(tmp_path, fetcher, journal, releases, store, status.append)
+        bot.guild_id = GUILD
+        # Soon enough that the window, which opens 10 minutes early, is already open
+        when = (clock.now() + timedelta(minutes=5)).astimezone(ET)
+        reply = await call(
+            TrackingCommands(lambda: bot).track,
+            "LCID",
+            admin=True,
+            when=f"{when:%Y-%m-%dT%H:%M}",
+            period="FY2026Q3",
+        )
+        assert "Manual override" in reply
+        [row] = bot.calendar.entries()
+        assert row.target is not None
+
+        # PR Newswire is polled every 2 seconds. Skip to 6 seconds before the window closes, with
+        # the results out a second in, after the first poll has seen the list without them.
+        clock.shift = row.target.window[1] - clock.now() - timedelta(seconds=6)
+        fetcher.released_at = time.monotonic() + 1
+        await bot.scan()
+        await asyncio.gather(*(window.task for window in bot.windows.values()))
+
+        [alert] = channel.messages.values()
+        assert "**$LCID earnings are out**" in alert.content
+        assert LUCID_RELEASE in alert.content
+        [report] = [line for line in status if line.startswith("LCID window closed.")]
+        assert report.startswith("LCID window closed. prnewswire first at")

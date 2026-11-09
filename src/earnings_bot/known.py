@@ -10,9 +10,10 @@ import argparse
 import json
 import sys
 import tomllib
+from calendar import monthrange
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from functools import cache
 from pathlib import Path
 from string import Formatter
@@ -47,6 +48,8 @@ class KnownCompany(BaseModel):
     evidence: str
     todo: str = ""
     checked: date
+    # SEC's MMDD, kept for companies added from SEC data so a calendar date gets its quarter
+    fiscal_year_end: str | None = None
 
 
 @cache
@@ -100,9 +103,44 @@ def guess_urls(
     return fill(company.guess, released, fiscal_year, fiscal_quarter)
 
 
-def to_target(ticker: str, expected: datetime, fiscal_year: int, fiscal_quarter: int) -> Target:
-    """A schedule entry for one release, built from what we know about the company."""
-    company = known_companies()[ticker]
+def wires(company: KnownCompany) -> tuple[list[str], list[str]]:
+    """Names to match on Business Wire and on PR Newswire. A company whose wire isn't known is
+    looked for on both."""
+    unknown = company.wire == "unknown"
+    return (
+        company.names if unknown or company.wire == "Business Wire" else [],
+        company.names if unknown or company.wire == "PR Newswire" else [],
+    )
+
+
+def fiscal_period(year_end: str, released: date) -> tuple[int, int]:
+    """The fiscal year and quarter most likely reported on `released`, for a fiscal year that
+    ends on `year_end` (SEC's MMDD). Results come out at least a week after the quarter ends, and
+    a fiscal year is named for the calendar year it ends in, as NVIDIA's FY2027 ends in January
+    2027. Quarter ends are taken as three months apart, close enough for 52-week years."""
+    month, day = int(year_end[:2]), int(year_end[2:])
+    ends = []
+    for fiscal_year in range(released.year - 1, released.year + 2):
+        for quarter in range(1, 5):
+            year, end_month = divmod(fiscal_year * 12 + month - 1 - 3 * (4 - quarter), 12)
+            end_month += 1
+            end = date(year, end_month, min(day, monthrange(year, end_month)[1]))
+            ends.append((end, fiscal_year, quarter))
+    _, fiscal_year, quarter = max(e for e in ends if e[0] <= released - timedelta(days=7))
+    return fiscal_year, quarter
+
+
+def to_target(
+    ticker: str,
+    expected: datetime,
+    fiscal_year: int,
+    fiscal_quarter: int,
+    company: KnownCompany | None = None,
+) -> Target:
+    """A schedule entry for one release, built from what we know about the company: its
+    catalog entry unless another is given."""
+    company = company or known_companies()[ticker]
+    business_wire, pr_newswire = wires(company)
     pages = fill(company.trial.pages, expected.date(), fiscal_year, fiscal_quarter)
     return Target(
         ticker=ticker,
@@ -110,9 +148,8 @@ def to_target(ticker: str, expected: datetime, fiscal_year: int, fiscal_quarter:
         cik=company.cik,
         period=f"FY{fiscal_year}Q{fiscal_quarter}",
         q4_host=company.q4_host if company.reachable else None,
-        # A company with no known wire is still matched on Business Wire, the most common one
-        newswire=company.names if company.wire in ("Business Wire", "unknown") else [],
-        prnewswire=company.names if company.wire == "PR Newswire" else [],
+        newswire=business_wire,
+        prnewswire=pr_newswire,
         rss=company.rss,
         # A guess counts as found on a 200, which a soft 404 would fake from the first poll
         guess=[]

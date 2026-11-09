@@ -10,13 +10,21 @@ import pytest
 from earnings_bot import date_discovery
 from earnings_bot.browser_sources import IRTrial
 from earnings_bot.calendar import Calendar, describe, manual_target
-from earnings_bot.date_discovery import DateDiscovery, find_date, parse_notice
+from earnings_bot.date_discovery import (
+    CALENDAR_DATE,
+    FMP_EARNINGS,
+    DateDiscovery,
+    find_date,
+    parse_notice,
+)
 from earnings_bot.delivery import DeliveryStore
 from earnings_bot.fetch import Fetcher, Response
 from earnings_bot.ir_research import IR_LISTINGS
-from earnings_bot.known import known_companies
+from earnings_bot.issuers import profile
+from earnings_bot.known import known_companies, to_target
 from earnings_bot.recorder import ET
 from tests.fakes import RoutedFetcher
+from tests.sec_data import LCID_CIK, LCID_SUBMISSIONS
 
 NOW = datetime(2026, 11, 7, 10, tzinfo=ET)
 NVIDIA_BODY = (
@@ -272,3 +280,151 @@ async def test_a_verified_browser_trial_joins_the_found_date_and_is_kept(
         assert calendar.entries() == [row]
     assert verified == ["FY2027Q3"]
     assert len(statuses) == 1
+
+
+LUCID = profile("LCID", LCID_CIK, "Lucid Group, Inc.", LCID_SUBMISSIONS, NOW.date())
+FMP_ROUTE = "financialmodelingprep.com/stable/earnings?symbol=LCID"
+
+
+def fmp_dates(*rows: tuple[str, float | None]) -> tuple[int, bytes]:
+    return 200, json.dumps(
+        [{"symbol": "LCID", "date": day, "epsActual": actual} for day, actual in rows]
+    ).encode()
+
+
+class Lucid:
+    """Lucid tracked from SEC's data, with discovery that may ask FMP."""
+
+    def __init__(self, store: DeliveryStore, fetcher: RoutedFetcher, key: str | None) -> None:
+        self.calendar = Calendar(store)
+        self.calendar.add("LCID", 1, NOW, LUCID)
+        self.now = NOW
+        self.statuses: list[str] = []
+        self.dates = DateDiscovery(
+            self.calendar, fetcher, lambda: self.now, lambda: False, self.statuses.append, key
+        )
+
+    async def check(self) -> None:
+        [row] = self.calendar.entries()
+        await self.dates._check(row)
+
+    def row(self) -> tuple[datetime | None, str | None]:
+        [row] = self.calendar.entries()
+        return (row.target.expected if row.target else None), row.evidence
+
+
+async def test_fmps_date_at_the_8k_time_sets_a_wide_window(tmp_path: Path) -> None:
+    fetcher = RoutedFetcher(
+        # Today's has been reported already, before the open
+        {FMP_ROUTE: fmp_dates(("2027-02-24", None), ("2026-11-09", None), ("2026-11-07", -3.3))}
+    )
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        lucid = Lucid(store, fetcher, "secret")
+
+        await lucid.check()
+
+        [row] = lucid.calendar.entries()
+        assert row.target is not None
+        # The soonest date still to report, at 4:05 PM from Lucid's 8-Ks, for the quarter that
+        # ended on September 30
+        assert row.target.expected == datetime(2026, 11, 9, 16, 5, tzinfo=ET)
+        assert row.target.period == "FY2026Q3"
+        assert (row.target.before_minutes, row.target.after_minutes) == (60, 90)
+        assert row.target.prnewswire == LUCID.names
+        assert row.evidence == CALENDAR_DATE
+        assert lucid.statuses == [describe(row.target, CALENDAR_DATE)]
+    # The key goes in a header, not the URL
+    [(_, url, headers)] = fetcher.requests
+    assert url == f"{FMP_EARNINGS}?symbol=LCID&limit=5"
+    assert headers == {"apikey": "secret"}
+
+
+async def test_fmp_is_asked_twice_a_day_until_its_window_passes(tmp_path: Path) -> None:
+    fetcher = RoutedFetcher({FMP_ROUTE: fmp_dates(("2026-11-09", None))})
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        lucid = Lucid(store, fetcher, "secret")
+        await lucid.check()
+        await lucid.check()
+        assert len(fetcher.requests) == 1
+
+        # After the window closes, the remembered answer is no use
+        fetcher.routes[FMP_ROUTE] = fmp_dates(("2026-11-09", -2.1), ("2027-02-24", None))
+        lucid.now = datetime(2026, 11, 9, 17, 36, tzinfo=ET)
+        await lucid.check()
+
+        assert len(fetcher.requests) == 2
+        assert lucid.row() == (datetime(2027, 2, 24, 16, 5, tzinfo=ET), CALENDAR_DATE)
+
+
+@pytest.mark.parametrize("answer", [(500, b"busy"), (200, b"<html>"), (200, b'{"error": 1}')])
+async def test_a_failed_fmp_answer_saves_nothing_and_is_asked_again(
+    tmp_path: Path, answer: tuple[int, bytes]
+) -> None:
+    fetcher = RoutedFetcher({FMP_ROUTE: answer})
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        lucid = Lucid(store, fetcher, "secret")
+
+        await lucid.check()
+        assert lucid.row() == (None, None)
+
+        fetcher.routes[FMP_ROUTE] = fmp_dates(("2026-11-09", None))
+        await lucid.check()
+        assert lucid.row() == (datetime(2026, 11, 9, 16, 5, tzinfo=ET), CALENDAR_DATE)
+
+
+async def test_a_symbol_fmps_plan_doesnt_cover_waits_for_the_next_refresh(
+    tmp_path: Path,
+) -> None:
+    fetcher = RoutedFetcher({FMP_ROUTE: (402, b"Premium Query Parameter")})
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        lucid = Lucid(store, fetcher, "secret")
+
+        await lucid.check()
+        await lucid.check()
+
+        assert lucid.row() == (None, None)
+    assert len(fetcher.requests) == 1
+
+
+async def test_an_issuers_date_beats_fmp_and_fmp_needs_a_key(tmp_path: Path) -> None:
+    fetcher = RoutedFetcher({FMP_ROUTE: fmp_dates(("2026-11-10", None))})
+    confirmed = "Issuer confirmed release time <https://ir.lucidmotors.com/notice>"
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        lucid = Lucid(store, fetcher, "secret")
+        target = to_target("LCID", datetime(2026, 11, 9, 16, 5, tzinfo=ET), 2026, 3, LUCID)
+        lucid.calendar.set_target(target, confirmed)
+
+        await lucid.check()
+
+        assert lucid.row() == (target.expected, confirmed)
+        assert fetcher.requests == []
+
+    with DeliveryStore(tmp_path / "keyless.db", 7) as store:
+        lucid = Lucid(store, fetcher, None)
+        await lucid.check()
+        assert lucid.row() == (None, None)
+    assert fetcher.requests == []
+
+
+@pytest.mark.parametrize(
+    "facts", [{"release_time": None}, {"fiscal_year_end": None}], ids=["no-time", "no-year-end"]
+)
+async def test_fmp_isnt_asked_without_a_time_or_fiscal_year_to_go_with_its_date(
+    tmp_path: Path, facts: dict[str, None]
+) -> None:
+    fetcher = RoutedFetcher({FMP_ROUTE: fmp_dates(("2026-11-09", None))})
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        calendar = Calendar(store)
+        calendar.add("LCID", 1, NOW, LUCID.model_copy(update=facts))
+        [row] = calendar.entries()
+        dates = DateDiscovery(calendar, fetcher, lambda: NOW, lambda: False, print, "secret")
+
+        await dates._check(row)
+
+        assert calendar.entries() == [row]
+    assert fetcher.requests == []
+
+
+def test_catalog_companies_have_no_fiscal_year_end_so_fmp_leaves_them_alone() -> None:
+    # Their dates come from the issuer, which an FMP guess mustn't replace
+    assert all(c.fiscal_year_end is None for c in known_companies().values())

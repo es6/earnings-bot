@@ -7,8 +7,8 @@ A Discord bot that posts company earnings the moment they're released, pulled st
 investor relations pages and SEC filings, along with a summary of the numbers and KPIs that
 matter for each company.
 
-In directory mode, `/track` adds a catalog issuer to the earnings calendar. The bot
-finds the next release date, prepares the sources, and keeps an editable Discord
+In directory mode, `/track` adds any company with a ticker on SEC's list to the
+earnings calendar. The bot finds the next release date, prepares the sources, and keeps an editable Discord
 scorecard. See the [calendar guide](docs/unattended.md) and [architecture](docs/architecture.md).
 
 ## Features

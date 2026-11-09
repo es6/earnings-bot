@@ -496,9 +496,14 @@ runs on a separate Windows desktop with a dedicated temporary profile.
 
 ## Tracking companies
 
-`/track` runs in directory mode and starts from the current [ticker catalog](../src/earnings_bot/companies.toml).
-A subscription is persistent and deduplicated by issuer CIK in the earnings channel. The catalog
-supplies the source adapters, wire names, URL patterns and typical release times. The bot checks
+`/track` runs in directory mode and accepts any ticker on SEC's list. A subscription is
+persistent and deduplicated by issuer CIK in the earnings channel. For a company in the
+[ticker catalog](../src/earnings_bot/companies.toml), the catalog supplies the source adapters,
+wire names, URL patterns and typical release times. For any other, `issuers.py` builds the same
+kind of entry from SEC's data when it's added, and the calendar saves it: the CIK, the name
+without its legal ending (when it's more than one word) and the exchange-and-ticker tag for
+wire matching, and the release time from its last four results 8-Ks. Its wire isn't known, so
+both Business Wire and PR Newswire are watched, along with EDGAR. The bot checks
 each tracked issuer for its next notice and audits the most recent actual results independently.
 A TOML schedule remains available for an operator-specified window or source configuration.
 
@@ -537,7 +542,10 @@ Broadcom's newsroom API, or a supported public listing through desktop Chrome on
 The notice must identify a future date and fiscal period. An explicit release time is used
 when available. For an approximate time, the planner uses the issuer's market-open/close
 wording and the catalog's typical time to place a wider window. A call-only notice leaves the
-ticker awaiting a date.
+ticker awaiting a date. A company outside the catalog has no issuer feed we know, so its date
+comes from FMP's earnings calendar, asked at most twice a day. FMP gives the day but not the
+time, so the window uses the 8-K time with an hour before and 90 minutes after, and the
+fiscal period follows from SEC's fiscal year end. An issuer's own date always wins over FMP's.
 
 The watcher scans for changes every three seconds. Date checks start on registration and repeat
 roughly hourly outside release windows. After a release, the subscription remains active for
@@ -724,3 +732,4 @@ onboarding, including international listings, and more live samples for source r
 | 2026-11-07 | Keep the connection to Discord open during windows with a cheap request every 10 s, since opening one costs 60 to 150 ms more at the moment the alert goes out |
 | 2026-11-07 | Poll the submissions JSON every 3 s, as the backup it is, and Q4's reports feed every 10.5 s, its CDN copy's lifetime. EDGAR's latest-filings feed gets the SEC turns that frees |
 | 2026-11-07 | The desktop Chrome IR trial and Tesla's deck User-Agent are the route for sites that block the default client. It's public information either way |
+| 2026-11-09 | `/track` takes any ticker on SEC's list, not just the catalog. Others are watched on EDGAR and both wires, matched by their exchange-and-ticker tag, with FMP's date at the time of their recent 8-Ks |

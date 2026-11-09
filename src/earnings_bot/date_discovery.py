@@ -20,13 +20,24 @@ from earnings_bot.browser import BrowserError
 from earnings_bot.calendar import Calendar, Tracked, describe, same_release
 from earnings_bot.fetch import Fetcher
 from earnings_bot.ir_research import IR_LISTINGS, issuer_links, verified_browser_trial
-from earnings_bot.known import NTH, ORD, KnownCompany, known_companies, to_target
+from earnings_bot.known import (
+    NTH,
+    ORD,
+    KnownCompany,
+    fiscal_period,
+    known_companies,
+    to_target,
+)
 from earnings_bot.recorder import ET, PollError, Target, poll
 from earnings_bot.sources import BroadcomNewsroom, Q4PressReleases, RssFeed
 from earnings_bot.text import html_to_text, release_text
 
 log = logging.getLogger(__name__)
 PT = ZoneInfo("America/Los_Angeles")
+FMP_EARNINGS = "https://financialmodelingprep.com/stable/earnings"
+CALENDAR_DATE = "FMP calendar date, time from past 8-Ks"
+CALENDAR_REFRESH = 12 * 3600  # seconds; FMP's free plan allows 250 requests a day
+MANUAL = "Manual override"
 _MONTHS = {name.lower(): i for i, name in enumerate(month_name) if name}
 _DATE = re.compile(
     r"\b(" + "|".join(_MONTHS) + r")\s+(\d{1,2})(?:st|nd|rd|th)?(?:,?\s+(20\d{2}))?\b",
@@ -134,7 +145,8 @@ def parse_notice(
     if expected is not None:
         if expected <= now:
             return None
-        return to_target(ticker, expected, int(year), quarter), "Issuer confirmed release time"
+        target = to_target(ticker, expected, int(year), quarter, company)
+        return target, "Issuer confirmed release time"
 
     # The issuer confirmed the date. Use a wider watch for an approximate time of day.
     if any(_AFTER.search(sentence) for sentence in release):
@@ -152,14 +164,18 @@ def parse_notice(
     if (mode == "after market close" and hour < 16) or (mode == "before market open" and hour >= 9):
         hour, minute = map(int, fallback.split(":"))
     expected = datetime(day.year, day.month, day.day, hour, minute, tzinfo=ET)
-    target = to_target(ticker, expected, int(year), quarter)
+    target = to_target(ticker, expected, int(year), quarter, company)
     target.before_minutes = 60
     target.after_minutes = 90
     return (target, f"Issuer date confirmed, {mode}") if target.window[1] > now else None
 
 
-async def find_date(fetcher: Fetcher, ticker: str, now: datetime) -> tuple[Target, str] | None:
-    company = known_companies()[ticker]
+async def find_date(
+    fetcher: Fetcher, ticker: str, now: datetime, company: KnownCompany | None = None
+) -> tuple[Target, str] | None:
+    """The next release from the issuer's own notice, for a catalog company unless another is
+    given."""
+    company = company or known_companies()[ticker]
     if company.q4_host and company.reachable:
         source = Q4PressReleases(company.q4_host)
         url = source.bodies_url(20)
@@ -212,6 +228,45 @@ async def find_date(fetcher: Fetcher, ticker: str, now: datetime) -> tuple[Targe
     return await _browser_date(fetcher, ticker, company, now)
 
 
+async def calendar_date(
+    fetcher: Fetcher, api_key: str, ticker: str, company: KnownCompany, now: datetime
+) -> tuple[Target, str] | None:
+    """The next release from FMP's earnings calendar, for a company with no issuer feed we
+    know. The day is FMP's, and the time comes from past 8-Ks, so the window is wide. None
+    means FMP has no date to come; ValueError means it didn't answer properly."""
+    if not (company.release_time and company.fiscal_year_end):
+        return None
+    # The key goes in a header rather than the URL, which can end up in logs
+    reply = await fetcher.request(
+        "GET", f"{FMP_EARNINGS}?symbol={ticker}&limit=5", {"apikey": api_key}, give_up_after=4
+    )
+    if reply.status == 402:  # the plan doesn't cover this symbol, such as BRK-B on the free one
+        return None
+    if reply.status != 200:
+        raise ValueError(f"FMP answered HTTP {reply.status}")
+    rows = json.loads(reply.body)
+    if not isinstance(rows, list):
+        raise ValueError("FMP sent something other than a list")
+    today = now.astimezone(ET).date()
+    days = sorted(
+        day
+        for row in rows
+        if row.get("symbol") == ticker
+        and row.get("epsActual") is None
+        and (day := date.fromisoformat(row["date"])) >= today
+    )
+    hour, minute = map(int, company.release_time.split(":"))
+    for day in days:
+        expected = datetime(day.year, day.month, day.day, hour, minute, tzinfo=ET)
+        fiscal_year, quarter = fiscal_period(company.fiscal_year_end, day)
+        target = to_target(ticker, expected, fiscal_year, quarter, company)
+        target.before_minutes = 60
+        target.after_minutes = 90
+        if target.window[1] > now:
+            return target, CALENDAR_DATE
+    return None
+
+
 async def _browser_date(
     fetcher: Fetcher, ticker: str, company: KnownCompany, now: datetime
 ) -> tuple[Target, str] | None:
@@ -246,11 +301,15 @@ class DateDiscovery:
         now: Callable[[], datetime],
         busy: Callable[[], bool],
         status: Callable[[str], None],
+        fmp_api_key: str | None = None,
     ) -> None:
         self.calendar, self.fetcher, self.now = calendar, fetcher, now
         self.busy, self.status = busy, status
+        self.fmp_api_key = fmp_api_key
         self.changed = asyncio.Event()
         self.checked: dict[int, float] = {}
+        # Each company's FMP answer and when to ask again, as time.monotonic()
+        self.calendar_dates: dict[int, tuple[float, tuple[Target, str] | None]] = {}
 
     async def run(self) -> None:
         while True:
@@ -269,16 +328,40 @@ class DateDiscovery:
             with suppress(TimeoutError):
                 await asyncio.wait_for(self.changed.wait(), timeout=60)
 
+    async def _calendar_date(self, row: Tracked, now: datetime) -> tuple[Target, str] | None:
+        if self.fmp_api_key is None:
+            return None
+        # A remembered answer counts until it's due again, unless its window has passed
+        asked = self.calendar_dates.get(row.cik)
+        if asked and time.monotonic() < asked[0] and (not asked[1] or asked[1][0].window[1] > now):
+            return asked[1]
+        try:
+            result = await calendar_date(
+                self.fetcher, self.fmp_api_key, row.ticker, row.company, now
+            )
+        except (aiohttp.ClientError, TimeoutError, ValueError, KeyError, TypeError, AttributeError):
+            return None  # asked again at the next check
+        self.calendar_dates[row.cik] = time.monotonic() + CALENDAR_REFRESH, result
+        return result
+
     async def _check(self, row: Tracked) -> None:
-        if row.ticker not in known_companies():
-            return
         now = self.now()
-        if row.evidence == "Manual override" and row.target and row.target.window[1] > now:
-            target, evidence = row.target, row.evidence
-        elif result := await find_date(self.fetcher, row.ticker, now):
+        saved = (
+            (row.target, row.evidence)
+            if row.target and row.evidence and row.target.window[1] > now
+            else None
+        )
+        # An issuer's word beats FMP's calendar, which beats nothing
+        if saved and saved[1] == MANUAL:
+            target, evidence = saved
+        elif result := await find_date(self.fetcher, row.ticker, now, row.company):
             target, evidence = result
-        elif row.target and row.evidence and row.target.window[1] > now:
-            target, evidence = row.target, row.evidence
+        elif saved and saved[1] != CALENDAR_DATE:
+            target, evidence = saved
+        elif result := await self._calendar_date(row, now):
+            target, evidence = result
+        elif saved:
+            target, evidence = saved
         else:
             return
         if self.busy() or row not in self.calendar.entries():

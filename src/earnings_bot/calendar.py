@@ -1,11 +1,11 @@
 """Persistent issuer subscriptions and the next planned release."""
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 from earnings_bot.delivery import DeliveryStore
 from earnings_bot.ir_research import IR_LISTINGS, quarter_headline
-from earnings_bot.known import known_companies, to_target
+from earnings_bot.known import KnownCompany, known_companies, to_target
 from earnings_bot.recorder import ET, Target
 
 DAILY_ADDS = 5
@@ -18,6 +18,7 @@ class Tracked:
     cik: int
     target: Target | None
     evidence: str | None
+    company: KnownCompany
 
 
 class Calendar:
@@ -31,6 +32,7 @@ class Calendar:
                 ticker TEXT NOT NULL,
                 target TEXT,
                 evidence TEXT,
+                profile TEXT,
                 PRIMARY KEY (channel, cik)
             );
             CREATE TABLE IF NOT EXISTS tracking_reviews (
@@ -46,6 +48,10 @@ class Calendar:
                 day TEXT NOT NULL
             );
         """)
+        columns = {row["name"] for row in self.db.execute("PRAGMA table_info(tracked)")}
+        if "profile" not in columns:  # a calendar saved before /track took any ticker
+            with self.db:
+                self.db.execute("ALTER TABLE tracked ADD COLUMN profile TEXT")
 
     def entries(self) -> list[Tracked]:
         return [
@@ -54,11 +60,15 @@ class Calendar:
                 row["cik"],
                 _read_target(row["target"]),
                 row["evidence"],
+                _company(row["ticker"], row["cik"], row["profile"]),
             )
             for row in self.db.execute(
                 "SELECT * FROM tracked WHERE channel = ? ORDER BY ticker", (self.channel,)
             )
         ]
+
+    def find(self, ticker: str) -> Tracked | None:
+        return next((row for row in self.entries() if row.ticker == ticker), None)
 
     def contains(self, cik: int) -> bool:
         return (
@@ -68,8 +78,12 @@ class Calendar:
             is not None
         )
 
-    def add(self, ticker: str, user_id: int, now: datetime) -> tuple[Tracked, bool]:
-        cik = company_cik(ticker)
+    def add(
+        self, ticker: str, user_id: int, now: datetime, company: KnownCompany | None = None
+    ) -> tuple[Tracked, bool]:
+        """Tracks a catalog company, or any other with its company facts given."""
+        company = company or known_companies()[ticker]
+        cik = company.cik
         entries = self.entries()
         if existing := next((row for row in entries if row.cik == cik), None):
             return existing, False
@@ -82,15 +96,17 @@ class Calendar:
         ).fetchone()[0]
         if count >= DAILY_ADDS:
             raise ValueError(f"You can add up to {DAILY_ADDS} tickers per Eastern calendar day.")
+        # The catalog's entry is read fresh each time, so only other companies' facts are saved
+        profile = None if ticker in known_companies() else company.model_dump_json()
         with self.db:
             self.db.execute(
-                "INSERT INTO tracked (channel, cik, ticker) VALUES (?, ?, ?)",
-                (self.channel, cik, ticker),
+                "INSERT INTO tracked (channel, cik, ticker, profile) VALUES (?, ?, ?, ?)",
+                (self.channel, cik, ticker, profile),
             )
             self.db.execute(
                 "INSERT INTO tracking_adds VALUES (?, ?, ?)", (self.channel, user_id, day)
             )
-        return Tracked(ticker, cik, None, None), True
+        return Tracked(ticker, cik, None, None, company), True
 
     def set_target(self, target: Target, evidence: str) -> None:
         with self.db:
@@ -181,14 +197,27 @@ def same_release(first: Target, second: Target) -> bool:
     return first.expected.astimezone(ET).date() == second.expected.astimezone(ET).date()
 
 
-def company_cik(ticker: str) -> int:
-    company = known_companies().get(ticker)
-    if company is None:
-        raise ValueError(f"{ticker or 'That symbol'} is outside the current ticker catalog.")
-    return company.cik
+def _company(ticker: str, cik: int, profile: str | None) -> KnownCompany:
+    if known := known_companies().get(ticker):
+        return known
+    if profile:
+        return KnownCompany.model_validate_json(profile)
+    # Tracked from the catalog, which has since dropped it. EDGAR still identifies it by CIK.
+    return KnownCompany(
+        name=ticker,
+        cik=cik,
+        platform="unknown",
+        reachable=False,
+        wire="none",
+        fastest="unknown",
+        evidence="No longer in the catalog.",
+        checked=date.min,
+    )
 
 
-def manual_target(ticker: str, when: str, period: str, now: datetime) -> Target:
+def manual_target(
+    ticker: str, when: str, period: str, now: datetime, company: KnownCompany | None = None
+) -> Target:
     try:
         if "T" not in when and " " not in when:
             raise ValueError
@@ -208,7 +237,7 @@ def manual_target(ticker: str, when: str, period: str, now: datetime) -> Target:
         expected = expected.replace(tzinfo=ET)
     if expected <= now:
         raise ValueError("Choose a future earnings release time.")
-    return to_target(ticker, expected.astimezone(ET), fy, quarter)
+    return to_target(ticker, expected.astimezone(ET), fy, quarter, company)
 
 
 def describe(target: Target, evidence: str) -> str:
