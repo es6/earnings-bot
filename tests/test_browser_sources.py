@@ -20,6 +20,13 @@ PATTERN = r"FICO Announces Earnings of .+ for Fourth Quarter Fiscal 2026"
 MC = "https://corporate.mcdonalds.com/"
 PDF = MC + "content/dam/quarterly-release.pdf"
 TESLA = "https://assets-ir.tesla.com/tesla-contents/IR/TSLA-Q3-2026-Update.pdf"
+LUCID = "https://ir.lucidmotors.com/press-releases"
+# Lucid's results headlines end in "Results", not "Financial Results". This is the pattern in
+# its Q3 2026 schedule.
+LUCID_Q3 = (
+    r"^(?!.*\b(?:webcast|conference call|to host|to announce|will report|date|schedule)\b)"
+    r"(?=.*\b(?:Q3|third quarter)\b)(?=.*\b2026\b)(?=.*\bresults\b).*"
+)
 
 
 class BrowserFake(RoutedFetcher):
@@ -141,3 +148,28 @@ def test_schedule_requires_specific_trial_configuration() -> None:
         IRTrial(listing=FICO)
     with pytest.raises(ValidationError, match="warmup page's host"):
         IRTrial(pdfs=[PDF], warmup=FICO)
+
+
+async def test_lucids_listing_trial_picks_only_the_quarters_results() -> None:
+    details = "https://ir.lucidmotors.com/news-releases/news-release-details/"
+    listing = (
+        f'<a href="{details}q3-deliveries">Lucid Announces Q3 Production and Deliveries, '
+        "Sets Date for Third Quarter 2026 Earnings</a>"
+        f'<a href="{details}q2">Lucid Announces Operational Reset and Second Quarter 2026 '
+        "Results</a>"
+        f'<a href="{details}q3-webcast">Lucid to Host Third Quarter 2026 Results Webcast</a>'
+        f'<a href="{details}q3">Lucid Announces Third Quarter 2026 Results</a>'
+    ).encode()
+    article = (
+        "<h1>Lucid Announces Third Quarter 2026 Results</h1>"
+        f"<p>{'Revenue of $395 million and deliveries of 3,806 vehicles. ' * 40}</p>"
+    ).encode()
+    fetcher = BrowserFake([(200, listing), (200, article)])
+    # The host has to be on the browser list for the schedule to load at all
+    [source] = IRTrial(listing=LUCID, headline=LUCID_Q3).sources()
+
+    _, items = await poll(source, fetcher)
+
+    assert [item.url for item in items] == [details + "q3"]
+    # Only the matching article is opened, ahead of other requests to the host
+    assert fetcher.browser_calls == [(LUCID, LUCID, False), (details + "q3", LUCID, True)]
