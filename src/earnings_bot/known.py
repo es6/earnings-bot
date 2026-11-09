@@ -50,6 +50,10 @@ class KnownCompany(BaseModel):
     checked: date
     # SEC's MMDD, kept for companies added from SEC data so a calendar date gets its quarter
     fiscal_year_end: str | None = None
+    # The IR site's press release listing, read through desktop Chrome
+    ir_listing: str | None = None
+    # When the bot last looked for this company's sources itself, for one added from SEC data
+    investigated: date | None = None
 
 
 @cache

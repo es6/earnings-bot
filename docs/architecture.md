@@ -502,8 +502,12 @@ persistent and deduplicated by issuer CIK in the earnings channel. For a company
 wire names, URL patterns and typical release times. For any other, `issuers.py` builds the same
 kind of entry from SEC's data when it's added, and the calendar saves it: the CIK, the name
 without its legal ending (when it's more than one word) and the exchange-and-ticker tag for
-wire matching, and the release time from its last four results 8-Ks. Its wire isn't known, so
-both Business Wire and PR Newswire are watched, along with EDGAR. The bot checks
+wire matching, and the release time from its last four results 8-Ks. Then `investigate.py`
+looks for its sources outside release windows: the IR site its last results release names, that
+site's Q4 feed or RSS feed, its press release list through Chrome when it blocks the bot or has no
+feed, and the wire its latest results' dateline names. Until a wire is found, both Business Wire
+and PR Newswire are watched, along with EDGAR. The source audit runs after the investigation, so
+it ranks what was found. The bot checks
 each tracked issuer for its next notice and audits the most recent actual results independently.
 A TOML schedule remains available for an operator-specified window or source configuration.
 
@@ -732,4 +736,6 @@ onboarding, including international listings, and more live samples for source r
 | 2026-11-07 | Keep the connection to Discord open during windows with a cheap request every 10 s, since opening one costs 60 to 150 ms more at the moment the alert goes out |
 | 2026-11-07 | Poll the submissions JSON every 3 s, as the backup it is, and Q4's reports feed every 10.5 s, its CDN copy's lifetime. EDGAR's latest-filings feed gets the SEC turns that frees |
 | 2026-11-07 | The desktop Chrome IR trial and Tesla's deck User-Agent are the route for sites that block the default client. It's public information either way |
+| 2026-11-09 | Chrome may open any public https page. It refuses plain http, other ports, logins in the URL, private and loopback addresses and local-only names, so a schedule can't point it at this PC or its network. The per-site list is gone |
+| 2026-11-09 | `/track` investigates a company outside the catalog itself: IR site from its last results 8-K, Q4 or RSS feed, Chrome for a site that blocks the bot, wire from the dateline. Again after 30 days |
 | 2026-11-09 | `/track` takes any ticker on SEC's list, not just the catalog. Others are watched on EDGAR and both wires, matched by their exchange-and-ticker tag, with FMP's date at the time of their recent 8-Ks |

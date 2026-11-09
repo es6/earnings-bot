@@ -11,7 +11,7 @@ import aiohttp
 from earnings_bot.browser import BrowserError
 from earnings_bot.browser_sources import IRTrial, _ReleaseLinks
 from earnings_bot.fetch import Fetcher
-from earnings_bot.known import NTH, ORD
+from earnings_bot.known import NTH, ORD, KnownCompany
 from earnings_bot.sources import looks_like_earnings
 from earnings_bot.text import html_to_text, verified_report
 
@@ -26,6 +26,12 @@ IR_LISTINGS = {
 }
 _ERRORS = (BrowserError, aiohttp.ClientError, TimeoutError, ValueError, KeyError)
 _NEWS = re.compile(r"press|release|earnings|report|financial|news", re.IGNORECASE)
+
+
+def issuer_listing(ticker: str, company: KnownCompany) -> str | None:
+    """The press release listing Chrome reads for a company: one the bot found itself, or one
+    researched by hand."""
+    return company.ir_listing or IR_LISTINGS.get(ticker)
 
 
 def issuer_links(url: str, body: bytes) -> list[tuple[str, str]]:
@@ -87,8 +93,7 @@ def matches_release(value: object, day: date, titles: set[str]) -> bool:
     return False
 
 
-async def inspect_issuer(fetcher: Fetcher, ticker: str, day: date, titles: set[str]) -> str:
-    url = IR_LISTINGS.get(ticker)
+async def inspect_issuer(fetcher: Fetcher, url: str | None, day: date, titles: set[str]) -> str:
     if url is None or os.name != "nt":
         return ""
     try:
@@ -114,13 +119,15 @@ def quarter_headline(year: int, quarter: int) -> str:
     return (
         r"^(?!.*\b(?:webcast|conference call|to host|to announce|will report|date|schedule)\b)"
         rf"(?=.*\b(?:{label})\b)(?=.*\b(?:FY\s*{year % 100:02d}|(?:FY\s*)?{year})\b)"
-        r"(?=.*\b(?:financial results|earnings|quarterly results|reports?.*results)\b).*"
+        r"(?=.*\b(?:financial results|earnings|quarterly results|(?:reports?|announces?).*results)"
+        r"\b).*"
     )
 
 
-async def verified_browser_trial(fetcher: Fetcher, ticker: str, period: str) -> IRTrial | None:
+async def verified_browser_trial(
+    fetcher: Fetcher, listing: str | None, period: str
+) -> IRTrial | None:
     """Verify the preceding quarter's article before preparing a record-only browser trial."""
-    listing = IR_LISTINGS.get(ticker)
     if os.name != "nt" or listing is None:
         return None
     year, quarter = int(period[2:6]), int(period[-1])

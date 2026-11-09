@@ -4,7 +4,7 @@ from datetime import datetime
 import pytest
 from pydantic import ValidationError
 
-from earnings_bot.browser import BrowserUnavailable
+from earnings_bot.browser import BrowserUnavailable, browser_host
 from earnings_bot.browser_sources import BrowserPDF, BrowserRelease, IRTrial, TeslaDeck
 from earnings_bot.fetch import Response
 from earnings_bot.ir_research import quarter_headline
@@ -173,3 +173,56 @@ async def test_lucids_listing_trial_picks_only_the_quarters_results() -> None:
     assert [item.url for item in items] == [details + "q3"]
     # Only the matching article is opened, ahead of other requests to the host
     assert fetcher.browser_calls == [(LUCID, LUCID, False), (details + "q3", LUCID, True)]
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://ir.lucidmotors.com/press-releases",
+        "https://investor.example.co.uk/news?page=2",
+        "https://IR.Example.com:443/news",
+        "https://8.8.8.8/news",
+    ],
+)
+def test_chrome_may_open_any_public_https_page(url: str) -> None:
+    assert browser_host(url) == url.split("/")[2]
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://ir.example.com/news",
+        "https://localhost/",
+        "https://127.0.0.1/",
+        "https://10.0.0.5/admin",
+        "https://192.168.1.1/",
+        "https://[::1]/",
+        "https://169.254.169.254/latest/meta-data",
+        "https://printer.local/",
+        "https://nas.home.arpa/",
+        "https://router/",
+        "https://ir.example.com:8443/news",
+        "https://user@ir.example.com/news",
+        "https://ir.example.com/news#latest",
+        "https://ir.example.com",
+    ],
+    ids=[
+        "http",
+        "localhost",
+        "loopback",
+        "private",
+        "home-router",
+        "ipv6-loopback",
+        "link-local",
+        "mdns",
+        "home-arpa",
+        "single-label",
+        "other-port",
+        "login",
+        "fragment",
+        "no-path",
+    ],
+)
+def test_chrome_never_opens_this_pc_or_its_network(url: str) -> None:
+    with pytest.raises(ValueError, match="Not a public https page"):
+        browser_host(url)
