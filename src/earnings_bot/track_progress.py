@@ -11,9 +11,10 @@ import discord
 
 from earnings_bot.calendar import Calendar, Tracked, describe
 from earnings_bot.delivery import DeliveryStore
-from earnings_bot.known import KnownCompany
+from earnings_bot.investigate import due
+from earnings_bot.known import KnownCompany, known_companies
 from earnings_bot.pipeline import DurableDiscordPoster
-from earnings_bot.recorder import Target
+from earnings_bot.recorder import ET, Target
 
 log = logging.getLogger(__name__)
 REFRESH = timedelta(days=1)
@@ -85,13 +86,20 @@ class TrackProgress:
             lines.append("Sources prepared for the window | " + ", ".join(names))
         else:
             lines.append("Waiting for a confirmed issuer date. The calendar will recheck.")
-        if checking:
+        if row.ticker not in known_companies():
+            lines.append(row.company.evidence)
+        if self._investigating(row):
+            lines.append("Looking for its IR site, feeds and newswire.")
+        elif checking:
             lines.append("Checking the last release, issuer endpoints and @earnings_guy.")
         elif not result:
             lines.append("Source audit queued. Active release windows take priority.")
         if result:
             lines.append(result)
         return "\n".join(lines)[:1950]
+
+    def _investigating(self, row: Tracked) -> bool:
+        return due(row.ticker, row.company, self.now().astimezone(ET).date())
 
     async def _check(self, row: Tracked) -> None:
         now = self.now()
@@ -125,6 +133,8 @@ class TrackProgress:
                     checked, result = self.calendar.review(row.cik)
                     if (
                         not busy
+                        # Audit the sources the investigation finds, not the ones before it
+                        and not self._investigating(row)
                         and self.active is None
                         and (checked is None or now - checked >= REFRESH)
                         and self.next_attempt.get(row.cik, now) <= now

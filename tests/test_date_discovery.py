@@ -282,7 +282,10 @@ async def test_a_verified_browser_trial_joins_the_found_date_and_is_kept(
     assert len(statuses) == 1
 
 
-LUCID = profile("LCID", LCID_CIK, "Lucid Group, Inc.", LCID_SUBMISSIONS, NOW.date())
+# Already investigated, so these tests see date discovery alone
+LUCID = profile("LCID", LCID_CIK, "Lucid Group, Inc.", LCID_SUBMISSIONS, NOW.date()).model_copy(
+    update={"investigated": NOW.date()}
+)
 FMP_ROUTE = "financialmodelingprep.com/stable/earnings?symbol=LCID"
 
 

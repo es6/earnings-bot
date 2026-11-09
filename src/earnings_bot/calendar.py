@@ -115,6 +115,14 @@ class Calendar:
                 (target.model_dump_json(), evidence, self.channel, target.cik),
             )
 
+    def save_profile(self, cik: int, company: KnownCompany) -> None:
+        """Keeps what the bot found out about a company outside the catalog."""
+        with self.db:
+            self.db.execute(
+                "UPDATE tracked SET profile = ? WHERE channel = ? AND cik = ?",
+                (company.model_dump_json(), self.channel, cik),
+            )
+
     def review(self, cik: int) -> tuple[datetime | None, str | None]:
         row = self.db.execute(
             "SELECT checked, result FROM tracking_reviews WHERE channel = ? AND cik = ?",

@@ -11,7 +11,7 @@ from typing import Any
 
 from earnings_bot.benchmark import EarningsBenchmark
 from earnings_bot.fetch import Fetcher
-from earnings_bot.ir_research import inspect_issuer
+from earnings_bot.ir_research import inspect_issuer, issuer_listing
 from earnings_bot.known import KnownCompany, wires
 from earnings_bot.recorder import ET, PollError, Target, poll
 from earnings_bot.sources import (
@@ -228,7 +228,7 @@ async def audit_sources(
                     f"@earnings_guy | {post.posted.astimezone(ET):%H:%M:%S} ET <{post.url}>"
                 )
                 break
-    browser = await inspect_issuer(fetcher, ticker, day, titles)
+    browser = await inspect_issuer(fetcher, issuer_listing(ticker, company), day, titles)
     heading = "Last release" if confidence else "Likely last release (8-K date)"
     lines = [
         f"**{heading} | {day:%b %d, %Y}**",

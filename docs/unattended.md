@@ -20,12 +20,26 @@ holds up to 50 subscriptions per earnings channel.
 
 Companies in the [ticker catalog](../src/earnings_bot/companies.toml) start
 from researched sources: the issuer's feeds, its wire and URL patterns. Any
-other ticker on SEC's list is looked up when it's added. The bot watches EDGAR
-and both Business Wire and PR Newswire for it, matching the exchange and ticker
-that open every wire release, such as "(NASDAQ: LCID)". Its date comes from
-FMP's earnings calendar when `FMP_API_KEY` is set, at the time of day its recent
-results 8-Ks were filed, with a wider window. Without the key, an admin sets the
-time with `when` and `period`.
+other ticker on SEC's list is looked up when it's added, and the bot then
+investigates it outside release windows:
+
+1. It reads the company's last results release from its 8-K and takes the IR
+   site the release names, such as `ir.lucidmotors.com`.
+2. It checks that site for Q4's press release feed, then for an RSS feed. Either
+   one is polled directly in release windows.
+3. If the site blocks the bot or has no feed, desktop Chrome reads its press
+   release list instead, as a trial.
+4. The dateline of its latest results, such as "/PRNewswire/", names its wire.
+   Until one is found, both Business Wire and PR Newswire are watched, matching
+   the exchange and ticker that open every wire release, such as
+   "(NASDAQ: LCID)".
+
+The scorecard shows what it found, and the source audit then ranks those sources
+on the last release. The investigation runs again a month later. The date comes
+from the issuer's own notice on the feed it found, or else from FMP's earnings
+calendar when `FMP_API_KEY` is set, at the time of day its recent results 8-Ks
+were filed, with a wider window. An admin can always set the time with `when`
+and `period`.
 
 ## From ticker to alert
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import ipaddress
 import json
 import socket
 import tempfile
@@ -23,20 +24,8 @@ if TYPE_CHECKING:
     from earnings_bot.fetch import Response
 
 
-BROWSER_HOSTS = frozenset(
-    {
-        "investor.nvidia.com",
-        "investors.fico.com",
-        "ir.crowdstrike.com",
-        "investor.lilly.com",
-        "ir.hubspot.com",
-        "investors.broadcom.com",
-        "corporate.mcdonalds.com",
-        "ir.homedepot.com",
-        # Akamai answers 403 to anything but a browser
-        "ir.lucidmotors.com",
-    }
-)
+# Names that only mean something inside a home or office network
+_LOCAL_SUFFIXES = (".localhost", ".local", ".internal", ".lan", ".home", ".home.arpa", ".corp")
 # Bound the bytes Chrome transfers through its local control socket.
 MAX_BROWSER_BYTES = 12 * 1024 * 1024
 MAX_JSON_BYTES = 1024 * 1024
@@ -57,15 +46,33 @@ class BrowserUnavailable(BrowserError):
     """The browser could not start in this Windows session."""
 
 
+def _public(host: str) -> bool:
+    try:
+        address = ipaddress.ip_address(host.strip("[]"))
+    except ValueError:
+        return "." in host and not host.endswith(_LOCAL_SUFFIXES)
+    return address.is_global
+
+
 def browser_host(url: str) -> str:
+    """The host of a page Chrome may open: any public https site. Chrome runs on this PC, so a
+    URL that would reach the PC itself or its network is refused: plain http, another port, a
+    login in the URL, a private or loopback address, or a local-only name."""
     parts = urlsplit(url)
+    try:
+        port = parts.port
+    except ValueError:
+        port = -1
     if (
         parts.scheme != "https"
-        or parts.netloc not in BROWSER_HOSTS
+        or not parts.hostname
+        or not _public(parts.hostname.rstrip(".").lower())
+        or port not in (None, 443)
+        or parts.username is not None
         or not parts.path.startswith("/")
         or parts.fragment
     ):
-        raise ValueError(f"Not an allowed public browser IR URL: {url}")
+        raise ValueError(f"Not a public https page: {url}")
     return parts.netloc
 
 

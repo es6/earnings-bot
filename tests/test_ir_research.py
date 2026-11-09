@@ -37,3 +37,12 @@ def test_browser_headline_requires_the_scheduled_fiscal_period() -> None:
     assert not pattern.fullmatch("CrowdStrike Announces Date of Fiscal Third Quarter 2027 Results")
     assert not pattern.fullmatch("CrowdStrike Reports Second Quarter Fiscal Year 2027 Results")
     assert not pattern.fullmatch("CrowdStrike Reports Third Quarter Fiscal Year 2026 Results")
+
+
+def test_a_results_headline_that_announces_rather_than_reports_counts() -> None:
+    pattern = re.compile(quarter_headline(2026, 2), re.IGNORECASE)
+    assert pattern.fullmatch("Lucid Announces Operational Reset and Second Quarter 2026 Results")
+    assert not pattern.fullmatch(
+        "Lucid Announces Q2 Production and Deliveries, Sets Date for Second Quarter 2026 Earnings"
+    )
+    assert not pattern.fullmatch("Lucid Announces Second Quarter 2026 Results Conference Call")

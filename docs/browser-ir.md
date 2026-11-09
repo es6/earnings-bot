@@ -13,7 +13,10 @@ source. The other sources continue watching.
 
 ## Automatic trials for tracked issuers
 
-For supported listings, `/track` can use Chrome to read an issuer's date notice.
+For a listing researched by hand, or one the bot found when it investigated a newly
+tracked company, `/track` can use Chrome to read an issuer's date notice. Chrome
+opens any public https page, never plain http, another port, a private or
+loopback address, or a local-only name.
 It can also observe same-origin JSON requested by the public IR page. The
 scorecard distinguishes responses that matched the last release from endpoint
 leads. A new route can be added as a source through a dedicated adapter.

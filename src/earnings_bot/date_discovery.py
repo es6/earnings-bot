@@ -19,7 +19,8 @@ import aiohttp
 from earnings_bot.browser import BrowserError
 from earnings_bot.calendar import Calendar, Tracked, describe, same_release
 from earnings_bot.fetch import Fetcher
-from earnings_bot.ir_research import IR_LISTINGS, issuer_links, verified_browser_trial
+from earnings_bot.investigate import OpenChrome, due, investigate
+from earnings_bot.ir_research import issuer_links, issuer_listing, verified_browser_trial
 from earnings_bot.known import (
     NTH,
     ORD,
@@ -270,7 +271,7 @@ async def calendar_date(
 async def _browser_date(
     fetcher: Fetcher, ticker: str, company: KnownCompany, now: datetime
 ) -> tuple[Target, str] | None:
-    listing = IR_LISTINGS.get(ticker)
+    listing = issuer_listing(ticker, company)
     if os.name != "nt" or listing is None:
         return None
     try:
@@ -302,10 +303,12 @@ class DateDiscovery:
         busy: Callable[[], bool],
         status: Callable[[str], None],
         fmp_api_key: str | None = None,
+        chrome: OpenChrome | None = None,
     ) -> None:
         self.calendar, self.fetcher, self.now = calendar, fetcher, now
         self.busy, self.status = busy, status
         self.fmp_api_key = fmp_api_key
+        self.chrome = chrome  # for investigations; None means desktop Chrome on Windows
         self.changed = asyncio.Event()
         self.checked: dict[int, float] = {}
         # Each company's FMP answer and when to ask again, as time.monotonic()
@@ -321,7 +324,8 @@ class DateDiscovery:
                     continue
                 self.checked[row.cik] = time.monotonic() + 3600
                 try:
-                    async with asyncio.timeout(50):
+                    # Room for a first investigation, which may wait for Chrome
+                    async with asyncio.timeout(150):
                         await self._check(row)
                 except Exception:
                     log.exception("Date discovery failed for %s", row.ticker)
@@ -344,7 +348,25 @@ class DateDiscovery:
         self.calendar_dates[row.cik] = time.monotonic() + CALENDAR_REFRESH, result
         return result
 
+    async def _investigate(self, row: Tracked) -> Tracked:
+        """Looks for the sources of a company outside the catalog, once and then monthly."""
+        today = self.now().astimezone(ET).date()
+        if not due(row.ticker, row.company, today):
+            return row
+        try:
+            chrome = self.chrome or (self.fetcher.research_browser if os.name == "nt" else None)
+            company = await investigate(self.fetcher, row.company, today, chrome)
+        except Exception:
+            log.exception("Investigating %s failed", row.ticker)
+            return row
+        if self.busy() or row not in self.calendar.entries():
+            return row
+        self.calendar.save_profile(row.cik, company)
+        self.status(f"{row.ticker}: {company.evidence}")
+        return replace(row, company=company)
+
     async def _check(self, row: Tracked) -> None:
+        row = await self._investigate(row)
         now = self.now()
         saved = (
             (row.target, row.evidence)
@@ -373,7 +395,9 @@ class DateDiscovery:
             self.status(describe(target, evidence))
         if target.trial.ir or target.trial.post or not target.period:
             return
-        trial = await verified_browser_trial(self.fetcher, row.ticker, target.period)
+        trial = await verified_browser_trial(
+            self.fetcher, issuer_listing(row.ticker, row.company), target.period
+        )
         if (
             trial
             and not self.busy()
