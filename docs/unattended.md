@@ -8,7 +8,7 @@ Replies to the commands are private to the person who ran them.
 
 | Command | Access | Result |
 |---|---|---|
-| `/track ticker:NVDA` | Server members | Adds an issuer from the [ticker catalog](../src/earnings_bot/companies.toml) and starts date discovery and the source audit. Repeating it returns the existing subscription. |
+| `/track ticker:NVDA` | Server members | Adds any company on SEC's ticker list and starts date discovery and the source audit. Repeating it returns the existing subscription. |
 | `/track ticker:NVDA when:2026-11-17T16:20 period:FY2027Q3` | Manage Server | Sets a future release time for a fiscal period. Supply both fields. An ISO time without an offset uses US Eastern. |
 | `/upcoming` | Server members | Shows scheduled releases in the next seven days and issuers awaiting dates. |
 | `/untrack ticker:NVDA` | Manage Server | Removes the calendar subscription. Any matching TOML schedule remains active. |
@@ -16,15 +16,24 @@ Replies to the commands are private to the person who ran them.
 | `/ping` | Server members | Checks the bot's Discord connection and reports Gateway latency. |
 
 Each member can add five new issuers per Eastern calendar day. The calendar
-holds up to 50 subscriptions per earnings channel. The current catalog is the
-supported ticker set.
+holds up to 50 subscriptions per earnings channel.
+
+Companies in the [ticker catalog](../src/earnings_bot/companies.toml) start
+from researched sources: the issuer's feeds, its wire and URL patterns. Any
+other ticker on SEC's list is looked up when it's added. The bot watches EDGAR
+and both Business Wire and PR Newswire for it, matching the exchange and ticker
+that open every wire release, such as "(NASDAQ: LCID)". Its date comes from
+FMP's earnings calendar when `FMP_API_KEY` is set, at the time of day its recent
+results 8-Ks were filed, with a wider window. Without the key, an admin sets the
+time with `when` and `period`.
 
 ## From ticker to alert
 
 1. **Add the issuer.** The bot saves the subscription by issuer CIK. It creates
    one scorecard and edits that message as the date and source findings change.
 2. **Find the next date.** The planner looks for an issuer results notice through
-   supported feeds or public IR listings. An exact release time uses the
+   supported feeds or public IR listings, or for a company outside the catalog,
+   uses FMP's calendar date. An exact release time uses the
    standard 10-minute lead and 30-minute follow-up. A confirmed day with an
    approximate time uses a wider window. A call-only notice leaves the date
    pending. Pending issuers are rechecked roughly hourly outside release windows.

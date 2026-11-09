@@ -5,7 +5,9 @@ from collections.abc import Callable
 import discord
 from discord import app_commands
 
-from earnings_bot.calendar import company_cik, describe, manual_target, upcoming
+from earnings_bot.calendar import describe, manual_target, upcoming
+from earnings_bot.issuers import symbol
+from earnings_bot.recorder import ET
 from earnings_bot.unattended import DirectoryWatcher
 
 OFFLINE = "The earnings calendar is available when the directory watcher is running."
@@ -46,7 +48,7 @@ class TrackingCommands:
 
     @app_commands.guild_only()
     @app_commands.describe(
-        ticker="Stock symbol in the ticker catalog",
+        ticker="Stock symbol of a company that files with SEC",
         when="Admin override. ISO date and time, Eastern by default",
         period="Fiscal period of an override, such as FY2027Q3",
     )
@@ -57,15 +59,23 @@ class TrackingCommands:
         when: str | None = None,
         period: str | None = None,
     ) -> None:
+        # Looking up a company outside the catalog can take longer than Discord's 3 seconds
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        message = await self._track(interaction, symbol(ticker), when, period)
+        await interaction.followup.send(message, ephemeral=True)
+
+    async def _track(
+        self,
+        interaction: discord.Interaction,
+        ticker: str,
+        when: str | None,
+        period: str | None,
+    ) -> str:
         watcher = self._watcher(interaction)
         if watcher is None:
-            await interaction.response.send_message(OFFLINE, ephemeral=True)
-            return
-        ticker = ticker.strip().upper()
+            return OFFLINE
         now = watcher.journal.now()
         try:
-            company_cik(ticker)
-            override = None
             if when is not None or period is not None:
                 if not interaction.permissions.manage_guild:
                     raise ValueError("Manage Server is required to set a release-time override.")
@@ -73,8 +83,16 @@ class TrackingCommands:
                     raise ValueError(
                         "Supply both a release time and a fiscal period for an override."
                     )
-                override = manual_target(ticker, when, period, now)
-            row, added = watcher.calendar.add(ticker, interaction.user.id, now)
+            existing = watcher.calendar.find(ticker)
+            company = (
+                existing.company
+                if existing
+                else await watcher.issuers.company(ticker, now.astimezone(ET).date())
+            )
+            override = (
+                manual_target(ticker, when, period, now, company) if when and period else None
+            )
+            row, added = watcher.calendar.add(ticker, interaction.user.id, now, company)
             watcher.dates.changed.set()
             if override:
                 watcher.calendar.set_target(override, "Manual override")
@@ -100,7 +118,7 @@ class TrackingCommands:
                 message += f" Progress appears in <#{channel_id}>."
         except ValueError as error:
             message = str(error)
-        await interaction.response.send_message(message, ephemeral=True)
+        return message
 
     @app_commands.guild_only()
     async def upcoming(self, interaction: discord.Interaction) -> None:
@@ -118,16 +136,16 @@ class TrackingCommands:
     @app_commands.default_permissions(manage_guild=True)
     async def untrack(self, interaction: discord.Interaction, ticker: str) -> None:
         watcher = self._watcher(interaction)
-        ticker = ticker.strip().upper()
+        ticker = symbol(ticker)
         try:
             if watcher is None:
                 raise ValueError(OFFLINE)
             if not interaction.permissions.manage_guild:
                 raise ValueError("Manage Server is required to remove a ticker.")
-            cik = company_cik(ticker)
-            removed = watcher.calendar.remove(cik)
-            if removed and watcher.progress:
-                watcher.progress.removed[cik] = ticker
+            row = watcher.calendar.find(ticker)
+            removed = row is not None and watcher.calendar.remove(row.cik)
+            if row and removed and watcher.progress:
+                watcher.progress.removed[row.cik] = ticker
                 watcher.progress.changed.set()
             message = (
                 f"Removed **{ticker}** from the calendar."

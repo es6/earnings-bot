@@ -1,4 +1,4 @@
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -7,8 +7,10 @@ from earnings_bot.browser_sources import IRTrial
 from earnings_bot.calendar import Calendar, manual_target, upcoming
 from earnings_bot.delivery import DeliveryStore
 from earnings_bot.ir_research import IR_LISTINGS, quarter_headline
-from earnings_bot.known import to_target
+from earnings_bot.issuers import profile
+from earnings_bot.known import known_companies, to_target
 from earnings_bot.recorder import ET, Trial
+from tests.sec_data import LCID_CIK, LCID_SUBMISSIONS
 
 NOW = datetime(2026, 11, 7, tzinfo=UTC)
 
@@ -89,3 +91,42 @@ def test_saved_automatic_browser_headline_is_repaired_after_restart(tmp_path: Pa
     with DeliveryStore(db, 7) as store:
         [effective] = Calendar(store).plan({}).values()
         assert effective.trial.ir and effective.trial.ir.headline == headline
+
+
+def test_a_calendar_saved_before_profiles_is_upgraded_in_place(tmp_path: Path) -> None:
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        store.db.executescript("""
+            CREATE TABLE tracked (
+                channel INTEGER NOT NULL,
+                cik INTEGER NOT NULL,
+                ticker TEXT NOT NULL,
+                target TEXT,
+                evidence TEXT,
+                PRIMARY KEY (channel, cik)
+            );
+            INSERT INTO tracked (channel, cik, ticker) VALUES (7, 1045810, 'NVDA');
+        """)
+
+        calendar = Calendar(store)
+
+        [nvda] = calendar.entries()
+        assert nvda.company == known_companies()["NVDA"]
+        lucid = profile("LCID", LCID_CIK, "Lucid Group, Inc.", LCID_SUBMISSIONS, date(2026, 11, 9))
+        calendar.add("LCID", 1, NOW, lucid)
+        assert [row.company for row in Calendar(store).entries()] == [lucid, nvda.company]
+
+
+def test_a_company_the_catalog_dropped_is_still_watched_on_edgar(tmp_path: Path) -> None:
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        store.db.execute(
+            "CREATE TABLE tracked (channel INTEGER NOT NULL, cik INTEGER NOT NULL, "
+            "ticker TEXT NOT NULL, target TEXT, evidence TEXT, profile TEXT, "
+            "PRIMARY KEY (channel, cik))"
+        )
+        store.db.execute("INSERT INTO tracked (channel, cik, ticker) VALUES (7, 99, 'GONE')")
+
+        [row] = Calendar(store).entries()
+
+    target = to_target("GONE", datetime(2027, 1, 5, 16, tzinfo=ET), 2026, 4, row.company)
+    assert [source.name for source in target.sources()] == ["edgar", "edgar_latest"]
+    assert target.cik == 99

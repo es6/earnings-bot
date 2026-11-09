@@ -11,6 +11,7 @@ import discord
 
 from earnings_bot.calendar import Calendar, Tracked, describe
 from earnings_bot.delivery import DeliveryStore
+from earnings_bot.known import KnownCompany
 from earnings_bot.pipeline import DurableDiscordPoster
 from earnings_bot.recorder import Target
 
@@ -33,7 +34,7 @@ class TrackProgress:
         planned: Callable[[], dict[str, Target]],
         now: Callable[[], datetime],
         busy: Callable[[], bool],
-        audit: Callable[[str, datetime], Awaitable[str]],
+        audit: Callable[[str, KnownCompany, datetime], Awaitable[str]],
     ) -> None:
         self.calendar, self.store, self.channel = calendar, store, channel
         self.author_id, self.planned, self.now, self.busy = author_id, planned, now, busy
@@ -97,7 +98,7 @@ class TrackProgress:
         self.next_attempt[row.cik] = now + timedelta(hours=1)
         try:
             async with asyncio.timeout(90):
-                result = await self.audit(row.ticker, now)
+                result = await self.audit(row.ticker, row.company, now)
         except Exception:
             log.exception("Source audit failed for %s", row.ticker)
             return

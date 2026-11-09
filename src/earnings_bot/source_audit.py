@@ -12,7 +12,7 @@ from typing import Any
 from earnings_bot.benchmark import EarningsBenchmark
 from earnings_bot.fetch import Fetcher
 from earnings_bot.ir_research import inspect_issuer
-from earnings_bot.known import known_companies
+from earnings_bot.known import KnownCompany, wires
 from earnings_bot.recorder import ET, PollError, Target, poll
 from earnings_bot.sources import (
     EdgarFilings,
@@ -121,15 +121,15 @@ async def _list(fetcher: Fetcher, source: Source) -> list[Sighting]:
         return []
 
 
-def _archived_sources(ticker: str, now: datetime) -> list[Source]:
-    company = known_companies()[ticker]
+def _archived_sources(ticker: str, company: KnownCompany, now: datetime) -> list[Source]:
+    business_wire, pr_newswire = wires(company)
     target = Target(
         ticker=ticker,
         cik=company.cik,
         expected=now,
         q4_host=company.q4_host if company.reachable else None,
-        newswire=company.names if company.wire in ("Business Wire", "unknown") else [],
-        prnewswire=company.names if company.wire == "PR Newswire" else [],
+        newswire=business_wire,
+        prnewswire=pr_newswire,
         rss=company.rss,
         trial=company.trial.model_copy(update={"pages": [], "ir": None}),
     )
@@ -145,11 +145,12 @@ async def audit_sources(
     fetcher: Fetcher,
     directory: Path,
     ticker: str,
+    company: KnownCompany,
     now: datetime,
     benchmark: EarningsBenchmark | None,
 ) -> str:
     """Use the latest dated results. Publisher times are estimates of availability."""
-    sec = EdgarFilings(known_companies()[ticker].cik, limit=150)
+    sec = EdgarFilings(company.cik, limit=150)
     filings = [
         (at, item)
         for item in await _list(fetcher, sec)
@@ -159,7 +160,7 @@ async def audit_sources(
         and at <= now
     ]
     snapshots = [
-        (source, await _list(fetcher, source)) for source in _archived_sources(ticker, now)
+        (source, await _list(fetcher, source)) for source in _archived_sources(ticker, company, now)
     ]
     estimates: list[Timing] = []
     verified: list[str] = []

@@ -7,6 +7,7 @@ import pytest
 from earnings_bot.known import (
     FIELDS,
     fill,
+    fiscal_period,
     guess_urls,
     known_companies,
     target_toml,
@@ -90,6 +91,28 @@ def test_templates_match_urls_seen_on_company_sites(
     ticker: str, released: date, fiscal_year: int, quarter: int, seen: str
 ) -> None:
     assert seen in guess_urls(known_companies()[ticker], released, fiscal_year, quarter)
+
+
+@pytest.mark.parametrize(
+    ("year_end", "released", "period"),
+    [
+        ("1231", date(2026, 11, 9), (2026, 3)),  # Lucid
+        ("1231", date(2027, 2, 24), (2026, 4)),
+        ("0125", date(2026, 11, 17), (2027, 3)),  # NVIDIA's FY2027 ends in January 2027
+        ("0131", date(2026, 11, 19), (2027, 3)),  # Walmart
+        ("0926", date(2026, 10, 29), (2026, 4)),  # Apple
+        ("0831", date(2026, 12, 10), (2027, 1)),  # Costco
+        ("0630", date(2027, 1, 28), (2027, 2)),  # Microsoft
+        # A release within a week of a quarter's end reports the quarter before it
+        ("1231", date(2026, 10, 7), (2026, 3)),
+        ("1231", date(2026, 10, 6), (2026, 2)),
+        ("0229", date(2026, 12, 20), (2027, 3)),  # a year end that only leap years have
+    ],
+)
+def test_a_release_date_gives_the_fiscal_period_it_reports(
+    year_end: str, released: date, period: tuple[int, int]
+) -> None:
+    assert fiscal_period(year_end, released) == period
 
 
 def test_soft_404_sites_get_no_guesses() -> None:

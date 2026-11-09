@@ -8,6 +8,7 @@ from earnings_bot.bot import EarningsBot
 from earnings_bot.calendar import Calendar
 from earnings_bot.config import Settings
 from earnings_bot.delivery import DeliveryStore
+from earnings_bot.known import KnownCompany
 from earnings_bot.track_progress import TrackProgress
 from tests.test_unattended import FakeDiscord
 
@@ -21,7 +22,7 @@ async def test_progress_resumes_after_discord_accepted_send(tmp_path: Path) -> N
     channel = FakeDiscord()
     now = datetime(2026, 11, 7, tzinfo=UTC)
 
-    async def audit(ticker: str, when: datetime) -> str:
+    async def audit(ticker: str, company: KnownCompany, when: datetime) -> str:
         raise AssertionError("The publisher should not start an audit")
 
     def progress(store: DeliveryStore) -> TrackProgress:
