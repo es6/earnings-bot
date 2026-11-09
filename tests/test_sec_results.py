@@ -140,7 +140,7 @@ async def test_saved_bn_profile_is_enriched_and_scheduled_from_issuer_notice(
     async def no_trial(*args: object) -> None:
         return None
 
-    monkeypatch.setattr(date_discovery, "verified_browser_trial", no_trial)
+    monkeypatch.setattr(date_discovery, "verified_browser_source", no_trial)
     data = filings()
     company = profile("BN", CIK, "Brookfield Corporation", data, NOW.date())
     assert company.sec_form == "6-K"

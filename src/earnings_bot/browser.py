@@ -298,7 +298,7 @@ class DesktopChrome:
                         tab.socket, f"{_FETCH}({json.dumps(url)}, {MAX_BROWSER_BYTES})"
                     )
                 if result.get("oversized"):
-                    raise BrowserError("Browser response exceeded the trial's size limit")
+                    raise BrowserError("Browser response exceeded the size limit")
                 return Response(
                     url,
                     result["status"],

@@ -66,9 +66,9 @@ Manage Server member can supply `when` and `period`.
    the benchmark result. The subscription remains in place for the next quarter.
 
 Windows Chrome research can inspect public issuer JSON and use selected listings
-to find notices. The planner can prepare an exact-period browser trial after
-retrieving the previous quarter's report. The trial records timing by default.
-See [browser IR](browser-ir.md) for how to configure and enable a trial.
+to find notices. The planner can prepare a live browser source for the upcoming
+period after retrieving the previous quarter's report. See [browser IR](browser-ir.md)
+for per-release schedule settings.
 
 ## Run and recover
 

@@ -12,10 +12,7 @@ prnewswire = [
 before_minutes = 15
 after_minutes = 45
 
-[target.trial]
-post = false
-
-[target.trial.ir]
+[target.ir]
 warmup = "https://ir.homedepot.com/financial-reports/quarterly-earnings/2026"
 pdfs = [
     "https://ir.homedepot.com/~/media/Files/H/HomeDepot-IR/press-release/q3-2026-earnings-release.pdf",

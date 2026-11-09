@@ -176,8 +176,8 @@ class Calendar:
                         before_minutes=target.before_minutes,
                         after_minutes=target.after_minutes,
                     )
-                if target.trial.ir and not existing.trial.ir and not existing.trial.post:
-                    updates["trial"] = existing.trial.model_copy(update={"ir": target.trial.ir})
+                if target.ir and not existing.ir:
+                    updates["ir"] = target.ir
                 if updates:
                     result[existing.release_key] = existing.model_copy(update=updates)
         return result
@@ -187,7 +187,7 @@ def _read_target(saved: str | None) -> Target | None:
     if saved is None:
         return None
     target = Target.model_validate_json(saved)
-    browser = target.trial.ir
+    browser = target.ir
     if (
         target.period
         and browser

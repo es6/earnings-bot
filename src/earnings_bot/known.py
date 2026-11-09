@@ -180,6 +180,12 @@ def target_toml(target: Target) -> str:
         lines.append(f'q4_host = "{target.q4_host}"')
     for key in ("newswire", "prnewswire", "rss", "guess"):
         lines += _toml_list(key, getattr(target, key))
+    if target.ir:
+        lines += ["", "[target.ir]"]
+        lines += [
+            f"{key} = {json.dumps(value)}"
+            for key, value in target.ir.model_dump(exclude_defaults=True).items()
+        ]
     trial = target.trial
     if trial != Trial(post=trial.post):
         lines += [

@@ -9,7 +9,7 @@ from urllib.parse import urljoin, urlsplit
 import aiohttp
 
 from earnings_bot.browser import BrowserError
-from earnings_bot.browser_sources import IRTrial, _ReleaseLinks
+from earnings_bot.browser_sources import IRSource, _ReleaseLinks
 from earnings_bot.fetch import Fetcher
 from earnings_bot.known import NTH, ORD, KnownCompany
 from earnings_bot.sources import looks_like_earnings
@@ -124,10 +124,10 @@ def quarter_headline(year: int, quarter: int) -> str:
     )
 
 
-async def verified_browser_trial(
+async def verified_browser_source(
     fetcher: Fetcher, listing: str | None, period: str
-) -> IRTrial | None:
-    """Verify the preceding quarter's article before preparing a record-only browser trial."""
+) -> IRSource | None:
+    """Verify the preceding quarter's article before preparing a live browser source."""
     if os.name != "nt" or listing is None:
         return None
     year, quarter = int(period[2:6]), int(period[-1])
@@ -156,7 +156,7 @@ async def verified_browser_trial(
                         and verified_report(text)
                         and title.casefold() in " ".join(text.split()).casefold()
                     ):
-                        return IRTrial(
+                        return IRSource(
                             listing=listing,
                             headline=quarter_headline(year, quarter),
                             verify_text=True,
