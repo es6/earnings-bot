@@ -40,6 +40,7 @@ from earnings_bot.sources import (
     BroadcomNewsroom,
     EdgarFilings,
     EdgarLatest,
+    FreshPrNewswire,
     GuessedFile,
     GuessedPage,
     Q4FinancialReports,
@@ -161,7 +162,12 @@ class Target(BaseModel):
                 RssFeed("businesswire_busted", BUSINESS_WIRE_EARNINGS, self.newswire, True)
             )
         if self.prnewswire:
-            sources.append(RssFeed("prnewswire", PR_NEWSWIRE_EARNINGS, self.prnewswire))
+            # The fresh copy goes first. The cached one stays in case PR Newswire's own server
+            # stops answering.
+            sources += [
+                FreshPrNewswire("prnewswire_busted", PR_NEWSWIRE_EARNINGS, self.prnewswire),
+                RssFeed("prnewswire", PR_NEWSWIRE_EARNINGS, self.prnewswire),
+            ]
         sources += [_company_feed(url) for url in self.rss]
         sources += _named_apart([GuessedFile(url) for url in self.guess])
         return sources + self.trial.sources()

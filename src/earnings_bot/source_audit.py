@@ -137,7 +137,8 @@ def _archived_sources(ticker: str, company: KnownCompany, now: datetime) -> list
         source
         for source in target.sources()
         if source.name in {"q4_press", "broadcom_newsroom"}
-        or (isinstance(source, RssFeed) and source.name != "globenewswire_busted")
+        # One copy of each feed is enough for the archive
+        or (isinstance(source, RssFeed) and not source.name.endswith("_busted"))
     ]
 
 

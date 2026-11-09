@@ -280,6 +280,7 @@ def test_trial_sources_come_from_the_targets_trial_table(tmp_path: Path) -> None
     assert [(s.name, s.trial) for s in sources] == [
         ("edgar", False),
         ("edgar_latest", False),
+        ("prnewswire_busted", False),
         ("prnewswire", False),
         ("broadcom_newsroom", True),
         ("rss:ir.hubspot.com", True),
@@ -289,8 +290,10 @@ def test_trial_sources_come_from_the_targets_trial_table(tmp_path: Path) -> None
         ("page:news.example.com/q4-results", True),
         ("page:news.example.com/q4.pdf", True),
     ]
-    assert "_=" in sources[4].url()  # a company feed is always busted
-    assert "_=" not in sources[5].url() and "_=" in sources[6].url()
+    named = {source.name: source for source in sources}
+    assert "_=" in named["rss:ir.hubspot.com"].url()  # a company feed is always busted
+    assert "_=" not in named["globenewswire"].url()
+    assert "_=" in named["globenewswire_busted"].url()
 
 
 class StampedSource(Source):

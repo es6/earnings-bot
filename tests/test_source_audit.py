@@ -1,8 +1,10 @@
 import json
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
-from earnings_bot.source_audit import _measurements, _rank
+from earnings_bot.known import known_companies
+from earnings_bot.recorder import ET
+from earnings_bot.source_audit import _archived_sources, _measurements, _rank
 
 
 def test_last_release_ranks_body_separately_from_headline(tmp_path: Path) -> None:
@@ -36,3 +38,9 @@ def test_last_release_ranks_body_separately_from_headline(tmp_path: Path) -> Non
     assert "wire +0.00s, ir +2.00s" in _rank("Reports", bodies)
     assert "Discord 2.00s earlier" in comparison
     assert not _measurements(tmp_path, "NET", date(2026, 8, 1))[0]
+
+
+def test_the_archive_reads_one_copy_of_each_feed() -> None:
+    now = datetime(2026, 11, 9, 16, tzinfo=ET)
+    names = [source.name for source in _archived_sources("LLY", known_companies()["LLY"], now)]
+    assert names == ["prnewswire"]

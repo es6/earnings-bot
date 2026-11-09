@@ -6,6 +6,7 @@ compares those items with the ones it saw before to spot new ones.
 
 import itertools
 import json
+import random
 import re
 import time
 import xml.etree.ElementTree as ET
@@ -14,13 +15,13 @@ from collections.abc import Callable, Hashable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from email.utils import parsedate_to_datetime
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urljoin, urlsplit, urlunsplit
 
 from earnings_bot.fetch import Fetcher, Response
 
 BUSINESS_WIRE_EARNINGS = "https://feed.businesswire.com/rss/home/?rss=G1QFDERJXkJeEF9YXA=="
 # The latest 20 releases PR Newswire files under Earnings. Its CDN keeps a copy for up to 60 s
-# and ignores cache-busting parameters, so there's no busted variant to poll.
+# and ignores query strings, so FreshPrNewswire busts it another way.
 PR_NEWSWIRE_EARNINGS = (
     "https://www.prnewswire.com/rss/financial-services-latest-news/earnings-list.rss"
 )
@@ -313,6 +314,22 @@ class EdgarLatest(EdgarFilings):
         return sightings
 
 
+def case_variant(url: str, n: int) -> str:
+    """The URL with the letters of its path between the first segment and the extension in the
+    upper and lower case pattern of `n`'s bits, never all lowercase: `n` = 0 gives
+    /rss/Financial-services-latest-news/earnings-list.rss."""
+    parts = urlsplit(url)
+    first, rest = parts.path.removeprefix("/").split("/", 1)
+    stem, dot, extension = rest.rpartition(".")
+    letters = [i for i, char in enumerate(stem) if char.isalpha()]
+    pattern = 1 + n % ((1 << len(letters)) - 1)
+    chars = list(stem)
+    for bit, i in enumerate(letters):
+        if pattern >> bit & 1:
+            chars[i] = chars[i].upper()
+    return urlunsplit(parts._replace(path=f"/{first}/{''.join(chars)}{dot}{extension}"))
+
+
 class RssFeed(Source):
     """An RSS feed, optionally narrowed to items that name one of the given companies."""
 
@@ -367,6 +384,24 @@ class RssFeed(Source):
                 )
             )
         return sightings
+
+
+class FreshPrNewswire(RssFeed):
+    """A PR Newswire feed from PR Newswire's own server rather than its CDN. The CDN keeps each
+    copy for 60 s and ignores query strings, but it keys copies on the path's letter case, which
+    the server ignores after /rss/. So every poll spells the path a way not asked for before and
+    gets the feed as the server builds it then. On Nov 9, 2026 Lucid's results were in the
+    server's feed by 16:05:17 and reached the cached copy we polled at 16:06:02."""
+
+    interval = 1.0
+
+    def __init__(self, name: str, feed_url: str, companies: Sequence[str] = ()) -> None:
+        super().__init__(name, feed_url, companies)
+        # A random start, so a restart doesn't ask for spellings the CDN still holds
+        self._spellings = itertools.count(random.randrange(1 << 32))
+
+    def url(self) -> str:
+        return case_variant(self.feed_url, next(self._spellings))
 
 
 _ATOM = "{http://www.w3.org/2005/Atom}"
