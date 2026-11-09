@@ -33,6 +33,8 @@ BROWSER_HOSTS = frozenset(
         "investors.broadcom.com",
         "corporate.mcdonalds.com",
         "ir.homedepot.com",
+        # Akamai answers 403 to anything but a browser
+        "ir.lucidmotors.com",
     }
 )
 # Bound the bytes Chrome transfers through its local control socket.
