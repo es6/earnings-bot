@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from earnings_bot.browser_sources import IRTrial
+from earnings_bot.browser_sources import IRSource
 from earnings_bot.calendar import Calendar, manual_target, upcoming
 from earnings_bot.delivery import DeliveryStore
 from earnings_bot.ir_research import IR_LISTINGS, quarter_headline
@@ -57,23 +57,23 @@ def test_override_requires_a_valid_fiscal_period_and_future_time() -> None:
         manual_target("NVDA", "2026-11-01T16:20", "FY2027Q3", NOW)
 
 
-def test_auto_browser_trial_preserves_existing_schedule_choices(tmp_path: Path) -> None:
+def test_auto_browser_source_preserves_existing_schedule_choices(tmp_path: Path) -> None:
     with DeliveryStore(tmp_path / "state.db", 7) as store:
         calendar = Calendar(store)
         calendar.add("NVDA", 1, NOW)
         target = to_target("NVDA", datetime(2026, 11, 17, 16, 20, tzinfo=ET), 2027, 3)
-        target.trial.ir = IRTrial(
+        target.ir = IRSource(
             listing="https://investor.nvidia.com/news/", headline="Q3", verify_text=True
         )
         calendar.set_target(target, "Issuer notice")
-        file = target.model_copy(update={"trial": Trial(globenewswire=["NVIDIA"])})
+        file = target.model_copy(update={"ir": None, "trial": Trial(globenewswire=["NVIDIA"])})
         [effective] = calendar.plan({file.release_key: file}).values()
-        assert effective.trial.ir == target.trial.ir
+        assert effective.ir == target.ir
         assert effective.trial.globenewswire == ["NVIDIA"]
         assert not effective.trial.post
         file.trial.post = True
         [effective] = calendar.plan({file.release_key: file}).values()
-        assert effective.trial.ir is None
+        assert effective.ir == target.ir
         assert effective.trial.post
 
 
@@ -81,7 +81,7 @@ def test_saved_automatic_browser_headline_is_repaired_after_restart(tmp_path: Pa
     db = tmp_path / "state.db"
     target = to_target("CRWD", datetime(2026, 12, 1, 16, 5, tzinfo=ET), 2027, 3)
     headline = quarter_headline(2027, 3)
-    target.trial.ir = IRTrial(
+    target.ir = IRSource(
         listing=IR_LISTINGS["CRWD"], headline=headline.removesuffix(".*"), verify_text=True
     )
     with DeliveryStore(db, 7) as store:
@@ -90,7 +90,7 @@ def test_saved_automatic_browser_headline_is_repaired_after_restart(tmp_path: Pa
         calendar.set_target(target, "Issuer notice")
     with DeliveryStore(db, 7) as store:
         [effective] = Calendar(store).plan({}).values()
-        assert effective.trial.ir and effective.trial.ir.headline == headline
+        assert effective.ir and effective.ir.headline == headline
 
 
 def test_a_calendar_saved_before_profiles_is_upgraded_in_place(tmp_path: Path) -> None:

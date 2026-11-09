@@ -143,10 +143,10 @@ What this tells us:
      McDonald's origin sometimes takes 11 to 16 s to answer. Polls still give up after 3 s,
      and the summary counts timeouts apart from other errors so that stays visible.
 
-6. **Desktop Chrome IR trials.** Selected issuer listings can run in stock Chrome on a separate
-   inactive Windows desktop. A file can opt into a listing, exact PDF candidates, or the separate
-   Tesla HTTP deck trial. For tracked issuers, the planner can prepare a record-only listing
-   after verifying the previous quarter's article. See [browser IR](browser-ir.md).
+6. **Desktop Chrome IR.** Selected issuer listings run in stock Chrome on a separate inactive
+   Windows desktop. A schedule can add a listing, exact PDF candidates, or the separate Tesla HTTP
+   deck source. For tracked issuers, the planner can prepare a live listing after verifying the
+   previous quarter's article. See [browser IR](browser-ir.md).
 
 ### IR platforms
 
@@ -215,11 +215,12 @@ latest quarter only. The details per company, with the last four 8-K times, are 
   Walmart, Goldman Sachs and Microsoft. These are guess templates in `companies.toml`. Others
   name files by random IDs: JPMorgan, Bank of America, and Walmart's PDFs.
 - **Tesla's update deck** has a predictable URL. The default HTTP client gets 403, so the
-  8-K is the regular source. The [IR trial](browser-ir.md) can also watch the deck URL
-  with a Tesla-specific User-Agent that identifies earnings-bot.
-- **Issuer IR sources on trial.** The [desktop Chrome trial](browser-ir.md) covers the
+  deck source uses a Tesla-specific User-Agent that identifies earnings-bot and races
+  the 8-K when configured.
+- **Issuer IR through Chrome.** The [desktop Chrome source](browser-ir.md) covers the
   release listings for FICO, CrowdStrike, HubSpot, Lilly and Broadcom, plus exact PDF URLs
-  for Home Depot and McDonald's. CrowdStrike's copy on FinancialContent, McDonald's
+  for Home Depot and McDonald's. A verified result can start or update the alert.
+  CrowdStrike's copy on FinancialContent, McDonald's
   MediaRoom newsroom, Broadcom's newsroom API and HubSpot's release feed are independent
   trials (see [Sources](#sources)). The [manual checks](manual-checks.md) document earlier
   release times.
@@ -567,9 +568,9 @@ the next fiscal period.
   and Discord's message timestamp.
 - For selected issuer pages, Chrome inspects the public JSON they request and reports matching
   routes or research leads. A new route needs an adapter and live timing before it can join the
-  polling set. The planner can prepare a record-only browser listing after it retrieves the
-  previous fiscal period's actual report. The new trial checks the exact upcoming fiscal period
-  and usable results text.
+  polling set. The planner can prepare a live browser listing after it retrieves the previous
+  fiscal period's actual report. The source checks the upcoming fiscal period and usable results
+  text.
 - Keep the configured IR, newswire and SEC sources in the same race. The scorecard provides
   evidence for source tuning, and trial promotion is controlled by the schedule.
 

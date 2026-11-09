@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 
 from earnings_bot import date_discovery
-from earnings_bot.browser_sources import IRTrial
+from earnings_bot.browser_sources import IRSource
 from earnings_bot.calendar import Calendar, describe, manual_target
 from earnings_bot.date_discovery import (
     CALENDAR_DATE,
@@ -49,13 +49,13 @@ def nvidia_notices() -> tuple[int, bytes]:
 
 @pytest.fixture(autouse=True)
 def no_browser(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keeps desktop Chrome out of these tests: no IR listing read, no browser trial verified."""
+    """Keeps desktop Chrome out of these tests: no IR listing read, no browser source verified."""
 
     async def nothing(*args: object) -> None:
         return None
 
     monkeypatch.setattr(date_discovery, "_listing_date", nothing)
-    monkeypatch.setattr(date_discovery, "verified_browser_trial", nothing)
+    monkeypatch.setattr(date_discovery, "verified_browser_source", nothing)
 
 
 def test_notice_prefers_report_time_over_call_and_preserves_fiscal_year() -> None:
@@ -252,17 +252,17 @@ async def test_discovery_leaves_an_admin_override_alone(tmp_path: Path) -> None:
     assert statuses == []
 
 
-async def test_a_verified_browser_trial_joins_the_found_date_and_is_kept(
+async def test_a_verified_browser_source_joins_the_found_date_and_is_kept(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    trial = IRTrial(listing=IR_LISTINGS["NVDA"], headline="Third Quarter", verify_text=True)
+    trial = IRSource(listing=IR_LISTINGS["NVDA"], headline="Third Quarter", verify_text=True)
     verified: list[str] = []
 
-    async def verify(fetcher: Fetcher, ticker: str, period: str) -> IRTrial:
+    async def verify(fetcher: Fetcher, ticker: str, period: str) -> IRSource:
         verified.append(period)
         return trial
 
-    monkeypatch.setattr(date_discovery, "verified_browser_trial", verify)
+    monkeypatch.setattr(date_discovery, "verified_browser_source", verify)
     fetcher = RoutedFetcher({NVIDIA_FEED: nvidia_notices()})
     statuses: list[str] = []
     with DeliveryStore(tmp_path / "state.db", 7) as store:
@@ -274,7 +274,7 @@ async def test_a_verified_browser_trial_joins_the_found_date_and_is_kept(
         await dates._check(row)
 
         [row] = calendar.entries()
-        assert row.target and row.target.trial.ir == trial
+        assert row.target and row.target.ir == trial
         # The next hourly check finds the same date, and keeps the trial without verifying again
         await dates._check(row)
         assert calendar.entries() == [row]

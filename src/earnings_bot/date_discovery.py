@@ -21,7 +21,7 @@ from earnings_bot.browser import BrowserError
 from earnings_bot.calendar import Calendar, Tracked, describe, same_release
 from earnings_bot.fetch import Fetcher, Response
 from earnings_bot.investigate import OpenChrome, due, investigate
-from earnings_bot.ir_research import issuer_links, issuer_listing, verified_browser_trial
+from earnings_bot.ir_research import issuer_links, issuer_listing, verified_browser_source
 from earnings_bot.known import (
     NTH,
     ORD,
@@ -429,29 +429,28 @@ class DateDiscovery:
             return
         if self._defer_if_busy(row.cik) or row not in self.calendar.entries():
             return
-        if row.target and row.target.trial.ir and same_release(target, row.target):
-            target.trial.ir = row.target.trial.ir
+        if row.target and row.target.ir and same_release(target, row.target):
+            target.ir = row.target.ir
         if row.company.sec_form == "6-K" and target.sec_form != "6-K":
             target = target.model_copy(update={"sec_form": "6-K"})
         self.phases.pop(row.cik, None)
         if row.target != target or row.evidence != evidence:
             self.calendar.set_target(target, evidence)
             self.status(describe(target, evidence))
-        if target.trial.ir or target.trial.post or not target.period:
+        if target.ir or not target.period:
             return
-        trial = await verified_browser_trial(
+        ir = await verified_browser_source(
             self.fetcher, issuer_listing(row.ticker, row.company), target.period
         )
         if (
-            trial
+            ir
             and not self.busy()
             and any(
                 tracked.target == target and tracked.evidence == evidence
                 for tracked in self.calendar.entries()
             )
         ):
-            prepared = target.trial.model_copy(update={"ir": trial})
-            self.calendar.set_target(target.model_copy(update={"trial": prepared}), evidence)
+            self.calendar.set_target(target.model_copy(update={"ir": ir}), evidence)
 
     def _defer_if_busy(self, cik: int) -> bool:
         if not self.busy():

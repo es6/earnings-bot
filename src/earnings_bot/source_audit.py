@@ -132,7 +132,7 @@ def _archived_sources(ticker: str, company: KnownCompany, now: datetime) -> list
         newswire=business_wire,
         prnewswire=pr_newswire,
         rss=company.rss,
-        trial=company.trial.model_copy(update={"pages": [], "ir": None}),
+        trial=company.trial.model_copy(update={"pages": []}),
     )
     return [
         source

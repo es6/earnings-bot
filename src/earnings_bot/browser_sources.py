@@ -1,6 +1,7 @@
-"""Opt-in issuer listings and PDFs exercised by the desktop Chrome trial."""
+"""Issuer listings and PDFs read through desktop Chrome."""
 
 import re
+import time
 from dataclasses import replace
 from html.parser import HTMLParser
 from typing import Self
@@ -18,8 +19,10 @@ _TESLA_PATH = re.compile(r"/tesla-contents/IR/TSLA-Q[1-4]-\d{4}-Update\.pdf")
 
 
 def _check_pdf(url: str, warmup: str) -> None:
-    if browser_host(url) != browser_host(warmup) or not urlsplit(url).path.endswith(".pdf"):
-        raise ValueError("Each browser PDF must be a .pdf on its warmup page's host")
+    if browser_host(url) != browser_host(warmup) or not urlsplit(url).path.lower().endswith(
+        (".pdf", "/pdf")
+    ):
+        raise ValueError("Each browser PDF must point to a PDF on its warmup page's host")
 
 
 def _check_tesla(url: str) -> None:
@@ -29,10 +32,10 @@ def _check_tesla(url: str) -> None:
         or parts.netloc != "assets-ir.tesla.com"
         or not _TESLA_PATH.fullmatch(parts.path)
     ):
-        raise ValueError("Tesla trial URLs must point to an official quarterly update deck")
+        raise ValueError("Tesla deck URLs must point to an official quarterly update")
 
 
-class IRTrial(BaseModel):
+class IRSource(BaseModel):
     """A schedule must explicitly specify the current release or exact file candidates."""
 
     listing: str | None = None
@@ -64,7 +67,7 @@ class IRTrial(BaseModel):
         if self.tesla_deck:
             _check_tesla(self.tesla_deck)
         if not (self.listing or self.pdfs or self.tesla_deck):
-            raise ValueError("An IR trial must have a listing or at least one PDF")
+            raise ValueError("An IR source must have a listing or at least one PDF")
         return self
 
     def sources(self) -> list[Source]:
@@ -108,7 +111,6 @@ class BrowserRelease(Source):
 
     name = "browser-ir"
     interval = 1.0
-    trial = True
     report_initial = True
     stop_when_found = True
     ok_statuses = frozenset({200, 404})
@@ -119,13 +121,20 @@ class BrowserRelease(Source):
         self._host = browser_host(listing)
         self._headline = re.compile(headline, re.IGNORECASE)
         self._candidate: Sighting | None = None
+        self.listing_poll: tuple[Response, float] | None = None
+
+    @property
+    def matched_listing(self) -> bool:
+        return self._candidate is not None
 
     def url(self) -> str:
         return self.listing
 
     async def fetch(self, fetcher: Fetcher) -> Response:
         self._candidate = None
+        self.listing_poll = None
         listing = await fetcher.browser_request(self.listing, self.listing, self.timeout)
+        self.listing_poll = replace(listing, body=b""), time.monotonic()
         if listing.status != 200:
             return listing
         parser = _ReleaseLinks()
@@ -160,12 +169,25 @@ class BrowserRelease(Source):
             return []
         return [replace(candidate, body=response.body)]
 
+    def pdf_url(self, article: str, body: bytes) -> str | None:
+        parser = _ReleaseLinks()
+        parser.feed(body.decode(errors="replace"))
+        for href, label in parser.links:
+            if label.casefold() != "pdf version":
+                continue
+            try:
+                url = urldefrag(urljoin(article, href)).url
+                _check_pdf(url, self.listing)
+            except ValueError:
+                continue
+            return url
+        return None
 
-class _TrialPDF(GuessedFile):
+
+class _VerifiedPDF(GuessedFile):
     """A single GET both detects the PDF and provides its attachment bytes."""
 
     method = "GET"
-    trial = True
     report_initial = True
 
     def __init__(self, url: str, source_prefix: str) -> None:
@@ -188,7 +210,7 @@ class _TrialPDF(GuessedFile):
         ]
 
 
-class BrowserPDF(_TrialPDF):
+class BrowserPDF(_VerifiedPDF):
     def __init__(self, url: str, warmup: str) -> None:
         super().__init__(url, "browser-pdf:")
         _check_pdf(url, warmup)
@@ -198,7 +220,7 @@ class BrowserPDF(_TrialPDF):
         return await fetcher.browser_request(self.url(), self._warmup, self.timeout)
 
 
-class TeslaDeck(_TrialPDF):
+class TeslaDeck(_VerifiedPDF):
     def __init__(self, url: str) -> None:
         super().__init__(url, "tesla-pdf:")
         _check_tesla(url)

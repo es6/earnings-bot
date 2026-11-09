@@ -15,6 +15,7 @@ post = false
 pages = [
     "https://markets.financialcontent.com/stocks/article/bizwire-2026-12-1-crowdstrike-reports-third-quarter-fiscal-year-2027-financial-results",
 ]
-[target.trial.ir]
+
+[target.ir]
 listing = "https://ir.crowdstrike.com/press-releases"
 headline = 'CrowdStrike Reports Third Quarter Fiscal(?: Year)? 2027 Financial Results'

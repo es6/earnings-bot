@@ -111,9 +111,9 @@ the bot after it exits and
 writes its console output to `recordings/`. Run the script manually first to check its
 configuration, then stop that copy before starting the scheduled task.
 
-[Chrome IR trials](docs/browser-ir.md) can be prepared by the planner or configured per release.
+[Chrome IR sources](docs/browser-ir.md) can be prepared by the planner or configured per release.
 They record timing by default.
-For the first Chrome trial, use an **At log on** trigger with **Run only when user is logged
+For Chrome, use an **At log on** trigger with **Run only when user is logged
 on**, unless you've already verified Chrome under the unattended startup account. Use a single
 task. Other sources keep running if Chrome cannot start.
 

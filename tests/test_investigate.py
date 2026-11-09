@@ -344,7 +344,7 @@ async def test_discovery_investigates_once_then_finds_the_date_on_the_new_feed(
     async def nothing(*args: object) -> None:
         return None
 
-    monkeypatch.setattr(date_discovery, "verified_browser_trial", nothing)
+    monkeypatch.setattr(date_discovery, "verified_browser_source", nothing)
     released("Webcast at investors.example.com.")
     fetcher = RoutedFetcher(
         {

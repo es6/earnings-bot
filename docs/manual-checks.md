@@ -1,6 +1,6 @@
 # Manual checks
 
-Some IR sites block the default HTTP client. The [IR trial](browser-ir.md) covers
+Some IR sites block the default HTTP client. The [Chrome IR source](browser-ir.md) covers
 selected issuer sources. These manual checks fill gaps listed as `todo` in
 `src/earnings_bot/companies.toml` and record historical release timing.
 
@@ -39,7 +39,7 @@ Results from 2026-10-31. Every company's wire is now known:
 
 Done on 2026-10-31. The deck links follow one pattern
 (`https://assets-ir.tesla.com/tesla-contents/IR/TSLA-Q3-2026-Update.pdf`), but that host
-returned 403 to the default client. The [IR trial](browser-ir.md) can poll the exact
+returned 403 to the default client. The [Tesla deck source](browser-ir.md) can poll the exact
 deck URL alongside the 8-K.
 
 One optional check is left, at Tesla's next report (late January 2027). Note when the deck
@@ -74,7 +74,7 @@ Results from 2026-10-31:
 | McDonald's | Aug 4, 6:46:00 AM (`MCD Q226 Earnings Release - Exhibit 99.1.pdf`) | PR Newswire 7:00 AM | Uploaded 14 minutes before the release, but the host blocks automated reads |
 
 The default HTTP client received 403 from these PDF hosts during the checks.
-The [IR trial](browser-ir.md) covers exact PDF URLs for Home Depot and McDonald's.
+The [Chrome IR source](browser-ir.md) covers exact PDF URLs for Home Depot and McDonald's.
 
 Two sites that do answer us, checked the same way:
 

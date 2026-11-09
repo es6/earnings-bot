@@ -200,13 +200,13 @@ class DirectoryWatcher:
             self.windows[key] = _Window(target, asyncio.create_task(self._watch(target)))
         self.last_scan = now
         self.store.scanned(now)
-        # Keep a just-opened or imminently opening trial clear of browser teardown.
+        # Keep a just-opened or imminently opening IR source clear of browser teardown.
         browser_horizon = self.journal.now() + timedelta(seconds=SCAN_SECONDS)
         if not any(
             not window.task.done()
             and window.target.window[0] <= browser_horizon
-            and window.target.trial.ir is not None
-            and (window.target.trial.ir.listing or window.target.trial.ir.pdfs)
+            and window.target.ir is not None
+            and (window.target.ir.listing or window.target.ir.pdfs)
             for window in self.windows.values()
         ):
             await self.fetcher.close_browser()

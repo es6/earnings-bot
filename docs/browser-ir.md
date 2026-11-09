@@ -1,17 +1,17 @@
-# Public IR browser trial
+# Investor relations in desktop Chrome
 
-The trial uses headful Chrome on a separate inactive Windows desktop with
+The bot uses headful Chrome on a separate inactive Windows desktop with
 a temporary profile. During a watch window, Chrome and ordinary HTTP
 requests share per-host pacing. The first browser poll warms the issuer tab.
 Later polls fetch from that tab without reloading the page. The bot keeps
 the complete response in memory for attachments or summaries.
 
-Use the recorder first. These tests exercised an active Windows login session.
-Check Chrome startup under the intended Task Scheduler account before counting
-on this source after a reboot. A browser startup failure is reported for that
-source. The other sources continue watching.
+The worker has been exercised under an active Windows login session. Chrome
+startup under the Task Scheduler account depends on that account's desktop
+access. A browser startup failure is reported for that source. The other
+sources continue watching.
 
-## Automatic trials for tracked issuers
+## Automatic sources for tracked issuers
 
 For a listing researched by hand, or one the bot found when it investigated a newly
 tracked company, `/track` can use Chrome to read an issuer's date notice. Chrome
@@ -21,14 +21,14 @@ It can also observe same-origin JSON requested by the public IR page. The
 scorecard distinguishes responses that matched the last release from endpoint
 leads. A new route can be added as a source through a dedicated adapter.
 
-The planner can prepare a listing trial after retrieving the previous quarter's
+The planner can prepare a listing source after retrieving the previous quarter's
 full report. It checks the upcoming fiscal period and requires usable financial
-results text before recording a sighting. Automatically prepared trials record
-timing alongside the other sources.
+results text before recording a sighting. Chrome races the other sources for the
+initial alert and can add the IR link to an alert already posted.
 
 ## Configure a source for one schedule
 
-Add an `[target.trial.ir]` section after the matching `[[target]]` entry. The
+Add a `[target.ir]` section after the matching `[[target]]` entry. The
 following are examples using historical releases. Set the target's expected time
 and the headline's fiscal period for the upcoming release.
 
@@ -39,7 +39,7 @@ cik = 814547
 expected = 2026-11-04T16:15:00
 newswire = ["FICO", "Fair Isaac"]
 
-[target.trial.ir]
+[target.ir]
 listing = "https://investors.fico.com/news-releases/"
 headline = 'FICO Announces Earnings of .+ for Fourth Quarter Fiscal 2026'
 ```
@@ -48,9 +48,11 @@ The headline is a case-insensitive full-match regex. Include the issuer and
 fiscal period. The listing must link to the result by that title. A webcast or
 a date announcement won't count. The recorder waits until the linked article
 contains the title and enough text to pass the release check. Set `verify_text = true`
-to require financial results text, as automatic trials do.
+to require financial results text, as automatic sources do. When the article
+links to a same-host **PDF Version**, the bot verifies and attaches the PDF
+after adding the article link.
 
-Other listing starting points for the same trial:
+Other listing starting points:
 
 | Issuer | Listing |
 | --- | --- |
@@ -64,7 +66,7 @@ file URL or URLs. McDonald's has used different filenames across quarters.
 Verify the candidates before arming the schedule.
 
 ```toml
-[target.trial.ir]
+[target.ir]
 warmup = "https://corporate.mcdonalds.com/corpmcd/investors/financial-information.html"
 pdfs = [
   "https://corporate.mcdonalds.com/content/dam/sites/corp/nfl/pdf/MCD%20Q326%20-%20Exhibit%2099.1.pdf",
@@ -77,18 +79,21 @@ Home Depot uses the same fields. For example, set `warmup` to
 for its Q2 2026 file. A cache-busted GET validates the PDF signature and keeps
 the bytes for the attachment.
 
-Tesla has a separate HTTP trial with the actual project name in the User-Agent:
+Tesla has a separate HTTP source with the project name in the User-Agent.
 
 ```toml
-[target.trial.ir]
+[target.ir]
 tesla_deck = "https://assets-ir.tesla.com/tesla-contents/IR/TSLA-Q3-2026-Update.pdf"
 ```
 
-All trial sources are recorded. To let a trial source add to the Discord alert,
-set `post = true` in that target's `[target.trial]` section after validating its timing.
+Existing `[target.trial.ir]` entries load as live sources. The `post` switch
+under `[target.trial]` controls the other experimental sources.
 The bot keeps the PDF link if the file exceeds the attachment limit. Use only
-the current quarter's PDF candidates. A verified trial result on the first
+the current quarter's PDF candidates. A verified IR result on the first
 poll counts as a catch-up, so a late start can still see that scheduled result.
+
+The journal records each listing's response time, queue time, cache headers
+and headline match separately from the article fetch.
 
 ```powershell
 uv run earnings-bot-record schedules/<day>.toml

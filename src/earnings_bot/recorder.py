@@ -25,10 +25,10 @@ from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 import aiohttp
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from earnings_bot.browser import BrowserError, BrowserUnavailable
-from earnings_bot.browser_sources import IRTrial
+from earnings_bot.browser_sources import BrowserRelease, IRSource
 from earnings_bot.clock import TrustedClock
 from earnings_bot.config import RecorderSettings
 from earnings_bot.fetch import Fetcher, Response
@@ -56,7 +56,17 @@ from earnings_bot.sources import (
 ET = ZoneInfo("America/New_York")
 
 # Response headers worth keeping, to see how stale a CDN's copy was
-CACHE_HEADERS = ("age", "cache-control", "expires", "last-modified", "date", "cf-cache-status")
+CACHE_HEADERS = (
+    "age",
+    "cache-control",
+    "expires",
+    "last-modified",
+    "date",
+    "etag",
+    "cf-cache-status",
+    "x-cache",
+    "x-cache-remote",
+)
 
 # Seconds between clock syncs during a window. A computer's clock can drift by about a
 # millisecond a minute, so this keeps the error to a few milliseconds.
@@ -75,7 +85,6 @@ class Trial(BaseModel):
     # Names to look for in PR Newswire's Semiconductors feed
     prnewswire_semiconductors: list[str] = []
     pages: list[str] = []  # exact URLs of the release page or file, fetched whole
-    ir: IRTrial | None = None  # issuer browser listings and official PDFs
 
     def sources(self) -> list[Source]:
         sources: list[Source] = []
@@ -97,8 +106,6 @@ class Trial(BaseModel):
                 )
             )
         sources += _named_apart([GuessedPage(url) for url in self.pages])
-        if self.ir:
-            sources += self.ir.sources()
         for source in sources:
             source.trial = True
         return sources
@@ -134,9 +141,26 @@ class Target(BaseModel):
     prnewswire: list[str] = []  # names to look for in PR Newswire's earnings feed
     rss: list[str] = []  # the company's own press release feeds
     guess: list[str] = []  # file URLs to probe
+    ir: IRSource | None = None
     trial: Trial = Trial()
     before_minutes: float = 10
     after_minutes: float = 30
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_ir(cls, values: Any) -> Any:
+        # Schedule TOML and saved calendar JSON used to nest IR under trial.
+        if (
+            isinstance(values, dict)
+            and isinstance(trial := values.get("trial"), dict)
+            and "ir" in trial
+        ):
+            return {
+                "ir": trial["ir"],
+                **values,
+                "trial": {k: v for k, v in trial.items() if k != "ir"},
+            }
+        return values
 
     @field_validator("expected")
     @classmethod
@@ -176,6 +200,8 @@ class Target(BaseModel):
             ]
         sources += [_company_feed(url) for url in self.rss]
         sources += _named_apart([GuessedFile(url) for url in self.guess])
+        if self.ir:
+            sources += self.ir.sources()
         return sources + self.trial.sources()
 
 
@@ -325,6 +351,10 @@ def _logged(item: Sighting) -> dict[str, Any]:
     return fields
 
 
+def _cache_headers(response: Response) -> dict[str, str]:
+    return {name: response.headers[name] for name in CACHE_HEADERS if name in response.headers}
+
+
 def record_items(
     w: Watch,
     items: list[Sighting],
@@ -364,9 +394,7 @@ def record_items(
             previous_sent=w.previous,
             response_ms=round(response.elapsed * 1000),
             queued_ms=round(response.queued * 1000),
-            headers={
-                name: response.headers[name] for name in CACHE_HEADERS if name in response.headers
-            },
+            headers=_cache_headers(response),
         )
         if item.earnings and item.caught_up:
             w.caught_up = w.caught_up or item.title
@@ -425,6 +453,20 @@ def take(
     """Records one poll's outcome for one watch, and returns how many seconds more than usual
     to wait before the next poll."""
     w.polls += 1
+    if isinstance(w.source, BrowserRelease) and w.source.listing_poll:
+        listing, received = w.source.listing_poll
+        journal.write(
+            "browser_listing",
+            ticker=w.ticker,
+            source=w.source.name,
+            sent=sent,
+            received=journal.now() - timedelta(seconds=time.monotonic() - received),
+            matched=w.source.matched_listing,
+            status=listing.status,
+            response_ms=round(listing.elapsed * 1000),
+            queued_ms=round(listing.queued * 1000),
+            headers=_cache_headers(listing),
+        )
     if isinstance(outcome, PollError):
         return _failed(w, outcome, journal)
     if items is None:

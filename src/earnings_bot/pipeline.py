@@ -19,6 +19,8 @@ from urllib.parse import urlsplit
 import aiohttp
 import discord
 
+from earnings_bot.browser import BrowserError
+from earnings_bot.browser_sources import BrowserPDF, BrowserRelease, TeslaDeck
 from earnings_bot.delivery import Delivery, DeliveryStore, retry_delivery
 from earnings_bot.estimates import Estimates, EstimatesError, fmp_estimates
 from earnings_bot.fetch import Fetcher, Response
@@ -246,7 +248,7 @@ class DurableDiscordPoster(DiscordPoster):
 
 
 def describe_source(source: Source) -> str:
-    if isinstance(source, Q4PressReleases | Q4FinancialReports):
+    if isinstance(source, Q4PressReleases | Q4FinancialReports | BrowserRelease):
         return "IR site"
     if isinstance(source, EdgarFilings):
         return f"SEC {source.form}"
@@ -332,12 +334,19 @@ class Release:
             self.first_seen, self.first_seen_at = self.journal.now(), time.monotonic()
             self.caught_up = sighting.caught_up
         label = describe_source(source)
-        is_file = urlsplit(sighting.url).path.lower().endswith(FILE_TYPES)
-        self._spawn(self._link(_file_name(sighting.url) if is_file else label, sighting.url))
+        is_file = isinstance(source, BrowserPDF | TeslaDeck) or urlsplit(
+            sighting.url
+        ).path.lower().endswith(FILE_TYPES)
+        if is_file:
+            label = self._attachment_name(sighting.url)
+        self._spawn(self._link(label, sighting.url))
         if is_file:
             self._spawn(self._attach(sighting.url, sighting.body))
-        elif measure or not self.has_text or (self.summarizer and not self.summarizing):
-            self._spawn(self._read(source, sighting, label, measure))
+        else:
+            if isinstance(source, BrowserRelease) and sighting.body is not None:
+                self._spawn(self._browser_attachment(source, sighting.url, sighting.body))
+            if measure or not self.has_text or (self.summarizer and not self.summarizing):
+                self._spawn(self._read(source, sighting, label, measure))
 
     async def finish(self) -> None:
         """Waits for every pending step."""
@@ -431,8 +440,43 @@ class Release:
         else:
             self.journal.say(f"{self.target.ticker}: added the {label} link, live after {live}s")
 
-    async def _attach(self, url: str, body: bytes | None = None) -> None:
+    def _attachment_name(self, url: str) -> str:
         name = _file_name(url)
+        if name.lower() == "pdf":
+            period = self.target.period or self.target.expected.astimezone(ET).date()
+            return f"{self.target.ticker}-{period}-results.pdf"
+        return name
+
+    async def _browser_attachment(self, source: BrowserRelease, article: str, body: bytes) -> None:
+        url = await asyncio.to_thread(source.pdf_url, article, body)
+        if url is None:
+            return
+        name = self._attachment_name(url)
+        if name in self.files or name in self._downloading:
+            return
+        self._downloading.add(name)
+        try:
+            response = await self._download(
+                name,
+                partial(
+                    self.fetcher.browser_request, url, source.listing, source.timeout, urgent=True
+                ),
+            )
+        finally:
+            self._downloading.discard(name)
+        if response.status == 200 and response.body.startswith(b"%PDF-"):
+            await self._link(name, url)
+            await self._attach(url, response.body)
+        elif name not in self.files:
+            self.journal.write(
+                "attachment_unavailable",
+                ticker=self.target.ticker,
+                file=name,
+                status=response.status,
+            )
+
+    async def _attach(self, url: str, body: bytes | None = None) -> None:
+        name = self._attachment_name(url)
         if name in self.files:
             return
         status = 200
@@ -441,7 +485,7 @@ class Release:
                 return
             self._downloading.add(name)
             try:
-                response = await self._download(url, name)
+                response = await self._download(name, partial(self.fetcher.request, "GET", url))
                 status, body = response.status, response.body
             finally:
                 self._downloading.discard(name)
@@ -465,10 +509,10 @@ class Release:
         )
         self.journal.say(f"{self.target.ticker}: attached {name}")
 
-    async def _download(self, url: str, name: str) -> Response:
+    async def _download(self, name: str, request: Callable[[], Awaitable[Response]]) -> Response:
         """Gets a file. A feed can list a file before it's uploaded, so a 404 gets tried again
         until the target's window closes."""
-        response = await self.fetcher.request("GET", url)
+        response = await request()
         _, end = self.target.window
         retry = timedelta(seconds=self.attach_retry)
         if response.status != 404 or self.journal.now() + retry >= end:
@@ -479,9 +523,11 @@ class Release:
         )
         while response.status == 404 and self.journal.now() + retry < end:
             await asyncio.sleep(self.attach_retry)
+            if name in self.files:
+                break
             try:
-                response = await self.fetcher.request("GET", url)
-            except (aiohttp.ClientError, TimeoutError):
+                response = await request()
+            except (aiohttp.ClientError, BrowserError, TimeoutError):
                 continue  # keep the last answer and try again
         return response
 
