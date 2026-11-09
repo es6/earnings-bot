@@ -54,7 +54,7 @@ def no_browser(monkeypatch: pytest.MonkeyPatch) -> None:
     async def nothing(*args: object) -> None:
         return None
 
-    monkeypatch.setattr(date_discovery, "_browser_date", nothing)
+    monkeypatch.setattr(date_discovery, "_listing_date", nothing)
     monkeypatch.setattr(date_discovery, "verified_browser_trial", nothing)
 
 

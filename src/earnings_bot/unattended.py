@@ -20,6 +20,7 @@ from earnings_bot.fetch import Fetcher
 from earnings_bot.issuers import Issuers
 from earnings_bot.pipeline import DiscordPoster, DurableDiscordPoster, Releases, keep_warm
 from earnings_bot.recorder import ET, Journal, Plan, Polls, Target, Watch, record_target
+from earnings_bot.sec_results import SixKResults
 from earnings_bot.source_audit import audit_sources
 from earnings_bot.sources import Sighting, Source
 from earnings_bot.summary import Summarizer
@@ -57,13 +58,14 @@ class DirectoryWatcher:
         self.directory = directory
         self.fetcher = fetcher
         self.journal = journal
-        self.polls = Polls(fetcher, journal)
+        self.sixk = SixKResults(fetcher)
+        self.polls = Polls(fetcher, journal, self.sixk)
         self.releases = releases
         self.store = store
         self.calendar = Calendar(store)
         self.planned: dict[str, Target] = {}
         self.dates = DateDiscovery(
-            self.calendar, fetcher, journal.now, self.busy, journal.say, fmp_api_key
+            self.calendar, fetcher, journal.now, self.busy, status, fmp_api_key, sixk=self.sixk
         )
         self.issuers = Issuers(fetcher)
         self.status = status
@@ -237,6 +239,7 @@ class DirectoryWatcher:
             watches = await record_target(target, self.fetcher, self.journal, on_new, self.polls)
             self._problem(problem, None)
             self.store.close_window(target.release_key, target.expected)
+            self.dates.changed.set()
             comparison = ""
             if benchmark is not None:
                 comparison = await self._compare(target, watches, benchmark)
@@ -441,7 +444,8 @@ async def watch_directory(
                 lambda: watcher.planned,
                 journal.now,
                 watcher.busy,
-                partial(audit_sources, fetcher, directory, benchmark=benchmark),
+                partial(audit_sources, fetcher, directory, benchmark=benchmark, sixk=watcher.sixk),
+                date_phase=watcher.dates.phases.get,
             )
             ready(watcher)
             status(f"Earnings monitoring started. Reading {directory.name}/.")

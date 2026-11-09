@@ -249,7 +249,7 @@ def describe_source(source: Source) -> str:
     if isinstance(source, Q4PressReleases | Q4FinancialReports):
         return "IR site"
     if isinstance(source, EdgarFilings):
-        return "SEC 8-K"
+        return f"SEC {source.form}"
     if isinstance(source, BroadcomNewsroom):
         return "Broadcom newsroom"
     if source.name.startswith("businesswire"):

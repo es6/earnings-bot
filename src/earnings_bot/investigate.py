@@ -8,7 +8,7 @@ import re
 from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 from html.parser import HTMLParser
 from typing import Protocol
 from urllib.parse import urljoin, urlsplit
@@ -18,15 +18,28 @@ import aiohttp
 from earnings_bot.browser import BrowserError
 from earnings_bot.fetch import Fetcher, Response
 from earnings_bot.ir_research import issuer_links
+from earnings_bot.issuers import SEC_SUBMISSIONS, filing_form, release_time
 from earnings_bot.known import KnownCompany, known_companies
-from earnings_bot.recorder import PollError, poll
-from earnings_bot.sources import EdgarFilings, Q4PressReleases, RssFeed, looks_like_earnings
+from earnings_bot.recorder import ET, PollError, poll
+from earnings_bot.sec_results import SixKResults, SixKUnavailable
+from earnings_bot.sources import (
+    EdgarFilings,
+    Q4PressReleases,
+    RssFeed,
+    looks_like_earnings,
+    published_time,
+)
 from earnings_bot.text import html_to_text, release_text
 
 log = logging.getLogger(__name__)
 REINVESTIGATE = timedelta(days=30)
 _HOST = re.compile(r"\b((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,})\b", re.IGNORECASE)
 _IR_HOST = re.compile(r"^(?:ir|investors?|investor-?relations)\.", re.IGNORECASE)
+_IR_LINK = re.compile(
+    r"(?:https?://)?([a-z0-9.-]+\.[a-z]{2,})/"
+    r"(?:investor-relations|events-news|news-events|press-releases|reports-filings)(?:[/\s]|$)",
+    re.IGNORECASE,
+)
 # The dateline that opens a wire release: "NEWARK, Calif., Oct. 5, 2026 /PRNewswire/ --"
 _WIRES = (
     ("PR Newswire", re.compile(r"/\s*PRNewswire(?:-[A-Z]+)?\s*/", re.IGNORECASE)),
@@ -62,13 +75,25 @@ def due(ticker: str, company: KnownCompany, today: date) -> bool:
     """Whether to look for a company's sources: one outside the catalog, not looked at lately."""
     if ticker in known_companies():
         return False
-    return company.investigated is None or today - company.investigated >= REINVESTIGATE
+    return (
+        (company.sec_form is None and not company.eightk)
+        or company.investigated is None
+        or today - company.investigated >= REINVESTIGATE
+    )
 
 
-def ir_hosts(text: str) -> list[str]:
+def ir_hosts(text: str, ticker: str | None = None) -> list[str]:
     """Hosts a release names that look like an IR site, in the order it names them."""
     hosts = dict.fromkeys(host.lower() for host in _HOST.findall(text))
-    return [host for host in hosts if _IR_HOST.match(host)]
+    prefixes = {host.lower() for host in _IR_LINK.findall(text)}
+    candidates = []
+    for host in hosts:
+        without_www = host.removeprefix("www.")
+        if ticker and without_www.split(".")[0] == ticker.lower():
+            candidates.append(without_www)
+        elif _IR_HOST.match(host) or host in prefixes:
+            candidates.append(host)
+    return list(dict.fromkeys(candidates))
 
 
 def wire(text: str) -> str | None:
@@ -232,14 +257,44 @@ async def investigate(
     company: KnownCompany,
     today: date,
     chrome: OpenChrome | None = None,
+    *,
+    sixk: SixKResults | None = None,
+    ticker: str | None = None,
 ) -> KnownCompany:
     """The company with what the bot found: its IR feed if the site has one, its press release
     list for Chrome if it hasn't, and its wire. Without `chrome`, a site that needs it goes
     unread."""
     findings = Findings()
-    text = await _last_release(fetcher, company.cik) or ""
+    form = company.sec_form
+    filings = None
+    if form is None and not company.eightk:
+        reply = await _get(fetcher, SEC_SUBMISSIONS.format(cik=company.cik))
+        if reply is None or reply.status != 200:
+            raise SixKUnavailable("SEC issuer form lookup unavailable")
+        form = filing_form(json.loads(reply.body))
+        if form == "6-K":
+            filings = EdgarFilings(company.cik, limit=500, form=form).parse(reply)
+    company = company.model_copy(update={"sec_form": form or "8-K"})
+    if company.sec_form == "6-K":
+        verifier = sixk or SixKResults(fetcher)
+        results = await verifier.history(
+            company.cik, datetime.combine(today, time.max, ET), filings=filings
+        )
+        accepted = [
+            stamp for result in results if (stamp := published_time(result.published)) is not None
+        ]
+        if accepted:
+            company = company.model_copy(
+                update={
+                    "release_time": release_time(accepted),
+                    "sixk": [f"{stamp.astimezone(ET):%H:%M}" for stamp in accepted],
+                }
+            )
+        text = (results[0].body or b"").decode() if results else ""
+    else:
+        text = await _last_release(fetcher, company.cik) or ""
     findings.wire = wire(text)
-    for host in ir_hosts(text)[:3]:
+    for host in ir_hosts(text, ticker)[:3]:
         home = f"https://{host}/"
         page = await _get(fetcher, home)
         if page is None or (page.status >= 400 and page.status not in _BLOCKED):
@@ -258,8 +313,10 @@ async def investigate(
             )
             findings.feeds = [feed] if feed else []
             findings.wire = findings.wire or feed_wire
-        if not findings.q4 and not findings.feeds and chrome is not None:
-            await _through_chrome(fetcher, chrome, home, findings)
+        if not findings.q4 and not findings.feeds:
+            findings.listing = listing(home, page.body)
+            if not findings.listing and chrome is not None:
+                await _through_chrome(fetcher, chrome, home, findings)
         break
     found_wire = findings.wire or "unknown"
     trial = company.trial

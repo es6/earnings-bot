@@ -7,10 +7,11 @@ import os
 import re
 import time
 from calendar import month_name
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import replace
 from datetime import date, datetime, timedelta
+from html import escape
 from urllib.parse import urljoin, urlsplit
 from zoneinfo import ZoneInfo
 
@@ -18,7 +19,7 @@ import aiohttp
 
 from earnings_bot.browser import BrowserError
 from earnings_bot.calendar import Calendar, Tracked, describe, same_release
-from earnings_bot.fetch import Fetcher
+from earnings_bot.fetch import Fetcher, Response
 from earnings_bot.investigate import OpenChrome, due, investigate
 from earnings_bot.ir_research import issuer_links, issuer_listing, verified_browser_trial
 from earnings_bot.known import (
@@ -30,6 +31,7 @@ from earnings_bot.known import (
     to_target,
 )
 from earnings_bot.recorder import ET, PollError, Target, poll
+from earnings_bot.sec_results import SixKResults, SixKUnavailable
 from earnings_bot.sources import BroadcomNewsroom, Q4PressReleases, RssFeed
 from earnings_bot.text import html_to_text, release_text
 
@@ -37,6 +39,7 @@ log = logging.getLogger(__name__)
 PT = ZoneInfo("America/Los_Angeles")
 FMP_EARNINGS = "https://financialmodelingprep.com/stable/earnings"
 CALENDAR_DATE = "FMP calendar date, time from past 8-Ks"
+CALENDAR_6K_DATE = "FMP calendar date, time estimated from verified results 6-Ks"
 CALENDAR_REFRESH = 12 * 3600  # seconds; FMP's free plan allows 250 requests a day
 MANUAL = "Manual override"
 _MONTHS = {name.lower(): i for i, name in enumerate(month_name) if name}
@@ -54,15 +57,16 @@ _NOTICE = re.compile(
     r"to (?:report|release|announce|host)|conference call|webcast",
     re.IGNORECASE,
 )
-_RESULTS = re.compile(r"\b(earnings|financial results|quarterly results)\b", re.IGNORECASE)
+_RESULTS = re.compile(r"\b(?:earnings|results)\b", re.IGNORECASE)
 _RELEASE = re.compile(
     r"\b(?:will|plans to|expects to)\s+(?:report|release|announce|publish|issue)\b"
-    r"|\b(?:results|earnings)\b.{0,70}\b(?:publicly announced|released|published)\s+at\b",
+    r"|\b(?:results|earnings)\b.{0,50}\b(?:will be|are)\s+"
+    r"(?:publicly\s+)?(?:announced|released|published)\b",
     re.IGNORECASE,
 )
 _TIME = re.compile(
     r"\bat\s+(?:approximately\s+|about\s+)?(\d{1,2})(?::(\d{2}))?\s*"
-    r"(am|pm)\s*(ET|EST|EDT|Eastern(?: Time)?|PT|PST|PDT|Pacific(?: Time)?)\b",
+    r"(am|pm)\s*\(?(ET|EST|EDT|Eastern(?: Time)?|PT|PST|PDT|Pacific(?: Time)?)\b",
     re.IGNORECASE,
 )
 _AFTER = re.compile(
@@ -226,14 +230,14 @@ async def find_date(
                     return target, f"{evidence} <{item.url}>"
         except PollError:
             pass
-    return await _browser_date(fetcher, ticker, company, now)
+    return await _listing_date(fetcher, ticker, company, now)
 
 
 async def calendar_date(
     fetcher: Fetcher, api_key: str, ticker: str, company: KnownCompany, now: datetime
 ) -> tuple[Target, str] | None:
     """The next release from FMP's earnings calendar, for a company with no issuer feed we
-    know. The day is FMP's, and the time comes from past 8-Ks, so the window is wide. None
+    know. The day is FMP's, and the time comes from prior results filings. None
     means FMP has no date to come; ValueError means it didn't answer properly."""
     if not (company.release_time and company.fiscal_year_end):
         return None
@@ -264,31 +268,44 @@ async def calendar_date(
         target.before_minutes = 60
         target.after_minutes = 90
         if target.window[1] > now:
-            return target, CALENDAR_DATE
+            return target, CALENDAR_6K_DATE if company.sec_form == "6-K" else CALENDAR_DATE
     return None
 
 
-async def _browser_date(
+async def _listing_date(
     fetcher: Fetcher, ticker: str, company: KnownCompany, now: datetime
 ) -> tuple[Target, str] | None:
     listing = issuer_listing(ticker, company)
-    if os.name != "nt" or listing is None:
+    if listing is None:
+        return None
+
+    async def direct(url: str) -> Response:
+        return await fetcher.request("GET", url, give_up_after=4, allow_redirects=False)
+
+    async def check(get: Callable[[str], Awaitable[Response]]) -> tuple[Target, str] | None:
+        page = await get(listing)
+        if page.status != 200:
+            return None
+        notices = [
+            (url, title) for url, title in issuer_links(listing, page.body) if _is_notice(title)
+        ]
+        for url, title in notices[:3]:
+            page = await get(url)
+            if page.status == 200:
+                body = page.body.decode(errors="replace")
+                if result := parse_notice(ticker, company, title, body, now):
+                    target, evidence = result
+                    return target, f"{evidence} <{url}>"
+        return None
+
+    with suppress(aiohttp.ClientError, TimeoutError, ValueError, KeyError):
+        if result := await check(direct):
+            return result
+    if os.name != "nt":
         return None
     try:
         async with fetcher.research_browser() as browser:
-            page = await browser.request(listing, listing, 4, fetcher.wait_turn)
-            if page.status != 200:
-                return None
-            notices = [
-                (url, title) for url, title in issuer_links(listing, page.body) if _is_notice(title)
-            ]
-            for url, title in notices[:3]:
-                page = await browser.request(url, listing, 4, fetcher.wait_turn)
-                if page.status == 200:
-                    body = page.body.decode(errors="replace")
-                    if result := parse_notice(ticker, company, title, body, now):
-                        target, evidence = result
-                        return target, f"{evidence} <{url}>"
+            return await check(lambda url: browser.request(url, listing, 4, fetcher.wait_turn))
     except (BrowserError, aiohttp.ClientError, TimeoutError, ValueError, KeyError):
         return None
     return None
@@ -304,11 +321,14 @@ class DateDiscovery:
         status: Callable[[str], None],
         fmp_api_key: str | None = None,
         chrome: OpenChrome | None = None,
+        sixk: SixKResults | None = None,
     ) -> None:
         self.calendar, self.fetcher, self.now = calendar, fetcher, now
         self.busy, self.status = busy, status
         self.fmp_api_key = fmp_api_key
         self.chrome = chrome  # for investigations; None means desktop Chrome on Windows
+        self.sixk = sixk or SixKResults(fetcher)
+        self.phases: dict[int, str] = {}
         self.changed = asyncio.Event()
         self.checked: dict[int, float] = {}
         # Each company's FMP answer and when to ask again, as time.monotonic()
@@ -329,6 +349,7 @@ class DateDiscovery:
                         await self._check(row)
                 except Exception:
                     log.exception("Date discovery failed for %s", row.ticker)
+                    self.phases[row.cik] = "Issuer research failed. Retrying at the next check."
             with suppress(TimeoutError):
                 await asyncio.wait_for(self.changed.wait(), timeout=60)
 
@@ -348,17 +369,30 @@ class DateDiscovery:
         self.calendar_dates[row.cik] = time.monotonic() + CALENDAR_REFRESH, result
         return result
 
+    async def _issuer_date(self, row: Tracked, now: datetime) -> tuple[Target, str] | None:
+        if result := await find_date(self.fetcher, row.ticker, now, row.company):
+            return result
+        if row.company.sec_form != "6-K":
+            return None
+        with suppress(SixKUnavailable):
+            async for notice in self.sixk.notices(row.cik, now):
+                if result := parse_notice(
+                    row.ticker, row.company, notice.headline, escape(notice.text), now
+                ):
+                    target, evidence = result
+                    return target, f"{evidence} from issuer 6-K exhibit <{notice.url}>"
+        return None
+
     async def _investigate(self, row: Tracked) -> Tracked:
         """Looks for the sources of a company outside the catalog, once and then monthly."""
         today = self.now().astimezone(ET).date()
         if not due(row.ticker, row.company, today):
             return row
-        try:
-            chrome = self.chrome or (self.fetcher.research_browser if os.name == "nt" else None)
-            company = await investigate(self.fetcher, row.company, today, chrome)
-        except Exception:
-            log.exception("Investigating %s failed", row.ticker)
-            return row
+        self.phases[row.cik] = "Looking for its IR site, feeds and newswire."
+        chrome = self.chrome or (self.fetcher.research_browser if os.name == "nt" else None)
+        company = await investigate(
+            self.fetcher, row.company, today, chrome, sixk=self.sixk, ticker=row.ticker
+        )
         if self.busy() or row not in self.calendar.entries():
             return row
         self.calendar.save_profile(row.cik, company)
@@ -367,6 +401,9 @@ class DateDiscovery:
 
     async def _check(self, row: Tracked) -> None:
         row = await self._investigate(row)
+        if self._defer_if_busy(row.cik):
+            return
+        self.phases[row.cik] = "Checking issuer notices for the next release date."
         now = self.now()
         saved = (
             (row.target, row.evidence)
@@ -376,20 +413,27 @@ class DateDiscovery:
         # An issuer's word beats FMP's calendar, which beats nothing
         if saved and saved[1] == MANUAL:
             target, evidence = saved
-        elif result := await find_date(self.fetcher, row.ticker, now, row.company):
+        elif result := await self._issuer_date(row, now):
             target, evidence = result
-        elif saved and saved[1] != CALENDAR_DATE:
+        elif saved and saved[1] not in (CALENDAR_DATE, CALENDAR_6K_DATE):
             target, evidence = saved
         elif result := await self._calendar_date(row, now):
             target, evidence = result
         elif saved:
             target, evidence = saved
         else:
+            self.phases[row.cik] = (
+                "No confirmed date found. A Manage Server member can set one with "
+                "`/track` using `when` and `period`. Rechecking hourly."
+            )
             return
-        if self.busy() or row not in self.calendar.entries():
+        if self._defer_if_busy(row.cik) or row not in self.calendar.entries():
             return
         if row.target and row.target.trial.ir and same_release(target, row.target):
             target.trial.ir = row.target.trial.ir
+        if row.company.sec_form == "6-K" and target.sec_form != "6-K":
+            target = target.model_copy(update={"sec_form": "6-K"})
+        self.phases.pop(row.cik, None)
         if row.target != target or row.evidence != evidence:
             self.calendar.set_target(target, evidence)
             self.status(describe(target, evidence))
@@ -408,3 +452,10 @@ class DateDiscovery:
         ):
             prepared = target.trial.model_copy(update={"ir": trial})
             self.calendar.set_target(target.model_copy(update={"trial": prepared}), evidence)
+
+    def _defer_if_busy(self, cik: int) -> bool:
+        if not self.busy():
+            return False
+        self.checked.pop(cik, None)
+        self.phases[cik] = "Issuer research queued after release monitoring."
+        return True
