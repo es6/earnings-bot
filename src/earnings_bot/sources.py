@@ -15,6 +15,7 @@ from collections.abc import Callable, Hashable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from email.utils import parsedate_to_datetime
+from typing import Literal
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
 from earnings_bot.fetch import Fetcher, Response
@@ -237,8 +238,17 @@ class Q4FinancialReports(Source):
         ]
 
 
+SecForm = Literal["8-K", "6-K"]
+
+
+def _filing_type(form: str, items: str) -> tuple[bool, dict[str, str]]:
+    if form == "6-K":
+        return False, {"form": "6-K"}
+    return form.startswith("8-K") and "2.02" in items.split(","), {}
+
+
 class EdgarFilings(Source):
-    """A company's latest SEC filings. Earnings 8-Ks report item 2.02."""
+    """A company's latest SEC filings. Results 6-Ks require exhibit verification."""
 
     name = "edgar"
     # A backup: it listed every 8-K measured live 0 to 56 s after EDGAR's latest-filings feed
@@ -248,9 +258,10 @@ class EdgarFilings(Source):
     # 6.0 s, and the slowest 8-K text from 7.6 s to 5.7 s.
     interval = 3.0
 
-    def __init__(self, cik: int, limit: int = 20) -> None:
+    def __init__(self, cik: int, limit: int = 20, *, form: SecForm = "8-K") -> None:
         self.cik = cik
         self.limit = limit  # newest filings to read; new ones always come first
+        self.form = form
 
     def url(self) -> str:
         return f"https://data.sec.gov/submissions/CIK{self.cik:010d}.json"
@@ -259,21 +270,25 @@ class EdgarFilings(Source):
         recent = json.loads(response.body)["filings"]["recent"]
         columns = ("accessionNumber", "form", "items", "acceptanceDateTime", "primaryDocument")
         rows = zip(*(recent[column] for column in columns), strict=True)
-        return [
-            Sighting(
-                key=accession,
-                title=f"{form} {items}".strip(),
-                url=f"https://www.sec.gov/Archives/edgar/data/{self.cik}/"
-                f"{accession.replace('-', '')}/{document}",
-                published=accepted,  # UTC
-                earnings=form.startswith("8-K") and "2.02" in items,
+        sightings = []
+        for accession, form, items, accepted, document in itertools.islice(rows, self.limit):
+            earnings, details = _filing_type(form, items)
+            sightings.append(
+                Sighting(
+                    key=accession,
+                    title=f"{form} {items}".strip(),
+                    url=f"https://www.sec.gov/Archives/edgar/data/{self.cik}/"
+                    f"{accession.replace('-', '')}/{document}",
+                    published=accepted,  # UTC
+                    earnings=earnings,
+                    details=details,
+                )
             )
-            for accession, form, items, accepted, document in itertools.islice(rows, self.limit)
-        ]
+        return sightings
 
 
 class EdgarLatest(EdgarFilings):
-    """EDGAR's latest-filings feed, narrowed to one company's 8-Ks. It lists a filing the moment
+    """EDGAR's latest-filings feed, narrowed to one company and form. It lists a filing the moment
     it goes public and is never cached, while the submissions JSON lagged it by 0 to 56 s on
     2026-11-03 (48 s for AMD's earnings 8-K)."""
 
@@ -283,7 +298,7 @@ class EdgarLatest(EdgarFilings):
     def url(self) -> str:
         return (
             "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent"
-            f"&CIK={self.cik:010d}&type=8-K&company=&dateb=&owner=include&start=0&count=10"
+            f"&CIK={self.cik:010d}&type={self.form}&company=&dateb=&owner=include&start=0&count=10"
             "&output=atom"
         )
 
@@ -302,13 +317,15 @@ class EdgarLatest(EdgarFilings):
                 raise ValueError("an entry without an accession number or link")
             form = (entry.findtext(f"{_ATOM}title") or "").split(" - ", 1)[0]
             items = ",".join(re.findall(r"Item (\d+\.\d+)", summary))
+            earnings, details = _filing_type(form, items)
             sightings.append(
                 Sighting(
                     key=accession.group(0),
                     title=f"{form} {items}".strip(),
                     url=link.get("href", ""),  # the filing's index page
                     published=entry.findtext(f"{_ATOM}updated"),  # US Eastern, with offset
-                    earnings=form.startswith("8-K") and "2.02" in items,
+                    earnings=earnings,
+                    details=details,
                 )
             )
         return sightings

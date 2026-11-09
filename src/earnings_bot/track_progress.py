@@ -36,14 +36,17 @@ class TrackProgress:
         now: Callable[[], datetime],
         busy: Callable[[], bool],
         audit: Callable[[str, KnownCompany, datetime], Awaitable[str]],
+        date_phase: Callable[[int], str | None] | None = None,
     ) -> None:
         self.calendar, self.store, self.channel = calendar, store, channel
         self.author_id, self.planned, self.now, self.busy = author_id, planned, now, busy
         self.audit = audit
+        self.date_phase = date_phase or (lambda _: None)
         self.changed = asyncio.Event()
         self.last_sent: dict[int, str] = {}
         self.removed: dict[int, str] = {}
         self.next_attempt: dict[int, datetime] = {}
+        self.audit_failed: set[int] = set()
         self.active: tuple[int, asyncio.Task[None]] | None = None
 
     def _key(self, cik: int) -> str:
@@ -74,6 +77,7 @@ class TrackProgress:
         # A manually pinned window may have been saved since the last directory scan.
         if row.target and row.target.window[1] > now and target is None:
             target = row.target
+        paused = self.busy() and (not target or self._investigating(row) or not result)
         lines = [f"**Tracking {row.ticker}**"]
         if target:
             evidence = (
@@ -84,14 +88,21 @@ class TrackProgress:
                 source.name + (" (trial)" if source.trial else "") for source in target.sources()
             ]
             lines.append("Sources prepared for the window | " + ", ".join(names))
-        else:
-            lines.append("Waiting for a confirmed issuer date. The calendar will recheck.")
+        elif not paused:
+            lines.append(self.date_phase(row.cik) or "Waiting for issuer date research to start.")
+        if row.company.sec_form == "6-K":
+            lines.append("Files results on SEC Form 6-K.")
         if row.ticker not in known_companies():
             lines.append(row.company.evidence)
-        if self._investigating(row):
-            lines.append("Looking for its IR site, feeds and newswire.")
+        if paused:
+            lines.append("Research is waiting for release monitoring to finish.")
+        elif self._investigating(row):
+            if not self.date_phase(row.cik):
+                lines.append("IR site, feed and newswire investigation queued.")
         elif checking:
             lines.append("Checking the last release, issuer endpoints and @earnings_guy.")
+        elif row.cik in self.audit_failed:
+            lines.append("Source audit failed. Retrying at the next check.")
         elif not result:
             lines.append("Source audit queued. Active release windows take priority.")
         if result:
@@ -109,7 +120,10 @@ class TrackProgress:
                 result = await self.audit(row.ticker, row.company, now)
         except Exception:
             log.exception("Source audit failed for %s", row.ticker)
+            self.audit_failed.add(row.cik)
+            self.changed.set()
             return
+        self.audit_failed.discard(row.cik)
         if any(item.cik == row.cik for item in self.calendar.entries()):
             self.calendar.save_review(row.cik, now, result)
         self.changed.set()

@@ -71,7 +71,7 @@ def verified_report(text: str | None) -> bool:
     return bool(
         text
         and len(text) >= MIN_RELEASE_CHARS
-        and re.search(r"\b(?:revenue|net sales)\b", text, re.IGNORECASE)
+        and re.search(r"\b(?:revenues?|net sales)\b", text, re.IGNORECASE)
         and re.search(
             r"\b(?:net (?:income|loss|earnings)|per (?:diluted )?share|EPS)\b", text, re.IGNORECASE
         )
@@ -198,6 +198,12 @@ class _FilingDocuments(HTMLParser):
                 )
 
 
+def filing_exhibits(html: str) -> list[dict[str, str]]:
+    parser = _FilingDocuments()
+    parser.feed(html)
+    return parser.exhibits
+
+
 async def _edgar_exhibit(fetcher: Fetcher, sighting: Sighting) -> str | None:
     folder, primary = sighting.url.rsplit("/", 1)
     if urlsplit(sighting.url).path.lower().endswith(("-index.htm", "-index.html")):
@@ -205,15 +211,14 @@ async def _edgar_exhibit(fetcher: Fetcher, sighting: Sighting) -> str | None:
         detail = await _get_text(fetcher, sighting.url)
         if detail is None:
             return None
-        parser = _FilingDocuments()
-        parser.feed(detail)
+        exhibits = filing_exhibits(detail)
         results = [
             row
-            for row in parser.exhibits
+            for row in exhibits
             if re.search(r"\b(?:earnings|results)\b", row["description"], re.IGNORECASE)
         ]
-        exhibit_991 = [row for row in parser.exhibits if row["form"] == "EX-99.1"]
-        exhibit = pick_exhibit(results or exhibit_991 or parser.exhibits, primary)
+        exhibit_991 = [row for row in exhibits if row["form"] == "EX-99.1"]
+        exhibit = pick_exhibit(results or exhibit_991 or exhibits, primary)
     else:
         listing = await _get_text(fetcher, f"{folder}/index.json")
         if listing is None:
@@ -232,6 +237,8 @@ async def release_text(fetcher: Fetcher, source: Source, sighting: Sighting) -> 
             if sighting.body.startswith(b"%PDF-"):
                 return None
             html = sighting.body.decode(errors="replace")
+            if sighting.details.get("verified_6k") == "true":
+                return html  # The classifier already parsed and verified this exhibit.
         elif isinstance(source, Q4PressReleases):
             return await _q4_text(fetcher, source, sighting.key)
         elif isinstance(source, BroadcomNewsroom):

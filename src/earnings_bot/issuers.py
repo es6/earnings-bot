@@ -11,6 +11,7 @@ import aiohttp
 from earnings_bot.fetch import Fetcher
 from earnings_bot.known import KnownCompany, known_companies
 from earnings_bot.recorder import ET
+from earnings_bot.sources import SecForm
 
 SEC_TICKERS = "https://www.sec.gov/files/company_tickers.json"
 SEC_SUBMISSIONS = "https://data.sec.gov/submissions/CIK{cik:010d}.json"
@@ -45,9 +46,7 @@ def wire_names(title: str, ticker: str) -> list[str]:
 
 
 def release_time(accepted: list[datetime]) -> str | None:
-    """The likely release time, from when SEC accepted recent results 8-Ks. The 8-K follows the
-    release by a minute or two, so this is the most common session's middle time, rounded down
-    to five minutes. Some item 2.02 filings aren't results, so the odd one out is ignored."""
+    """Estimate time from verified filings, favoring the most common market session."""
     times = [moment.astimezone(ET).time() for moment in accepted]
     if not times:
         return None
@@ -63,6 +62,13 @@ def release_time(accepted: list[datetime]) -> str | None:
     chosen = sorted(sessions[busiest])
     middle = chosen[(len(chosen) - 1) // 2]
     return f"{middle.hour:02d}:{middle.minute - middle.minute % 5:02d}"
+
+
+def filing_form(submissions: dict) -> SecForm:
+    forms = set(submissions["filings"]["recent"]["form"])
+    if "6-K" in forms and (forms & {"20-F", "40-F"} or "8-K" not in forms):
+        return "6-K"
+    return "8-K"
 
 
 def profile(ticker: str, cik: int, title: str, submissions: dict, today: date) -> KnownCompany:
@@ -81,6 +87,7 @@ def profile(ticker: str, cik: int, title: str, submissions: dict, today: date) -
         platform="unknown",
         reachable=False,
         wire="unknown",
+        sec_form=filing_form(submissions),
         release_time=release_time(accepted),
         eightk=[f"{moment.astimezone(ET):%H:%M}" for moment in accepted],
         fastest="unknown",

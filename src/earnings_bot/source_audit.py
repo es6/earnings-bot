@@ -14,6 +14,7 @@ from earnings_bot.fetch import Fetcher
 from earnings_bot.ir_research import inspect_issuer, issuer_listing
 from earnings_bot.known import KnownCompany, wires
 from earnings_bot.recorder import ET, PollError, Target, poll
+from earnings_bot.sec_results import SixKResults, SixKUnavailable
 from earnings_bot.sources import (
     EdgarFilings,
     RssFeed,
@@ -149,14 +150,24 @@ async def audit_sources(
     company: KnownCompany,
     now: datetime,
     benchmark: EarningsBenchmark | None,
+    sixk: SixKResults | None = None,
 ) -> str:
     """Use the latest dated results. Publisher times are estimates of availability."""
-    sec = EdgarFilings(company.cik, limit=150)
+    form = company.sec_form or "8-K"
+    sec = EdgarFilings(company.cik, limit=500 if form == "6-K" else 150, form=form)
+    recent = await _list(fetcher, sec)
+    if sec.form == "6-K":
+        try:
+            recent = await (sixk or SixKResults(fetcher)).history(
+                company.cik, now, count=1, filings=recent
+            )
+        except SixKUnavailable:
+            recent = []
     filings = [
         (at, item)
-        for item in await _list(fetcher, sec)
+        for item in recent
         if item.earnings
-        and item.title.startswith("8-K ")
+        and item.title.startswith(f"{sec.form} ")
         and (at := published_time(item.published))
         and at <= now
     ]
@@ -175,7 +186,7 @@ async def audit_sources(
             anchor = accepted.astimezone(ET).date()
             if exhibit is not None:
                 confidence = True
-                estimates.append(Timing("SEC acceptance", accepted, filing.url))
+                estimates.append(Timing(f"SEC {sec.form} acceptance", accepted, filing.url))
                 verified.append(sec.name)
             break
 
@@ -230,7 +241,7 @@ async def audit_sources(
                 )
                 break
     browser = await inspect_issuer(fetcher, issuer_listing(ticker, company), day, titles)
-    heading = "Last release" if confidence else "Likely last release (8-K date)"
+    heading = "Last release" if confidence else f"Likely last release ({sec.form} date)"
     lines = [
         f"**{heading} | {day:%b %d, %Y}**",
         _rank("Measured report text", bodies),

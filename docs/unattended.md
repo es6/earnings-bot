@@ -23,8 +23,9 @@ from researched sources: the issuer's feeds, its wire and URL patterns. Any
 other ticker on SEC's list is looked up when it's added, and the bot then
 investigates it outside release windows:
 
-1. It reads the company's last results release from its 8-K and takes the IR
-   site the release names, such as `ir.lucidmotors.com`.
+1. It reads the company's last results release from EDGAR and takes the IR
+   site the release names. A 6-K requires a results announcement and financial
+   figures in its exhibit before it can count as an earnings release.
 2. It checks that site for Q4's press release feed, then for an RSS feed. Either
    one is polled directly in release windows.
 3. If the site blocks the bot or has no feed, desktop Chrome reads its press
@@ -36,10 +37,11 @@ investigates it outside release windows:
 
 The scorecard shows what it found, and the source audit then ranks those sources
 on the last release. The investigation runs again a month later. The date comes
-from the issuer's own notice on the feed it found, or else from FMP's earnings
-calendar when `FMP_API_KEY` is set, at the time of day its recent results 8-Ks
-were filed, with a wider window. An admin can always set the time with `when`
-and `period`.
+from the issuer's own notice, including a date announcement furnished on 6-K.
+FMP's earnings calendar can supply a date when `FMP_API_KEY` is set. The bot
+estimates the time from recent results filings and uses a wider window. The
+scorecard explains when work is paused for release monitoring and when a
+Manage Server member can supply `when` and `period`.
 
 ## From ticker to alert
 
@@ -47,8 +49,9 @@ and `period`.
    one scorecard and edits that message as the date and source findings change.
 2. **Find the next date.** The planner looks for an issuer results notice through
    supported feeds or public IR listings, or for a company outside the catalog,
-   uses FMP's calendar date. An exact release time uses the
-   standard 10-minute lead and 30-minute follow-up. A confirmed day with an
+   uses FMP's calendar date. An exact release time uses a 10-minute lead
+   for 8-K issuers and a 30-minute lead for 6-K issuers, with 30 minutes of
+   follow-up. A confirmed day with an
    approximate time uses a wider window. A call-only notice leaves the date
    pending. Pending issuers are rechecked roughly hourly outside release windows.
 3. **Audit the last release.** The scorecard separates measured report-text and

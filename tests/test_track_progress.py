@@ -96,7 +96,7 @@ async def test_the_audit_waits_for_the_investigation(tmp_path: Path) -> None:
             [card] = channel.messages.values()
             assert card.content.splitlines()[-2:] == [
                 lucid.evidence,
-                "Looking for its IR site, feeds and newswire.",
+                "IR site, feed and newswire investigation queued.",
             ]
             assert audited == []
 

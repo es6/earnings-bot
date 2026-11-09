@@ -41,6 +41,8 @@ class KnownCompany(BaseModel):
     wire: Literal["Business Wire", "PR Newswire", "GlobeNewswire", "none", "unknown"]
     release_time: str | None = None  # HH:MM US Eastern
     eightk: list[str] = []  # last four earnings 8-Ks accepted, HH:MM US Eastern
+    sixk: list[str] = []  # verified results 6-Ks accepted, HH:MM US Eastern
+    sec_form: Literal["8-K", "6-K"] | None = None
     fastest: Literal["ir-feed", "company-rss", "company-page", "newswire", "sec-8k", "unknown"]
     rss: list[str] = []
     guess: list[str] = []  # URL templates
@@ -150,6 +152,8 @@ def to_target(
         ticker=ticker,
         expected=expected,
         cik=company.cik,
+        sec_form=company.sec_form or "8-K",
+        before_minutes=30 if company.sec_form == "6-K" else 10,
         period=f"FY{fiscal_year}Q{fiscal_quarter}",
         q4_host=company.q4_host if company.reachable else None,
         newswire=business_wire,
@@ -170,6 +174,8 @@ def target_toml(target: Target) -> str:
     lines.append(f"cik = {target.cik}")
     if target.period:
         lines.append(f'period = "{target.period}"')
+    if target.sec_form != "8-K":
+        lines += [f'sec_form = "{target.sec_form}"', f"before_minutes = {target.before_minutes:g}"]
     if target.q4_host:
         lines.append(f'q4_host = "{target.q4_host}"')
     for key in ("newswire", "prnewswire", "rss", "guess"):

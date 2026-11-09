@@ -32,6 +32,7 @@ from earnings_bot.browser_sources import IRTrial
 from earnings_bot.clock import TrustedClock
 from earnings_bot.config import RecorderSettings
 from earnings_bot.fetch import Fetcher, Response
+from earnings_bot.sec_results import SixKResults, SixKUnavailable
 from earnings_bot.sources import (
     BUSINESS_WIRE_EARNINGS,
     GLOBENEWSWIRE_EARNINGS,
@@ -46,6 +47,7 @@ from earnings_bot.sources import (
     Q4FinancialReports,
     Q4PressReleases,
     RssFeed,
+    SecForm,
     Sighting,
     Source,
     published_time,
@@ -125,6 +127,7 @@ class Target(BaseModel):
     ticker: str
     expected: datetime  # US Eastern unless it carries a UTC offset
     cik: int
+    sec_form: SecForm = "8-K"
     period: str | None = Field(default=None, pattern=r"^FY\d{4}Q[1-4]$")
     q4_host: str | None = None
     newswire: list[str] = []  # names to look for in Business Wire's earnings feed
@@ -155,7 +158,10 @@ class Target(BaseModel):
         sources: list[Source] = []
         if self.q4_host:
             sources += [Q4PressReleases(self.q4_host), Q4FinancialReports(self.q4_host)]
-        sources += [EdgarFilings(self.cik), EdgarLatest(self.cik)]
+        sources += [
+            EdgarFilings(self.cik, form=self.sec_form),
+            EdgarLatest(self.cik, form=self.sec_form),
+        ]
         if self.newswire:
             # Only the cache-busted copy: on Nov 4 the plain one trailed it by 2 minutes both times
             sources.append(
@@ -413,16 +419,19 @@ def take(
     outcome: Response | PollError,
     journal: Journal,
     on_new: Callable[[Source, Sighting], None] | None = None,
+    *,
+    items: list[Sighting] | None = None,
 ) -> float:
     """Records one poll's outcome for one watch, and returns how many seconds more than usual
     to wait before the next poll."""
     w.polls += 1
     if isinstance(outcome, PollError):
         return _failed(w, outcome, journal)
-    try:
-        items = parse(w.source, outcome)
-    except PollError as error:
-        return _failed(w, error, journal)
+    if items is None:
+        try:
+            items = parse(w.source, outcome)
+        except PollError as error:
+            return _failed(w, error, journal)
     if w.problem:
         journal.say(f"{w.ticker} {w.source.name}: working again")
         w.problem = None
@@ -440,17 +449,50 @@ async def _poll_once(source: Source, fetcher: Fetcher) -> Response | PollError:
         return error
 
 
+async def _verify_sixks(
+    w: Watch, response: Response, sixk: SixKResults, journal: Journal
+) -> list[Sighting]:
+    items = []
+    for item in parse(w.source, response):
+        result = item
+        accepted = published_time(item.published)
+        if (
+            item.details.get("form") == "6-K"
+            and w.window
+            and accepted is not None
+            and w.window[0] <= accepted <= w.window[1]
+            and item.key not in (w.known or ())
+        ):
+            try:
+                result = await sixk.verify(item) or item
+            except SixKUnavailable as error:
+                # Leave the accession unseen so either SEC source can retry it.
+                journal.write("sec_verify_error", ticker=w.ticker, key=item.key, message=str(error))
+                continue
+        items.append(result)
+    return items
+
+
 async def watch(
     w: Watch,
     fetcher: Fetcher,
     journal: Journal,
     end: datetime,
     on_new: Callable[[Source, Sighting], None] | None = None,
+    *,
+    sixk: SixKResults | None = None,
 ) -> None:
     """Polls one watch's source on its own until `end`, or until the watch is done."""
     while (sent := journal.now()) < end:
         next_poll = time.monotonic() + w.source.interval
-        pause = take(w, sent, await _poll_once(w.source, fetcher), journal, on_new)
+        outcome = await _poll_once(w.source, fetcher)
+        items = None
+        if sixk and isinstance(outcome, Response):
+            try:
+                items = await _verify_sixks(w, outcome, sixk, journal)
+            except PollError as error:
+                outcome = error
+        pause = take(w, sent, outcome, journal, on_new, items=items)
         if w.done:
             return
         # A long Retry-After mustn't hold the window open past its end
@@ -542,9 +584,10 @@ class Polls:
     """Runs every watch, sharing one poll loop among watches whose sources have the same
     `share_key` and leaving the rest to poll on their own."""
 
-    def __init__(self, fetcher: Fetcher, journal: Journal) -> None:
+    def __init__(self, fetcher: Fetcher, journal: Journal, sixk: SixKResults | None = None) -> None:
         self.fetcher = fetcher
         self.journal = journal
+        self.sixk = sixk or SixKResults(fetcher)
         self.shared: dict[Hashable, SharedPoll] = {}
 
     async def watch(
@@ -555,7 +598,10 @@ class Polls:
     ) -> None:
         key = w.source.share_key
         if key is None:
-            await watch(w, self.fetcher, self.journal, end, on_new)
+            sixk = (
+                self.sixk if isinstance(w.source, EdgarFilings) and w.source.form == "6-K" else None
+            )
+            await watch(w, self.fetcher, self.journal, end, on_new, sixk=sixk)
             return
         if key not in self.shared:
             self.shared[key] = SharedPoll(w.source, self.fetcher, self.journal)

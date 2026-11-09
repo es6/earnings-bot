@@ -161,11 +161,15 @@ class Calendar:
         for row in self.entries():
             if (target := row.target) is None:
                 continue
+            if row.company.sec_form == "6-K" and target.sec_form != "6-K":
+                target = target.model_copy(update={"sec_form": "6-K"})
             existing = next((t for t in files.values() if same_release(t, target)), None)
             if existing is None:
                 result[target.release_key] = target
             else:
                 updates = {}
+                if row.company.sec_form == "6-K" and "sec_form" not in existing.model_fields_set:
+                    updates["sec_form"] = "6-K"
                 if row.evidence == "Manual override":
                     updates.update(
                         expected=target.expected,
