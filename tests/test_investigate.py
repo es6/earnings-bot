@@ -208,6 +208,7 @@ async def test_a_site_with_a_feed_is_polled_through_it(released: Callable[[str],
     assert [s.name for s in target.sources()] == [
         "edgar",
         "edgar_latest",
+        "prnewswire_busted",
         "prnewswire",
         "rss:ir.example.com",
     ]
@@ -237,7 +238,12 @@ async def test_a_site_that_blocks_the_bot_is_read_through_chrome(
     ]
     # The wire is known now, so only PR Newswire is watched
     target = to_target("LCID", NOW, 2026, 3, found)
-    assert [s.name for s in target.sources()] == ["edgar", "edgar_latest", "prnewswire"]
+    assert [s.name for s in target.sources()] == [
+        "edgar",
+        "edgar_latest",
+        "prnewswire_busted",
+        "prnewswire",
+    ]
 
 
 async def test_without_chrome_a_blocked_site_is_reported_and_both_wires_kept(

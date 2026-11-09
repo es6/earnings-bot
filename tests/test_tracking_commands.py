@@ -324,6 +324,7 @@ async def test_an_admin_can_pin_a_ticker_outside_the_catalog(
         "edgar",
         "edgar_latest",
         "businesswire_busted",
+        "prnewswire_busted",
         "prnewswire",
     ]
 
@@ -563,8 +564,9 @@ def _wire_item(title: str, lead: str, link: str) -> str:
 
 
 class WireDay(RoutedFetcher):
-    """SEC, and PR Newswire's earnings feed, which lists Lucid's results from `released_at`
-    (time.monotonic()) on. Another company's results are listed throughout."""
+    """SEC, and PR Newswire's earnings feed. Its server lists Lucid's results from `released_at`
+    (time.monotonic()) on, but its CDN's copy at the usual URL still predates them, as on
+    Nov 9. Another company's results are listed throughout."""
 
     def __init__(self) -> None:
         super().__init__(sec_routes())
@@ -587,7 +589,8 @@ class WireDay(RoutedFetcher):
                 "https://www.prnewswire.com/news-releases/acme-q3-302600000.html",
             )
         ]
-        if time.monotonic() >= self.released_at:
+        fresh = url != PR_NEWSWIRE_EARNINGS
+        if fresh and time.monotonic() >= self.released_at:
             items.insert(
                 0,
                 _wire_item(
@@ -596,8 +599,10 @@ class WireDay(RoutedFetcher):
                     LUCID_RELEASE,
                 ),
             )
-        feed = '<rss version="2.0"><channel>' + "".join(items) + "</channel></rss>"
-        self.routes[PR_NEWSWIRE_EARNINGS] = (200, feed.encode())
+        if url.lower() == PR_NEWSWIRE_EARNINGS.lower():
+            self.requests.append((method, url, headers))
+            feed = '<rss version="2.0"><channel>' + "".join(items) + "</channel></rss>"
+            return Response(url, 200, {}, feed.encode(), 0.01)
         return await super().request(
             method, url, headers, give_up_after, urgent, allow_redirects=allow_redirects
         )
@@ -642,4 +647,5 @@ async def test_a_ticker_outside_the_catalog_gets_its_alert_from_the_wire(
         assert "**$LCID earnings are out**" in alert.content
         assert LUCID_RELEASE in alert.content
         [report] = [line for line in status if line.startswith("LCID window closed.")]
-        assert report.startswith("LCID window closed. prnewswire first at")
+        # PR Newswire's own server had it while its CDN's copy didn't
+        assert report.startswith("LCID window closed. prnewswire_busted first at")

@@ -148,6 +148,7 @@ def test_a_profile_watches_edgar_and_both_wires() -> None:
         "edgar",
         "edgar_latest",
         "businesswire_busted",
+        "prnewswire_busted",
         "prnewswire",
     ]
 

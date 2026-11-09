@@ -21,8 +21,9 @@ USER_AGENT = "Mozilla/5.0 (compatible; earnings-bot/0.1; +https://github.com/es6
 # Minimum seconds between requests to one host, or to one site whose hosts share a queue. SEC
 # allows 10 requests a second across everything we send it, so all of sec.gov gets 8 a second,
 # leaving headroom. The file CDN serves many companies, and Apple's newsroom is a few guessed URLs
-# plus a feed on one very large site. Every other host gets one request a second.
-_HOST_GAPS = {"sec.gov": 0.125, "q4cdn.com": 0.2, "apple.com": 0.25}
+# plus a feed on one very large site. PR Newswire's earnings feed is read fresh every second and
+# from its CDN every two. Every other host gets one request a second.
+_HOST_GAPS = {"sec.gov": 0.125, "q4cdn.com": 0.2, "apple.com": 0.25, "prnewswire.com": 0.5}
 _DEFAULT_GAP = 1.0
 # Sites whose hosts all wait in one queue, because the site's limit covers them together:
 # www.sec.gov (the latest-filings feed, filings and exhibits) and data.sec.gov (each company's

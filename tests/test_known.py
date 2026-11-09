@@ -129,7 +129,12 @@ def test_blocked_sites_and_other_wires_are_left_out_of_the_target() -> None:
     assert fico.newswire == ["FICO", "Fair Isaac"]
     lilly = to_target("LLY", datetime(2027, 2, 4, 6, 45), 2026, 4)
     assert (lilly.newswire, lilly.prnewswire) == ([], ["Lilly"])
-    assert [s.name for s in lilly.sources()] == ["edgar", "edgar_latest", "prnewswire"]
+    assert [s.name for s in lilly.sources()] == [
+        "edgar",
+        "edgar_latest",
+        "prnewswire_busted",
+        "prnewswire",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -196,6 +201,7 @@ def test_broadcom_is_matched_on_pr_newswire_and_tried_on_its_newsroom() -> None:
     assert [(s.name, s.trial) for s in avgo.sources()] == [
         ("edgar", False),
         ("edgar_latest", False),
+        ("prnewswire_busted", False),
         ("prnewswire", False),
         ("broadcom_newsroom", True),
         ("prnewswire_semiconductors", True),
