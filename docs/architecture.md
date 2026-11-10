@@ -115,7 +115,9 @@ What this tells us:
    feed (`https://www.prnewswire.com/rss/financial-services-latest-news/earnings-list.rss`) is
    polled with equivalent percent-encoded paths and a cached backup. The feed must identify
    the intended category. A schedule lists company names under `prnewswire`. Matching also
-   checks the item's `dc:contributor`.
+   checks the item's `dc:contributor`. A single-word issuer such as Azenta can match its
+   exact contributor name, or lead the headline as the company reporting when the feed
+   supplies no contributor.
    The same source reads company press release feeds, such as the ones Equisolve sites publish.
 5. **Additional release sources.** Existing schedules configure these in `[target.trial]`.
    They can start or enrich an alert after their release checks pass.

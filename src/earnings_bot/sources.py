@@ -470,6 +470,22 @@ class EdgarLatest(EdgarFilings):
         return sightings
 
 
+# Legal-entity endings that headlines leave off: "Lucid Group, Inc." is "Lucid Group"
+_ENTITY = re.compile(
+    r"[,\s]+(?:inc|incorporated|corp|corporation|co|company|ltd|limited|plc|llc|lp|l\.p|n\.v|"
+    r"s\.a|ag|se)\.?$",
+    re.IGNORECASE,
+)
+_STATE = re.compile(r"\s*/\s*[A-Z]{2,}/?$")  # SEC's "Rivian Automotive, Inc. / DE"
+
+
+def issuer_wire_name(title: str) -> str:
+    name = _STATE.sub("", title).strip()
+    while (shorter := _ENTITY.sub("", name)) != name:
+        name = shorter
+    return name
+
+
 class RssFeed(Source):
     """An RSS feed, optionally narrowed to items that name one of the given companies."""
 
@@ -484,6 +500,7 @@ class RssFeed(Source):
         bust_cache: bool = False,
         *,
         spell: bool = False,
+        publisher: str | None = None,
     ) -> None:
         self.name = name
         self.feed_url = feed_url
@@ -492,6 +509,23 @@ class RssFeed(Source):
         self.spellings = Spellings(feed_url) if spell else None
         names = "|".join(re.escape(_straight_quotes(company)) for company in companies)
         self._match = re.compile(rf"\b(?:{names})\b", re.IGNORECASE) if companies else None
+        publisher = issuer_wire_name(publisher) if publisher else None
+        self._publisher = publisher.casefold() if publisher else None
+        self._publisher_title = (
+            re.compile(
+                rf"^{re.escape(publisher)}\s+(?:reports?|announces?|posts?|releases?)\b",
+                re.IGNORECASE,
+            )
+            if publisher
+            else None
+        )
+
+    def _from_publisher(self, entry: "_Entry") -> bool:
+        if self._publisher is None:
+            return False
+        if entry.contributor.strip():
+            return issuer_wire_name(entry.contributor).casefold() == self._publisher
+        return bool(self._publisher_title and self._publisher_title.match(entry.title))
 
     @property
     def share_key(self) -> Hashable:
@@ -536,7 +570,9 @@ class RssFeed(Source):
             # "IRVINE, Calif.--(BUSINESS WIRE)--Beach Cities Commercial Bank ...". PR Newswire
             # also names the company in each item's dc:contributor.
             text = _straight_quotes(f"{entry.title} {entry.contributor} {entry.lead[:150]}")
-            if self._match and not self._match.search(text):
+            if (self._match or self._publisher) and not (
+                (self._match and self._match.search(text)) or self._from_publisher(entry)
+            ):
                 continue
             sightings.append(
                 Sighting(
@@ -560,9 +596,15 @@ class FreshPrNewswire(RssFeed):
     verify_channel = True
 
     def __init__(
-        self, name: str, feed_url: str, companies: Sequence[str] = (), *, interval: float = 1.0
+        self,
+        name: str,
+        feed_url: str,
+        companies: Sequence[str] = (),
+        *,
+        interval: float = 1.0,
+        publisher: str | None = None,
     ) -> None:
-        super().__init__(name, feed_url, companies)
+        super().__init__(name, feed_url, companies, publisher=publisher)
         self.interval = interval
         # Keep /rss/ and .rss literal. Each of the two category feeds has over 700 spellings,
         # and the CDN keeps a copy for 60 s, so they can come round again.

@@ -24,6 +24,7 @@ from pydantic import BaseModel
 
 from earnings_bot.periods import NTH, ORD
 from earnings_bot.recorder import ET, Target, Trial
+from earnings_bot.sources import issuer_wire_name
 
 COMPANIES = Path(__file__).with_name("companies.toml")
 # The placeholders a URL template may use; companies.toml explains each one
@@ -150,6 +151,16 @@ def wires(company: KnownCompany) -> tuple[list[str], list[str]]:
     )
 
 
+def wire_publisher(company: KnownCompany) -> str | None:
+    """A one-word issuer needs an exact publisher or subject match, rather than a mention."""
+    if not company.names or any(
+        not alias.startswith(("NASDAQ:", "NYSE:")) for alias in company.names
+    ):
+        return None
+    name = issuer_wire_name(company.name)
+    return name if len(name.split()) == 1 else None
+
+
 def fiscal_period(year_end: str, released: date) -> tuple[int, int]:
     """The fiscal year and quarter most likely reported on `released`, for a fiscal year that
     ends on `year_end` (SEC's MMDD). Results come out at least a week after the quarter ends, and
@@ -218,6 +229,7 @@ def to_target(
         q4_host=company.q4_host if company.reachable else None,
         newswire=business_wire,
         prnewswire=pr_newswire,
+        wire_publisher=wire_publisher(company),
         rss=company.rss,
         rss_spelled=company.rss_spelled,
         # A guess counts as found on a 200, which a soft 404 would fake from the first poll
@@ -239,6 +251,8 @@ def target_toml(target: Target) -> str:
         lines += [f'sec_form = "{target.sec_form}"', f"before_minutes = {target.before_minutes:g}"]
     if target.q4_host:
         lines.append(f'q4_host = "{target.q4_host}"')
+    if target.wire_publisher:
+        lines.append(f"wire_publisher = {json.dumps(target.wire_publisher)}")
     for key in ("newswire", "prnewswire", "rss", "rss_spelled", "guess"):
         lines += _toml_list(key, getattr(target, key))
     if target.ir:

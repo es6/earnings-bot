@@ -94,7 +94,11 @@ class Trial(BaseModel):
     pages: list[str] = []  # exact URLs of the release page or file, fetched whole
 
     def sources(
-        self, rss_canonical: Sequence[str] = (), rss_spelled: Sequence[str] = ()
+        self,
+        rss_canonical: Sequence[str] = (),
+        rss_spelled: Sequence[str] = (),
+        *,
+        publisher: str | None = None,
     ) -> list[Source]:
         sources: list[Source] = []
         if self.broadcom_newsroom:
@@ -106,8 +110,16 @@ class Trial(BaseModel):
         if self.globenewswire:
             # Both copies, so a live release shows whether busting GlobeNewswire's cache helps
             sources += [
-                RssFeed("globenewswire", GLOBENEWSWIRE_EARNINGS, self.globenewswire),
-                RssFeed("globenewswire_busted", GLOBENEWSWIRE_EARNINGS, self.globenewswire, True),
+                RssFeed(
+                    "globenewswire", GLOBENEWSWIRE_EARNINGS, self.globenewswire, publisher=publisher
+                ),
+                RssFeed(
+                    "globenewswire_busted",
+                    GLOBENEWSWIRE_EARNINGS,
+                    self.globenewswire,
+                    True,
+                    publisher=publisher,
+                ),
             ]
         if self.prnewswire_semiconductors:
             sources.append(
@@ -116,6 +128,7 @@ class Trial(BaseModel):
                     PR_NEWSWIRE_SEMICONDUCTORS,
                     self.prnewswire_semiconductors,
                     interval=RssFeed.interval,
+                    publisher=publisher,
                 )
             )
         sources += _named_apart([GuessedPage(url) for url in self.pages])
@@ -153,6 +166,7 @@ class Target(BaseModel):
     q4_host: str | None = None
     newswire: list[str] = []  # names to look for in Business Wire's earnings feed
     prnewswire: list[str] = []  # names to look for in PR Newswire's earnings feed
+    wire_publisher: str | None = None  # strict match when a brand is one word
     rss: list[str] = []  # the company's own press release feeds
     rss_canonical: list[str] = []  # issuer feeds that reject the query parameter
     # Issuer feeds whose cache ignores query strings but misses on a new spelling of the path
@@ -206,14 +220,30 @@ class Target(BaseModel):
         if self.newswire:
             # Only the cache-busted copy: on Nov 4 the plain one trailed it by 2 minutes both times
             sources.append(
-                RssFeed("businesswire_busted", BUSINESS_WIRE_EARNINGS, self.newswire, True)
+                RssFeed(
+                    "businesswire_busted",
+                    BUSINESS_WIRE_EARNINGS,
+                    self.newswire,
+                    True,
+                    publisher=self.wire_publisher,
+                )
             )
         if self.prnewswire:
             # The fresh copy goes first. The cached one stays in case PR Newswire's own server
             # stops answering.
             sources += [
-                FreshPrNewswire("prnewswire_busted", PR_NEWSWIRE_EARNINGS, self.prnewswire),
-                RssFeed("prnewswire", PR_NEWSWIRE_EARNINGS, self.prnewswire),
+                FreshPrNewswire(
+                    "prnewswire_busted",
+                    PR_NEWSWIRE_EARNINGS,
+                    self.prnewswire,
+                    publisher=self.wire_publisher,
+                ),
+                RssFeed(
+                    "prnewswire",
+                    PR_NEWSWIRE_EARNINGS,
+                    self.prnewswire,
+                    publisher=self.wire_publisher,
+                ),
             ]
         sources += [
             _company_feed(
@@ -224,7 +254,9 @@ class Target(BaseModel):
         sources += _named_apart([GuessedFile(url) for url in self.guess])
         if self.ir:
             sources += self.ir.sources(self.expected.astimezone(ET).date(), self.period)
-        return sources + self.trial.sources(self.rss_canonical, self.rss_spelled)
+        return sources + self.trial.sources(
+            self.rss_canonical, self.rss_spelled, publisher=self.wire_publisher
+        )
 
 
 class Plan(BaseModel):

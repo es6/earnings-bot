@@ -7,7 +7,7 @@ from datetime import date, datetime, timedelta
 from earnings_bot.delivery import DeliveryStore
 from earnings_bot.formatting import clock, period_label, stamp
 from earnings_bot.ir_research import IR_LISTINGS, quarter_headline
-from earnings_bot.known import KnownCompany, known_companies, to_target
+from earnings_bot.known import KnownCompany, known_companies, to_target, wire_publisher
 from earnings_bot.recorder import ET, Target
 
 _LINKED = re.compile(r"(.*?)\s*<(https?://[^>\s]+)>")
@@ -190,11 +190,15 @@ class Calendar:
                 continue
             if row.company.sec_form == "6-K" and target.sec_form != "6-K":
                 target = target.model_copy(update={"sec_form": "6-K"})
+            if target.wire_publisher is None and (publisher := wire_publisher(row.company)):
+                target = target.model_copy(update={"wire_publisher": publisher})
             existing = next((t for t in files.values() if same_release(t, target)), None)
             if existing is None:
                 result[target.release_key] = target
             else:
                 updates = {}
+                if existing.wire_publisher is None and target.wire_publisher:
+                    updates["wire_publisher"] = target.wire_publisher
                 if row.company.sec_form == "6-K" and "sec_form" not in existing.model_fields_set:
                     updates["sec_form"] = "6-K"
                 if row.evidence == "Manual override":
