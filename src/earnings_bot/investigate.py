@@ -23,13 +23,14 @@ from earnings_bot.ir_pages import RESULTS, IRReader, nav_rank
 from earnings_bot.ir_research import issuer_links, next_page
 from earnings_bot.issuer_news import news_records, read_news
 from earnings_bot.issuers import SEC_SUBMISSIONS, filing_form, release_time
-from earnings_bot.known import KnownCompany, SourceCheck, known_companies
+from earnings_bot.known import KnownCompany, SourceCheck, known_companies, naming_offset
 from earnings_bot.recorder import ET, PollError, poll
-from earnings_bot.sec_results import SixKResults, SixKUnavailable
+from earnings_bot.sec_results import SixKResults, SixKUnavailable, reported_period
 from earnings_bot.sources import (
     EdgarFilings,
     Q4PressReleases,
     RssFeed,
+    Sighting,
     is_date_notice,
     looks_like_earnings,
     published_time,
@@ -47,8 +48,10 @@ REINVESTIGATE = timedelta(days=30)
 # 9 recognizes more 6-K results language and looks further back for Q4 wire datelines,
 # 10 reads the IR site as Chrome renders it, finds IR hosts behind www. and brand domains, and
 # keeps the IR home page for reading dates, 11 reads the IR site from the last three results
-# releases and keeps earlier research when none names one.
-INVESTIGATION = 12
+# releases and keeps earlier research when none names one, 12 finds results pages behind
+# investor landing pages and feeds only Chrome can read, 13 learns how the company names
+# its fiscal years from its results releases.
+INVESTIGATION = 13
 _HOST = re.compile(r"\b((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,})\b", re.IGNORECASE)
 _WEB_HOST = re.compile(r"\b(?:https?://|(?=www\.))" + _HOST.pattern, re.IGNORECASE)
 _IR_HOST = re.compile(r"^(?:ir|investors?|investor-?relations)\.", re.IGNORECASE)
@@ -294,8 +297,11 @@ class Findings:
         return " ".join(part for part in parts if part)
 
 
-async def _last_releases(fetcher: Fetcher, cik: int, count: int = RELEASES_READ) -> list[str]:
-    """The texts of the company's last results releases, as filed with its 8-Ks, newest first."""
+async def _last_releases(
+    fetcher: Fetcher, cik: int, count: int = RELEASES_READ
+) -> list[tuple[Sighting, str]]:
+    """The company's last results releases as filed with its 8-Ks, newest first: each filing
+    and its text."""
     # Read more rows from the same submissions response. Only results exhibits get fetched.
     sec = EdgarFilings(cik, limit=500)
     try:
@@ -306,7 +312,7 @@ async def _last_releases(fetcher: Fetcher, cik: int, count: int = RELEASES_READ)
     texts = []
     for filing in results[: count + 1]:
         if text := await release_text(fetcher, sec, filing):
-            texts.append(text)
+            texts.append((filing, text))
             if len(texts) == count:
                 break
     return texts
@@ -701,6 +707,20 @@ def _wire_checks(report: Report, found: str | None) -> None:
             report.watch(source, "No release named its wire, so all three wires are watched")
 
 
+def fiscal_naming(company: KnownCompany, releases: list[tuple[Sighting, str]]) -> int | None:
+    """How the company names its fiscal years, from the periods its results releases report and
+    the days they came out, or what earlier research learned when they don't say."""
+    if company.fiscal_year_end is None:
+        return company.fiscal_year_offset
+    reported = [
+        (moment.astimezone(ET).date(), period)
+        for filing, text in releases
+        if (moment := published_time(filing.published)) and (period := reported_period(text))
+    ]
+    learned = naming_offset(company.fiscal_year_end, reported)
+    return company.fiscal_year_offset if learned is None else learned
+
+
 async def investigate(
     fetcher: Fetcher,
     company: KnownCompany,
@@ -747,9 +767,10 @@ async def investigate(
         # announcement beside the press release, and a release can leave out the IR site that
         # the one before named: On's Q2 2026 release named investors.on-running.com, its Q3
         # release didn't
-        texts = [(result.body or b"").decode() for result in results]
+        releases = [(result, (result.body or b"").decode()) for result in results]
     else:
-        texts = await _last_releases(fetcher, company.cik)
+        releases = await _last_releases(fetcher, company.cik)
+    texts = [copy for _, copy in releases]
     text = "\n".join(texts)
     times = company.sixk if company.sec_form == "6-K" else company.eightk
     report.watch(
@@ -921,6 +942,7 @@ async def investigate(
     return company.model_copy(
         update={
             **ir,
+            "fiscal_year_offset": fiscal_naming(company, releases),
             "ir_posted": findings.posted,
             "ir_release": findings.release_url,
             "wire": found_wire,

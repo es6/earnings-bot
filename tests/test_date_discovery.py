@@ -15,6 +15,7 @@ from earnings_bot.date_discovery import (
     CALENDAR_DATE,
     FMP_EARNINGS,
     DateDiscovery,
+    calendar_date,
     find_date,
     parse_notice,
     rendered_date,
@@ -937,3 +938,36 @@ async def test_new_watch_is_saved_after_issuer_and_cache_preparation(
 
     assert planned.target and planned.target.ir
     assert planned.target.ir.cache_bust_urls == [table]
+
+
+@pytest.mark.parametrize(
+    ("offset", "period"), [(-1, "FY2026Q3"), (0, "FY2027Q3")], ids=["start-year", "end-year"]
+)
+def test_a_notice_naming_no_year_gets_the_quarter_as_the_company_names_it(
+    offset: int, period: str
+) -> None:
+    # Lowe's names the quarter ending in October 2026 "third quarter 2026", NVIDIA names its
+    # "third quarter fiscal 2027"
+    body = (
+        "<p>Acme will release its third quarter results on Wednesday, November 18, 2026, before "
+        "the market opens.</p>"
+    )
+    company = AMAT.model_copy(
+        update={"release_time": "06:00", "fiscal_year_end": "0131", "fiscal_year_offset": offset}
+    )
+
+    result = parse_notice("ACME", company, "Acme to Report Third Quarter Results", body, NOW)
+
+    assert result is not None and result[0].period == period
+
+
+@pytest.mark.parametrize(
+    ("offset", "period"), [(-1, "FY2026Q3"), (0, "FY2027Q3")], ids=["start-year", "end-year"]
+)
+async def test_fmps_date_gets_the_quarter_as_the_company_names_it(offset: int, period: str) -> None:
+    fetcher = RoutedFetcher({FMP_ROUTE: fmp_dates(("2026-11-18", None))})
+    company = LUCID.model_copy(update={"fiscal_year_end": "0131", "fiscal_year_offset": offset})
+
+    result = await calendar_date(fetcher, "secret", "LCID", company, NOW)
+
+    assert result is not None and result[0].period == period

@@ -11,7 +11,8 @@ import json
 import sys
 import tomllib
 from calendar import monthrange
-from collections.abc import Sequence
+from collections import Counter
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from functools import cache
@@ -64,6 +65,10 @@ class KnownCompany(BaseModel):
     checked: date
     # SEC's MMDD, kept for companies added from SEC data so a calendar date gets its quarter
     fiscal_year_end: str | None = None
+    # How its results name a fiscal year, learned from them: years from the calendar year the
+    # fiscal year ends in. 0 as NVIDIA's FY2027 ends in January 2027, -1 as Home Depot's
+    # fiscal 2026 does. None until its releases have said.
+    fiscal_year_offset: int | None = None
     # The IR site's press release listing and the direct request's status (0 for no response).
     ir_listing: str | None = None
     ir_http_status: int | None = None
@@ -149,7 +154,8 @@ def fiscal_period(year_end: str, released: date) -> tuple[int, int]:
     """The fiscal year and quarter most likely reported on `released`, for a fiscal year that
     ends on `year_end` (SEC's MMDD). Results come out at least a week after the quarter ends, and
     a fiscal year is named for the calendar year it ends in, as NVIDIA's FY2027 ends in January
-    2027. Quarter ends are taken as three months apart, close enough for 52-week years."""
+    2027; `planned_period` names it as the company does. Quarter ends are taken as three months
+    apart, close enough for 52-week years."""
     month, day = int(year_end[:2]), int(year_end[2:])
     ends = []
     for fiscal_year in range(released.year - 1, released.year + 2):
@@ -160,6 +166,32 @@ def fiscal_period(year_end: str, released: date) -> tuple[int, int]:
             ends.append((end, fiscal_year, quarter))
     _, fiscal_year, quarter = max(e for e in ends if e[0] <= released - timedelta(days=7))
     return fiscal_year, quarter
+
+
+def naming_offset(year_end: str, reported: Iterable[tuple[date, tuple[int, int]]]) -> int | None:
+    """How an issuer names its fiscal years, from the day each of its results releases came
+    out and the fiscal year and quarter it named: the years to add to `fiscal_period`'s. Home
+    Depot's "Third Quarter Fiscal 2025" came out on November 18, 2025, which `fiscal_period`
+    takes for FY2026 Q3, so it's -1. A release naming another quarter, or a year further off,
+    was misread and doesn't count. None when none count, or they disagree evenly."""
+    votes: Counter[int] = Counter()
+    for released, (named_year, named_quarter) in reported:
+        year, quarter = fiscal_period(year_end, released)
+        if named_quarter == quarter and abs(named_year - year) <= 1:
+            votes[named_year - year] += 1
+    ranked = votes.most_common(2)
+    if not ranked or (len(ranked) == 2 and ranked[0][1] == ranked[1][1]):
+        return None
+    return ranked[0][0]
+
+
+def planned_period(company: KnownCompany, released: date) -> tuple[int, int] | None:
+    """The fiscal year and quarter most likely reported on `released`, as the company names
+    them, when SEC gives its fiscal year end."""
+    if company.fiscal_year_end is None:
+        return None
+    year, quarter = fiscal_period(company.fiscal_year_end, released)
+    return year + (company.fiscal_year_offset or 0), quarter
 
 
 def to_target(

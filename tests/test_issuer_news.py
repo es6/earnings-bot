@@ -21,6 +21,7 @@ from earnings_bot.ir_research import quarter_headline
 from earnings_bot.issuer_news import IssuerNews, news_records
 from earnings_bot.known import KnownCompany
 from earnings_bot.recorder import ET, poll
+from earnings_bot.sources import Sighting
 from tests.fakes import RoutedChrome, RoutedFetcher
 
 HOME = "https://www.sea.com/"
@@ -111,8 +112,9 @@ async def test_track_reads_the_rendered_newsrooms_api_and_prepares_live_pdf(
         checked=NOW.date(),
     )
 
-    async def last_results(*_: object) -> list[str]:
-        return ["Sea Limited. See https://www.sea.com/investor/home."]
+    async def last_results(*_: object) -> list[tuple[Sighting, str]]:
+        filing = Sighting("0001703399-26-000040", "8-K 2.02,9.01", "https://www.sec.gov/")
+        return [(filing, "Sea Limited. See https://www.sea.com/investor/home.")]
 
     monkeypatch.setattr("earnings_bot.investigate._last_releases", last_results)
     monkeypatch.setattr(date_discovery, "chrome_available", lambda: True)
