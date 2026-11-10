@@ -101,7 +101,8 @@ async def _evaluate(ws: aiohttp.ClientWebSocketResponse, expression: str) -> Any
 # The browser stays in the tab's origin and the bot drives the polling timer.
 _FETCH = """
 (async (url, limit) => {
-    const response = await fetch(url, {cache: 'no-store', redirect: 'error'});
+    // An unpublished file can redirect to a generic page. Keep the tab warm and never follow it.
+    const response = await fetch(url, {cache: 'no-store', redirect: 'manual'});
     const headers = Object.fromEntries(response.headers);
     if (response.status !== 200) {
         await response.body?.cancel();

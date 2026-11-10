@@ -10,6 +10,7 @@ import secrets
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable, Coroutine, Iterable
+from dataclasses import replace
 from datetime import datetime, timedelta
 from functools import partial
 from pathlib import Path
@@ -20,7 +21,14 @@ import aiohttp
 import discord
 
 from earnings_bot.browser import BrowserError
-from earnings_bot.browser_sources import BrowserPDF, BrowserRelease, TeslaDeck
+from earnings_bot.browser_sources import (
+    BrowserPDF,
+    BrowserRelease,
+    BrowserRss,
+    TeslaDeck,
+    article_matches,
+    issuer_pdf_url,
+)
 from earnings_bot.delivery import Delivery, DeliveryStore, retry_delivery
 from earnings_bot.estimates import Estimates, EstimatesError, fmp_estimates
 from earnings_bot.fetch import Fetcher, Response
@@ -250,6 +258,8 @@ class DurableDiscordPoster(DiscordPoster):
 
 
 def describe_source(source: Source) -> str:
+    if isinstance(source, BrowserRss):
+        return "IR press release feed"
     if isinstance(source, Q4PressReleases | Q4FinancialReports | BrowserRelease):
         return "IR site"
     if isinstance(source, EdgarFilings):
@@ -388,9 +398,15 @@ class Release:
         self._spawn(self._link(label, sighting.url))
         if is_file:
             self._spawn(self._attach(sighting.url, sighting.body))
+        elif isinstance(source, BrowserRss):
+            self._spawn(self._read_browser_feed(source, sighting, label, measure))
         else:
             if isinstance(source, BrowserRelease) and sighting.body is not None:
-                self._spawn(self._browser_attachment(source, sighting.url, sighting.body))
+                self._spawn(
+                    self._browser_attachment(
+                        source.listing, sighting.url, sighting.body, source.timeout
+                    )
+                )
             if measure or not self.has_text or (self.summarizer and not self.summarizing):
                 self._spawn(self._read(source, sighting, label, measure))
 
@@ -499,8 +515,43 @@ class Release:
             return f"{self.target.ticker}-{period}-results.pdf"
         return name
 
-    async def _browser_attachment(self, source: BrowserRelease, article: str, body: bytes) -> None:
-        url = await asyncio.to_thread(source.pdf_url, article, body)
+    async def _read_browser_feed(
+        self, source: BrowserRss, sighting: Sighting, label: str, measure: bool
+    ) -> None:
+        # An item can appear shortly before its article. Give the next paced slot to the
+        # article once before leaving the other sources to supply the body.
+        for attempt in range(2):
+            try:
+                response = await self.fetcher.browser_request(
+                    sighting.url, source.warmup, source.timeout, urgent=True
+                )
+            except (aiohttp.ClientError, BrowserError, TimeoutError):
+                if attempt:
+                    raise
+                continue
+            if response.status == 200 and await asyncio.to_thread(
+                article_matches, sighting.title, response.body, verify_text=True
+            ):
+                self._spawn(
+                    self._browser_attachment(
+                        source.warmup, sighting.url, response.body, source.timeout
+                    )
+                )
+                await self._read(source, replace(sighting, body=response.body), label, measure)
+                return
+            if attempt or response.status not in (0, 200, 404):
+                self.journal.write(
+                    "browser_article_unavailable",
+                    ticker=self.target.ticker,
+                    url=sighting.url,
+                    status=response.status,
+                )
+                return
+
+    async def _browser_attachment(
+        self, warmup: str, article: str, body: bytes, give_up_after: float
+    ) -> None:
+        url = await asyncio.to_thread(issuer_pdf_url, article, body)
         if url is None:
             return
         name = self._attachment_name(url)
@@ -510,9 +561,8 @@ class Release:
         try:
             response = await self._download(
                 name,
-                partial(
-                    self.fetcher.browser_request, url, source.listing, source.timeout, urgent=True
-                ),
+                partial(self.fetcher.browser_request, url, warmup, give_up_after, urgent=True),
+                pending_statuses=(0, 404),  # Chrome stops at an opaque redirect with status 0.
             )
         finally:
             self._downloading.discard(name)
@@ -561,19 +611,25 @@ class Release:
         )
         self.journal.say(f"{self.target.ticker}: attached {name}")
 
-    async def _download(self, name: str, request: Callable[[], Awaitable[Response]]) -> Response:
-        """Gets a file. A feed can list a file before it's uploaded, so a 404 gets tried again
-        until the target's window closes."""
+    async def _download(
+        self,
+        name: str,
+        request: Callable[[], Awaitable[Response]],
+        *,
+        pending_statuses: tuple[int, ...] = (404,),
+    ) -> Response:
+        """Get a file and retry when it has yet to appear during this window."""
         response = await request()
         _, end = self.target.window
         retry = timedelta(seconds=self.attach_retry)
-        if response.status != 404 or self.journal.now() + retry >= end:
+        if response.status not in pending_statuses or self.journal.now() + retry >= end:
             return response
+        status = f"HTTP {response.status}" if response.status else "redirect"
         self.journal.say(
-            f"{self.target.ticker}: {name} isn't up yet (HTTP 404), so trying again every "
+            f"{self.target.ticker}: {name} isn't up yet ({status}), so trying again every "
             f"{self.attach_retry:g}s until {end.astimezone(ET):%H:%M} ET"
         )
-        while response.status == 404 and self.journal.now() + retry < end:
+        while response.status in pending_statuses and self.journal.now() + retry < end:
             await asyncio.sleep(self.attach_retry)
             if name in self.files:
                 break

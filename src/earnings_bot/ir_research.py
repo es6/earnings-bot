@@ -9,7 +9,7 @@ from urllib.parse import urljoin, urlsplit
 import aiohttp
 
 from earnings_bot.browser import BrowserError
-from earnings_bot.browser_sources import IRSource, _ReleaseLinks
+from earnings_bot.browser_sources import BrowserRss, IRSource, _ReleaseLinks, article_matches
 from earnings_bot.fetch import Fetcher
 from earnings_bot.known import NTH, ORD, KnownCompany
 from earnings_bot.sources import looks_like_earnings
@@ -26,6 +26,15 @@ IR_LISTINGS = {
 }
 _ERRORS = (BrowserError, aiohttp.ClientError, TimeoutError, ValueError, KeyError)
 _NEWS = re.compile(r"press|release|earnings|report|financial|news", re.IGNORECASE)
+_CHROME_FEED_HOSTS = frozenset(
+    {
+        "ir.lucidmotors.com",
+        "investors.fico.com",
+        "investor.lilly.com",
+        "ir.crowdstrike.com",
+        "investors.broadcom.com",
+    }
+)
 
 
 def chrome_available() -> bool:
@@ -156,9 +165,33 @@ async def verified_browser_source(
     year, quarter = int(period[2:6]), int(period[-1])
     prior_year, prior_quarter = (year - 1, 4) if quarter == 1 else (year, quarter - 1)
     pattern = re.compile(quarter_headline(prior_year, prior_quarter), re.IGNORECASE)
+    headline = quarter_headline(year, quarter)
     last = f"Q{prior_quarter} {prior_year}"
     try:
         async with fetcher.research_browser() as browser:
+            if urlsplit(listing).hostname in _CHROME_FEED_HOSTS:
+                feed = BrowserRss(
+                    urljoin(listing, "/rss/news-releases.xml"), listing, pattern.pattern
+                )
+                try:
+                    reply = await browser.request(feed.url(), listing, 4, fetcher.wait_turn)
+                    if reply.status == 200:
+                        for item in feed.parse(reply):
+                            article = await browser.request(item.url, listing, 4, fetcher.wait_turn)
+                            if article.status == 200 and article_matches(
+                                item.title, article.body, verify_text=True
+                            ):
+                                return (
+                                    IRSource(
+                                        rss=feed.url(),
+                                        listing=listing,
+                                        headline=headline,
+                                        verify_text=True,
+                                    ),
+                                    f"Verified last quarter's results in RSS, “{item.title}”",
+                                )
+                except _ERRORS:
+                    pass  # The HTML listing remains a candidate.
             url = listing
             seen = set()
             for _ in range(6):
@@ -181,7 +214,7 @@ async def verified_browser_source(
                     ):
                         source = IRSource(
                             listing=listing,
-                            headline=quarter_headline(year, quarter),
+                            headline=headline,
                             verify_text=True,
                         )
                         return source, f"Last quarter's results, “{title}”, read in Chrome"

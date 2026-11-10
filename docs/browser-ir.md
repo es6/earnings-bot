@@ -95,6 +95,30 @@ poll counts as a catch-up, so a late start can still see that scheduled result.
 The journal records each listing's response time, queue time, cache headers
 and headline match separately from the article fetch.
 
+## Read an issuer feed in Chrome
+
+Some IR feeds return HTTP 403 to the bot's HTTP client and readable RSS to
+Chrome. A dated, same-host feed item whose headline matches the scheduled
+quarter can start the alert. Chrome reads the article and downloads its
+verified PDF afterward. This removes the article request from the alert's
+critical path.
+
+```toml
+[target.ir]
+rss = "https://ir.lucidmotors.com/rss/news-releases.xml"
+warmup = "https://ir.lucidmotors.com/press-releases"
+headline = 'Lucid Announces Third Quarter 2026 Results.*'
+```
+
+Set both `rss` and `listing` to compare the feed and page at the same release.
+On the same host, each polls every two seconds so they share the existing
+one-request-per-second budget. The journal records `browser_feed` and
+`browser_listing` separately. The planner can add a known issuer feed
+alongside the listing after reading the previous quarter's full report through it.
+
+An exact PDF URL can redirect to a generic page before publication. Chrome
+stops at the redirect and keeps the tab warm for the next check.
+
 ```powershell
 uv run earnings-bot-record schedules/<day>.toml
 ```

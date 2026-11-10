@@ -28,7 +28,7 @@ import aiohttp
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from earnings_bot.browser import BrowserError, BrowserUnavailable
-from earnings_bot.browser_sources import BrowserRelease, IRSource
+from earnings_bot.browser_sources import BrowserRelease, BrowserRss, IRSource
 from earnings_bot.clock import TrustedClock
 from earnings_bot.config import RecorderSettings
 from earnings_bot.fetch import Fetcher, Response
@@ -319,6 +319,8 @@ async def fetch(source: Source, fetcher: Fetcher) -> Response:
         pause = float(retry_after) if retry_after.isdigit() else 30.0
         raise PollError(f"HTTP {response.status}, backing off for {pause:.0f}s", pause=pause)
     if response.status not in source.ok_statuses:
+        if response.status == 0:
+            raise PollError("Chrome stopped at a redirect")
         raise PollError(f"HTTP {response.status}")
     return response
 
@@ -480,6 +482,19 @@ def take(
             items = parse(w.source, outcome)
         except PollError as error:
             return _failed(w, error, journal)
+    if isinstance(w.source, BrowserRss):
+        if w.window is not None:
+            items = [item for item in items if _caught_up(w, item)]
+        journal.write(
+            "browser_feed",
+            ticker=w.ticker,
+            source=w.source.name,
+            sent=sent,
+            matched=bool(items),
+            response_ms=round(outcome.elapsed * 1000),
+            queued_ms=round(outcome.queued * 1000),
+            headers=_cache_headers(outcome),
+        )
     if w.problem:
         journal.say(f"{w.ticker} {w.source.name}: working again")
         w.problem = None

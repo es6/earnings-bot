@@ -227,7 +227,7 @@ class DirectoryWatcher:
             not window.task.done()
             and window.target.window[0] <= browser_horizon
             and window.target.ir is not None
-            and (window.target.ir.listing or window.target.ir.pdfs)
+            and (window.target.ir.listing or window.target.ir.rss or window.target.ir.pdfs)
             for window in self.windows.values()
         ):
             await self.fetcher.close_browser()
