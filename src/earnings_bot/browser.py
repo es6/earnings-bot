@@ -89,6 +89,14 @@ async def _command(ws: aiohttp.ClientWebSocketResponse, method: str, **params: A
         return message.get("result", {})
 
 
+async def _skip_browser_cache(ws: aiohttp.ClientWebSocketResponse, **network: Any) -> None:
+    """Open the tab's pages without Chrome's own cache. A navigation would otherwise take the
+    page, and the data its scripts load, from an earlier copy for as long as the site's
+    Cache-Control allows. Requests made with fetch() already pass `cache: 'no-store'`."""
+    await _command(ws, "Network.enable", **network)
+    await _command(ws, "Network.setCacheDisabled", cacheDisabled=True)
+
+
 async def _evaluate(ws: aiohttp.ClientWebSocketResponse, expression: str) -> Any:
     result = await _command(
         ws, "Runtime.evaluate", expression=expression, awaitPromise=True, returnByValue=True
@@ -339,6 +347,7 @@ class DesktopChrome:
         tab = await self._new_tab(f"render:{host}:{time.monotonic_ns()}")
         try:
             async with asyncio.timeout(give_up_after):
+                await _skip_browser_cache(tab.socket)
                 navigation = await _command(tab.socket, "Page.navigate", url=url)
                 if "errorText" in navigation:
                     raise BrowserError(navigation["errorText"])
@@ -450,9 +459,8 @@ async def _observe_json(
     command = 3
     with suppress(TimeoutError):
         async with asyncio.timeout(6):
-            await _command(
+            await _skip_browser_cache(
                 ws,
-                "Network.enable",
                 maxTotalBufferSize=4 * MAX_JSON_BYTES,
                 maxResourceBufferSize=MAX_JSON_BYTES,
             )

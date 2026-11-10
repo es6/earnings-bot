@@ -54,6 +54,9 @@ class KnownCompany(BaseModel):
     sec_form: Literal["8-K", "6-K"] | None = None
     fastest: Literal["ir-feed", "company-rss", "company-page", "newswire", "sec-8k", "unknown"]
     rss: list[str] = []
+    # Feeds (in `rss` or the trial table) polled with a new spelling of the path each time,
+    # since their cache ignores query strings but misses on a new spelling
+    rss_spelled: list[str] = []
     guess: list[str] = []  # URL templates
     trial: Trial = Trial()  # sources on trial; `pages` holds URL templates here
     evidence: str
@@ -184,6 +187,7 @@ def to_target(
         newswire=business_wire,
         prnewswire=pr_newswire,
         rss=company.rss,
+        rss_spelled=company.rss_spelled,
         # A guess counts as found on a 200, which a soft 404 would fake from the first poll
         guess=[]
         if company.soft_404
@@ -203,7 +207,7 @@ def target_toml(target: Target) -> str:
         lines += [f'sec_form = "{target.sec_form}"', f"before_minutes = {target.before_minutes:g}"]
     if target.q4_host:
         lines.append(f'q4_host = "{target.q4_host}"')
-    for key in ("newswire", "prnewswire", "rss", "guess"):
+    for key in ("newswire", "prnewswire", "rss", "rss_spelled", "guess"):
         lines += _toml_list(key, getattr(target, key))
     if target.ir:
         lines += ["", "[target.ir]"]
