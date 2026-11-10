@@ -1,7 +1,7 @@
 import asyncio
 import io
 import json
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import cast
 
@@ -16,7 +16,7 @@ from earnings_bot.issuers import profile
 from earnings_bot.known import SourceCheck
 from earnings_bot.recorder import ET, Journal, Polls, Target, Watch
 from earnings_bot.sec_results import SixKResults, is_results_release
-from earnings_bot.source_audit import Speed, audit_sources
+from earnings_bot.source_audit import Speed, Timing, audit_sources, site_local_time
 from earnings_bot.sources import EdgarFilings, EdgarLatest, Sighting
 from earnings_bot.track_progress import TrackProgress
 from tests.fakes import RoutedFetcher, embed_text, sec_filing_detail
@@ -353,3 +353,113 @@ async def test_the_ir_sites_own_time_for_the_release_joins_the_comparison(
     company = company.model_copy(update={"ir_posted": datetime(2026, 5, 14, 6, 40, tzinfo=ET)})
     speed = await audit_sources(fetcher, tmp_path, "BN", company, NOW, None, SixKResults(fetcher))
     assert [t.source for t in speed.archive] == ["SEC 6-K acceptance"]
+
+
+# WeRide's results 6-Ks of Aug 12, 2026 open with the Hong Kong exchange's disclaimers
+HKEX_DISCLAIMER = (
+    "Hong Kong Exchanges and Clearing Limited and The Stock Exchange of Hong Kong Limited take "
+    "no responsibility for the contents of this announcement, make no representation as to its "
+    "accuracy or completeness and expressly disclaim any liability whatsoever for any loss "
+    "howsoever arising from or in reliance upon the whole or any part of the contents of this "
+    "announcement. "
+)
+FIGURES = [
+    "Total revenue | 231.7 | 127.2",
+    "Revenue increased by 82.2% to RMB231.7 million. Net loss per share was RMB0.92.",
+] * 30
+# The press release itself, as Schedule I after the exchange's announcement
+SCHEDULE = "\n".join(
+    [
+        "Exhibit 99.1",
+        HKEX_DISCLAIMER * 4 + "This announcement contains forward-looking statements. " * 20,
+        "Schedule I",
+        "WeRide Inc. Announces Second Quarter and First Half 2026 Unaudited Financial Results",
+        (
+            "NEW YORK, August 12, 2026 (GLOBE NEWSWIRE) - WeRide Inc. today announced its "
+            "unaudited financial results for the second quarter and first half ended June 30, 2026."
+        ),
+        *FIGURES,
+    ]
+)
+# The exchange's own interim results announcement, filed the same afternoon
+INTERIM = "\n".join(
+    [
+        "Exhibit 99.1",
+        HKEX_DISCLAIMER,
+        "INTERIM RESULTS ANNOUNCEMENT FOR THE SIX MONTHS ENDED JUNE 30, 2026",
+        (
+            "The Company is pleased to announce the unaudited consolidated quarterly and first "
+            "half results of the Company for the three months and first half ended June 30, 2026."
+        ),
+        *FIGURES,
+    ]
+)
+
+
+def test_a_press_release_after_the_exchanges_disclaimers_is_recognized_as_results() -> None:
+    assert SCHEDULE.index("today announced") > 2500
+    assert is_results_release(SCHEDULE, "EXHIBIT 99.1")
+
+
+def test_pleased_to_announce_results_is_results_and_not_a_date_notice() -> None:
+    assert is_results_release(INTERIM, "EXHIBIT 99.1")
+    notice = INTERIM.replace("is pleased to announce the", "will announce its")
+    assert not is_results_release(notice, "EXHIBIT 99.1")
+
+
+LATER = "0001171843-26-005999"
+
+
+async def test_the_speed_review_times_sec_by_the_days_first_results_6k(tmp_path: Path) -> None:
+    # Like WeRide on Aug 12: the press release at 9:22 AM, the Hong Kong filing at 4:03 PM
+    data = {
+        "fiscalYearEnd": "1231",
+        "filings": {
+            "recent": {
+                "accessionNumber": [LATER, RESULT],
+                "form": ["6-K", "6-K"],
+                "items": ["", ""],
+                "acceptanceDateTime": ["2026-08-13T20:03:22Z", "2026-08-13T10:45:04Z"],
+                "primaryDocument": ["cover.htm", "cover.htm"],
+            }
+        },
+    }
+    routes = {f"CIK{CIK:010d}.json": (200, json.dumps(data).encode())}
+    for key in (LATER, RESULT):
+        base = folder(key)
+        routes[f"{base}/{key}-index.htm"] = (
+            200,
+            sec_filing_detail(f"{base}/cover.htm", "exh_991.htm"),
+        )
+        routes[f"{base}/exh_991.htm"] = (200, RELEASE.encode())
+    company = profile("BN", CIK, "Brookfield Corporation", data, NOW.date())
+    fetcher = RoutedFetcher(routes)
+
+    speed = await audit_sources(fetcher, tmp_path, "BN", company, NOW, None, SixKResults(fetcher))
+
+    [sec] = [timing for timing in speed.archive if timing.source == "SEC 6-K acceptance"]
+    assert sec.at == datetime(2026, 8, 13, 10, 45, 4, tzinfo=UTC)
+
+
+def test_reports_third_quarter_results_is_an_announcement() -> None:
+    # CGI's press release, the third exhibit of its results 6-K
+    release = "\n".join(
+        [
+            "GLOBAL PRESS RELEASE | Stock Market Symbols | GIB.A (TSX) | GIB (NYSE)",
+            "CGI reports third quarter Fiscal 2026 results",
+            "Revenue up 2.5% and diluted EPS accretion of 22.5%",
+            *FIGURES,
+        ]
+    )
+    assert is_results_release(release, "EX-99.3")
+    notice = release.replace("CGI reports third quarter", "CGI to host third quarter")
+    assert not is_results_release(notice, "EX-99.3")
+
+
+def test_a_q4_time_counts_as_eastern_only_when_sec_confirms_it() -> None:
+    sec = [Timing("SEC 8-K acceptance", datetime(2026, 8, 13, 16, 3, 36, tzinfo=ET))]
+    assert site_local_time("08/13/2026 16:01:00", sec) == datetime(2026, 8, 13, 16, 1, tzinfo=ET)
+    # In another zone, or on another day, it doesn't line up with SEC's time
+    assert site_local_time("08/13/2026 22:01:00", sec) is None
+    assert site_local_time("08/13/2026 06:01:00", sec) is None
+    assert site_local_time("08/13/2026 16:01:00", []) is None

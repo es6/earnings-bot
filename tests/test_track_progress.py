@@ -507,3 +507,39 @@ def test_a_minute_resolution_timestamp_cannot_win_by_seconds(tmp_path: Path) -> 
         "**IR press release page, read in Chrome** at 4:01 PM ET",
         "**SEC 8-K filings** at 4:01:10 PM ET",
     ]
+
+
+async def test_a_moved_calendars_cards_are_edited_not_posted_again(tmp_path: Path) -> None:
+    channel = FakeDiscord()
+    state, cards = tmp_path / "state.db", tmp_path / "cards.db"
+    with DeliveryStore(state, 5) as store, DeliveryStore(cards, 7) as card_store:
+        calendar = Calendar(store)
+        row, _ = calendar.add("NVDA")
+        first = TrackProgress(
+            calendar,
+            card_store,
+            cast(discord.abc.Messageable, channel),
+            42,
+            planned=dict,
+            now=lambda: NOW,
+            busy=lambda: False,
+            audit=never,
+        )
+        await first.publish(row.cik, card("NVDA · NVIDIA", "Queued"))
+    # The bot now posts to channel 6, and the calendar came along
+    with DeliveryStore(state, 6) as store, DeliveryStore(cards, 7) as card_store:
+        moved = TrackProgress(
+            Calendar(store),
+            card_store,
+            cast(discord.abc.Messageable, channel),
+            42,
+            planned=dict,
+            now=lambda: NOW,
+            busy=lambda: False,
+            audit=never,
+        )
+        moved.follow_calendar()
+        await moved.publish(row.cik, card("NVDA · NVIDIA", "Finished"))
+
+    [message] = channel.messages.values()
+    assert "Finished" in embed_text(message.embeds[0])

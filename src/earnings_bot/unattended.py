@@ -4,7 +4,7 @@ import asyncio
 import tomllib
 from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from functools import partial
 from pathlib import Path
 
@@ -17,7 +17,18 @@ from earnings_bot.calendar import Calendar
 from earnings_bot.date_discovery import DateDiscovery
 from earnings_bot.delivery import DeliveryStore, retry_delivery
 from earnings_bot.fetch import Fetcher
-from earnings_bot.formatting import clock, day, duration, period_label, source_label, stamp
+from earnings_bot.formatting import (
+    AMBER,
+    GREEN,
+    clock,
+    day,
+    duration,
+    period_label,
+    source_label,
+    stamp,
+    truncate,
+)
+from earnings_bot.investigate import wire_seen, with_wire
 from earnings_bot.issuers import Issuers
 from earnings_bot.pipeline import (
     DiscordPoster,
@@ -27,11 +38,13 @@ from earnings_bot.pipeline import (
     keep_warm,
 )
 from earnings_bot.recorder import (
+    FOLLOW_UP,
     Journal,
     Plan,
     Polls,
     Target,
     Watch,
+    follow_up,
     parse_plan,
     record_target,
 )
@@ -56,6 +69,14 @@ class _Schedule:
 class _Window:
     target: Target
     task: asyncio.Task[None]
+
+
+def _expected(target: Target) -> datetime:
+    return target.expected
+
+
+def _period(target: Target) -> str:
+    return f" {period_label(target.period)}" if target.period else ""
 
 
 class DirectoryWatcher:
@@ -85,6 +106,8 @@ class DirectoryWatcher:
         self.issuers = Issuers(fetcher)
         self.status = status
         self.benchmark = benchmark
+        # How long after a window to keep looking for the release's other links; none unless set
+        self.follow_up = timedelta(0)
         self.latest_benchmark: str | None = None
         self.progress: TrackProgress | None = None
         self.guild_id: int | None = None
@@ -128,6 +151,57 @@ class DirectoryWatcher:
         if self.latest_benchmark:
             lines.append(f"🏁 {self.latest_benchmark}")
         return "\n".join(lines)
+
+    def health_embed(self, version: str, revision: str | None) -> discord.Embed:
+        """/watch_status: what's live, what's next with its expected time and its watch, and
+        anything wrong."""
+        now = self.journal.now()
+        running = [w.target for w in self.windows.values() if not w.task.done()]
+        live = sorted((t for t in running if t.window[0] <= now < t.window[1]), key=_expected)
+        coming = sorted((t for t in running if t.window[0] > now), key=lambda t: t.window[0])
+        color = AMBER if self.problems else GREEN
+        embed = discord.Embed(title=f"Earnings Bot {version}", color=color)
+        scan = f" · last scan {clock(self.last_scan, seconds=True)}" if self.last_scan else ""
+        embed.description = f"🟢 Watching `{self.directory.name}/`{scan}"
+        if live:
+            lines = [
+                f"**{t.ticker}**{_period(t)} · results expected {clock(t.expected)} · "
+                f"watching until {clock(t.window[1])}"
+                for t in live
+            ]
+            embed.add_field(name="🔴 Live now", value=truncate("\n".join(lines)), inline=False)
+        lines = [
+            f"**{t.ticker}**{_period(t)} · {day(t.expected)}, results about {clock(t.expected)}\n"
+            f"-# Watch opens {clock(t.window[0])} ({stamp(t.window[0], 'R')})"
+            for t in coming[:5]
+        ]
+        embed.add_field(
+            name="⏭️ Next windows",
+            value=truncate("\n".join(lines)) if lines else "None scheduled",
+            inline=False,
+        )
+        if self.problems:
+            problems = [f"**{name}**: {message}" for name, message in self.problems.items()]
+            embed.add_field(name="⚠️ Problems", value=truncate("\n".join(problems)), inline=False)
+        if self.latest_benchmark:
+            embed.add_field(name="🏁 Latest benchmark", value=self.latest_benchmark, inline=False)
+        if revision:
+            embed.set_footer(text=f"Build {revision}")
+        return embed
+
+    def _learn_wire(self, target: Target, watches: list[Watch]) -> None:
+        """Keep the wire a live release came out on, for a tracked company whose research
+        couldn't find it."""
+        row = self.calendar.find(target.ticker)
+        if row is None or row.company.wire != "unknown":
+            return
+        seen = sorted(
+            (w for w in watches if w.first or w.caught_up),
+            key=lambda w: w.first or datetime.max.replace(tzinfo=UTC),
+        )
+        if found := wire_seen([w.source.name for w in seen]):
+            self.calendar.save_profile(row.cik, with_wire(row.company, found))
+            self.journal.say(f"{target.ticker}: its releases go out on {found}")
 
     def _problem(self, name: str, message: str | None) -> None:
         previous = self.problems.get(name)
@@ -267,6 +341,12 @@ class DirectoryWatcher:
             if benchmark is not None:
                 comparison = await self._compare(target, watches, benchmark)
             self.status(_window_report(target, watches, comparison))
+            self._learn_wire(target, watches)
+            release = self.releases.active.get(target.release_key)
+            if self.follow_up and release is not None and release.posted:
+                await follow_up(
+                    target, watches, self.fetcher, self.journal, on_new, self.sixk, self.follow_up
+                )
             await self.releases.finish_target(target)
             await asyncio.gather(*trial_reads.values(), return_exceptions=True)
             if self.calendar.contains(target.cik):
@@ -462,6 +542,7 @@ async def watch_directory(
             watcher = DirectoryWatcher(
                 directory, fetcher, journal, releases, store, status, benchmark, fmp_api_key
             )
+            watcher.follow_up = FOLLOW_UP
             if isinstance(channel, discord.abc.GuildChannel | discord.Thread):
                 watcher.guild_id = channel.guild.id
             watcher.progress = TrackProgress(
@@ -479,6 +560,7 @@ async def watch_directory(
                 cache_notes=watcher.dates.cache_notes.get,
             )
             watcher.dates.on_progress = watcher.progress.changed.set
+            watcher.progress.follow_calendar()
             ready(watcher)
             status(
                 f"🟢 **Earnings monitoring started** · {release_version()} · `{directory.name}/`"

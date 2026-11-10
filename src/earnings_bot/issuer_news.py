@@ -4,7 +4,7 @@ import json
 import re
 from dataclasses import dataclass
 from datetime import date
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import unquote, urljoin, urlsplit
 
 from earnings_bot.browser import browser_host
 from earnings_bot.fetch import Fetcher, Response
@@ -16,20 +16,72 @@ class NewsRecord:
     title: str
     description: str
     url: str
-    day: date
+    day: date | None  # None when the record gives no date
+
+
+# Keys under which a quarterly results record links its press release
+_RELEASE_KEYS = ("press_release", "earnings_release", "press_release_url", "earnings_release_url")
+_QUARTER = re.compile(r"^\s*Q?([1-4])\s*$", re.IGNORECASE)
+_FILE_DAY = re.compile(r"(20\d{2})[.\-_](\d{2})[.\-_](\d{2})")
+
+
+def _issuer_pdf(api: str, link: str, origin: str) -> str | None:
+    try:
+        url = urljoin(api, link)
+        host = browser_host(url).removeprefix("www.")
+    except ValueError:
+        return None
+    issuer = host == origin or host.endswith(f".{origin}")
+    return url if issuer and urlsplit(url).path.lower().endswith(".pdf") else None
+
+
+def _results_records(api: str, value: object, origin: str) -> list[NewsRecord]:
+    """Quarterly results resources, which give a quarter and its press release instead of a
+    headline, as Sea's results page's API does: {"year": 2026, "data": [{"quarter": "Q3",
+    "press_release": ".../2026.11.10 Sea Third Quarter 2026 Results.pdf"}]}."""
+    records: list[NewsRecord] = []
+
+    def walk(node: object, year: str) -> None:
+        if isinstance(node, list):
+            for child in node:
+                walk(child, year)
+            return
+        if not isinstance(node, dict):
+            return
+        named = node.get("year") or node.get("fiscal_year")
+        if isinstance(named, int | str) and re.fullmatch(r"20\d{2}", str(named)):
+            year = str(named)
+        quarter = _QUARTER.match(str(node.get("quarter", "")))
+        link = next((node[key] for key in _RELEASE_KEYS if isinstance(node.get(key), str)), "")
+        if quarter and year and link and (url := _issuer_pdf(api, link, origin)):
+            stamp = _FILE_DAY.search(unquote(url))
+            try:
+                day = date(*map(int, stamp.groups())) if stamp else None
+            except ValueError:
+                day = None
+            title = f"Q{quarter[1]} {year} Financial Results Press Release"
+            records.append(NewsRecord(title, "", url, day))
+        for child in node.values():
+            if isinstance(child, list | dict):
+                walk(child, year)
+
+    walk(value, "")
+    return records
 
 
 def news_records(api: str, body: bytes) -> list[NewsRecord]:
-    """Recognize records from an issuer's newsroom, with issuer-hosted PDFs only."""
+    """Recognize records from an issuer's newsroom or results page, with issuer-hosted PDFs
+    only."""
     origin = browser_host(api).removeprefix("www.")
     try:
         value = json.loads(body)
     except (ValueError, RecursionError):
         return []
+    results = _results_records(api, value, origin)
     rows = value.get("news") if isinstance(value, dict) else value
     if not isinstance(rows, list):
-        return []
-    records = []
+        return results
+    records = list(results)
     for row in rows:
         if not isinstance(row, dict):
             continue
@@ -84,7 +136,7 @@ class IssuerNews(Source):
             return listing
         for row in news_records(self.api, listing.body):
             if (
-                (self.day is None or row.day == self.day)
+                (self.day is None or row.day is None or row.day == self.day)
                 and self.headline.fullmatch(row.title)
                 and looks_like_earnings(row.title)
             ):

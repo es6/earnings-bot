@@ -48,6 +48,8 @@ class KnownCompany(BaseModel):
     soft_404: bool = False  # the site answers 200 for pages that don't exist
     wire: Literal["Business Wire", "PR Newswire", "GlobeNewswire", "none", "unknown"]
     release_time: str | None = None  # HH:MM US Eastern
+    # The release time is when the IR site or a wire had the last release, not SEC's filing
+    release_published: bool = False
     eightk: list[str] = []  # last four earnings 8-Ks accepted, HH:MM US Eastern
     sixk: list[str] = []  # verified results 6-Ks accepted, HH:MM US Eastern
     sec_form: Literal["8-K", "6-K"] | None = None
@@ -64,6 +66,10 @@ class KnownCompany(BaseModel):
     ir_listing: str | None = None
     ir_http_status: int | None = None
     ir_news_api: str | None = None
+    # The IR site's home page, where reading its navigation starts
+    ir_home: str | None = None
+    # The public data behind its results page, which can name new results before its newsroom
+    ir_results_api: str | None = None
     # The latest results on it, and when the IR site says they were posted
     ir_release: str | None = None
     ir_posted: datetime | None = None

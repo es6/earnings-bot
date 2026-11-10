@@ -1,5 +1,6 @@
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import discord
 import pytest
@@ -7,9 +8,10 @@ import pytest
 from earnings_bot import __main__ as entry
 
 
-def test_the_status_channel_must_differ_from_the_release_channel(
+def test_alerts_and_status_can_share_one_channel(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Everything goes to #bot-testing in HQ Nest
     monkeypatch.chdir(tmp_path)  # away from a developer's real .env
     for name, value in {
         "DISCORD_TOKEN": "not-a-real-token",
@@ -22,8 +24,9 @@ def test_the_status_channel_must_differ_from_the_release_channel(
     monkeypatch.setattr(entry, "configure_console", lambda: None)
     monkeypatch.setattr(discord.utils, "setup_logging", lambda **kwargs: None)
     started: list[object] = []
-    monkeypatch.setattr(entry, "EarningsBot", lambda *args: started.append(args))
+    bot = SimpleNamespace(run=lambda token, **_: started.append(token))
+    monkeypatch.setattr(entry, "EarningsBot", lambda *args: bot)
 
-    with pytest.raises(SystemExit, match="must differ"):
-        entry.main()
-    assert not started
+    entry.main()
+
+    assert started == ["not-a-real-token"]

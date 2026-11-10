@@ -18,7 +18,7 @@ import time
 import tomllib
 from collections.abc import Callable, Hashable, Sequence
 from dataclasses import asdict, dataclass, field, replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any, TextIO
 from urllib.parse import urlsplit
@@ -340,18 +340,31 @@ async def poll(source: Source, fetcher: Fetcher) -> tuple[Response, list[Sightin
     return response, parse(source, response)
 
 
+# How long before a window opens a release can come out and still be this one. On published
+# its Q3 2026 results at 5:00 AM ET, ten minutes before the watch its 6-K times had set.
+EARLY_RELEASE = timedelta(hours=12)
+
+
+def _site_local_day(stamp: str | None) -> date | None:
+    """The day of Q4's "11/10/2026 05:00:00", which names no time zone."""
+    try:
+        return datetime.strptime(stamp or "", "%m/%d/%Y %H:%M:%S").date()
+    except ValueError:
+        return None
+
+
 def _caught_up(w: Watch, item: Sighting) -> bool:
-    """Whether an item listed at the first poll was published inside the window. Only sources
-    whose timestamps name their time zone can tell; Q4's site-local times can't. Nor can a
-    guessed URL, whose Last-Modified can be when a copy was generated: a page that answers 200
-    for anything would otherwise look like the release the moment the window opened."""
-    published = published_time(item.published)
-    if not item.earnings or w.window is None or published is None:
-        return False
-    if isinstance(w.source, GuessedFile):
+    """Whether an earnings item listed at the first poll is this release, already out: published
+    inside the window, or earlier that day, up to 12 hours before it opened. A Q4 time names no
+    zone, so its day decides. A guessed URL can't tell, since its Last-Modified can be when a copy
+    was generated: a page that answers 200 for anything would otherwise look like the release."""
+    if not item.earnings or w.window is None or isinstance(w.source, GuessedFile):
         return False
     start, end = w.window
-    return start <= published <= end
+    day = start.astimezone(ET).date()
+    if (published := published_time(item.published)) is not None:
+        return start - EARLY_RELEASE <= published <= end and published.astimezone(ET).date() == day
+    return _site_local_day(item.published) == day
 
 
 def _logged(item: Sighting) -> dict[str, Any]:
@@ -548,10 +561,12 @@ async def watch(
     on_new: Callable[[Source, Sighting], None] | None = None,
     *,
     sixk: SixKResults | None = None,
+    interval: float | None = None,
 ) -> None:
-    """Polls one watch's source on its own until `end`, or until the watch is done."""
+    """Polls one watch's source on its own until `end`, or until the watch is done, every
+    `interval` seconds instead of the source's own when given."""
     while (sent := journal.now()) < end:
-        next_poll = time.monotonic() + w.source.interval
+        next_poll = time.monotonic() + (interval or w.source.interval)
         outcome = await _poll_once(w.source, fetcher)
         items = None
         if sixk and isinstance(outcome, Response):
@@ -815,6 +830,58 @@ async def record_target(
     finally:
         summarize(target, watches, journal)
     return watches
+
+
+FOLLOW_UP = timedelta(hours=10)
+FOLLOW_UP_INTERVAL = 60.0  # seconds
+
+
+async def follow_up(
+    target: Target,
+    watches: list[Watch],
+    fetcher: Fetcher,
+    journal: Journal,
+    on_new: OnNew | None = None,
+    sixk: SixKResults | None = None,
+    longest: timedelta = FOLLOW_UP,
+) -> None:
+    """After a window that found the release, check each source that didn't show it once a
+    minute, until ten hours later or the end of that day, so links that come later still join
+    the alert: Sea's 6-K comes hours after its Business Wire release, and its results page and
+    newsroom later still. SEC's latest-filings feed scrolls too fast to read once a minute, so
+    the company's own filing list stands in for it."""
+    _, end = target.window
+    day_end = end.astimezone(ET).replace(hour=23, minute=59, second=0, microsecond=0)
+    until = min(end + longest, day_end)
+    pending = [
+        w
+        for w in watches
+        if w.first is None
+        and not w.caught_up
+        and w.stopped is None
+        and w.known is not None
+        and not w.source.trial
+        and w.source.name != "edgar_latest"
+    ]
+    if not pending or journal.now() >= until:
+        return
+    names = ", ".join(w.source.name for w in pending)
+    journal.say(f"{target.ticker}: checking {names} for later links until {_clock(until)} ET")
+    notify = (lambda source, item: on_new(target, source, item)) if on_new else None
+    async with asyncio.TaskGroup() as group:
+        for w in pending:
+            filings = isinstance(w.source, EdgarFilings) and w.source.form == "6-K"
+            group.create_task(
+                watch(
+                    w,
+                    fetcher,
+                    journal,
+                    until,
+                    notify,
+                    sixk=sixk if filings else None,
+                    interval=FOLLOW_UP_INTERVAL,
+                )
+            )
 
 
 async def record(

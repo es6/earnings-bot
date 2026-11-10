@@ -12,24 +12,71 @@ from earnings_bot.recorder import ET, Target
 from tests.fakes import RoutedFetcher
 
 URL = "https://issuer.example/press?category=results"
+WERIDE = {
+    "cf-cache-status": "DYNAMIC",
+    "cache-control": "public, max-age=0, s-maxage=2592000",
+    "last-modified": "Mon, 09 Nov 2026 05:55:28 GMT",
+    "x-cache-hits": "372",
+}
 
 
 @pytest.mark.parametrize(
     ("normal", "query", "query_status", "query_body", "outcome", "label"),
     [
-        ({"x-cache": "TCP_HIT"}, {"x-cache": "TCP_MISS"}, 200, b"feed", (True, False), "verified"),
-        ({"age": "10"}, {"age": "1"}, 200, b"feed", (False, False), "Cache hits observed"),
-        ({}, {}, 200, b"feed", (False, False), "Freshness unverified"),
+        (
+            {"x-cache": "TCP_HIT"},
+            {"x-cache": "TCP_MISS"},
+            200,
+            b"feed",
+            (True, False, False),
+            "Query bypass verified",
+        ),
+        (
+            {"cache-status": '"Cloudflare"; hit'},
+            {"cache-status": '"Cloudflare"; fwd=uri-miss'},
+            200,
+            b"feed",
+            (True, False, False),
+            "Query bypass verified",
+        ),
+        ({"age": "10"}, {"age": "1"}, 200, b"feed", (False, False, True), "don't get past"),
+        # Cloudflare passes the request through to the IR platform's own cache, which serves
+        # its stored copy to every URL variant (ir.weride.ai, Nov 10)
+        (
+            WERIDE,
+            WERIDE,
+            200,
+            b"feed",
+            (False, False, True),
+            "x-cache-hits: 372, last rebuilt Mon, Nov 9 at 12:55 AM ET",
+        ),
+        (
+            {"x-varnish": "32770"},
+            {"x-varnish": "98306 32770"},
+            200,
+            b"feed",
+            (False, False, True),
+            "don't get past",
+        ),
+        (
+            {"cf-cache-status": "DYNAMIC"},
+            {"cf-cache-status": "DYNAMIC"},
+            200,
+            b"feed",
+            (False, False, False),
+            "Not cached",
+        ),
+        ({}, {}, 200, b"feed", (False, False, False), "Freshness unverified"),
         (
             {"cache-control": "public, max-age=0, s-maxage=60"},
             {},
             200,
             b"feed",
-            (False, False),
+            (False, False, False),
             "Shared TTL 60 s",
         ),
-        ({"age": "10"}, {"age": "0"}, 200, b"other", (False, False), "Responses differed"),
-        ({}, {}, 403, b"blocked", (False, True), "Both queries rejected"),
+        ({"age": "10"}, {"age": "0"}, 200, b"other", (False, False, False), "Responses differed"),
+        ({}, {}, 403, b"blocked", (False, True, False), "Both queries rejected"),
     ],
 )
 async def test_cache_comparison(
@@ -37,7 +84,7 @@ async def test_cache_comparison(
     query: dict[str, str],
     query_status: int,
     query_body: bytes,
-    outcome: tuple[bool, bool],
+    outcome: tuple[bool, bool, bool],
     label: str,
 ) -> None:
     urls: list[str] = []
@@ -50,7 +97,7 @@ async def test_cache_comparison(
 
     result = await probe_cache(get, URL)
 
-    assert (result.query_bust, result.canonical_only) == outcome
+    assert (result.query_bust, result.canonical_only, result.stored_only) == outcome
     assert label in result.summary
     assert urls[:2] == [URL, URL]
     assert len(set(urls[2:])) == 2

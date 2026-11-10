@@ -20,16 +20,17 @@ from earnings_bot.calendar import describe
 from earnings_bot.clock import TrustedClock
 from earnings_bot.delivery import DeliveryStore
 from earnings_bot.fetch import Response
+from earnings_bot.formatting import clock, stamp
 from earnings_bot.known import KnownCompany, known_companies, to_target
 from earnings_bot.pipeline import Releases
 from earnings_bot.recorder import ET, Journal
 from earnings_bot.source_audit import Speed
 from earnings_bot.sources import PR_NEWSWIRE_EARNINGS
 from earnings_bot.track_progress import TrackProgress
-from earnings_bot.tracking_commands import OFFLINE, TrackingCommands
-from earnings_bot.unattended import DirectoryWatcher
+from earnings_bot.tracking_commands import OFFLINE, TrackingCommands, upcoming_embed
+from earnings_bot.unattended import DirectoryWatcher, _Window
 from tests.burst_replay import LocalClock
-from tests.fakes import RoutedFetcher
+from tests.fakes import RoutedFetcher, embed_text
 from tests.sec_data import LCID_CIK, LCID_ROUTE, LCID_SUBMISSIONS, sec_routes
 from tests.test_pipeline import FakePoster
 from tests.test_unattended import FakeDiscord
@@ -63,11 +64,13 @@ async def call(
     replies: list[str] = []
     events = [] if events is None else events
 
-    async def send_message(content: str, *, ephemeral: bool = False) -> None:
+    async def send_message(
+        content: str | None = None, *, embed: discord.Embed | None = None, ephemeral: bool = False
+    ) -> None:
         assert ephemeral, "calendar replies are only for the member who asked"
         assert "defer" not in events, "Discord refuses a second response"
         events.append("reply")
-        replies.append(content)
+        replies.append(embed_text(embed) if embed is not None else content or "")
 
     async def defer(*, ephemeral: bool = False, thinking: bool = False) -> None:
         assert ephemeral and thinking, "only the member who asked sees the bot thinking"
@@ -425,7 +428,9 @@ def test_only_managers_see_untrack_and_every_command_is_server_only() -> None:
 async def test_upcoming_lists_the_weeks_windows_and_issuers_awaiting_dates(
     watcher: DirectoryWatcher, commands: TrackingCommands
 ) -> None:
-    assert await call(commands.upcoming) == "📅 No earnings windows in the next 7 days."
+    assert await call(commands.upcoming) == (
+        "📅 Earnings in the next 7 days\nNo releases expected in the next 7 days."
+    )
 
     for ticker in ("CRWD", "HD", "NVDA"):
         await call(commands.track, ticker)
@@ -439,17 +444,20 @@ async def test_upcoming_lists_the_weeks_windows_and_issuers_awaiting_dates(
 
     reply = await call(commands.upcoming)
 
+    # One heading per day, and each release's expected time beside the window watched
     assert reply.splitlines() == [
-        "📅 **Earnings in the next 7 days**",
-        describe(found, evidence),
-        describe(nvda, "Schedule file"),
-        "-# Still looking for dates: CRWD",
+        "📅 Earnings in the next 7 days",
+        "",
+        "Tuesday, November 17",
+        f"**HD** Q3 FY26 · results 6:00 AM ET ({stamp(found.expected, 'R')})",
+        (
+            "-# Watching 5:50 to 6:30 AM ET · Issuer confirmed release time · "
+            "[source](<https://ir.homedepot.com/news-releases/q3>)"
+        ),
+        f"**NVDA** Q3 FY27 · results about 4:20 PM ET ({stamp(nvda.expected, 'R')})",
+        "-# Watching 4:10 to 4:50 PM ET · Schedule file",
     ]
-    # The evidence's link is a short masked one
-    assert (
-        "Issuer confirmed release time · [source](<https://ir.homedepot.com/news-releases/q3>)"
-        in reply
-    )
+    assert upcoming_embed(watcher).footer.text == "Still looking for dates: CRWD"
 
 
 async def test_a_long_upcoming_list_stops_at_a_whole_line(
@@ -461,12 +469,12 @@ async def test_a_long_upcoming_list_stops_at_a_whole_line(
     ]
     watcher.planned = {t.release_key: t for t in targets}
 
-    lines = (await call(commands.upcoming)).splitlines()
+    embed = upcoming_embed(watcher)
 
-    assert len("\n".join(lines)) <= 2000  # Discord's limit for a message
-    assert lines[0] == "📅 **Earnings in the next 7 days**"
-    assert lines[-1] == "-# …and more after these."
-    assert lines[1:-1] == [describe(t, "Schedule file") for t in targets[: len(lines) - 2]]
+    assert len(embed) <= 6000  # Discord's limit for an embed
+    assert all(len(field.value or "") <= 1024 for field in embed.fields)
+    # The day's list says how many more didn't fit
+    assert (embed.fields[0].value or "").endswith("more")
 
 
 PLTR_FEED = "investors.palantir.com/feed/PressRelease.svc/GetPressReleaseList"
@@ -688,3 +696,24 @@ async def test_a_ticker_outside_the_catalog_gets_its_alert_from_the_wire(
         [report] = [line for line in status if "LCID Q3 FY26 window closed" in line]
         # PR Newswire's own server had it while its CDN's copy didn't
         assert report.splitlines()[1].startswith("🥇 PR Newswire earnings feed at ")
+
+
+async def test_watch_status_shows_each_releases_time_beside_when_its_watch_opens(
+    watcher: DirectoryWatcher,
+) -> None:
+    # ONON, Nov 10: /watch_status said "from 5:10 AM" and /upcoming "6:10 AM", which read as a
+    # disagreement. One was the watch opening, the other the release.
+    onon = to_target("HD", NOW + timedelta(hours=2), 2026, 3)
+    onon.before_minutes, onon.after_minutes = 60, 90
+    task = asyncio.create_task(asyncio.sleep(3600))
+    watcher.windows[onon.release_key] = _Window(onon, task)
+    try:
+        embed = watcher.health_embed("v0.8.0", "abc1234")
+    finally:
+        task.cancel()
+
+    text = embed_text(embed)
+    assert embed.title == "Earnings Bot v0.8.0"
+    assert f"results about {clock(onon.expected)}" in text
+    assert f"Watch opens {clock(onon.window[0])}" in text
+    assert embed.footer.text == "Build abc1234"

@@ -5,20 +5,31 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import date, datetime
 from pathlib import Path
-from typing import Self
+from typing import Self, cast
 
 import pytest
 
 from earnings_bot import date_discovery, investigate, ir_research
+from earnings_bot.browser import RenderedPage
 from earnings_bot.calendar import Calendar, describe
 from earnings_bot.date_discovery import DateDiscovery
 from earnings_bot.delivery import DeliveryStore
 from earnings_bot.fetch import Response
-from earnings_bot.investigate import INVESTIGATION, due, feed_links, ir_hosts, wire
+from earnings_bot.investigate import (
+    INVESTIGATION,
+    due,
+    feed_links,
+    ir_hosts,
+    wire,
+    wire_seen,
+    with_wire,
+)
 from earnings_bot.issuers import profile
 from earnings_bot.known import SourceCheck, known_companies, to_target
 from earnings_bot.recorder import ET
-from tests.fakes import RoutedFetcher
+from earnings_bot.sec_results import SixKResults
+from earnings_bot.sources import Sighting
+from tests.fakes import RoutedFetcher, rendered
 from tests.sec_data import LCID_CIK, LCID_SUBMISSIONS
 from tests.test_date_discovery import AMAT, AMAT_NOTICE_BODY
 from tests.test_pipeline import filing_routes
@@ -67,6 +78,13 @@ class FakeChrome:
         self.calls.append((url, warmup))
         status, body = self.pages.get(url, (404, ""))
         return Response(url, status, {}, body.encode(), 0.01)
+
+    async def render(
+        self, url: str, give_up_after: float, wait_turn: Callable[[str], Awaitable[None]]
+    ) -> RenderedPage:
+        self.calls.append((url, "render"))
+        status, body = self.pages.get(url, (404, ""))
+        return rendered(url, status, body)
 
 
 def lucid_chrome() -> FakeChrome:
@@ -254,7 +272,11 @@ async def test_blocked_q4_homepage_does_not_hide_the_issuer_notice(
     result = await date_discovery.find_date(fetcher, "ONON", NOW, found)
     assert result and result[0].period == "FY2026Q3"
     assert result[0].expected == datetime(2026, 11, 10, 6, 10, tzinfo=ET)
-    assert result[0].window[1] == datetime(2026, 11, 10, 8, 5, tzinfo=ET)
+    # Before the open runs to 9:35, whatever past filing times say
+    assert result[0].window == (
+        datetime(2026, 11, 10, 5, 10, tzinfo=ET),
+        datetime(2026, 11, 10, 9, 35, tzinfo=ET),
+    )
     assert result[1] == f"Issuer date confirmed, before market open <{home}news/q3-notice>"
     no_history = date_discovery.parse_notice(
         "ONON",
@@ -575,7 +597,11 @@ async def test_every_source_checked_is_reported_with_why_as_it_goes(
             f"Its last results 8-Ks were accepted at {', '.join(LUCID.eightk)} ET",
         ),
         ("ir.lucidmotors.com homepage over HTTP", False, "Returned HTTP 403"),
-        ("Q4 press release feed on ir.lucidmotors.com", False, "Q4 feed returned HTTP 403"),
+        (
+            "Q4 press release feed on ir.lucidmotors.com",
+            False,
+            "Not readable as a Q4 site: its firewall answered HTTP 403",
+        ),
         (
             f"Press release page <{LUCID_LIST}>, read in Chrome",
             True,
@@ -1052,3 +1078,62 @@ async def test_an_unreadable_notice_on_the_press_release_list_is_reported() -> N
 
     assert await date_discovery.find_date(fetcher, "LCID", NOW, company, unread) is None
     assert unread == [title]
+
+
+class TwoCopies:
+    """SEC's verified results 6-Ks for WeRide's Aug 12 release, newest first: the Hong Kong
+    interim announcement, then the press release carrying the wire's dateline and IR site."""
+
+    async def history(
+        self, cik: int, now: datetime, count: int = 3, filings: object = None
+    ) -> list[Sighting]:
+        def copy(key: str, at: str, text: str) -> Sighting:
+            return Sighting(key, "6-K financial results", "", at, True, body=text.encode())
+
+        return [
+            copy("b", "2026-08-12T20:03:22Z", "INTERIM RESULTS ANNOUNCEMENT. Revenue grew."),
+            copy(
+                "a",
+                "2026-08-12T13:22:00Z",
+                "NEW YORK, August 12, 2026 (GLOBE NEWSWIRE) -- WeRide Inc. today announced its "
+                "results. Visit https://ir.weride.ai for more.",
+            ),
+            copy("c", "2026-05-13T10:16:36Z", "NEW YORK (PRNewswire) -- an older release"),
+        ]
+
+
+async def test_a_6k_filers_wire_and_ir_site_come_from_any_copy_of_its_latest_results() -> None:
+    company = LUCID.model_copy(update={"sec_form": "6-K", "name": "WeRide Inc."})
+
+    found = await investigate.investigate(
+        RoutedFetcher({}), company, TODAY, None, sixk=cast(SixKResults, TwoCopies())
+    )
+
+    assert found.wire == "GlobeNewswire"
+    assert "ir.weride.ai homepage over HTTP" in [check.source for check in found.checks]
+
+
+def test_a_live_release_teaches_the_bot_its_wire() -> None:
+    # Sea's 6-Ks name no wire, so both main wires were watched; Business Wire carried its Q3
+    assert wire_seen(["edgar", "businesswire_busted", "prnewswire"]) == "Business Wire"
+    assert wire_seen(["edgar", "q4_press"]) is None
+    company = LUCID.model_copy(
+        update={
+            "wire": "unknown",
+            "checks": [
+                SourceCheck(source="SEC 6-K filings", watch=True, why="Filed here"),
+                SourceCheck(source="PR Newswire earnings feed", watch=True, why="Both watched"),
+            ],
+        }
+    )
+
+    learned = with_wire(company, "Business Wire")
+
+    target = to_target("SE", NOW, 2026, 3, learned)
+    assert (target.newswire, target.prnewswire) == (learned.names, [])
+    assert [(c.source, c.watch) for c in learned.checks] == [
+        ("SEC 6-K filings", True),
+        ("PR Newswire earnings feed", False),
+        ("Business Wire earnings feed", True),
+        ("GlobeNewswire earnings feed", False),
+    ]

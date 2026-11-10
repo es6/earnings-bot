@@ -16,11 +16,21 @@ from zoneinfo import ZoneInfo
 
 import aiohttp
 
-from earnings_bot.browser import BrowserError
+from earnings_bot.browser import BrowserError, RenderedPage
 from earnings_bot.cache_research import CHECKING_CACHE, CacheResult, CacheRoute, probe_cache
 from earnings_bot.calendar import Calendar, Tracked, describe, same_release
 from earnings_bot.fetch import Fetcher, Response
+from earnings_bot.formatting import clock
 from earnings_bot.investigate import OpenChrome, Report, due, investigate
+from earnings_bot.ir_pages import (
+    IRReader,
+    IRReading,
+    Moment,
+    Render,
+    earnings_event,
+    moments,
+    upcoming,
+)
 from earnings_bot.ir_research import (
     chrome_available,
     issuer_links,
@@ -40,6 +50,7 @@ from earnings_bot.known import (
 )
 from earnings_bot.recorder import ET, PollError, Target, poll
 from earnings_bot.sec_results import SixKResults, SixKUnavailable
+from earnings_bot.source_audit import Speed, published_first
 from earnings_bot.sources import BroadcomNewsroom, Q4PressReleases, RssFeed, is_date_notice
 from earnings_bot.text import html_to_text, release_text
 
@@ -63,14 +74,26 @@ _ABBREVIATED = re.compile(
 _NOTICE_QUARTER = rf"(?:Q([1-4])|({'|'.join(NTH + ORD)})[-\s]+quarter)"
 _PERIOD = re.compile(
     rf"\b{_NOTICE_QUARTER}"
-    # "of fiscal 2026", "and fiscal 2026", "and full year 2025"
-    r"\s+(?:(?:and|&)\s+(?:full[-\s]+)?|of\s+)?(?:fiscal\s+)?(?:year\s+)?(?:FY\s*)?(20\d{2})\b",
+    # "of fiscal 2026", "and fiscal 2026", "and full year 2025", "and first half 2026"
+    r"\s+(?:(?:and|&)\s+(?:(?:full|first|second)[-\s]+)?(?:half[-\s]+)?|of\s+)?"
+    r"(?:fiscal\s+)?(?:year\s+)?(?:FY\s*)?(20\d{2})\b",
     re.IGNORECASE,
 )
 _YEAR_FIRST_PERIOD = re.compile(
     rf"\b(?:fiscal(?:\s+year)?|FY)\s*(20\d{{2}})\s+{_NOTICE_QUARTER}\b",
     re.IGNORECASE,
 )
+# "WeRide Inc. 2026 Q3 Earnings Conference Call"
+_YEAR_QUARTER = re.compile(
+    rf"\b(20\d{{2}})\s+(?:Q([1-4])|({'|'.join(NTH + ORD)})[-\s]+quarter)\b", re.IGNORECASE
+)
+_SHORT_YEAR = re.compile(r"\bFY\s?(\d{2})\b", re.IGNORECASE)
+# An event the IR site hasn't settled yet, as Lowe's "Earnings Conference Call (tentative)"
+_TENTATIVE = re.compile(r"\b(?:tentative|tbc|tbd|to be confirmed|estimated)\b", re.IGNORECASE)
+EVENT_DATE = "Issuer's earnings event"
+READING_IR = "Reading its IR site in Chrome"
+IR_REREAD = 6 * 3600  # seconds
+RESEARCH_SECONDS = 450  # for one company's hourly check
 VERIFYING_IR = "Verifying the issuer's last report"
 CACHE_REFRESH = 24 * 3600
 _RELEASE = re.compile(
@@ -93,8 +116,10 @@ _AFTER = re.compile(
     re.IGNORECASE,
 )
 _BEFORE = re.compile(
-    rf"before (?:the )?(?:(?:US|U S) )?"
-    rf"(?:{_MARKET} opens?|opening bell|open(?:ing)? of (?:the )?{_MARKET})\b",
+    rf"(?:before|prior to) (?:the )?(?:(?:US|U S) )?"
+    rf"(?:{_MARKET} opens?|opening bell|open(?:ing)? of (?:the )?{_MARKET}|open\b)"
+    # TJX's "before 9:30 am ET", the open by the clock
+    r"|before 9:30 ?am\b",
     re.IGNORECASE,
 )
 _CALL = re.compile(r"\b(?:conference call|earnings call|webcast)\b", re.IGNORECASE)
@@ -167,38 +192,23 @@ def _release_clause(statement: str) -> str | None:
     return statement[start : after.start() if after else None]
 
 
+def _tidy(line: str) -> str:
+    """A line whose abbreviations won't end a sentence: "Nov. 12", "2 p.m." and "U.S."."""
+    line = _full_months(" ".join(line.split()))
+    return re.sub(r"\b([ap])\.m\.", r"\1m", line, flags=re.IGNORECASE).replace("U.S.", "US")
+
+
 def parse_notice(
     ticker: str, company: KnownCompany, title: str, body: str, now: datetime
 ) -> tuple[Target, str] | None:
     if not is_date_notice(title):
         return None
 
-    def tidy(line: str) -> str:
-        line = _full_months(" ".join(line.split()))
-        return re.sub(r"\b([ap])\.m\.", r"\1m", line, flags=re.IGNORECASE).replace("U.S.", "US")
-
-    title = tidy(title)
+    title = _tidy(title)
     # Kept apart, so a heading or the page's "posted at" line doesn't run into the next line
-    lines = [tidy(line) for line in html_to_text(_BREAK.sub(" ", body)).splitlines()]
+    lines = [_tidy(line) for line in html_to_text(_BREAK.sub(" ", body)).splitlines()]
     # The headline's explicit fiscal period takes precedence over other quarters in the page.
-    for notice in (title, " ".join(lines)):
-        if period := _PERIOD.search(notice):
-            digit, ordinal, year = period.groups()
-            break
-        if period := _YEAR_FIRST_PERIOD.search(notice):
-            year, digit, ordinal = period.groups()
-            break
-    else:
-        return None
-    quarter = (
-        int(digit)
-        if digit
-        else (
-            NTH.index(ordinal.lower()) + 1
-            if ordinal.lower() in NTH
-            else ORD.index(ordinal.lower()) + 1
-        )
-    )
+    period = title_period(title) or title_period(" ".join(lines))
     today = now.astimezone(ET).date()
     # A headline such as "X to Report Fourth Quarter Results on November 12, 2026" may be the
     # only place that gives the date, when the notice itself is about the call
@@ -223,11 +233,18 @@ def parse_notice(
     if len(dates) != 1:
         return None
     [day] = dates
+    # A notice that names no quarter it can be read from ("will release its financial results
+    # for the fourth quarter and fiscal year ended September 30") reports the one that ended last
+    if period is None and company.fiscal_year_end:
+        period = fiscal_period(company.fiscal_year_end, day)
+    if period is None:
+        return None
+    year, quarter = period
     expected = next((stamp for s in release if (stamp := _release_time(s, day))), None)
     if expected is not None:
         if expected <= now:
             return None
-        target = to_target(ticker, expected, int(year), quarter, company)
+        target = to_target(ticker, expected, year, quarter, company)
         return target, "Issuer confirmed release time"
 
     # The issuer confirmed the date. Use a wider watch for an approximate time of day.
@@ -243,29 +260,46 @@ def parse_notice(
     if not fallback:
         return None
     hour, minute = map(int, (company.release_time or fallback).split(":"))
-    if (mode == "after market close" and hour < 16) or (mode == "before market open" and hour >= 9):
+    if (mode == "after market close" and hour < 16) or (
+        mode == "before market open" and (hour, minute) >= (9, 30)
+    ):
         hour, minute = map(int, fallback.split(":"))
     expected = datetime(day.year, day.month, day.day, hour, minute, tzinfo=ET)
     estimate = expected
     call_deadline = None
-    if mode == "before market open":
+    if mode != "after market close":
         # The issuer's same-day earnings call is a deadline for results, even when the
-        # historical SEC acceptance times would put the estimate later than the call.
+        # historical SEC acceptance times would put the estimate later than the call, as for
+        # Warner Music's "will hold an earnings conference call that morning at 8:30 a.m."
         for sentence in sentences:
             if (
                 _CALL.search(sentence)
                 and (_SAME_DAY.search(sentence) or day in _dates(sentence, today))
                 and (call := _release_time(sentence, day, allow_call=True))
-                and call <= expected.replace(hour=9, minute=30)
+                and (mode != "before market open" or call <= expected.replace(hour=9, minute=30))
             ):
                 call_deadline = min(call_deadline, call) if call_deadline else call
-        if call_deadline:
-            expected = min(expected, call_deadline)
-    target = to_target(ticker, expected, int(year), quarter, company)
+        if call_deadline and call_deadline <= expected:
+            # Before the call, by as much as an hour when the time was only estimated
+            expected = (
+                call_deadline
+                if mode == "before market open"
+                else call_deadline - timedelta(hours=1)
+            )
+    target = to_target(ticker, expected, year, quarter, company)
     target.before_minutes = 90 if expected < estimate else 60
     target.after_minutes = 90
-    if call_deadline:
+    if call_deadline and call_deadline >= expected:
         target.after_minutes = max(90, (call_deadline - expected) // timedelta(minutes=1) + 5)
+    if mode == "before market open":
+        # Before the open can be any time from early morning to 9:30, whatever past filing
+        # times say: TJX's 8-Ks came at 9:10 while its notice says only "before 9:30 a.m."
+        opens = expected.replace(hour=9, minute=35)
+        early = expected.replace(hour=6, minute=0)
+        target.after_minutes = max(target.after_minutes, (opens - expected) // timedelta(minutes=1))
+        target.before_minutes = max(
+            target.before_minutes, (expected - early) // timedelta(minutes=1)
+        )
     return (target, f"Issuer date confirmed, {mode}") if target.window[1] > now else None
 
 
@@ -428,6 +462,217 @@ async def _listing_date(
     return None
 
 
+def title_period(title: str) -> tuple[int, int] | None:
+    """The fiscal year and quarter a headline or event names: "Q3 2026", "third quarter of
+    fiscal 2026", "fiscal 2026 Q3", "2026 Q3" or "Q4 FY26"."""
+    title = _SHORT_YEAR.sub(r"FY20\1", title)
+    if period := _PERIOD.search(title):
+        digit, ordinal, year = period.groups()
+    elif period := _YEAR_FIRST_PERIOD.search(title) or _YEAR_QUARTER.search(title):
+        year, digit, ordinal = period.groups()
+    else:
+        return None
+    if digit:
+        return int(year), int(digit)
+    ordinal = ordinal.lower()
+    return int(year), (NTH.index(ordinal) if ordinal in NTH else ORD.index(ordinal)) + 1
+
+
+def timed_by_publishers(company: KnownCompany, review: str | None) -> KnownCompany:
+    """The company with its usual release time taken from when its IR site or wire had the
+    last release, when that was before SEC had it."""
+    speed = Speed.from_json(review)
+    first = published_first(speed) if speed else None
+    if first is None:
+        return company
+    local = first.astimezone(ET)
+    release = f"{local.hour:02d}:{local.minute - local.minute % 5:02d}"
+    return company.model_copy(update={"release_time": release, "release_published": True})
+
+
+def _weekday_before(day: date) -> date:
+    day -= timedelta(days=1)
+    while day.weekday() >= 5:
+        day -= timedelta(days=1)
+    return day
+
+
+def _period_of(title: str, text: str, company: KnownCompany, day: date) -> tuple[int, int] | None:
+    """The period an event or notice is for: the one it names, or else the quarter that ended
+    last before its date, as "John Deere - 4Q Earnings Call" in November is."""
+    if period := title_period(title) or title_period(text[:3000]):
+        return period
+    return fiscal_period(company.fiscal_year_end, day) if company.fiscal_year_end else None
+
+
+def event_target(
+    ticker: str, company: KnownCompany, title: str, moment: Moment, now: datetime, text: str = ""
+) -> tuple[Target, str] | None:
+    """The release an IR site's earnings event implies. Results come out before the call: the
+    same morning or afternoon, or the evening before a morning call."""
+    if _TENTATIVE.search(title) or _TENTATIVE.search(text[:400]):
+        return None  # a placeholder, not a date
+    period = _period_of(title, text, company, moment.day)
+    if period is None:
+        return None
+    year, quarter = period
+    history = company.release_time
+    hour, minute = map(int, history.split(":")) if history else (None, None)
+    call = moment.at
+    when = (
+        f"{call:%a, %b} {call.day} at {clock(call)}"
+        if call
+        else f"{moment.day:%a, %b} {moment.day.day}"
+    )
+    if call is None:
+        if hour is None or minute is None:
+            return None
+        expected = datetime(
+            moment.day.year, moment.day.month, moment.day.day, hour, minute, tzinfo=ET
+        )
+        before, after = 60, 90
+    elif (
+        call.hour < 12
+        and hour is not None
+        and minute is not None
+        and hour >= 16
+        and (company.sec_form != "6-K" or company.release_published)
+    ):
+        # Past 8-Ks came out after the close, so a morning call follows an evening release
+        day = _weekday_before(call.date())
+        expected = datetime(day.year, day.month, day.day, hour, minute, tzinfo=ET)
+        before, after = 60, 90
+    else:
+        same_day = (
+            call.replace(hour=hour, minute=minute)
+            if hour is not None and minute is not None
+            else None
+        )
+        if (
+            same_day
+            and timedelta(0) < call - same_day <= timedelta(hours=3)
+            and (company.sec_form != "6-K" or company.release_published)
+        ):
+            expected = same_day
+            before = 60
+        else:
+            # A 6-K can be filed hours after the release, so the call is the better guide
+            expected = call - timedelta(hours=1)
+            before = 90
+        after = (call - expected) // timedelta(minutes=1) + 15
+    target = to_target(ticker, expected, year, quarter, company)
+    target.before_minutes, target.after_minutes = before, after
+    if target.window[1] <= now:
+        return None
+    return target, f"{EVENT_DATE}: “{title}”, {when}"
+
+
+async def rendered_date(
+    render: Render,
+    starts: list[str],
+    ticker: str,
+    company: KnownCompany,
+    now: datetime,
+    unread: list[str],
+) -> tuple[tuple[Target, str] | None, IRReading]:
+    """Read the IR site in Chrome, through its own navigation, for the issuer's date notice or
+    else its next earnings event. Works for any layout, including lists built by scripts."""
+    reader = IRReader(render, starts)
+    today = now.astimezone(ET).date()
+    tried: set[str] = set()
+    # Earnings calls the site lists: (title, when, where, the text around it)
+    events: list[tuple[str, Moment, str, str]] = []
+    async for page in reader.pages():
+        # A notice dated ahead in its headline is surely this quarter's, so it goes first
+        notices = sorted(
+            reader.reading.notices, key=lambda notice: not upcoming(moments(notice[1]), today)
+        )
+        for url, title in notices:
+            # A notice whose headline gives a date that has passed is an old one
+            dated = moments(title)
+            # A link back to a page already read, as HPE's "/#11-23-2026", isn't a notice page
+            if (
+                url in tried
+                or url in reader.reading.pages
+                or len(tried) >= 4
+                or (dated and not upcoming(dated, today))
+            ):
+                continue
+            tried.add(url)
+            notice = await reader.open(url)
+            if notice is None:
+                continue
+            if result := parse_notice(ticker, company, title, escape(notice.text), now):
+                target, evidence = result
+                return (target, f"{evidence} <{url}>"), reader.reading
+            # A notice of the call alone still dates the release, which comes before it
+            if call := _call_moment(notice.text, today):
+                events.append((title, call, url, notice.text))
+            elif title not in unread:
+                unread.append(title)
+        events.extend(_listed_events(page, today))
+    # Each event link's card usually shows its date beside the title
+    events.extend(
+        (title, moment, url, card)
+        for url, title, card in reader.reading.events
+        for moment in upcoming(moments(card), today)[:1]
+    )
+    # An event's own page gives its date when the list doesn't
+    for url, title, _ in reader.reading.events[: 0 if events else 2]:
+        if page := await reader.open(url):
+            dates = upcoming(moments(page.text[:5000]), today)
+            events.extend((title, moment, url, page.text) for moment in dates[:1])
+    for title, moment, url, text in sorted(events, key=lambda item: item[1].day):
+        if result := event_target(ticker, company, title, moment, now, text):
+            target, evidence = result
+            return (target, f"{evidence} <{url}>"), reader.reading
+    return None, reader.reading
+
+
+def _call_moment(text: str, today: date) -> Moment | None:
+    """When a notice says its earnings call is, as in Autodesk's "conference call ... on
+    Tuesday, November 24, 2026, at 2 p.m. Pacific Time (PT)"."""
+    found = [
+        moment
+        for sentence in _SENTENCE.split(_tidy(text))
+        if _CALL.search(sentence)
+        for moment in upcoming(moments(sentence), today)
+    ]
+    timed = [moment for moment in found if moment.at]
+    return (timed or found or [None])[0]
+
+
+def _listed_events(page: RenderedPage, today: date) -> list[tuple[str, Moment, str, str]]:
+    """Earnings events a page lists with their dates beside them, as in "WeRide Inc. 2026 Q3
+    Earnings Conference Call 2026-11-20 8:00 AM EST"."""
+    found = []
+    lines = page.text.splitlines()
+    for number, line in enumerate(lines):
+        if not earnings_event(line):
+            continue
+        # The event's own line, or a short one right after it that's just its date. Any further
+        # and the date may be the next event's.
+        nearby = [line, *(after for after in lines[number + 1 : number + 2] if len(after) <= 40)]
+        found.extend(
+            (line.strip(), moment, page.url, " ".join(nearby))
+            for moment in upcoming(moments(" ".join(nearby)), today)[:1]
+        )
+    return found
+
+
+def ir_starts(ticker: str, company: KnownCompany) -> list[str]:
+    """Where to start reading an issuer's IR site."""
+    origins = [
+        f"https://{urlsplit(url).netloc}/"
+        for url in (company.ir_listing, company.ir_news_api, *company.rss)
+        if url
+    ]
+    if company.q4_host:
+        origins.append(f"https://{company.q4_host}/")
+    starts = [issuer_listing(ticker, company), company.ir_home, *origins]
+    return [url for url in dict.fromkeys(starts) if url]
+
+
 def _cache_routes(row: Tracked) -> list[CacheRoute]:
     target, company = row.target, row.company
     ir = target.ir if target else None
@@ -486,6 +731,9 @@ class DateDiscovery:
         # Why each tracked company's IR page is or isn't watched in its next window
         self.ir_notes: dict[int, str] = {}
         self.cache_notes: dict[int, list[str]] = {}
+        # What reading each company's IR site in Chrome found, and when it last ran
+        self.ir_reads: dict[int, str] = {}
+        self.ir_read_at: dict[int, float] = {}
         self.cache_results: dict[CacheRoute, tuple[float, CacheResult]] = {}
         # Called whenever a phase, report or note changes
         self.on_progress: Callable[[], None] = lambda: None
@@ -510,8 +758,8 @@ class DateDiscovery:
     async def run_once(self, row: Tracked) -> None:
         """One hourly check of a company, which never raises."""
         try:
-            # Room for a first investigation, which reads several pages through Chrome
-            async with asyncio.timeout(300):
+            # Room for a first investigation and a read of the IR site, both through Chrome
+            async with asyncio.timeout(RESEARCH_SECONDS):
                 await self._check(row)
                 if current := self.calendar.find(row.ticker):
                     await self._prepare_cache(current)
@@ -543,16 +791,52 @@ class DateDiscovery:
     ) -> tuple[Target, str] | None:
         if result := await find_date(self.fetcher, row.ticker, now, row.company, unread):
             return result
-        if row.company.sec_form != "6-K":
+        if row.company.sec_form == "6-K":
+            with suppress(SixKUnavailable):
+                async for notice in self.sixk.notices(row.cik, now):
+                    if result := parse_notice(
+                        row.ticker, row.company, notice.headline, escape(notice.text), now
+                    ):
+                        target, evidence = result
+                        return target, f"{evidence} from issuer 6-K exhibit <{notice.url}>"
+        return await self._ir_site_date(row, now, unread)
+
+    async def _ir_site_date(
+        self, row: Tracked, now: datetime, unread: list[str]
+    ) -> tuple[Target, str] | None:
+        """The date from the IR site as Chrome shows it, when its feeds and lists didn't give
+        one. A date already found this way is read again every few hours, not hourly."""
+        open_chrome = self.chrome or (self.fetcher.research_browser if chrome_available() else None)
+        starts = ir_starts(row.ticker, row.company)
+        if open_chrome is None or not starts or self.busy():
             return None
-        with suppress(SixKUnavailable):
-            async for notice in self.sixk.notices(row.cik, now):
-                if result := parse_notice(
-                    row.ticker, row.company, notice.headline, escape(notice.text), now
-                ):
-                    target, evidence = result
-                    return target, f"{evidence} from issuer 6-K exhibit <{notice.url}>"
-        return None
+        if (
+            row.target
+            and row.evidence
+            and row.target.window[1] > now
+            and time.monotonic() < self.ir_read_at.get(row.cik, 0) + IR_REREAD
+        ):
+            return row.target, row.evidence
+        self._phase(row.cik, READING_IR)
+        try:
+            async with open_chrome() as browser:
+
+                async def render(url: str) -> RenderedPage:
+                    if self.busy():
+                        raise TimeoutError
+                    return await browser.render(url, 15, self.fetcher.wait_turn)
+
+                result, reading = await rendered_date(
+                    render, starts, row.ticker, row.company, now, unread
+                )
+        except (BrowserError, aiohttp.ClientError, TimeoutError, ValueError) as error:
+            self.ir_reads[row.cik] = f"Chrome couldn't read its IR site ({type(error).__name__})"
+            self.on_progress()
+            return None
+        self.ir_read_at[row.cik] = time.monotonic()
+        self.ir_reads[row.cik] = f"{reading.summary()}."
+        self.on_progress()
+        return result
 
     def _phase(self, cik: int, text: str | None) -> None:
         if text is None:
@@ -622,10 +906,11 @@ class DateDiscovery:
                 if ir and route.url in (ir.news_api, ir.listing, ir.rss):
                     if result.query_bust:
                         bust.add(route.url)
-                    elif result.canonical_only:
+                    elif result.canonical_only or result.stored_only:
                         bust.discard(route.url)
                 if target and (route.url in target.rss or route.url in target.trial.rss):
-                    if result.canonical_only:
+                    # A query that gets the same stored copy only costs the cache a lookup
+                    if result.canonical_only or result.stored_only:
                         canonical.add(route.url)
                     elif result.query_bust:
                         canonical.discard(route.url)
@@ -676,6 +961,10 @@ class DateDiscovery:
         row = await self._investigate(row)
         if self._defer_if_busy(row.cik):
             return
+        # Place windows by when the release came out last time, not when SEC had it
+        timed = replace(
+            row, company=timed_by_publishers(row.company, self.calendar.review(row.cik)[1])
+        )
         self._phase(row.cik, "Looking for the next release date")
         now = self.now()
         unread: list[str] = []
@@ -687,24 +976,29 @@ class DateDiscovery:
         # An issuer's word beats FMP's calendar, which beats nothing
         if saved and saved[1] == MANUAL:
             target, evidence = saved
-        elif result := await self._issuer_date(row, now, unread):
+        elif result := await self._issuer_date(timed, now, unread):
             target, evidence = result
         elif saved and saved[1] not in (CALENDAR_DATE, CALENDAR_6K_DATE):
             target, evidence = saved
-        elif result := await self._calendar_date(row, now):
+        elif result := await self._calendar_date(timed, now):
             target, evidence = result
         elif saved:
             target, evidence = saved
         else:
-            seen = (
-                f" It saw the notice “{unread[0]}” but couldn't read a date from it."
-                if unread
-                else ""
-            )
+            today = now.astimezone(ET).date()
+            # A notice whose headline dates a release that has passed is last quarter's
+            fresh = [t for t in unread if not (dated := moments(t)) or upcoming(dated, today)]
+            if fresh:
+                seen = f" It saw the notice “{fresh[0]}” but couldn't read a date from it."
+            elif unread:
+                seen = f" Its latest date notice, “{unread[0]}”, is for an earlier release."
+            else:
+                seen = ""
+            read = f" {self.ir_reads[row.cik]}" if row.cik in self.ir_reads else ""
             self._phase(
                 row.cik,
-                f"No release date read yet.{seen} Rechecking hourly. A Manage Server member can "
-                "set one with `/track` and `when` and `period`.",
+                f"No release date read yet.{read}{seen} Rechecking hourly. A Manage Server "
+                "member can set one with `/track` and `when` and `period`.",
             )
             return
         if self._defer_if_busy(row.cik) or row not in self.calendar.entries():
@@ -721,16 +1015,23 @@ class DateDiscovery:
             self.calendar.set_target(target, evidence)
             self.status(f"📅 {describe(target, evidence)}")
         existing_ir = target.ir
-        if existing_ir and (
-            evidence == MANUAL
-            or existing_ir.news_api
-            or existing_ir.http_first
-            or existing_ir.rss
-            or existing_ir.pdfs
-            or existing_ir.tesla_deck
-            or existing_ir.warmup
-            or not existing_ir.verify_text
-            or row.cik in self.ir_notes
+        results_api = row.company.ir_results_api
+        # A results API found since is worth switching to
+        newer = bool(results_api and existing_ir and existing_ir.news_api != results_api)
+        if (
+            existing_ir
+            and not newer
+            and (
+                evidence == MANUAL
+                or existing_ir.news_api
+                or existing_ir.http_first
+                or existing_ir.rss
+                or existing_ir.pdfs
+                or existing_ir.tesla_deck
+                or existing_ir.warmup
+                or not existing_ir.verify_text
+                or row.cik in self.ir_notes
+            )
         ):
             return
         if not target.period:
@@ -740,8 +1041,10 @@ class DateDiscovery:
         listing = existing_ir.listing if existing_ir else issuer_listing(row.ticker, row.company)
         if listing:
             self._phase(row.cik, VERIFYING_IR)
-        ir = await verified_news_source(self.fetcher, row.company.ir_news_api, target.period)
+        ir = await verified_news_source(self.fetcher, results_api, target.period)
         if ir:
+            why = "Read last quarter's press release PDF from the issuer's results API"
+        elif ir := await verified_news_source(self.fetcher, row.company.ir_news_api, target.period):
             why = "Read last quarter's report PDF from the issuer newsroom API"
         else:
             ir = (

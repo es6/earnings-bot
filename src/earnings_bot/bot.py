@@ -134,7 +134,9 @@ class EarningsBot(discord.Client):
         elif self.directory_watcher is None:
             status = f"Earnings watcher is running for {self.schedule}."
         else:
-            status = self.directory_watcher.health()
+            embed = self.directory_watcher.health_embed(release_version(), build_revision())
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
         lines = [f"**Earnings Bot {release_version()}**"]
         if revision := build_revision():
             lines.append(f"Build `{revision}`")

@@ -11,7 +11,7 @@ import tempfile
 import time
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
@@ -129,6 +129,57 @@ _FETCH = """
         }
     }
     return {status: response.status, headers, body: btoa(bytes)};
+})
+"""
+
+
+@dataclass(frozen=True)
+class RenderedPage:
+    """A page as a person sees it, after its scripts have built it."""
+
+    url: str  # where it ended up, after any redirects
+    status: int  # the page's HTTP status, or 0 when Chrome didn't say
+    title: str
+    text: str  # what it shows, one line per block
+    links: list[tuple[str, str]]  # each link's absolute URL and visible text
+    frames: list[str]  # pages it embeds
+    # The text of the small block around each link, such as an event's card with its date
+    cards: list[str] = field(default_factory=list)
+
+
+# Enough for a long press release or a list of a few hundred releases
+MAX_RENDERED_TEXT = 400_000
+_SETTLED = (
+    "[document.readyState, document.links.length,"
+    " document.body ? document.body.innerText.length : 0]"
+)
+_READ_PAGE = """
+((limit) => {
+    const links = [];
+    const tidy = (text) => (text || '').replace(/\\s+/g, ' ').trim();
+    for (const a of document.querySelectorAll('a[href]')) {
+        const text = tidy(a.innerText || a.getAttribute('aria-label') || a.title);
+        if (!text || !/^https:/.test(a.href)) continue;
+        // The largest block around the link that is still one item: its card in a list
+        let card = a;
+        for (let up = a.parentElement, i = 0; up && i < 4; up = up.parentElement, i++) {
+            if (tidy(up.innerText).length > 400) break;
+            card = up;
+        }
+        links.push([a.href, text.slice(0, 300), tidy(card.innerText).slice(0, 400)]);
+        if (links.length >= 3000) break;
+    }
+    const frames = [...document.querySelectorAll('iframe[src]')]
+        .map(frame => frame.src).filter(src => /^https:/.test(src)).slice(0, 20);
+    const navigation = performance.getEntriesByType('navigation')[0];
+    return {
+        url: location.href,
+        status: (navigation && navigation.responseStatus) || 0,
+        title: document.title || '',
+        text: (document.body ? document.body.innerText : '').slice(0, limit),
+        links,
+        frames,
+    };
 })
 """
 
@@ -273,6 +324,55 @@ class DesktopChrome:
                 return await _observe_json(tab.socket, url, host)
             finally:
                 await self._drop(host)
+
+    async def render(
+        self,
+        url: str,
+        give_up_after: float,
+        wait_turn: Callable[[str], Awaitable[None]],
+    ) -> RenderedPage:
+        """Open a page in its own tab and read it once its scripts stop changing it. Many IR
+        sites build their release lists in the browser, so the HTML a request gets is empty."""
+        host = browser_host(url)
+        await self._start()
+        await wait_turn(host)
+        tab = await self._new_tab(f"render:{host}:{time.monotonic_ns()}")
+        try:
+            async with asyncio.timeout(give_up_after):
+                navigation = await _command(tab.socket, "Page.navigate", url=url)
+                if "errorText" in navigation:
+                    raise BrowserError(navigation["errorText"])
+                seen: list[object] = []
+                started = time.monotonic()
+                # Settled: loaded, and the links and text stayed the same for about a second
+                while True:
+                    await asyncio.sleep(0.3)
+                    with suppress(BrowserError):
+                        state = await _evaluate(tab.socket, _SETTLED)
+                        seen.append(state)
+                        if (
+                            state
+                            and state[0] == "complete"
+                            and len(seen) >= 4
+                            and seen[-1] == seen[-2] == seen[-3] == seen[-4]
+                        ) or time.monotonic() - started > give_up_after - 1.5:
+                            break
+                page = await _evaluate(tab.socket, f"{_READ_PAGE}({MAX_RENDERED_TEXT})")
+            final = str(page["url"])
+            browser_host(final)  # a redirect to somewhere Chrome may not go isn't read
+            return RenderedPage(
+                url=final,
+                status=int(page["status"] or 0),
+                title=str(page["title"]),
+                text=str(page["text"]),
+                links=[(str(link), str(text)) for link, text, _ in page["links"]],
+                frames=[str(frame) for frame in page["frames"]],
+                cards=[str(card) for _, _, card in page["links"]],
+            )
+        except (aiohttp.ClientError, ValueError, KeyError, TypeError) as error:
+            raise BrowserError(str(error)) from error
+        finally:
+            await self._drop(next(key for key, value in self._tabs.items() if value is tab))
 
     async def request(
         self,

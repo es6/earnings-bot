@@ -22,6 +22,7 @@ from earnings_bot.recorder import (
     Target,
     Watch,
     configure_console,
+    follow_up,
     load_plan,
     summarize,
     sync_clock,
@@ -327,10 +328,15 @@ async def test_a_late_start_catches_up_on_releases_published_inside_the_window()
     listed = [
         late,
         late,  # listed twice, still new once
-        # Published before the window opened, so it's old news
-        {"key": "last quarter", "published": (now - timedelta(hours=1)).isoformat()},
-        # Q4's site-local time names no time zone, so it can't tell
+        # Published days before the window opened, so it's old news
+        {"key": "last quarter", "published": (now - timedelta(days=90)).isoformat()},
+        # Q4's site-local time names no zone, but its day is the window's: already out
         {"key": "q4", "published": f"{now.astimezone(ET):%m/%d/%Y %H:%M:%S}"},
+        # And one from another day isn't
+        {
+            "key": "q4 old",
+            "published": f"{now.astimezone(ET) - timedelta(days=90):%m/%d/%Y %H:%M:%S}",
+        },
         # Inside the window, but not the release
         {"key": "webcast", "published": now.isoformat(), "earnings": False},
     ]
@@ -346,27 +352,31 @@ async def test_a_late_start_catches_up_on_releases_published_inside_the_window()
     )
 
     new = [e for e in events(log) if e["event"] == "new"]
-    assert [(e["key"], e["caught_up"]) for e in new] == [("8-K", True)]
-    assert [(item.key, item.caught_up) for item in seen] == [("8-K", True)]
+    assert [(e["key"], e["caught_up"]) for e in new] == [("8-K", True), ("q4", True)]
+    assert [(item.key, item.caught_up) for item in seen] == [("8-K", True), ("q4", True)]
     [ready] = [e for e in events(log) if e["event"] == "ready"]
-    assert (ready["listed"], ready["caught_up"]) == (5, 1)
+    assert (ready["listed"], ready["caught_up"]) == (6, 2)
     # Not a measurement of how fast the source is
     assert w.first is None
     assert w.caught_up == "Item 8-K"
 
 
-async def test_items_listed_at_an_on_time_start_are_old_news() -> None:
+async def test_a_release_out_before_the_window_opened_is_already_out() -> None:
+    # On, Nov 10: its results were on its IR site at 5:00 AM ET, and the watch opened at 5:10
     log = io.StringIO()
     journal = Journal(log)
     now = journal.now()
-    listed = [{"key": "8-K", "published": (now - timedelta(minutes=2)).isoformat()}]
-    # The window opens now, so anything already listed came before it
-    w = Watch("ABNB", StampedSource(), (now, now + timedelta(minutes=30)))
+    listed = [
+        {"key": "results", "published": (now - timedelta(minutes=10)).isoformat()},
+        {"key": "yesterday", "published": (now - timedelta(days=1)).isoformat()},
+    ]
+    w = Watch("ONON", StampedSource(), (now, now + timedelta(minutes=30)))
 
     await watch(w, FakeFetcher((200, json.dumps(listed))), journal, now + timedelta(seconds=0.1))
 
-    assert [e for e in events(log) if e["event"] == "new"] == []
-    assert w.caught_up == ""
+    new = [e for e in events(log) if e["event"] == "new"]
+    assert [(e["key"], e["caught_up"]) for e in new] == [("results", True)]
+    assert w.caught_up == "Item results"
 
 
 class SoftNotFound(GuessedFile):
@@ -700,3 +710,27 @@ def test_console_output_cant_fail_on_characters_its_encoding_lacks(
 def test_a_timestamp_that_isnt_text_has_no_time() -> None:
     assert published_time(cast(Any, 1793394900)) is None
     assert published_time("2026-11-04T16:15:00-05:00") == datetime(2026, 11, 4, 21, 15, tzinfo=UTC)
+
+
+async def test_after_the_window_a_source_that_hadnt_shown_the_release_still_links_it() -> None:
+    # Sea: Business Wire had its results at 6:30 AM, its 6-K came hours after the window
+    journal = Journal(io.StringIO())
+    now = journal.now()
+    target = Target(ticker="SE", cik=1703399, expected=now, before_minutes=1, after_minutes=0)
+    later = {"key": "6-K", "published": now.isoformat()}
+    quiet = Watch("SE", StampedSource(), target.window, known=set())  # nothing in the window
+    found = Watch("SE", StampedSource(), target.window, known={"wire"}, first=now)
+    seen: list[tuple[str, str]] = []
+
+    await follow_up(
+        target,
+        [quiet, found],
+        FakeFetcher((200, json.dumps([later]))),
+        journal,
+        lambda t, source, item: seen.append((t.ticker, item.key)),
+        longest=timedelta(seconds=1),
+    )
+
+    # Only the source that hadn't shown it is checked, and its link joins the alert
+    assert seen == [("SE", "6-K")]
+    assert quiet.polls >= 1 and found.polls == 0

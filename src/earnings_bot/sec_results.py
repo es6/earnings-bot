@@ -14,22 +14,32 @@ from earnings_bot.sources import EdgarFilings, Sighting, published_time
 from earnings_bot.text import filing_exhibits, html_to_text, verified_report
 
 _PERIOD = re.compile(
-    r"\b(?:q[1-4]|[1-4]q\d{2}|quarter|full[- ]year|half[- ]year|fiscal year|"
+    r"\b(?:q[1-4]|[1-4]q\s?(?:20)?\d{2}|quarter|full[- ]year|half[- ]year|fiscal year|"
     r"(?:three|six|nine|twelve) months ended|(?:year|half) ended|annual results)\b",
     re.IGNORECASE,
 )
 _ANNOUNCES_RESULTS = re.compile(
-    r"\b(?:report(?:s|ed)?|announc(?:es|ed)|releas(?:es|ed)|publish(?:es|ed)|post(?:s|ed))"
-    r"\b.{0,110}\b(?:financial results|quarterly results|results for|earnings|net sales)\b"
+    # "is pleased to announce the unaudited consolidated quarterly and first half results", in
+    # the Hong Kong exchange's format that dual-listed issuers such as WeRide also file
+    r"\b(?:report(?:s|ed)?|announc(?:e|es|ed)|releas(?:es|ed)|publish(?:es|ed)|post(?:s|ed))"
+    r"\b.{0,110}\b(?:financial results|(?:quarterly|interim|annual)(?: and [a-z -]{1,20})? "
+    r"results|results for|earnings|net sales)\b"
     # Some releases use "today reported second quarter 2026 results". Require the
     # announcement to be current so a mention of older results doesn't qualify.
+    # "CGI reports third quarter Fiscal 2026 results"
+    # Present tense only: "previously reported second quarter results" is about older ones
+    r"|\b(?:reports?|announces?) (?:its )?(?:unaudited )?"
+    r"(?:q[1-4]|[1-4]q|first|second|third|fourth|full[- ]year|half[- ]year|fiscal)\b"
+    r"[^.|]{0,60}?\bresults\b"
     r"|\btoday (?:reported|announced|released|published|posted) (?:its )?"
     r"(?:q[1-4]|(?:first|second|third|fourth|[1-4](?:st|nd|rd|th))[- ]quarter|"
     r"(?:full|half)[- ]year)(?: (?:fiscal )?20\d{2})? results\b",
     re.IGNORECASE,
 )
 _NOTICE = re.compile(
-    r"\b(?:to (?:host|report|announce|release|publish)|will (?:report|announce|release|publish)|"
+    # "The Company is pleased to announce the ... results" is the results themselves
+    r"\b(?:(?<!pleased )(?<!happy )(?<!delighted )to (?:host|report|announce|release|publish)|"
+    r"will (?:report|announce|release|publish)|"
     r"(?:announces?|sets?) (?:the )?date|results conference call|earnings webcast)\b",
     re.IGNORECASE,
 )
@@ -44,6 +54,7 @@ _REVENUE_ROW = re.compile(
 _ARCHIVE = re.compile(r"https://www\.sec\.gov/Archives/edgar/data/\d+/(\d{18})/[^/?#]+")
 _ACCESSION = re.compile(r"\d{10}-\d{2}-\d{6}")
 HISTORY_LIMIT = 36
+INTRODUCTION = 5000  # characters in which a results 6-K must announce its results
 
 
 class SixKUnavailable(Exception):
@@ -66,7 +77,9 @@ class _Verdict:
 def is_results_release(text: str, description: str) -> bool:
     """Require a results announcement near the front and actual financial statements."""
     first_lines = text.splitlines()[:12]
-    introduction = " ".join(" ".join(first_lines).split())[:2500]
+    # Room for the disclaimers a Hong Kong exchange announcement opens with, ahead of the
+    # press release it carries
+    introduction = " ".join(" ".join(first_lines).split())[:INTRODUCTION]
     if _NOTICE.search(description) or any(_NOTICE.search(line) for line in first_lines[:4]):
         return False
     for announcement in _ANNOUNCES_RESULTS.finditer(introduction):
@@ -127,6 +140,9 @@ class SixKResults:
         if reply.status != 200 or b"Document Format Files" not in reply.body:
             raise SixKUnavailable(f"filing index unavailable (HTTP {reply.status})")
         exhibits = filing_exhibits(reply.body.decode(errors="replace"))
+        if not exhibits:
+            # Some issuers, such as Nu Holdings, put the release in the 6-K document itself
+            exhibits = [{"name": filing.url.rsplit("/", 1)[1], "description": "6-K"}]
         # A press release is usually EX-99.1. Check other HTML exhibits when it is elsewhere.
         notice = None
         for exhibit in exhibits:

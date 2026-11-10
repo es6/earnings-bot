@@ -11,7 +11,7 @@ import aiohttp
 import discord
 
 from earnings_bot.calendar import Calendar, Tracked, evidence_text
-from earnings_bot.date_discovery import CHECKING_CACHE, VERIFYING_IR
+from earnings_bot.date_discovery import CHECKING_CACHE, READING_IR, VERIFYING_IR
 from earnings_bot.delivery import DeliveryStore
 from earnings_bot.formatting import (
     AMBER,
@@ -158,6 +158,20 @@ class TrackProgress:
     def _key(self, cik: int) -> str:
         return f"track:{self.calendar.channel}:{cik}"
 
+    def follow_calendar(self) -> None:
+        """After the calendar moved to a new channel, its scorecards keep their messages, so
+        they're edited as before instead of posted again."""
+        old = self.calendar.moved_from
+        if old is None:
+            return
+        before, after = f"track:{old}:", f"track:{self.calendar.channel}:"
+        with self.store.db:
+            self.store.db.execute(
+                "UPDATE OR IGNORE alerts SET release_key = ? || substr(release_key, ?) "
+                "WHERE channel_id = ? AND substr(release_key, 1, ?) = ?",
+                (after, len(before) + 1, self.store.channel_id, len(before), before),
+            )
+
     async def publish(self, cik: int, embed: discord.Embed) -> None:
         shown = embed.to_dict()
         if self.last_sent.get(cik) == shown:
@@ -227,7 +241,7 @@ class TrackProgress:
             elif ir_pending:
                 pause = "waits for an open release window" if busy else "queued"
                 steps.append(f"{WAITING if busy else TODO} IR verification ({pause})")
-        elif phase and phase.startswith("Looking"):
+        elif phase and (phase.startswith("Looking") or phase == READING_IR):
             steps.append(f"{WORKING} {phase}…")
         elif phase and no_date:
             steps.append(f"{FAILED} {phase}")

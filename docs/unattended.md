@@ -76,8 +76,11 @@ for per-release schedule settings.
 
 - Set `DISCORD_CHANNEL_ID` and `SEC_USER_AGENT`. Set
   `DISCORD_STATUS_CHANNEL_ID` to a channel in the same server for scorecards and
-  window reports. With only the earnings channel configured, scorecards appear
-  there and window reports remain in the journal.
+  window reports; it can be the alerts' own channel. With only the earnings channel
+  configured, scorecards appear there and window reports remain in the journal.
+- Changing `DISCORD_CHANNEL_ID` moves the calendar with it at the next start: the
+  tracked companies, their research, the alerts and windows already done, and the
+  scorecards' records, from the channel that tracked the most companies.
 - Give the bot **Read Message History** in both channels it uses. On restart it
   can recover an alert or scorecard that Discord accepted before saving its ID.
 - Keep `.earnings-state.sqlite3`, `.tracking-progress.sqlite3`, and `watch.jsonl`
