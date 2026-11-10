@@ -34,7 +34,7 @@ from earnings_bot.known import KnownCompany, known_companies, to_target
 from earnings_bot.pipeline import UNKNOWN_MESSAGE
 from earnings_bot.recorder import ET, Target
 from earnings_bot.source_audit import Speed, Timing
-from earnings_bot.version import build_version
+from earnings_bot.version import release_version
 
 log = logging.getLogger(__name__)
 REFRESH = timedelta(days=1)
@@ -319,7 +319,7 @@ class TrackProgress:
             embed.add_field(
                 name="📝 Research", value=truncate(row.company.evidence, 1024), inline=False
             )
-        embed.set_footer(text=f"Earnings Bot {build_version()} · Updated")
+        embed.set_footer(text=f"Earnings Bot {release_version()} · Updated")
         return embed
 
     async def _check(self, row: Tracked) -> None:

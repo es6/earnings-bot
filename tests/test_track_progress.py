@@ -2,8 +2,10 @@ import asyncio
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import cast
+from unittest.mock import AsyncMock, Mock
 
 import discord
+import pytest
 
 from earnings_bot.bot import EarningsBot
 from earnings_bot.browser_sources import IRSource
@@ -18,7 +20,7 @@ from earnings_bot.known import KnownCompany, SourceCheck, to_target
 from earnings_bot.recorder import ET, Target
 from earnings_bot.source_audit import Speed, Timing
 from earnings_bot.track_progress import CardPoster, TrackProgress
-from earnings_bot.version import build_version
+from earnings_bot.version import release_version
 from tests.fakes import embed_text
 from tests.sec_data import LCID_CIK, LCID_SUBMISSIONS
 from tests.test_unattended import FakeDiscord, FakeMessage
@@ -59,6 +61,23 @@ INVESTIGATED = LUCID.model_copy(
 def test_directory_bot_registers_tracking_commands(tmp_path: Path) -> None:
     bot = EarningsBot(Settings.model_validate({"discord_token": "test"}), tmp_path)
     assert {"track", "upcoming", "untrack"} <= {command.name for command in bot.tree.get_commands()}
+
+
+async def test_watch_status_shows_build_separately_from_the_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("earnings_bot.bot.build_revision", lambda: "0123456789")
+    bot = EarningsBot(Settings.model_validate({"discord_token": "test"}))
+    send = AsyncMock()
+    interaction = cast(discord.Interaction, Mock(response=Mock(send_message=send)))
+
+    await bot._status(interaction)
+
+    send.assert_awaited_once_with(
+        f"**Earnings Bot {release_version()}**\nBuild `0123456789`\n"
+        "Earnings monitoring is not configured.",
+        ephemeral=True,
+    )
 
 
 def lines_of(embed: discord.Embed) -> dict[str, list[str]]:
@@ -254,7 +273,7 @@ async def test_a_finished_card_says_what_was_fastest_watched_and_rejected(tmp_pa
         "-# Issuer confirmed release time · [source](<https://ir.lucidmotors.com/notice>) · "
         "watching from 3:55 PM ET"
     )
-    assert embed.footer.text == f"Earnings Bot {build_version()} · Updated"
+    assert embed.footer.text == f"Earnings Bot {release_version()} · Updated"
     assert fields["Progress"] == [
         f"✅ Found in SEC data: CIK {LCID_CIK}, results on Form 8-K",
         "✅ Sources investigated Nov 9",

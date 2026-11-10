@@ -15,7 +15,7 @@ from earnings_bot.recorder import load_plan
 from earnings_bot.summary import Summarizer
 from earnings_bot.tracking_commands import TrackingCommands
 from earnings_bot.unattended import DirectoryWatcher, watch_directory
-from earnings_bot.version import build_version
+from earnings_bot.version import build_revision, release_version
 
 log = logging.getLogger(__name__)
 
@@ -61,7 +61,7 @@ class EarningsBot(discord.Client):
             self.watcher.add_done_callback(self._watch_ended)
 
     async def on_ready(self) -> None:
-        log.info("Logged in as %s (%s)", self.user, build_version())
+        log.info("Logged in as %s (%s)", self.user, release_version())
 
     async def _watch(self, schedule: Path) -> None:
         settings = self.settings
@@ -135,9 +135,11 @@ class EarningsBot(discord.Client):
             status = f"Earnings watcher is running for {self.schedule}."
         else:
             status = self.directory_watcher.health()
-        await interaction.response.send_message(
-            f"**Earnings Bot {build_version()}**\n{status}", ephemeral=True
-        )
+        lines = [f"**Earnings Bot {release_version()}**"]
+        if revision := build_revision():
+            lines.append(f"Build `{revision}`")
+        lines.append(status)
+        await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
     def _watch_ended(self, task: asyncio.Task[None]) -> None:
         if not task.cancelled() and (error := task.exception()):

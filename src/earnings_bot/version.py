@@ -10,7 +10,12 @@ from pathlib import Path
 
 
 @cache
-def build_version() -> str:
+def release_version() -> str:
+    return f"v{version('earnings-bot')}"
+
+
+@cache
+def build_revision() -> str | None:
     revision = os.getenv("EARNINGS_BOT_REVISION", "")
     checkout = Path(__file__).resolve().parents[2]
     if not revision and (checkout / ".git").exists():
@@ -22,8 +27,7 @@ def build_version() -> str:
                 text=True,
                 timeout=2,
             ).strip()
-    package = f"v{version('earnings-bot')}"
     if match := re.fullmatch(r"([0-9a-f]{10,64})(-dirty)?", revision):
-        suffix = ".dirty" if match[2] else ""
-        return f"{package}+g{match[1][:10]}{suffix}"
-    return package
+        suffix = " (local edits)" if match[2] else ""
+        return f"{match[1][:10]}{suffix}"
+    return None

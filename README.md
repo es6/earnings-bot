@@ -84,12 +84,10 @@ date discovery finish. It shows whether a watch is scheduled or still awaiting a
 
 Run `uv run earnings-bot schedules` to watch every TOML in the directory. Edits and new files
 are picked up within a few seconds. A malformed edit keeps the last valid version active.
-Use `/watch_status` for the running build, next watch window, and last successful schedule scan.
-The build also appears on scorecards, at startup, and in `uv run earnings-bot --version`.
-It combines the package version with the Git revision when one is available and adds `.dirty`
-for a checkout with tracked local edits. Set
-`DISCORD_STATUS_CHANNEL_ID` to a separate channel to receive window reports there. Reports
-are also written to `schedules/watch.jsonl`.
+Use `/watch_status` for the running release version, Git build, next watch window, and last
+successful schedule scan. The release version also appears on scorecards, at startup, and in
+`uv run earnings-bot --version`. Set `DISCORD_STATUS_CHANNEL_ID` to a separate channel to receive
+window reports there. Reports are also written to `schedules/watch.jsonl`.
 
 Window reports use **@earnings_guy** as the main external speed benchmark. The runner
 checks a shared public RSS timeline during release windows and verifies candidate results
@@ -158,6 +156,20 @@ committed). It needs `SEC_USER_AGENT` in `.env`.
 Times don't come from your computer's clock, which can be seconds off. The recorder asks NTP time
 servers (Cloudflare, Google and NIST) when it starts, when each window opens and every five
 minutes during a window, and counts forward from their answer in between.
+
+## Release versions
+
+Run one version bump for each PR that changes what gets deployed. `uv version` updates both
+`pyproject.toml` and `uv.lock` so the package, Discord and CLI use the same version.
+
+| Change | Command | Example |
+| --- | --- | --- |
+| Breaking change | `uv version --bump major` | `0.2.1` → `1.0.0` |
+| New feature or major bug fix | `uv version --bump minor` | `0.2.1` → `0.3.0` |
+| Routine fix, maintenance, or dependency update | `uv version --bump patch` | `0.2.1` → `0.2.2` |
+
+CI checks the bump against the PR's base. If another release lands first, update from `main` and
+pick the next version. Docs and tests can change on their own without a version bump.
 
 ## License
 
