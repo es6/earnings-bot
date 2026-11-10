@@ -23,7 +23,7 @@ from earnings_bot.sources import (
 
 # Shorter than any real earnings release, so error pages and teasers don't count
 MIN_RELEASE_CHARS = 2000
-# Newswires whose article pages don't let us in, so their items give no text
+# Newswires whose main article hosts block the HTTP client.
 BLOCKED_ARTICLES = ("businesswire.com", "globenewswire.com")
 
 # Tags that start a new line
@@ -227,6 +227,18 @@ async def _edgar_exhibit(fetcher: Fetcher, sighting: Sighting) -> str | None:
     return await _get_text(fetcher, f"{folder}/{exhibit}") if exhibit else None
 
 
+def globe_article_url(url: str) -> str | None:
+    parts = urlsplit(url)
+    if (
+        parts.scheme == "https"
+        and parts.netloc == "www.globenewswire.com"
+        and parts.path.startswith("/news-release/")
+        and parts.path.endswith(".html")
+    ):
+        return parts._replace(netloc="rss.globenewswire.com").geturl()
+    return None
+
+
 async def release_text(fetcher: Fetcher, source: Source, sighting: Sighting) -> str | None:
     """The release's text from wherever this sighting points, or None if this source can't
     provide it."""
@@ -246,13 +258,17 @@ async def release_text(fetcher: Fetcher, source: Source, sighting: Sighting) -> 
         elif isinstance(source, EdgarFilings):
             html = await _edgar_exhibit(fetcher, sighting) if sighting.earnings else None
         elif isinstance(source, GuessedFile | RssFeed):
-            host = urlsplit(sighting.url).hostname or ""
-            # Business Wire's article pages drop automated requests, and GlobeNewswire's answer
-            # 403 (only its RSS host lets us in). PDFs need no reading, because a release's HTML
-            # version always comes too.
-            if host.endswith(BLOCKED_ARTICLES) or sighting.url.lower().endswith(".pdf"):
+            url = urlsplit(sighting.url)
+            if isinstance(source, RssFeed) and (article := globe_article_url(sighting.url)):
+                # The publisher's feed hostname serves the same article. Keep the original
+                # URL for Discord and skip the main hostname's 403 on the body request.
+                html = await _get_text(fetcher, article)
+            elif (url.hostname or "").endswith(BLOCKED_ARTICLES) or url.path.lower().endswith(
+                ".pdf"
+            ):
                 return None
-            html = await _get_text(fetcher, sighting.url)
+            else:
+                html = await _get_text(fetcher, sighting.url)
         else:
             return None
     except (aiohttp.ClientError, TimeoutError, ValueError, KeyError, TypeError):

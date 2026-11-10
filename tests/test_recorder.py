@@ -62,6 +62,7 @@ class FakeFetcher(Fetcher):
         urgent: bool = False,
         *,
         allow_redirects: bool = True,
+        encoded_url: bool = False,
     ) -> Response:
         self.sent += 1
         status, body = self.responses[0] if len(self.responses) == 1 else self.responses.popleft()
@@ -520,6 +521,7 @@ class CountingFetcher(FakeFetcher):
         urgent: bool = False,
         *,
         allow_redirects: bool = True,
+        encoded_url: bool = False,
     ) -> Response:
         response = await super().request(method, url, headers, give_up_after, urgent)
         if self.sent == self.after:
@@ -603,6 +605,7 @@ class RateLimitedFetcher(FakeFetcher):
         urgent: bool = False,
         *,
         allow_redirects: bool = True,
+        encoded_url: bool = False,
     ) -> Response:
         self.sent += 1
         return Response(url, 429, {"retry-after": "3600"}, b"", 0.01)

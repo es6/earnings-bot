@@ -40,6 +40,7 @@ from earnings_bot.sources import (
     GuessedPage,
     Q4FinancialReports,
     Q4PressReleases,
+    RssFeed,
     Sighting,
     Source,
 )
@@ -317,6 +318,34 @@ def _file_name(url: str) -> str:
     return urlsplit(url).path.rstrip("/").rsplit("/", 1)[-1]
 
 
+class ReleaseText:
+    """Share successful reads of a filing or feed article within one release window."""
+
+    def __init__(self, fetcher: Fetcher, *, verified_only: bool = False) -> None:
+        self.fetcher = fetcher
+        self.verified_only = verified_only
+        self._locks: dict[str, asyncio.Lock] = {}
+        self._texts: dict[str, str] = {}
+
+    async def read(self, source: Source, sighting: Sighting) -> str | None:
+        key = _filing_folder(sighting.url) if isinstance(source, EdgarFilings) else None
+        if isinstance(source, RssFeed):
+            key = sighting.url
+        if key is None:
+            return await self._fetch(source, sighting)
+        async with self._locks.setdefault(key, asyncio.Lock()):
+            if key not in self._texts:
+                text = await self._fetch(source, sighting)
+                if text is None:
+                    return None  # Another sighting can retry the miss.
+                self._texts[key] = text
+            return self._texts[key]
+
+    async def _fetch(self, source: Source, sighting: Sighting) -> str | None:
+        text = await release_text(self.fetcher, source, sighting)
+        return text if not self.verified_only or verified_report(text) else None
+
+
 class Release:
     """Everything known about one company's release, and its Discord post."""
 
@@ -347,10 +376,7 @@ class Release:
         self.posted = False
         self.has_text = False  # some source has delivered the release's text
         self.first_text_at: datetime | None = None
-        # Both SEC sources list the same 8-K. These make sure its exhibit is read once: one lock
-        # per filing folder, and the text each folder's exhibit gave.
-        self._filing_locks: dict[str, asyncio.Lock] = {}
-        self._filing_texts: dict[str, str] = {}
+        self._text = ReleaseText(fetcher)
         self.summarizing = False
         self.lock = asyncio.Lock()  # one Discord edit at a time, in order
         self.tasks: set[asyncio.Task[None]] = set()
@@ -618,7 +644,7 @@ class Release:
     ) -> None:
         """Gets the release's text from this sighting, logs when the first text arrives, and
         starts the summary from it. Several sources can deliver the text; the first one wins."""
-        text = await self._release_text(source, sighting)
+        text = await self._text.read(source, sighting)
         if text is None:
             return
         if measure and not sighting.caught_up and verified_report(text):
@@ -646,21 +672,6 @@ class Release:
             )
         if self.summarizer and not self.summarizing:
             await self._summarize(self.summarizer, text, label)
-
-    async def _release_text(self, source: Source, sighting: Sighting) -> str | None:
-        """release_text, except that each SEC filing's exhibit is downloaded once. When both SEC
-        sources list one 8-K, the second sighting waits for the first one's read and takes its
-        text. If that read got nothing, the second sighting tries again."""
-        folder = _filing_folder(sighting.url) if isinstance(source, EdgarFilings) else None
-        if folder is None:
-            return await release_text(self.fetcher, source, sighting)
-        async with self._filing_locks.setdefault(folder, asyncio.Lock()):
-            if folder not in self._filing_texts:
-                text = await release_text(self.fetcher, source, sighting)
-                if text is None:
-                    return None
-                self._filing_texts[folder] = text
-            return self._filing_texts[folder]
 
     async def _summarize(self, summarizer: Summarizer, text: str, label: str) -> None:
         self.summarizing = True

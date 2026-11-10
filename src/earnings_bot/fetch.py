@@ -12,6 +12,7 @@ from typing import Self
 from urllib.parse import urlsplit
 
 import aiohttp
+from yarl import URL
 
 from earnings_bot.browser import DesktopChrome
 
@@ -140,6 +141,7 @@ class Fetcher:
         urgent: bool = False,
         *,
         allow_redirects: bool = True,
+        encoded_url: bool = False,
     ) -> Response:
         """Raises TimeoutError if the whole response hasn't arrived within `give_up_after`
         seconds (the Fetcher's own timeout if None). Waiting for the initial slot doesn't count,
@@ -184,7 +186,7 @@ class Fetcher:
         started = time.monotonic()
         async with self._session.request(
             method,
-            url,
+            URL(url, encoded=True) if encoded_url else url,
             headers=headers,
             timeout=limit,
             allow_redirects=allow_redirects,

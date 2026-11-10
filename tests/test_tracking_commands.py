@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
+from urllib.parse import unquote
 
 import discord
 import pytest
@@ -181,10 +182,17 @@ class LoggedFetcher(RoutedFetcher):
         urgent: bool = False,
         *,
         allow_redirects: bool = True,
+        encoded_url: bool = False,
     ) -> Response:
         self.events.append("request")
         return await super().request(
-            method, url, headers, give_up_after, urgent, allow_redirects=allow_redirects
+            method,
+            url,
+            headers,
+            give_up_after,
+            urgent,
+            allow_redirects=allow_redirects,
+            encoded_url=encoded_url,
         )
 
 
@@ -499,11 +507,18 @@ class ReleaseDay(RoutedFetcher):
         urgent: bool = False,
         *,
         allow_redirects: bool = True,
+        encoded_url: bool = False,
     ) -> Response:
         listed: list[dict[str, Any]] = [RESULTS] if time.monotonic() >= self.released_at else []
         self.routes = {PLTR_FEED: (200, json.dumps({"GetPressReleaseListResult": listed}).encode())}
         return await super().request(
-            method, url, headers, give_up_after, urgent, allow_redirects=allow_redirects
+            method,
+            url,
+            headers,
+            give_up_after,
+            urgent,
+            allow_redirects=allow_redirects,
+            encoded_url=encoded_url,
         )
 
 
@@ -605,6 +620,7 @@ class WireDay(RoutedFetcher):
         urgent: bool = False,
         *,
         allow_redirects: bool = True,
+        encoded_url: bool = False,
     ) -> Response:
         items = [
             _wire_item(
@@ -623,12 +639,22 @@ class WireDay(RoutedFetcher):
                     LUCID_RELEASE,
                 ),
             )
-        if url.lower() == PR_NEWSWIRE_EARNINGS.lower():
+        if unquote(url) == PR_NEWSWIRE_EARNINGS:
             self.requests.append((method, url, headers))
-            feed = '<rss version="2.0"><channel>' + "".join(items) + "</channel></rss>"
+            feed = (
+                f'<rss version="2.0"><channel><link>{PR_NEWSWIRE_EARNINGS}</link>'
+                + "".join(items)
+                + "</channel></rss>"
+            )
             return Response(url, 200, {}, feed.encode(), 0.01)
         return await super().request(
-            method, url, headers, give_up_after, urgent, allow_redirects=allow_redirects
+            method,
+            url,
+            headers,
+            give_up_after,
+            urgent,
+            allow_redirects=allow_redirects,
+            encoded_url=encoded_url,
         )
 
 

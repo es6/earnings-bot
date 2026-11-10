@@ -99,10 +99,11 @@ class Trial(BaseModel):
             ]
         if self.prnewswire_semiconductors:
             sources.append(
-                RssFeed(
+                FreshPrNewswire(
                     "prnewswire_semiconductors",
                     PR_NEWSWIRE_SEMICONDUCTORS,
                     self.prnewswire_semiconductors,
+                    interval=RssFeed.interval,
                 )
             )
         sources += _named_apart([GuessedPage(url) for url in self.pages])
@@ -400,6 +401,7 @@ def record_items(
             previous_sent=w.previous,
             response_ms=round(response.elapsed * 1000),
             queued_ms=round(response.queued * 1000),
+            request_url=response.url,
             headers=_cache_headers(response),
         )
         if item.earnings and item.caught_up:
