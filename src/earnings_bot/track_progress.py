@@ -11,7 +11,7 @@ import aiohttp
 import discord
 
 from earnings_bot.calendar import Calendar, Tracked, evidence_text
-from earnings_bot.date_discovery import VERIFYING_IR
+from earnings_bot.date_discovery import CHECKING_CACHE, VERIFYING_IR
 from earnings_bot.delivery import DeliveryStore
 from earnings_bot.formatting import (
     AMBER,
@@ -139,6 +139,7 @@ class TrackProgress:
         date_phase: Callable[[int], str | None] | None = None,
         research: Callable[[int], Report | None] | None = None,
         ir_note: Callable[[int], str | None] | None = None,
+        cache_notes: Callable[[int], list[str] | None] | None = None,
     ) -> None:
         self.calendar, self.store, self.channel = calendar, store, channel
         self.author_id, self.planned, self.now, self.busy = author_id, planned, now, busy
@@ -146,6 +147,7 @@ class TrackProgress:
         self.date_phase = date_phase or (lambda _: None)
         self.research = research or (lambda _: None)
         self.ir_note = ir_note or (lambda _: None)
+        self.cache_notes = cache_notes
         self.changed = asyncio.Event()
         self.last_sent: dict[int, object] = {}
         self.removed: dict[int, str] = {}
@@ -229,10 +231,17 @@ class TrackProgress:
             steps.append(f"{WORKING} {phase}…")
         elif phase and no_date:
             steps.append(f"{FAILED} {phase}")
-        elif phase:
+        elif phase and phase != CHECKING_CACHE:
             steps.append(f"{WAITING} Release date: {phase.lower()}")
         else:
             steps.append(f"{TODO} Release date")
+        cache = self.cache_notes(row.cik) if self.cache_notes else None
+        cache_pending = self.cache_notes is not None and cache is None
+        if phase == CHECKING_CACHE:
+            steps.append(f"{WORKING} {phase}…")
+        elif cache_pending:
+            pause = "waits for an open release window" if busy else "queued"
+            steps.append(f"{WAITING if busy else TODO} Cache preflight ({pause})")
         if checking:
             steps.append(f"{WORKING} Checking which source was fastest last time…")
         elif speed is not None:
@@ -250,6 +259,7 @@ class TrackProgress:
             and not investigating
             and not working
             and not ir_pending
+            and not cache_pending
             and row.cik not in self.audit_failed
             and (no_date or (target and phase is None))
         )
@@ -303,6 +313,8 @@ class TrackProgress:
                 watching.append("IR press release page *(verified after the date is set)*")
             heading = "👀 Will watch once a date is set"
         embed.add_field(name=heading, value=bullets(watching) or "Nothing yet", inline=False)
+        if cache:
+            embed.add_field(name="Cache preflight", value=bullets(cache), inline=False)
 
         if listing := row.company.ir_listing:
             status = row.company.ir_http_status

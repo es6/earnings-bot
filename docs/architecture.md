@@ -524,6 +524,14 @@ The notice still has to state when the results will be released.
 When a newsroom renders its cards in the browser, research can verify its observed public,
 same-origin GET API. A dated notice can supply the calendar date. The live poller checks the
 scheduled quarter and date and downloads the issuer-hosted results PDF once it is available.
+Outside release windows, date discovery compares two ordinary responses and two unique
+query URLs on up to three issuer endpoints. The scorecard shows whether the normal copy
+hit a cache, both query responses came back fresh with the same body, or the test was
+inconclusive. It applies a verified query bypass to the issuer listing, API or Chrome feed.
+Direct issuer RSS keeps its default buster unless both query requests are rejected while
+the normal URL works. Q4 and shared newswires keep their source-specific polling strategies.
+Cache headers describe the responding cache. Release-night measurements show when new
+items actually become visible.
 Until a wire is found, both Business Wire and PR
 Newswire are watched along with EDGAR. The source audit runs after investigation. For a release
 confirmed before market open, a same-day earnings call can move the watch earlier when the

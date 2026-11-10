@@ -3,6 +3,7 @@
 import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
 from typing import cast
@@ -14,6 +15,7 @@ from earnings_bot.browser import BrowserJSON, DesktopChrome
 from earnings_bot.calendar import Calendar
 from earnings_bot.date_discovery import DateDiscovery
 from earnings_bot.delivery import DeliveryStore
+from earnings_bot.fetch import Response
 from earnings_bot.issuer_news import IssuerNews
 from earnings_bot.known import KnownCompany
 from earnings_bot.recorder import ET, poll
@@ -56,6 +58,31 @@ class NewsFetcher(RoutedFetcher):
     async def research_browser(self) -> AsyncIterator[DesktopChrome]:
         yield cast(DesktopChrome, NewsChrome(self))
 
+    async def request(
+        self,
+        method: str,
+        url: str,
+        headers: dict[str, str] | None = None,
+        give_up_after: float | None = None,
+        urgent: bool = False,
+        *,
+        allow_redirects: bool = True,
+        encoded_url: bool = False,
+    ) -> Response:
+        response = await super().request(
+            method,
+            url,
+            headers,
+            give_up_after,
+            urgent,
+            allow_redirects=allow_redirects,
+            encoded_url=encoded_url,
+        )
+        if url.startswith(API):
+            cache = "TCP_MISS" if "&_=" in url else "TCP_HIT"
+            return replace(response, headers={**response.headers, "x-cache": cache})
+        return response
+
 
 async def test_track_reads_the_rendered_newsrooms_api_and_prepares_live_pdf(
     tmp_path: Path,
@@ -93,12 +120,16 @@ async def test_track_reads_the_rendered_newsrooms_api_and_prepares_live_pdf(
         dates = DateDiscovery(calendar, fetcher, lambda: NOW, lambda: False, lambda _: None)
         await dates.run_once(row)
         [saved] = calendar.entries()
+        assert dates.cache_notes[row.cik] == [
+            "IR newsroom API · Query bypass verified at the responding cache"
+        ]
 
     assert saved.company.ir_news_api == API
     assert saved.target and saved.target.ir and saved.target.ir.news_api == API
     assert saved.target.expected == datetime(2026, 11, 10, 7, tzinfo=ET)
     assert saved.evidence and NOTICE["document_url"] in saved.evidence
-    assert "issuer-news" in {source.name for source in saved.target.sources()}
+    [source] = [source for source in saved.target.sources() if source.name == "issuer-news"]
+    assert source.url().startswith(f"{API}&_=")
 
 
 async def test_the_news_poll_requires_the_right_date_title_origin_and_pdf() -> None:

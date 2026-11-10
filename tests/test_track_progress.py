@@ -9,6 +9,7 @@ import pytest
 
 from earnings_bot.bot import EarningsBot
 from earnings_bot.browser_sources import IRSource
+from earnings_bot.cache_research import CHECKING_CACHE
 from earnings_bot.calendar import Calendar
 from earnings_bot.config import Settings
 from earnings_bot.date_discovery import VERIFYING_IR
@@ -366,6 +367,33 @@ def test_a_scheduled_card_waits_for_ir_verification_to_finish(tmp_path: Path) ->
 
     assert embed.description and "Research complete" not in embed.description
     assert f"⏳ {VERIFYING_IR}…" in lines_of(embed)["Progress"]
+
+
+def test_the_card_shows_cache_preflight_before_research_completes(tmp_path: Path) -> None:
+    target = lucid_target(ir=True)
+    phases = {LCID_CIK: CHECKING_CACHE}
+    notes: dict[int, list[str]] = {}
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        calendar = Calendar(store)
+        row, _ = calendar.add("LCID", 1, NOW, INVESTIGATED)
+        progress = tracker(
+            store,
+            FakeDiscord(),
+            planned=lambda: {target.release_key: target},
+            date_phase=phases.get,
+            cache_notes=notes.get,
+        )
+        working = progress.render(row, SPEED.to_json(), False)
+        phases.clear()
+        notes[row.cik] = ["IR press release listing · Query bypass verified"]
+        complete = progress.render(row, SPEED.to_json(), False)
+
+    assert working.description and "Research complete" not in working.description
+    assert f"⏳ {CHECKING_CACHE}…" in lines_of(working)["Progress"]
+    assert complete.description and "watch scheduled" in complete.description
+    assert lines_of(complete)["Cache preflight"] == [
+        "• IR press release listing · Query bypass verified"
+    ]
 
 
 async def test_a_check_saved_in_the_old_format_is_redone(tmp_path: Path) -> None:
