@@ -496,7 +496,7 @@ async def test_discovery_investigates_once_then_finds_the_date_on_the_new_feed(
     statuses: list[str] = []
     with DeliveryStore(tmp_path / "state.db", 7) as store:
         calendar = Calendar(store)
-        calendar.add("LCID", 1, NOW, LUCID)
+        calendar.add("LCID", LUCID)
         dates = DateDiscovery(calendar, fetcher, lambda: NOW, lambda: False, statuses.append)
         [row] = calendar.entries()
 
@@ -536,7 +536,7 @@ async def test_findings_from_a_check_cut_short_by_a_window_arent_saved(
     statuses: list[str] = []
     with DeliveryStore(tmp_path / "state.db", 7) as store:
         calendar = Calendar(store)
-        calendar.add("LCID", 1, NOW, LUCID)
+        calendar.add("LCID", LUCID)
         dates = DateDiscovery(
             calendar, fetcher, lambda: NOW, lambda: window_open, statuses.append, None, chrome.open
         )
@@ -727,7 +727,7 @@ async def test_discovery_shows_the_investigation_while_it_runs(
     seen: list[tuple[str | None, int]] = []
     with DeliveryStore(tmp_path / "state.db", 7) as store:
         calendar = Calendar(store)
-        calendar.add("LCID", 1, NOW, LUCID)
+        calendar.add("LCID", LUCID)
         dates = DateDiscovery(
             calendar, fetcher, lambda: NOW, lambda: False, print, None, chrome.open
         )
@@ -937,7 +937,7 @@ async def test_amat_notice_in_chrome_saves_the_window_and_prepares_live_ir(
     )
     with DeliveryStore(tmp_path / "state.db", 7) as store:
         calendar = Calendar(store)
-        row, _ = calendar.add("AMAT", 1, NOW, company)
+        row, _ = calendar.add("AMAT", company)
         dates = DateDiscovery(calendar, fetcher, lambda: NOW, lambda: False, lambda _: None)
         await dates._check(row)
         [planned] = calendar.entries()
@@ -1003,7 +1003,7 @@ async def test_corporate_site_with_a_hosted_release_list_schedules_transdigm(
     monkeypatch.setattr(ir_research, "chrome_available", lambda: True)
     with DeliveryStore(tmp_path / "state.db", 7) as store:
         calendar = Calendar(store)
-        row, _ = calendar.add("TDG", 1, now, company)
+        row, _ = calendar.add("TDG", company)
         calendar.save_review(cik, now, "Previous SEC-only source audit")
         dates = DateDiscovery(calendar, fetcher, lambda: now, lambda: False, lambda _: None)
         await dates.run_once(row)

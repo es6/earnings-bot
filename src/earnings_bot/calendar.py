@@ -10,7 +10,6 @@ from earnings_bot.ir_research import IR_LISTINGS, quarter_headline
 from earnings_bot.known import KnownCompany, known_companies, to_target
 from earnings_bot.recorder import ET, Target
 
-DAILY_ADDS = 5
 _LINKED = re.compile(r"(.*?)\s*<(https?://[^>\s]+)>")
 MAX_TRACKED = 50
 
@@ -45,11 +44,6 @@ class Calendar:
                 result TEXT NOT NULL,
                 PRIMARY KEY (channel, cik)
             );
-            CREATE TABLE IF NOT EXISTS tracking_adds (
-                channel INTEGER NOT NULL,
-                user_id INTEGER NOT NULL,
-                day TEXT NOT NULL
-            );
         """)
         columns = {row["name"] for row in self.db.execute("PRAGMA table_info(tracked)")}
         if "profile" not in columns:  # a calendar saved before /track took any ticker
@@ -81,9 +75,7 @@ class Calendar:
             is not None
         )
 
-    def add(
-        self, ticker: str, user_id: int, now: datetime, company: KnownCompany | None = None
-    ) -> tuple[Tracked, bool]:
+    def add(self, ticker: str, company: KnownCompany | None = None) -> tuple[Tracked, bool]:
         """Tracks a catalog company, or any other with its company facts given."""
         company = company or known_companies()[ticker]
         cik = company.cik
@@ -92,22 +84,12 @@ class Calendar:
             return existing, False
         if len(entries) >= MAX_TRACKED:
             raise ValueError(f"This calendar already tracks {MAX_TRACKED} companies.")
-        day = now.astimezone(ET).date().isoformat()
-        count = self.db.execute(
-            "SELECT count(*) FROM tracking_adds WHERE channel = ? AND user_id = ? AND day = ?",
-            (self.channel, user_id, day),
-        ).fetchone()[0]
-        if count >= DAILY_ADDS:
-            raise ValueError(f"You can add up to {DAILY_ADDS} tickers per Eastern calendar day.")
         # The catalog's entry is read fresh each time, so only other companies' facts are saved
         profile = None if ticker in known_companies() else company.model_dump_json()
         with self.db:
             self.db.execute(
                 "INSERT INTO tracked (channel, cik, ticker, profile) VALUES (?, ?, ?, ?)",
                 (self.channel, cik, ticker, profile),
-            )
-            self.db.execute(
-                "INSERT INTO tracking_adds VALUES (?, ?, ?)", (self.channel, user_id, day)
             )
         return Tracked(ticker, cik, None, None, company), True
 

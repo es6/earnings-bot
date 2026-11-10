@@ -118,7 +118,7 @@ def test_the_check_counts_schedule_files_and_tracked_tickers(
     # A ticker someone tracked, released in 3 minutes
     with DeliveryStore(schedules / ".earnings-state.sqlite3", 7) as store:
         calendar = Calendar(store)
-        calendar.add("NVDA", 1, now)
+        calendar.add("NVDA")
         calendar.set_target(to_target("NVDA", now + timedelta(minutes=3), 2027, 3), "Confirmed")
     code, out = _run(tmp_path, monkeypatch, capsys)
     assert code == WINDOW_OPEN

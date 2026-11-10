@@ -156,7 +156,7 @@ async def test_saved_bn_profile_is_enriched_and_scheduled_from_issuer_notice(
     messages: list[str] = []
     with DeliveryStore(tmp_path / "state.db", 7) as store:
         calendar = Calendar(store)
-        row, _ = calendar.add("BN", 1, NOW, old)
+        row, _ = calendar.add("BN", old)
         dates = DateDiscovery(calendar, fetcher, lambda: NOW, lambda: False, messages.append)
         await dates._check(row)
         found = calendar.find("BN")
@@ -196,7 +196,7 @@ async def test_an_issuer_notice_filed_on_6k_can_schedule_but_never_alert(tmp_pat
     )
     with DeliveryStore(tmp_path / "state.db", 7) as store:
         calendar = Calendar(store)
-        row, _ = calendar.add("BN", 1, NOW, company)
+        row, _ = calendar.add("BN", company)
         dates = DateDiscovery(calendar, fetcher, lambda: NOW, lambda: False, print)
         await dates._check(row)
         found = calendar.find("BN")
@@ -222,7 +222,7 @@ async def test_scorecard_explains_busy_and_missing_date_states(tmp_path: Path) -
     busy = True
     with DeliveryStore(tmp_path / "state.db", 7) as store:
         calendar = Calendar(store)
-        row, _ = calendar.add("BN", 1, NOW, company)
+        row, _ = calendar.add("BN", company)
         dates = DateDiscovery(calendar, RoutedFetcher({}), lambda: NOW, lambda: busy, print)
         progress = TrackProgress(
             calendar,

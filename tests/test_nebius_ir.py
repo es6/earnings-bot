@@ -105,7 +105,7 @@ async def test_nebius_tracks_from_the_issuer_notice_and_verifies_the_previous_pd
     company = profile("NBIS", CIK, "Nebius Group N.V.", submissions, NOW.date())
     with DeliveryStore(tmp_path / "state.db", 7) as store:
         calendar = Calendar(store)
-        row, _ = calendar.add("NBIS", 1, NOW, company)
+        row, _ = calendar.add("NBIS", company)
         dates = DateDiscovery(calendar, fetcher, lambda: NOW, lambda: False, lambda _: None)
         await dates.run_once(row)
         [saved] = calendar.entries()

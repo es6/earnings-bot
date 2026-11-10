@@ -242,7 +242,6 @@ async def test_a_ticker_sec_doesnt_list_is_refused(
     assert await call(commands.track, typed) == f"⚠️ {refusal}"
     assert tracked(watcher) == []
     assert not watcher.dates.changed.is_set()
-    assert watcher.store.db.execute("SELECT count(*) FROM tracking_adds").fetchone()[0] == 0
 
 
 async def test_when_sec_doesnt_answer_nothing_is_saved_and_a_retry_works(
@@ -256,7 +255,6 @@ async def test_when_sec_doesnt_answer_nothing_is_saved_and_a_retry_works(
 
     assert reply == "⚠️ SEC's company data didn't load. Try again in a minute."
     assert tracked(watcher) == []
-    assert watcher.store.db.execute("SELECT count(*) FROM tracking_adds").fetchone()[0] == 0
 
     routes[LCID_ROUTE] = (200, json.dumps(LCID_SUBMISSIONS).encode())
     assert (await call(commands.track, "LCID")).startswith("✅ Now tracking **LCID**")
@@ -296,9 +294,7 @@ async def test_a_release_time_override_needs_manage_server_and_both_fields(
     reply = await call(commands.track, "NVDA", admin=admin, when=when, period=period)
 
     assert reply.startswith(f"⚠️ {refusal}")
-    # Refused before anything is saved, so it doesn't use up one of the day's adds either
     assert tracked(watcher) == []
-    assert watcher.store.db.execute("SELECT count(*) FROM tracking_adds").fetchone()[0] == 0
 
 
 async def test_an_admin_override_pins_the_release_and_can_move_it(
@@ -346,18 +342,11 @@ async def test_an_admin_can_pin_a_ticker_outside_the_catalog(
     ]
 
 
-async def test_the_daily_limit_and_the_calendar_cap_are_explained(
+async def test_one_member_can_track_six_tickers_in_one_day(
     watcher: DirectoryWatcher, commands: TrackingCommands, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    for ticker in ("AAPL", "AMD", "AMZN", "META", "MSFT"):
+    for ticker in ("AAPL", "AMD", "AMZN", "META", "MSFT", "NVDA"):
         assert (await call(commands.track, ticker)).startswith(f"✅ Now tracking **{ticker}**")
-
-    reply = await call(commands.track, "NVDA")
-
-    assert reply == "⚠️ You can add up to 5 tickers per Eastern calendar day."
-    assert "NVDA" not in tracked(watcher)
-    # The limit is per member
-    assert (await call(commands.track, "NVDA", user=2)).startswith("✅ Now tracking **NVDA**")
 
     # Lower the cap rather than track 50 companies
     monkeypatch.setattr(tracking_calendar, "MAX_TRACKED", 6)

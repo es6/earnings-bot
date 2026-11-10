@@ -15,8 +15,7 @@ Replies to the commands are private to the person who ran them.
 | `/watch_status` | Server members | Shows watcher health, including the next window, last scan and most recent benchmark result in directory mode. |
 | `/ping` | Server members | Checks the bot's Discord connection and reports Gateway latency. |
 
-Each member can add five new issuers per Eastern calendar day. The calendar
-holds up to 50 subscriptions per earnings channel.
+The calendar holds up to 50 subscriptions per earnings channel.
 
 Companies in the [ticker catalog](../src/earnings_bot/companies.toml) start
 from researched sources: the issuer's feeds, its wire and URL patterns. Any

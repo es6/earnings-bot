@@ -116,7 +116,7 @@ async def test_track_reads_the_rendered_newsrooms_api_and_prepares_live_pdf(
     monkeypatch.setattr(date_discovery, "chrome_available", lambda: True)
     with DeliveryStore(tmp_path / "calendar.db", 7) as store:
         calendar = Calendar(store)
-        row, _ = calendar.add("SE", 1, NOW, company)
+        row, _ = calendar.add("SE", company)
         dates = DateDiscovery(calendar, fetcher, lambda: NOW, lambda: False, lambda _: None)
         await dates.run_once(row)
         [saved] = calendar.entries()
