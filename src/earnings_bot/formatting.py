@@ -70,6 +70,8 @@ def source_label(name: str, form: str = "8-K") -> str:
         return "GlobeNewswire earnings feed"
     if name == "browser-ir":
         return "IR press release page, read in Chrome"
+    if name == "browser-rss":
+        return "IR press release feed, read in Chrome"
     if name.startswith(("browser-pdf:", "tesla-pdf:")):
         return f"IR file {name.split(':', 1)[1]}, read in Chrome"
     if name in ("q4_press", "q4_files"):

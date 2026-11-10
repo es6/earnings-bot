@@ -11,7 +11,14 @@ from pydantic import BaseModel, model_validator
 
 from earnings_bot.browser import browser_host
 from earnings_bot.fetch import Fetcher, Response
-from earnings_bot.sources import GuessedFile, Sighting, Source, looks_like_earnings
+from earnings_bot.sources import (
+    GuessedFile,
+    RssFeed,
+    Sighting,
+    Source,
+    looks_like_earnings,
+    published_time,
+)
 from earnings_bot.text import MIN_RELEASE_CHARS, html_to_text, verified_report
 
 _TESLA_AGENT = "earnings-bot/0.1 (public earnings release monitor)"
@@ -39,6 +46,7 @@ class IRSource(BaseModel):
     """A schedule must explicitly specify the current release or exact file candidates."""
 
     listing: str | None = None
+    rss: str | None = None
     headline: str | None = None
     verify_text: bool = False
     warmup: str | None = None
@@ -47,8 +55,10 @@ class IRSource(BaseModel):
 
     @model_validator(mode="after")
     def check_sources(self) -> Self:
-        if bool(self.listing) != bool(self.headline):
-            raise ValueError("An IR listing requires a headline regex for the scheduled quarter")
+        if bool(self.listing or self.rss) != bool(self.headline):
+            raise ValueError(
+                "An IR listing or feed requires a headline regex for the scheduled quarter"
+            )
         if self.listing:
             browser_host(self.listing)
         if self.headline:
@@ -58,17 +68,22 @@ class IRSource(BaseModel):
                 raise ValueError(f"Invalid earnings headline regex: {error}") from error
         if self.warmup:
             browser_host(self.warmup)
+        if self.rss and browser_host(self.rss) != browser_host(self._warmup() or self.rss):
+            raise ValueError("The IR feed must stay on its warmup page's host")
         if self.pdfs:
-            warmup = self.warmup or self.listing
+            warmup = self._warmup()
             if not warmup:
                 raise ValueError("Browser PDFs require a same-host warmup page")
             for url in self.pdfs:
                 _check_pdf(url, warmup)
         if self.tesla_deck:
             _check_tesla(self.tesla_deck)
-        if not (self.listing or self.pdfs or self.tesla_deck):
-            raise ValueError("An IR source must have a listing or at least one PDF")
+        if not (self.listing or self.rss or self.pdfs or self.tesla_deck):
+            raise ValueError("An IR source must have a listing, feed or at least one PDF")
         return self
+
+    def _warmup(self) -> str | None:
+        return self.warmup or self.listing or (urljoin(self.rss, "/") if self.rss else None)
 
     def sources(self) -> list[Source]:
         sources: list[Source] = []
@@ -76,8 +91,14 @@ class IRSource(BaseModel):
             sources.append(
                 BrowserRelease(self.listing, self.headline, verify_text=self.verify_text)
             )
-        warmup = self.warmup or self.listing
+        warmup = self._warmup()
         if warmup:
+            if self.rss and self.headline:
+                sources.append(BrowserRss(self.rss, warmup, self.headline))
+                if self.listing and browser_host(self.listing) == browser_host(self.rss):
+                    # Both discovery routes share this host's one-request-per-second budget.
+                    for source in sources:
+                        source.interval = 2.0
             sources.extend(BrowserPDF(url, warmup) for url in self.pdfs)
         if self.tesla_deck:
             sources.append(TeslaDeck(self.tesla_deck))
@@ -160,28 +181,71 @@ class BrowserRelease(Source):
         candidate = self._candidate
         if candidate is None or response.status != 200 or response.url != candidate.url:
             return []
-        text = html_to_text(response.body.decode(errors="replace"))
-        if (
-            len(text) < MIN_RELEASE_CHARS
-            or (self.verify_text and not verified_report(text))
-            or candidate.title.casefold() not in " ".join(text.split()).casefold()
-        ):
+        if not article_matches(candidate.title, response.body, verify_text=self.verify_text):
             return []
         return [replace(candidate, body=response.body)]
 
-    def pdf_url(self, article: str, body: bytes) -> str | None:
-        parser = _ReleaseLinks()
-        parser.feed(body.decode(errors="replace"))
-        for href, label in parser.links:
-            if label.casefold() != "pdf version":
+
+class BrowserRss(Source):
+    """Read an issuer's release feed in one Chrome request. The article can follow the alert."""
+
+    name = "browser-rss"
+    interval = 1.0
+    stop_when_found = True
+
+    def __init__(self, url: str, warmup: str, headline: str) -> None:
+        self.feed = RssFeed(self.name, url)
+        self.warmup = warmup
+        self._host = browser_host(url)
+        if browser_host(warmup) != self._host:
+            raise ValueError("The IR feed must stay on its warmup page's host")
+        self._headline = re.compile(headline, re.IGNORECASE)
+
+    def url(self) -> str:
+        return self.feed.feed_url
+
+    async def fetch(self, fetcher: Fetcher) -> Response:
+        return await fetcher.browser_request(self.url(), self.warmup, self.timeout)
+
+    def parse(self, response: Response) -> list[Sighting]:
+        items = []
+        for item in self.feed.parse(response):
+            if not (
+                item.earnings
+                and self._headline.fullmatch(item.title)
+                and published_time(item.published)
+            ):
                 continue
             try:
-                url = urldefrag(urljoin(article, href)).url
-                _check_pdf(url, self.listing)
+                if browser_host(item.url) == self._host:
+                    items.append(item)
             except ValueError:
                 continue
-            return url
-        return None
+        return items
+
+
+def article_matches(title: str, body: bytes, *, verify_text: bool) -> bool:
+    text = html_to_text(body.decode(errors="replace"))
+    return (
+        len(text) >= MIN_RELEASE_CHARS
+        and (not verify_text or verified_report(text))
+        and title.casefold() in " ".join(text.split()).casefold()
+    )
+
+
+def issuer_pdf_url(article: str, body: bytes) -> str | None:
+    parser = _ReleaseLinks()
+    parser.feed(body.decode(errors="replace"))
+    for href, label in parser.links:
+        if label.casefold() != "pdf version":
+            continue
+        try:
+            url = urldefrag(urljoin(article, href)).url
+            _check_pdf(url, article)
+        except ValueError:
+            continue
+        return url
+    return None
 
 
 class _VerifiedPDF(GuessedFile):
@@ -211,6 +275,9 @@ class _VerifiedPDF(GuessedFile):
 
 
 class BrowserPDF(_VerifiedPDF):
+    # A manual Fetch redirect is opaque (status 0). Some sites redirect missing PDFs.
+    ok_statuses = frozenset({0, 200, 404})
+
     def __init__(self, url: str, warmup: str) -> None:
         super().__init__(url, "browser-pdf:")
         _check_pdf(url, warmup)
