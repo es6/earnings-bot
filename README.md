@@ -77,12 +77,17 @@ version for you.
 Use `/track ticker:NVDA` in directory mode. `/upcoming` shows the next seven days and issuers
 awaiting a date. Members with Manage Server can set a release time or remove a subscription
 with `/untrack`. See the [command reference](docs/unattended.md#commands) for exact syntax.
+The `/track` scorecard updates in place and marks research complete once source checks and
+date discovery finish. It shows whether a watch is scheduled or still awaiting a date.
 
 ### Run continuously on Windows
 
 Run `uv run earnings-bot schedules` to watch every TOML in the directory. Edits and new files
 are picked up within a few seconds. A malformed edit keeps the last valid version active.
-Use `/watch_status` for the next watch window and the last successful schedule scan. Set
+Use `/watch_status` for the running build, next watch window, and last successful schedule scan.
+The build also appears on scorecards, at startup, and in `uv run earnings-bot --version`.
+It combines the package version with the Git revision when one is available and adds `.dirty`
+for a checkout with tracked local edits. Set
 `DISCORD_STATUS_CHANNEL_ID` to a separate channel to receive window reports there. Reports
 are also written to `schedules/watch.jsonl`.
 

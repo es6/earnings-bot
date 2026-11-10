@@ -311,7 +311,7 @@ async def test_a_release_naming_no_ir_site_still_gives_its_wire(
     assert fetcher.requests == []
     assert (found.platform, found.wire, found.investigated) == ("unknown", "Business Wire", TODAY)
     assert found.evidence == (
-        "Investigated Nov 09: No IR site found in its last results release. Wire: Business Wire."
+        "Investigated Nov 09: No issuer press release site could be verified. Wire: Business Wire."
     )
 
 
@@ -522,6 +522,33 @@ async def test_chrome_tries_the_usual_list_when_the_home_page_doesnt_link_it(
     assert [url for url, _ in chrome.calls] == [LUCID_HOME, LUCID_LIST, LUCID_Q2]
 
 
+async def test_chrome_tries_another_listing_after_a_timeout(
+    released: Callable[[str], None],
+) -> None:
+    released(LUCID_RELEASE)
+    fetcher = RoutedFetcher({LUCID_HOME: (403, b"Access Denied")})
+    slow = LUCID_HOME + "company/news-releases"
+
+    class SlowChrome(FakeChrome):
+        async def request(
+            self,
+            url: str,
+            warmup: str,
+            give_up_after: float,
+            wait_turn: Callable[[str], Awaitable[None]],
+        ) -> Response:
+            if url == slow:
+                raise TimeoutError
+            return await super().request(url, warmup, give_up_after, wait_turn)
+
+    chrome = SlowChrome(lucid_chrome().pages)
+    chrome.pages[LUCID_HOME] = (200, f'<a href="{slow}">Press Releases</a>')
+
+    found = await investigate.investigate(fetcher, LUCID, TODAY, chrome.open)
+
+    assert found.ir_release == LUCID_Q2
+
+
 async def test_a_list_without_results_is_kept_for_notices_but_reported(
     released: Callable[[str], None],
 ) -> None:
@@ -575,9 +602,11 @@ async def test_a_site_without_a_q4_feed_or_rss_says_what_was_tried(
 async def test_a_release_naming_no_ir_site_says_so(released: Callable[[str], None]) -> None:
     released("Results. See www.example.com.")
     found = await investigate.investigate(RoutedFetcher({}), LUCID, TODAY, None)
-    assert ("IR site", False, "Its last results release names no IR site") in [
-        (c.source, c.watch, c.why) for c in found.checks
-    ]
+    assert (
+        "IR site",
+        False,
+        "No IR site or issuer website identified in its last results release",
+    ) in [(c.source, c.watch, c.why) for c in found.checks]
 
     released("")
     found = await investigate.investigate(RoutedFetcher({}), LUCID, TODAY, None)
@@ -820,6 +849,78 @@ async def test_amat_notice_in_chrome_saves_the_window_and_prepares_live_ir(
     assert planned.evidence == f"Issuer date confirmed, release time estimated <{AMAT_NOTICE}>"
     assert planned.target.ir and planned.target.ir.listing == AMAT_LIST
     assert planned.target.ir.verify_text
+
+
+async def test_corporate_site_with_a_hosted_release_list_schedules_transdigm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, released: Callable[[str], None]
+) -> None:
+    home = "https://www.transdigm.com/"
+    investors = home + "investor-relations/"
+    wrong = home + "news-releases/"
+    wrapper = investors + "news-releases/"
+    hosted = "https://transdigmgroupinc.gcs-web.com/news-releases/"
+    article = hosted + "news-release-details/third-quarter-results"
+    notice = hosted + "news-release-details/fourth-quarter-earnings-date"
+    notice_title = (
+        "TransDigm Fourth Quarter Earnings Report and Conference Call Set for "
+        "Tuesday, November 10, 2026"
+    )
+    last_title = "TransDigm Group Reports Fiscal 2026 Third Quarter Results"
+    now = datetime(2026, 11, 10, 2, tzinfo=ET)
+    cik = 1260221
+    company = LUCID.model_copy(
+        update={"name": "TransDigm Group INC", "cik": cik, "release_time": "07:15"}
+    )
+    released(
+        f"{last_title}. /PRNewswire/ -- The webcast is at https://event.example.com. "
+        "See the investor relations page of our website at https://www.transdigm.com."
+    )
+    chrome = FakeChrome(
+        {
+            home: (200, f'<a href="{investors}">Investors</a>'),
+            investors: (
+                200,
+                f'<a href="{wrong}">News Releases</a><a href="{wrapper}">Press Releases</a>',
+            ),
+            wrong: (200, '<a href="/other">Company news</a>'),
+            wrapper: (200, f'<iframe src="{hosted}?auth_token=abc-123"></iframe>'),
+            hosted: (
+                200,
+                f'<a href="{notice}">{notice_title}</a><a href="{article}">{last_title}</a>',
+            ),
+            article: (200, f"<h1>{last_title}</h1><p>August 4, 2026 at 7:15 AM EDT</p>{REPORT}"),
+            notice: (
+                200,
+                (
+                    "<p>TransDigm Group said it will report fiscal 2026 fourth quarter earnings "
+                    "before the market opens on Tuesday, November 10, 2026.</p>"
+                ),
+            ),
+        }
+    )
+    fetcher = RoutedFetcher({"gcs-web.com/": (403, b""), home: (200, b"<html>")})
+    monkeypatch.setattr(fetcher, "research_browser", chrome.open)
+    monkeypatch.setattr(date_discovery, "chrome_available", lambda: True)
+    monkeypatch.setattr(ir_research, "chrome_available", lambda: True)
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        calendar = Calendar(store)
+        row, _ = calendar.add("TDG", 1, now, company)
+        calendar.save_review(cik, now, "Previous SEC-only source audit")
+        dates = DateDiscovery(calendar, fetcher, lambda: now, lambda: False, lambda _: None)
+        await dates.run_once(row)
+        [planned] = calendar.entries()
+        assert calendar.review(cik) == (None, None)
+
+    assert planned.company.ir_listing == hosted
+    assert planned.company.ir_release == article
+    assert planned.company.ir_posted == datetime(2026, 8, 4, 7, 15, tzinfo=ET)
+    assert (hosted, hosted) in chrome.calls
+    assert not any("event.example.com" in url for url, _ in chrome.calls)
+    assert planned.target is not None
+    assert planned.target.expected == datetime(2026, 11, 10, 7, 15, tzinfo=ET)
+    assert planned.target.period == "FY2026Q4"
+    assert planned.target.ir and planned.target.ir.listing == hosted
+    assert planned.evidence == f"Issuer date confirmed, before market open <{notice}>"
 
 
 @pytest.mark.parametrize(

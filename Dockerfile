@@ -19,10 +19,12 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 # --- Runtime stage: plain Python plus the virtualenv, running as a non-root user ---
 FROM python:3.13-slim-bookworm
+ARG EARNINGS_BOT_REVISION
 RUN useradd --create-home --uid 1000 bot
 COPY --from=build --chown=bot:bot /app/.venv /app/.venv
 ENV PATH="/app/.venv/bin:$PATH" \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    EARNINGS_BOT_REVISION=$EARNINGS_BOT_REVISION
 USER bot
 WORKDIR /home/bot
 CMD ["earnings-bot"]
