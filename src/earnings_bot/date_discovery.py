@@ -3,7 +3,6 @@
 import asyncio
 import json
 import logging
-import os
 import re
 import time
 from calendar import month_name
@@ -21,7 +20,12 @@ from earnings_bot.browser import BrowserError
 from earnings_bot.calendar import Calendar, Tracked, describe, same_release
 from earnings_bot.fetch import Fetcher, Response
 from earnings_bot.investigate import OpenChrome, Report, due, investigate
-from earnings_bot.ir_research import issuer_links, issuer_listing, verified_browser_source
+from earnings_bot.ir_research import (
+    chrome_available,
+    issuer_links,
+    issuer_listing,
+    verified_browser_source,
+)
 from earnings_bot.known import (
     NTH,
     ORD,
@@ -32,7 +36,7 @@ from earnings_bot.known import (
 )
 from earnings_bot.recorder import ET, PollError, Target, poll
 from earnings_bot.sec_results import SixKResults, SixKUnavailable
-from earnings_bot.sources import BroadcomNewsroom, Q4PressReleases, RssFeed
+from earnings_bot.sources import BroadcomNewsroom, Q4PressReleases, RssFeed, is_date_notice
 from earnings_bot.text import html_to_text, release_text
 
 log = logging.getLogger(__name__)
@@ -47,19 +51,20 @@ _DATE = re.compile(
     r"\b(" + "|".join(_MONTHS) + r")\s+(\d{1,2})(?:st|nd|rd|th)?(?:,?\s+(20\d{2}))?\b",
     re.IGNORECASE,
 )
+# Abbreviated months, as in "Nov. 12, 2026", which would also end a sentence too soon
+_ABBREVIATED = re.compile(
+    r"\b(Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sept?|Oct|Nov|Dec)\.?(?=\s+\d)", re.IGNORECASE
+)
 _PERIOD = re.compile(
     rf"\b(?:Q([1-4])|({'|'.join(NTH + ORD)})[-\s]+quarter)"
-    r"\s+(?:of\s+)?(?:fiscal\s+)?(?:year\s+)?(?:FY\s*)?(20\d{2})\b",
+    # "of fiscal 2026", "and fiscal 2026", "and full year 2025"
+    r"\s+(?:(?:and|&)\s+(?:full[-\s]+)?|of\s+)?(?:fiscal\s+)?(?:year\s+)?(?:FY\s*)?(20\d{2})\b",
     re.IGNORECASE,
 )
-_NOTICE = re.compile(
-    r"sets?|schedule|announces? (?:the )?date|will (?:report|release|announce)|"
-    r"to (?:report|release|announce|host)|conference call|webcast",
-    re.IGNORECASE,
-)
-_RESULTS = re.compile(r"\b(?:earnings|results)\b", re.IGNORECASE)
 _RELEASE = re.compile(
-    r"\b(?:will|plans to|expects to)\s+(?:report|release|announce|publish|issue)\b"
+    r"\b(?:will|plans to|expects to|to)\s+(?:report|release|announce|publish|issue)\b"
+    r"(?:(?!\b(?:conference call|earnings call|webcast)\b)[^.!?]){0,100}?"
+    r"\b(?:results|earnings)\b"
     r"|\b(?:results|earnings)\b.{0,50}\b(?:will be|are)\s+"
     r"(?:publicly\s+)?(?:announced|released|published)\b",
     re.IGNORECASE,
@@ -75,11 +80,19 @@ _AFTER = re.compile(
 _BEFORE = re.compile(
     r"before (?:the )?(?:(?:US|U S) )?(?:market open|market opens|opening bell)", re.IGNORECASE
 )
-_CALL = re.compile(r"\b(?:conference call|webcast)\b", re.IGNORECASE)
+_CALL = re.compile(r"\b(?:conference call|earnings call|webcast)\b", re.IGNORECASE)
+_SAME_DAY = re.compile(r"\b(?:that|the same)\s+(?:day|morning|afternoon|evening)\b", re.IGNORECASE)
+_BREAK = re.compile(r"<br\b[^>]*>", re.IGNORECASE)
+_SENTENCE = re.compile(r"(?<=[.!?])\s+|--+|[\u2013\u2014]")
 
 
-def _is_notice(title: str) -> bool:
-    return bool(_NOTICE.search(title) and _RESULTS.search(title))
+def _full_months(text: str) -> str:
+    return _ABBREVIATED.sub(
+        lambda match: next(
+            name for name in _MONTHS if name.startswith(match.group(1)[:3].lower())
+        ).capitalize(),
+        text,
+    )
 
 
 def _dates(text: str, today: date) -> set[date]:
@@ -100,6 +113,13 @@ def _release_time(text: str, day: date) -> datetime | None:
     for match in _TIME.finditer(text):
         if _CALL.search(text[: match.start()]):
             continue
+        # A time right after another day's date, such as when the page was posted, isn't it
+        dated = list(_DATE.finditer(text[max(0, match.start() - 30) : match.start()]))
+        if dated and (_MONTHS[dated[-1].group(1).lower()], int(dated[-1].group(2))) != (
+            day.month,
+            day.day,
+        ):
+            continue
         hour, minute, half, zone = match.groups()
         if not 1 <= int(hour) <= 12 or not 0 <= int(minute or 0) <= 59:
             continue
@@ -115,13 +135,32 @@ def _release_time(text: str, day: date) -> datetime | None:
     return None
 
 
+def _release_clause(statement: str) -> str | None:
+    match = _RELEASE.search(statement)
+    if match is None:
+        return None
+    before = _CALL.search(statement, 0, match.start())
+    if before and statement[match.start() :].casefold().startswith("to "):
+        return None  # A call to discuss or announce results is still a call.
+    start = match.start() if before else 0
+    after = _CALL.search(statement, match.end())
+    return statement[start : after.start() if after else None]
+
+
 def parse_notice(
     ticker: str, company: KnownCompany, title: str, body: str, now: datetime
 ) -> tuple[Target, str] | None:
-    if not _is_notice(title):
+    if not is_date_notice(title):
         return None
-    text = " ".join(html_to_text(body).split())
-    text = re.sub(r"\b([ap])\.m\.", r"\1m", text, flags=re.IGNORECASE).replace("U.S.", "US")
+
+    def tidy(line: str) -> str:
+        line = _full_months(" ".join(line.split()))
+        return re.sub(r"\b([ap])\.m\.", r"\1m", line, flags=re.IGNORECASE).replace("U.S.", "US")
+
+    title = tidy(title)
+    # Kept apart, so a heading or the page's "posted at" line doesn't run into the next line
+    lines = [tidy(line) for line in html_to_text(_BREAK.sub(" ", body)).splitlines()]
+    text = " ".join(lines)
     period = _PERIOD.search(f"{title} {text}")
     if period is None:
         return None
@@ -136,13 +175,26 @@ def parse_notice(
         )
     )
     today = now.astimezone(ET).date()
-    sentences = re.split(r"(?<=[.!?])\s+", text)
-    release = [sentence for sentence in sentences if _RELEASE.search(sentence)]
+    # A headline such as "X to Report Fourth Quarter Results on November 12, 2026" may be the
+    # only place that gives the date, when the notice itself is about the call
+    sentences = [title, *(s for line in lines for s in _SENTENCE.split(line))]
+    release = [part for sentence in sentences if (part := _release_clause(sentence))]
     if not release:
         return None
     dates = set().union(*(_dates(sentence, today) for sentence in release))
-    if not dates:
-        dates = _dates(f"{title} {text}", today)
+    if (
+        not dates
+        and not any(_DATE.search(sentence) for sentence in release)
+        and any(_SAME_DAY.search(sentence) or _TIME.search(sentence) for sentence in release)
+    ):
+        # Some notices date the call, then give a separate release time for that day.
+        dates = set().union(
+            *(
+                _dates(sentence, today)
+                for sentence in sentences
+                if _CALL.search(sentence) and _release_clause(sentence) is None
+            )
+        )
     if len(dates) != 1:
         return None
     [day] = dates
@@ -176,11 +228,16 @@ def parse_notice(
 
 
 async def find_date(
-    fetcher: Fetcher, ticker: str, now: datetime, company: KnownCompany | None = None
+    fetcher: Fetcher,
+    ticker: str,
+    now: datetime,
+    company: KnownCompany | None = None,
+    unread: list[str] | None = None,
 ) -> tuple[Target, str] | None:
     """The next release from the issuer's own notice, for a catalog company unless another is
-    given."""
+    given. The headline of each notice whose date couldn't be read goes in `unread`."""
     company = company or known_companies()[ticker]
+    unread = [] if unread is None else unread
     if company.q4_host and company.reachable:
         source = Q4PressReleases(company.q4_host)
         url = source.bodies_url(20)
@@ -196,6 +253,8 @@ async def find_date(
                             f"https://{company.q4_host}", row.get("LinkToDetailPage") or ""
                         )
                         return target, f"{evidence} <{link}>"
+                    if is_date_notice(row["Headline"]):
+                        unread.append(row["Headline"])
         except (aiohttp.ClientError, TimeoutError, ValueError, KeyError, TypeError, AttributeError):
             pass
     for url in dict.fromkeys([*company.rss, *company.trial.rss]):
@@ -204,7 +263,7 @@ async def find_date(
             reply = await fetcher.request("GET", feed.url(), give_up_after=4, allow_redirects=False)
             if reply.status != 200:
                 continue
-            notices = [item for item in feed.parse(reply) if _is_notice(item.title)]
+            notices = [item for item in feed.parse(reply) if is_date_notice(item.title)]
             for item in notices[:3]:
                 link = urlsplit(item.url)
                 if link.scheme != "https" or link.netloc != urlsplit(url).netloc:
@@ -217,20 +276,22 @@ async def find_date(
                     if result := parse_notice(ticker, company, item.title, body, now):
                         target, evidence = result
                         return target, f"{evidence} <{item.url}>"
+                    unread.append(item.title)
         except (aiohttp.ClientError, TimeoutError, ValueError, KeyError, TypeError, AttributeError):
             continue
     if company.trial.broadcom_newsroom:
         source = BroadcomNewsroom()
         try:
             _, releases = await poll(source, fetcher)
-            for item in [item for item in releases if _is_notice(item.title)][:3]:
+            for item in [item for item in releases if is_date_notice(item.title)][:3]:
                 body = await release_text(fetcher, source, replace(item, earnings=True))
                 if body and (result := parse_notice(ticker, company, item.title, body, now)):
                     target, evidence = result
                     return target, f"{evidence} <{item.url}>"
+                unread.append(item.title)
         except PollError:
             pass
-    return await _listing_date(fetcher, ticker, company, now)
+    return await _listing_date(fetcher, ticker, company, now, unread)
 
 
 async def calendar_date(
@@ -273,7 +334,7 @@ async def calendar_date(
 
 
 async def _listing_date(
-    fetcher: Fetcher, ticker: str, company: KnownCompany, now: datetime
+    fetcher: Fetcher, ticker: str, company: KnownCompany, now: datetime, unread: list[str]
 ) -> tuple[Target, str] | None:
     listing = issuer_listing(ticker, company)
     if listing is None:
@@ -287,7 +348,7 @@ async def _listing_date(
         if page.status != 200:
             return None
         notices = [
-            (url, title) for url, title in issuer_links(listing, page.body) if _is_notice(title)
+            (url, title) for url, title in issuer_links(listing, page.body) if is_date_notice(title)
         ]
         for url, title in notices[:3]:
             page = await get(url)
@@ -296,12 +357,14 @@ async def _listing_date(
                 if result := parse_notice(ticker, company, title, body, now):
                     target, evidence = result
                     return target, f"{evidence} <{url}>"
+                if title not in unread:
+                    unread.append(title)
         return None
 
     with suppress(aiohttp.ClientError, TimeoutError, ValueError, KeyError):
         if result := await check(direct):
             return result
-    if os.name != "nt":
+    if not chrome_available():
         return None
     try:
         async with fetcher.research_browser() as browser:
@@ -382,8 +445,10 @@ class DateDiscovery:
         self.calendar_dates[row.cik] = time.monotonic() + CALENDAR_REFRESH, result
         return result
 
-    async def _issuer_date(self, row: Tracked, now: datetime) -> tuple[Target, str] | None:
-        if result := await find_date(self.fetcher, row.ticker, now, row.company):
+    async def _issuer_date(
+        self, row: Tracked, now: datetime, unread: list[str]
+    ) -> tuple[Target, str] | None:
+        if result := await find_date(self.fetcher, row.ticker, now, row.company, unread):
             return result
         if row.company.sec_form != "6-K":
             return None
@@ -410,7 +475,7 @@ class DateDiscovery:
             return row
         self._phase(row.cik, "Investigating its sources")
         report = self.reports[row.cik] = Report(changed=self.on_progress)
-        chrome = self.chrome or (self.fetcher.research_browser if os.name == "nt" else None)
+        chrome = self.chrome or (self.fetcher.research_browser if chrome_available() else None)
         company = await investigate(
             self.fetcher,
             row.company,
@@ -431,6 +496,7 @@ class DateDiscovery:
             return
         self._phase(row.cik, "Looking for the next release date")
         now = self.now()
+        unread: list[str] = []
         saved = (
             (row.target, row.evidence)
             if row.target and row.evidence and row.target.window[1] > now
@@ -439,7 +505,7 @@ class DateDiscovery:
         # An issuer's word beats FMP's calendar, which beats nothing
         if saved and saved[1] == MANUAL:
             target, evidence = saved
-        elif result := await self._issuer_date(row, now):
+        elif result := await self._issuer_date(row, now, unread):
             target, evidence = result
         elif saved and saved[1] not in (CALENDAR_DATE, CALENDAR_6K_DATE):
             target, evidence = saved
@@ -448,10 +514,15 @@ class DateDiscovery:
         elif saved:
             target, evidence = saved
         else:
+            seen = (
+                f" It saw the notice “{unread[0]}” but couldn't read a date from it."
+                if unread
+                else ""
+            )
             self._phase(
                 row.cik,
-                "No release date found yet. Rechecking hourly. A Manage Server member can set "
-                "one with `/track` and `when` and `period`.",
+                f"No release date read yet.{seen} Rechecking hourly. A Manage Server member can "
+                "set one with `/track` and `when` and `period`.",
             )
             return
         if self._defer_if_busy(row.cik) or row not in self.calendar.entries():

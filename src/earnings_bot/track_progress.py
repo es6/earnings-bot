@@ -81,33 +81,45 @@ class CardPoster:
         self.store.delivered(self.key, message.id)
 
 
-def _first_lines(speed: Speed) -> str:
+def _last_release_field(speed: Speed) -> tuple[str, str]:
     """Which source had the last results first, and how far behind the others were."""
+    field = "⏱️ Last release"
     if speed.day is None:
-        return "Couldn't date its last results release."
+        return field, "Couldn't date its last results release."
     basis, timings = speed.fastest()
     if not timings:
-        return f"No timings recorded for its {speed.day:%b} {speed.day.day} release."
+        return field, f"No timings recorded for its {speed.day:%b} {speed.day.day} release."
     by_label: dict[str, Timing] = {}
     for timing in timings:
         by_label.setdefault(source_label(timing.source, speed.form), timing)
     first, *rest = by_label.items()
-    label, at = first[0], first[1].at
-    if rest:
-        lines = [f"🥇 **{label}** at {clock(at, seconds=True)}"]
-        lines += [f"{name} +{duration((t.at - at).total_seconds())}" for name, t in rest[:4]]
+    label, earliest = first
+    at = earliest.at
+    when = clock(at, seconds=not earliest.resolution_seconds)
+    lead = (rest[0][1].at - at).total_seconds() if rest else None
+    if lead is not None and (lead == 0 or lead < earliest.resolution_seconds):
+        lines = ["The reported times overlap, so the order is unresolved."]
+        lines += [
+            f"**{name}** at {clock(t.at, seconds=not t.resolution_seconds)}"
+            for name, t in list(by_label.items())[:5]
+        ]
+    elif rest:
+        field = "⚡ Fastest last time"
+        lines = [f"🥇 **{label}** at {when}"]
+        for name, timing in rest[:4]:
+            if earliest.resolution_seconds or timing.resolution_seconds:
+                lines.append(f"{name} at {clock(timing.at, seconds=not timing.resolution_seconds)}")
+            else:
+                lines.append(f"{name} +{duration((timing.at - at).total_seconds())}")
     else:
-        # First by default, so say so rather than call it a win
         lines = [
-            (
-                f"**{label}** at {clock(at, seconds=True)}, the only timing left for that release. "
-                "Newswire feeds keep only their latest releases."
-            )
+            f"Only one time is known for it: **{label}** at {when}.",
+            "Which source was first isn't known yet. The next release is timed live.",
         ]
     lines.append(f"-# {speed.day:%b} {speed.day.day} release · {basis}")
     if speed.benchmark:
         lines.append(f"-# {speed.benchmark}")
-    return "\n".join(lines)
+    return field, "\n".join(lines)
 
 
 class TrackProgress:
@@ -244,7 +256,8 @@ class TrackProgress:
         embed.add_field(name="Progress", value="\n".join(steps), inline=False)
 
         if speed is not None:
-            embed.add_field(name="⚡ Fastest last time", value=_first_lines(speed), inline=False)
+            name, value = _last_release_field(speed)
+            embed.add_field(name=name, value=value, inline=False)
 
         checks = report.checks if report is not None else row.company.checks
         if target:

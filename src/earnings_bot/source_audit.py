@@ -34,13 +34,20 @@ class Timing:
     source: str
     at: datetime
     url: str = ""
+    resolution_seconds: int = 0
 
 
 def _timings(rows: object) -> list[Timing]:
     if not isinstance(rows, list):
         raise TypeError("timings must be a list")
     return [
-        Timing(row["source"], datetime.fromisoformat(row["at"]), row.get("url", "")) for row in rows
+        Timing(
+            row["source"],
+            datetime.fromisoformat(row["at"]),
+            row.get("url", ""),
+            row.get("resolution_seconds", 0),
+        )
+        for row in rows
     ]
 
 
@@ -273,6 +280,12 @@ async def audit_sources(
     if anchor is None:
         return Speed(day=None, form=sec.form)
     day = anchor
+    posted = company.ir_posted
+    if posted and posted.astimezone(ET).date() == day:
+        # The IR site's own time for the release, which Chrome read when investigating
+        estimates.append(
+            Timing("browser-ir", posted, company.ir_release or "", resolution_seconds=60)
+        )
     heads, bodies, comparison = await asyncio.to_thread(_measurements, directory, ticker, day)
 
     if benchmark and not comparison:

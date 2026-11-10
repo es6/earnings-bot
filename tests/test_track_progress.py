@@ -11,7 +11,7 @@ from earnings_bot.calendar import Calendar
 from earnings_bot.config import Settings
 from earnings_bot.delivery import DeliveryStore
 from earnings_bot.formatting import GREEN
-from earnings_bot.investigate import Report
+from earnings_bot.investigate import INVESTIGATION, Report
 from earnings_bot.issuers import profile
 from earnings_bot.known import KnownCompany, SourceCheck, to_target
 from earnings_bot.recorder import ET, Target
@@ -28,6 +28,7 @@ LISTING = "https://ir.lucidmotors.com/press-releases"
 INVESTIGATED = LUCID.model_copy(
     update={
         "investigated": date(2026, 11, 9),
+        "investigation": INVESTIGATION,
         "wire": "PR Newswire",
         "ir_listing": LISTING,
         "platform": "own-site",
@@ -46,7 +47,7 @@ INVESTIGATED = LUCID.model_copy(
             SourceCheck(
                 source="Business Wire earnings feed",
                 watch=False,
-                why="Its latest results release went out on PR Newswire",
+                why="Its releases go out on PR Newswire",
             ),
         ],
     }
@@ -180,6 +181,7 @@ async def test_the_audit_waits_for_the_investigation(tmp_path: Path) -> None:
                     "investigated": date(2026, 11, 9),
                     "evidence": "Investigated Nov 09: X.",
                     "checks": [SourceCheck(source="SEC 8-K filings", watch=True, why="Filed here")],
+                    "investigation": INVESTIGATION,
                 }
             )
             calendar.save_profile(LCID_CIK, found)
@@ -271,7 +273,7 @@ async def test_a_finished_card_says_what_was_fastest_watched_and_rejected(tmp_pa
     # The Chrome page was verified for this release, so only the others are rejected
     assert fields["🚫 Checked and rejected"] == [
         "• **ir.lucidmotors.com without Chrome**: Blocks automated requests (HTTP 403)",
-        "• **Business Wire earnings feed**: Its latest results release went out on PR Newswire",
+        "• **Business Wire earnings feed**: Its releases go out on PR Newswire",
     ]
 
 
@@ -399,10 +401,33 @@ def test_a_lone_timing_isnt_called_the_fastest(tmp_path: Path) -> None:
         calendar = Calendar(store)
         row, _ = calendar.add("LCID", 1, NOW, INVESTIGATED)
         fields = lines_of(tracker(store, FakeDiscord()).render(row, speed.to_json(), False))
-    assert fields["⚡ Fastest last time"] == [
-        (
-            "**SEC 8-K filings** at 4:08:17 PM ET, the only timing left for that release. "
-            "Newswire feeds keep only their latest releases."
-        ),
+    # One time isn't a race, so nothing is called the fastest
+    assert "⚡ Fastest last time" not in fields
+    assert fields["⏱️ Last release"] == [
+        "Only one time is known for it: **SEC 8-K filings** at 4:08:17 PM ET.",
+        "Which source was first isn't known yet. The next release is timed live.",
         "-# Aug 5 release · publishers' timestamps",
+    ]
+
+
+def test_a_minute_resolution_timestamp_cannot_win_by_seconds(tmp_path: Path) -> None:
+    posted = datetime(2026, 8, 5, 16, 1, tzinfo=ET)
+    accepted = posted.replace(second=10)
+    speed = Speed(
+        posted.date(),
+        archive=[
+            Timing("browser-ir", posted, resolution_seconds=60),
+            Timing("SEC 8-K acceptance", accepted),
+        ],
+    )
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        calendar = Calendar(store)
+        row, _ = calendar.add("LCID", 1, NOW, INVESTIGATED)
+        fields = lines_of(tracker(store, FakeDiscord()).render(row, speed.to_json(), False))
+
+    assert "⚡ Fastest last time" not in fields
+    assert fields["⏱️ Last release"][:3] == [
+        "The reported times overlap, so the order is unresolved.",
+        "**IR press release page, read in Chrome** at 4:01 PM ET",
+        "**SEC 8-K filings** at 4:01:10 PM ET",
     ]

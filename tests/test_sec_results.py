@@ -11,6 +11,7 @@ import pytest
 from earnings_bot.calendar import Calendar, describe
 from earnings_bot.date_discovery import CALENDAR_6K_DATE, DateDiscovery, calendar_date
 from earnings_bot.delivery import DeliveryStore
+from earnings_bot.investigate import INVESTIGATION
 from earnings_bot.issuers import profile
 from earnings_bot.known import SourceCheck
 from earnings_bot.recorder import ET, Journal, Polls, Target, Watch
@@ -190,6 +191,7 @@ async def test_an_issuer_notice_filed_on_6k_can_schedule_but_never_alert(tmp_pat
         update={
             "investigated": NOW.date(),
             "checks": [SourceCheck(source="SEC 8-K filings", watch=True, why="Filed here")],
+            "investigation": INVESTIGATION,
         }
     )
     with DeliveryStore(tmp_path / "state.db", 7) as store:
@@ -214,6 +216,7 @@ async def test_scorecard_explains_busy_and_missing_date_states(tmp_path: Path) -
         update={
             "investigated": NOW.date(),
             "checks": [SourceCheck(source="SEC 8-K filings", watch=True, why="Filed here")],
+            "investigation": INVESTIGATION,
         }
     )
     busy = True
@@ -243,4 +246,26 @@ async def test_scorecard_explains_busy_and_missing_date_states(tmp_path: Path) -
         await dates._check(row)
         score = embed_text(progress.render(row, None, False))
         assert "results on Form 6-K" in score
-        assert "⚠️ No release date found yet" in score and "`when`" in score and "`period`" in score
+        assert "⚠️ No release date read yet" in score and "`when`" in score and "`period`" in score
+
+
+async def test_the_ir_sites_own_time_for_the_release_joins_the_comparison(
+    tmp_path: Path,
+) -> None:
+    data = filings()
+    company = profile("BN", CIK, "Brookfield Corporation", data, NOW.date()).model_copy(
+        update={
+            "ir_posted": datetime(2026, 8, 13, 6, 40, tzinfo=ET),
+            "ir_release": "https://bn.brookfield.com/q2",
+        }
+    )
+    fetcher = RoutedFetcher(fixtures(data))
+    speed = await audit_sources(fetcher, tmp_path, "BN", company, NOW, None, SixKResults(fetcher))
+    _, order = speed.fastest()
+    assert next((t.source, t.url) for t in order) == ("browser-ir", "https://bn.brookfield.com/q2")
+    assert [t.source for t in order] == ["browser-ir", "SEC 6-K acceptance"]
+
+    # A time for another release doesn't count
+    company = company.model_copy(update={"ir_posted": datetime(2026, 5, 14, 6, 40, tzinfo=ET)})
+    speed = await audit_sources(fetcher, tmp_path, "BN", company, NOW, None, SixKResults(fetcher))
+    assert [t.source for t in speed.archive] == ["SEC 6-K acceptance"]
