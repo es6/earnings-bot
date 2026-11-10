@@ -600,8 +600,14 @@ not hourly. Translated copies of a site are skipped, since their headlines don't
 Notices name their period many ways ("fourth quarter and fiscal year ended September 30",
 "September quarter", "Q4 FY26", "2026 Q3"). When the headline and text name none it can read,
 the period is the fiscal quarter that ended last before the release day, from SEC's fiscal year
-end, or from the period of the latest 10-K, 20-F or 40-F when SEC's field is empty (Alibaba). A
-same-day call is a deadline for an estimated time: Warner Music's 8-Ks came after the close,
+end, or from the period of the latest 10-K, 20-F or 40-F when SEC's field is empty (Alibaba).
+That quarter is named the way the company's own results name it. Home Depot, Lowe's, Target and
+most retailers name a fiscal year for the calendar year it starts in (Home Depot's "Third
+Quarter Fiscal 2025" came out in November 2025), while NVIDIA, Walmart and Salesforce name it
+for the year it ends in. Research reads the period each of the last three results releases
+announces, compares it with the quarter that ended last before its filing day, and keeps the
+naming most of them agree on. A company whose releases name no year (Walmart, Ross) keeps the
+year-it-ends naming. A same-day call is a deadline for an estimated time: Warner Music's 8-Ks came after the close,
 but its notice's "earnings conference call that morning at 8:30 a.m." puts results before it.
 "Before 9:30 a.m." counts as before the open, and a before-the-open watch runs from 6:00 (or an
 hour before the estimate) to 9:35, since TJX's 8-Ks come at 9:10 while its release may not.
@@ -611,7 +617,8 @@ comes from FMP's earnings calendar, asked at most twice a day. FMP's free plan a
 for nearly every symbol (it covered AAPL but none of the 49 tickers evaluated on Nov 10), so in
 practice the issuer's own pages are the source. FMP gives the day but not the
 time, so the window uses the 8-K time with an hour before and 90 minutes after, and the
-fiscal period follows from SEC's fiscal year end. An issuer's own date always wins over FMP's.
+fiscal period follows from SEC's fiscal year end, named as the company names it. An issuer's own
+date always wins over FMP's.
 
 The watcher scans for changes every three seconds. Date checks start on registration and repeat
 roughly hourly outside release windows. After a release, the subscription remains active for

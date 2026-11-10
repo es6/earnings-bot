@@ -48,8 +48,8 @@ from earnings_bot.ir_research import (
 from earnings_bot.issuer_news import news_records, read_news
 from earnings_bot.known import (
     KnownCompany,
-    fiscal_period,
     known_companies,
+    planned_period,
     to_target,
 )
 from earnings_bot.periods import title_period
@@ -225,8 +225,7 @@ def parse_notice(
     [day] = dates
     # A notice that names no quarter it can be read from ("will release its financial results
     # for the fourth quarter and fiscal year ended September 30") reports the one that ended last
-    if period is None and company.fiscal_year_end:
-        period = fiscal_period(company.fiscal_year_end, day)
+    period = period or planned_period(company, day)
     if period is None:
         return None
     year, quarter = period
@@ -404,8 +403,9 @@ async def calendar_date(
     hour, minute = map(int, company.release_time.split(":"))
     for day in days:
         expected = datetime(day.year, day.month, day.day, hour, minute, tzinfo=ET)
-        fiscal_year, quarter = fiscal_period(company.fiscal_year_end, day)
-        target = to_target(ticker, expected, fiscal_year, quarter, company)
+        if (period := planned_period(company, day)) is None:
+            return None
+        target = to_target(ticker, expected, *period, company)
         target.before_minutes = 60
         target.after_minutes = 90
         if target.window[1] > now:
@@ -511,10 +511,9 @@ def _weekday_before(day: date) -> date:
 
 def _period_of(title: str, text: str, company: KnownCompany, day: date) -> tuple[int, int] | None:
     """The period an event or notice is for: the one it names, or else the quarter that ended
-    last before its date, as "John Deere - 4Q Earnings Call" in November is."""
-    if period := title_period(title) or title_period(text[:3000]):
-        return period
-    return fiscal_period(company.fiscal_year_end, day) if company.fiscal_year_end else None
+    last before its date, as "John Deere - 4Q Earnings Call" in November is, named as the
+    company names its fiscal years."""
+    return title_period(title) or title_period(text[:3000]) or planned_period(company, day)
 
 
 def event_target(

@@ -30,6 +30,14 @@ from earnings_bot.recorder import ET
 from earnings_bot.sec_results import SixKResults
 from earnings_bot.sources import Sighting
 from tests.fakes import RoutedFetcher, rendered
+from tests.results_data import (
+    CRM_RELEASES,
+    HD_RELEASES,
+    LOW_RELEASES,
+    NVDA_RELEASES,
+    TGT_RELEASES,
+    WMT_RELEASES,
+)
 from tests.sec_data import LCID_CIK, LCID_SUBMISSIONS
 from tests.test_date_discovery import AMAT, AMAT_NOTICE_BODY
 from tests.test_pipeline import filing_routes
@@ -105,13 +113,22 @@ def lucid_chrome() -> FakeChrome:
     )
 
 
+def sec_releases(releases: list[tuple[str, str]]) -> list[tuple[Sighting, str]]:
+    """Results releases as `_last_releases` gives them: each 8-K, accepted when given, and its
+    text."""
+    return [
+        (Sighting(accepted, "8-K 2.02,9.01", "https://www.sec.gov/", accepted, True), text)
+        for accepted, text in releases
+    ]
+
+
 @pytest.fixture
 def released(monkeypatch: pytest.MonkeyPatch) -> Callable[[str], None]:
     """Sets the text of the company's last results release, as SEC has it."""
 
     def set_text(text: str) -> None:
-        async def last_releases(fetcher: object, cik: int) -> list[str]:
-            return [text] if text else []
+        async def last_releases(fetcher: object, cik: int) -> list[tuple[Sighting, str]]:
+            return sec_releases([("2026-08-04T20:07:05.000Z", text)] if text else [])
 
         monkeypatch.setattr(investigate, "_last_releases", last_releases)
 
@@ -465,9 +482,10 @@ async def test_the_last_release_is_read_from_the_results_8k() -> None:
         {"submissions/CIK0001543151.json": (200, submissions), **filing_routes()}
     )
 
-    [text] = await investigate._last_releases(fetcher, 1543151)
+    [(filing, text)] = await investigate._last_releases(fetcher, 1543151)
 
     assert "Gross bookings grew 21%" in text
+    assert filing.published == "2026-11-04T11:55:39.000Z"
     # Only the results 8-K is read
     assert not any("000154315126000041" in url for _, url, _ in fetcher.requests)
     assert not any("000154315126000042" in url for _, url, _ in fetcher.requests)
@@ -1200,3 +1218,43 @@ async def test_earlier_research_stands_when_no_release_names_an_ir_site() -> Non
     assert ("Earlier research: investors.on-running.com", True) in [
         (c.source, c.watch) for c in found.checks
     ]
+
+
+@pytest.mark.parametrize(
+    ("releases", "year_end", "offset"),
+    [
+        (HD_RELEASES, "0131", -1),
+        (LOW_RELEASES, "0131", -1),
+        (TGT_RELEASES, "0201", -1),
+        (NVDA_RELEASES, "0131", 0),
+        (CRM_RELEASES, "0131", 0),
+        (WMT_RELEASES, "0131", None),
+    ],
+    ids=["HD", "LOW", "TGT", "NVDA", "CRM", "WMT"],
+)
+async def test_the_investigation_learns_how_the_company_names_its_fiscal_years(
+    monkeypatch: pytest.MonkeyPatch,
+    releases: list[tuple[str, str]],
+    year_end: str,
+    offset: int | None,
+) -> None:
+    async def last_releases(fetcher: object, cik: int) -> list[tuple[Sighting, str]]:
+        return sec_releases(releases)
+
+    monkeypatch.setattr(investigate, "_last_releases", last_releases)
+    company = LUCID.model_copy(update={"fiscal_year_end": year_end})
+
+    found = await investigate.investigate(RoutedFetcher({}), company, TODAY, None)
+
+    assert found.fiscal_year_offset == offset
+
+
+async def test_what_earlier_research_learned_stands_when_the_releases_dont_say(
+    released: Callable[[str], None],
+) -> None:
+    released(WMT_RELEASES[0][1])
+    company = LUCID.model_copy(update={"fiscal_year_end": "0131", "fiscal_year_offset": -1})
+
+    found = await investigate.investigate(RoutedFetcher({}), company, TODAY, None)
+
+    assert found.fiscal_year_offset == -1

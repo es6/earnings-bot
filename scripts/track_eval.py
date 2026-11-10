@@ -53,6 +53,8 @@ class Outcome:
     error: str = ""
     form: str = ""
     wire: str = ""
+    # SEC's fiscal year end and the years the company's own naming is off from its end year
+    fiscal: str = ""
     watch: list[str] = field(default_factory=list)
     rejected: list[str] = field(default_factory=list)
     speed: list[str] = field(default_factory=list)
@@ -79,6 +81,7 @@ async def evaluate(
             assert row is not None
             outcome.form = row.company.sec_form or ""
             outcome.wire = row.company.wire
+            outcome.fiscal = f"{row.company.fiscal_year_end} {row.company.fiscal_year_offset}"
             outcome.watch = [f"{c.source}: {c.why}" for c in row.company.checks if c.watch]
             outcome.rejected = [f"{c.source}: {c.why}" for c in row.company.checks if not c.watch]
             if row.target and row.evidence:
@@ -133,7 +136,7 @@ async def main() -> None:
     found = [o for o in outcomes if o.date]
     print(f"\nDates found: {len(found)}/{len(outcomes)}")
     for o in sorted(outcomes, key=lambda item: item.ticker):
-        print(f"\n== {o.ticker} ({o.form}, wire {o.wire}) {o.seconds}s")
+        print(f"\n== {o.ticker} ({o.form}, wire {o.wire}, fiscal {o.fiscal}) {o.seconds}s")
         print(f"   date: {o.date or '-'}  {o.evidence or o.phase or o.error}")
         if o.speed_day or o.speed:
             print(f"   speed {o.speed_day}: {', '.join(o.speed) or '-'}")

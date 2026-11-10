@@ -10,6 +10,8 @@ from earnings_bot.known import (
     fiscal_period,
     guess_urls,
     known_companies,
+    naming_offset,
+    planned_period,
     target_toml,
     template_fields,
     to_target,
@@ -205,3 +207,55 @@ def test_broadcom_is_matched_on_pr_newswire_and_tried_on_its_newsroom() -> None:
         "broadcom_newsroom",
         "prnewswire_semiconductors",
     ]
+
+
+@pytest.mark.parametrize(
+    ("reported", "offset"),
+    [
+        # Home Depot's "Second Quarter Fiscal 2026" and "First Quarter Fiscal 2026"
+        ([(date(2026, 8, 18), (2026, 2)), (date(2026, 5, 19), (2026, 1))], -1),
+        # NVIDIA's "Second Quarter Fiscal 2027"
+        ([(date(2026, 8, 26), (2027, 2))], 0),
+        # Walmart's Q4 release looks ahead to "Q1 and FY27", another quarter
+        ([(date(2026, 2, 19), (2027, 1))], None),
+        # Two years off is a misreading, not a way of naming years
+        ([(date(2026, 5, 20), (2025, 1))], None),
+        # Split evenly, so neither can be trusted
+        ([(date(2026, 8, 18), (2026, 2)), (date(2026, 8, 26), (2027, 2))], None),
+        # The majority wins over one misreading
+        (
+            [
+                (date(2026, 8, 18), (2026, 2)),
+                (date(2026, 5, 19), (2027, 1)),
+                (date(2026, 2, 24), (2025, 4)),
+            ],
+            -1,
+        ),
+        ([], None),
+    ],
+)
+def test_how_a_company_names_its_fiscal_years_comes_from_its_results(
+    reported: list[tuple[date, tuple[int, int]]], offset: int | None
+) -> None:
+    assert naming_offset("0131", reported) == offset
+
+
+@pytest.mark.parametrize(
+    ("year_end", "offset", "released", "period"),
+    [
+        ("0131", -1, date(2026, 11, 17), (2026, 3)),  # Home Depot's Q3 fiscal 2026
+        ("0131", -1, date(2026, 11, 18), (2026, 3)),  # Lowe's
+        ("0201", -1, date(2026, 11, 19), (2026, 3)),  # Target
+        ("0131", 0, date(2026, 11, 18), (2027, 3)),  # NVIDIA's Q3 fiscal 2027
+        ("0131", 0, date(2026, 12, 2), (2027, 3)),  # Salesforce
+        ("0131", None, date(2026, 11, 19), (2027, 3)),  # Walmart, whose releases never say
+    ],
+)
+def test_a_planned_period_is_named_as_the_company_names_it(
+    year_end: str, offset: int | None, released: date, period: tuple[int, int]
+) -> None:
+    company = known_companies()["NVDA"].model_copy(
+        update={"fiscal_year_end": year_end, "fiscal_year_offset": offset}
+    )
+    assert planned_period(company, released) == period
+    assert planned_period(company.model_copy(update={"fiscal_year_end": None}), released) is None

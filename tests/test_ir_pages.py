@@ -1,13 +1,16 @@
 """Reading an IR site the way Chrome shows it, for its release date."""
 
+import re
 from datetime import date, datetime
 
 import pytest
 
 from earnings_bot.browser import BrowserError, RenderedPage
 from earnings_bot.date_discovery import EVENT_DATE, event_target, rendered_date, title_period
+from earnings_bot.formatting import period_label
 from earnings_bot.investigate import ir_hosts
 from earnings_bot.ir_pages import IRReader, Moment, moments, nav_rank, upcoming
+from earnings_bot.ir_research import prior_period, quarter_headline
 from earnings_bot.issuers import fiscal_year_end
 from earnings_bot.recorder import ET
 from earnings_bot.sources import looks_like_earnings
@@ -434,3 +437,26 @@ def test_a_6k_filers_time_from_its_ir_site_is_trusted_before_its_call() -> None:
 
     assert result is not None
     assert result[0].expected == datetime(2026, 11, 24, 6, 45, tzinfo=ET)
+
+
+def test_an_event_naming_no_year_is_planned_as_the_company_names_its_quarters() -> None:
+    # Home Depot, whose fiscal 2026 ends in January 2027, holds its call on November 17
+    company = ACME.model_copy(
+        update={"fiscal_year_end": "0131", "fiscal_year_offset": -1, "release_time": "06:00"}
+    )
+    moment = Moment(date(2026, 11, 17), datetime(2026, 11, 17, 9, tzinfo=ET))
+
+    result = event_target("HD", company, "Q3 Earnings Conference Call", moment, NOW)
+
+    assert result is not None
+    period = result[0].period
+    assert period == "FY2026Q3"
+    assert period_label(period) == "Q3 FY26"
+    # Its IR listing is verified by last quarter's headline, and watched for this one's
+    last = re.compile(quarter_headline(*prior_period(period)), re.IGNORECASE)
+    assert last.fullmatch(
+        "The Home Depot Announces Second Quarter Fiscal 2026 Results; Reaffirms Fiscal 2026 "
+        "Guidance"
+    )
+    this = re.compile(quarter_headline(2026, 3), re.IGNORECASE)
+    assert this.fullmatch("The Home Depot Announces Third Quarter Fiscal 2026 Results")

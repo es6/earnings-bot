@@ -55,6 +55,10 @@ _REVENUE_ROW = re.compile(
 _ARCHIVE = re.compile(r"https://www\.sec\.gov/Archives/edgar/data/\d+/(\d{18})/[^/?#]+")
 _ACCESSION = re.compile(r"\d{10}-\d{2}-\d{6}")
 _COVER_END = re.compile(r"^Yes\s*(?:[☐☑☒]|\([xX ]\))?\s+No\s*(?:[☐☑☒]|\([xX ]\))?$", re.IGNORECASE)
+_RESULTS = re.compile(r"\b(?:results|earnings)\b", re.IGNORECASE)
+_HEADLINE = 120  # characters at most in a headline line
+# Results still to come: "Acme to Report Third Quarter 2026 Results on November 12"
+_FUTURE = re.compile(r"\b(?:to|will)\s+$", re.IGNORECASE)
 HISTORY_LIMIT = 36
 INTRODUCTION = 5000  # characters in which a results 6-K must announce its results
 
@@ -93,6 +97,27 @@ def is_results_release(text: str, description: str) -> bool:
         ):
             return True
     return False
+
+
+def reported_period(text: str) -> tuple[int, int] | None:
+    """The fiscal year and quarter a results release says it reports, from where it announces
+    them: "The Home Depot Announces Third Quarter Fiscal 2025 Results", Target's "today announced
+    its first quarter 2026 financial results" below a headline that gives no year, or a headline
+    line of results alone, as Ollie's "Second Quarter Fiscal 2026 Results" below its name. Only
+    the words just after an announcement count, so Target's earlier "compared with Q1 2025" and
+    the "second quarter of 2025" at the end of Lowe's dateline don't."""
+    for line in text[:INTRODUCTION].splitlines():
+        claims = [
+            line[announcement.start() : announcement.end() + 80]
+            for announcement in _ANNOUNCES_RESULTS.finditer(line)
+            if not _FUTURE.search(line[: announcement.start()])
+        ]
+        if len(line) <= _HEADLINE and _RESULTS.search(line) and not _NOTICE.search(line):
+            claims.append(line)
+        for claim in claims:
+            if period := title_period(claim):
+                return period
+    return None
 
 
 def _after_cover(text: str) -> str:

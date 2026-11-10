@@ -16,11 +16,19 @@ from earnings_bot.investigate import INVESTIGATION
 from earnings_bot.issuers import profile
 from earnings_bot.known import SourceCheck
 from earnings_bot.recorder import ET, Journal, Polls, Target, Watch, follow_up
-from earnings_bot.sec_results import SixKResults, is_results_release
+from earnings_bot.sec_results import SixKResults, is_results_release, reported_period
 from earnings_bot.source_audit import Speed, Timing, audit_sources, site_local_time
 from earnings_bot.sources import EdgarFilings, EdgarLatest, Sighting
 from earnings_bot.track_progress import TrackProgress
 from tests.fakes import RoutedFetcher, embed_text, sec_filing_detail
+from tests.results_data import (
+    CRM_RELEASES,
+    HD_RELEASES,
+    LOW_RELEASES,
+    NVDA_RELEASES,
+    TGT_RELEASES,
+    WMT_RELEASES,
+)
 from tests.test_unattended import FakeDiscord
 
 NOW = datetime(2026, 11, 9, 17, tzinfo=ET)
@@ -534,3 +542,63 @@ async def test_after_midnight_6k_is_verified_and_catches_up_inside_the_window() 
     )
 
     assert [item.key for item in sightings if item.earnings and item.caught_up] == [RESULT]
+
+
+@pytest.mark.parametrize(
+    ("releases", "periods"),
+    [
+        # Fiscal years named for the year they start in
+        (HD_RELEASES, [(2026, 2), (2026, 1), (2025, 4)]),
+        (LOW_RELEASES, [(2026, 2), (2026, 1), (2025, 4)]),
+        # From the dateline, since the headline names no year. Not "compared with Q1 2025"
+        (TGT_RELEASES, [(2026, 2), (2026, 1), (2025, 4)]),
+        # Named for the year they end in
+        (NVDA_RELEASES, [(2027, 2), (2027, 1), (2026, 4)]),
+        # "Salesforce Delivers Record Fourth Quarter Fiscal 2026 Results" is a headline line,
+        # though "delivers" isn't how results are usually announced
+        (CRM_RELEASES, [(2027, 2), (2027, 1), (2026, 4)]),
+        # Not its outlook "for Q1 and FY27"
+        (WMT_RELEASES, [None, None, None]),
+    ],
+    ids=["HD", "LOW", "TGT", "NVDA", "CRM", "WMT"],
+)
+def test_a_results_release_names_the_period_it_reports(
+    releases: list[tuple[str, str]], periods: list[tuple[int, int] | None]
+) -> None:
+    assert [reported_period(text) for _, text in releases] == periods
+
+
+@pytest.mark.parametrize(
+    ("opening", "period"),
+    [
+        # Ollie's headline, split across two lines, Sep 2, 2026
+        (
+            (
+                "Exhibit 99.1\nOllie\u2019s Bargain Outlet Holdings, Inc. Announces\n"
+                "Second Quarter Fiscal 2026 Results\nNet Sales Increased 9.1%"
+            ),
+            (2026, 2),
+        ),
+        # Williams-Sonoma's, Aug 26, 2026
+        (
+            (
+                "Exhibit 99.1\n"
+                "Williams-Sonoma, Inc. announces strong second quarter 2026 results\n"
+                "Q2 comparable brand revenue +6.2%"
+            ),
+            (2026, 2),
+        ),
+        # A date notice isn't a results headline
+        ("Acme to Report Third Quarter 2026 Results on November 12", None),
+    ],
+)
+def test_a_headline_line_names_the_period_too(opening: str, period: tuple[int, int] | None) -> None:
+    assert reported_period(opening) == period
+
+
+def test_a_comparison_with_last_year_isnt_the_period_reported() -> None:
+    # Lowe's dateline without its headline: "today reported net earnings ... for the quarter
+    # ended July 31, 2026, compared to diluted EPS of $4.27 in the second quarter of 2025". The
+    # quarter it names is last year's, too far past the announcement to count.
+    [dateline] = [line for line in LOW_RELEASES[0][1].splitlines() if "today reported" in line]
+    assert reported_period(dateline) is None
