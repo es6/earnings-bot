@@ -62,7 +62,7 @@ async def test_a_feed_that_rejects_query_strings_keeps_its_readable_url(tmp_path
     now = datetime(2026, 11, 10, 3, tzinfo=ET)
     with DeliveryStore(tmp_path / "calendar.db", 7) as store:
         calendar = Calendar(store)
-        row, _ = calendar.add("AAPL", 1, now)
+        row, _ = calendar.add("AAPL")
         calendar.set_target(Target(ticker=row.ticker, cik=row.cik, expected=now, rss=[URL]), "Test")
         [planned] = calendar.entries()
         dates = DateDiscovery(calendar, fetcher, lambda: now, lambda: False, lambda _: None)

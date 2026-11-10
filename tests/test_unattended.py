@@ -311,7 +311,7 @@ async def test_globe_trial_copies_share_one_verified_article_read(
             store,
             lambda _: None,
         )
-        row, _ = runner.calendar.add("NVDA", 1, journal.now())
+        row, _ = runner.calendar.add("NVDA")
         target = Target(
             ticker="NVDA",
             cik=row.cik,

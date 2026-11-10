@@ -603,15 +603,15 @@ the next fiscal period.
 ### Commands and limits
 
 The [calendar command reference](unattended.md#commands) covers syntax and permissions. Tracking
-commands apply to the server that contains the configured earnings channel. The limits are five
-new issuers per member per Eastern calendar day and 50 subscriptions per earnings channel.
+commands apply to the server that contains the configured earnings channel. Each earnings
+channel can have up to 50 subscriptions.
 `DISCORD_GUILD_ID` optionally scopes slash command registration to one server.
 
 ### Storage
 
 | Path in the schedule directory | Contents |
 |---|---|
-| `.earnings-state.sqlite3` | Subscriptions, next windows and date evidence, daily add counts, audit results, scan state and release delivery IDs |
+| `.earnings-state.sqlite3` | Subscriptions, next windows and date evidence, audit results, scan state and release delivery IDs |
 | `.tracking-progress.sqlite3` | Delivery intents and message IDs for issuer scorecards |
 | `watch.jsonl` | Window reports, sightings, source timing, benchmark results and status events |
 | `*.toml` | Optional operator-supplied windows and per-release source settings |

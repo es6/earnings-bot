@@ -190,7 +190,7 @@ async def test_the_audit_waits_for_the_investigation(tmp_path: Path) -> None:
 
     with DeliveryStore(tmp_path / "state.db", 7) as store:
         calendar = Calendar(store)
-        calendar.add("LCID", 1, NOW, LUCID)
+        calendar.add("LCID", LUCID)
         progress = tracker(store, channel, audit=audit)
         task = asyncio.create_task(progress.run())
         try:
@@ -223,7 +223,7 @@ async def test_the_card_follows_an_investigation_as_it_goes(tmp_path: Path) -> N
     report.reject("ir.lucidmotors.com without Chrome", "Blocks automated requests (HTTP 403)")
     with DeliveryStore(tmp_path / "state.db", 7) as store:
         calendar = Calendar(store)
-        row, _ = calendar.add("LCID", 1, NOW, LUCID)
+        row, _ = calendar.add("LCID", LUCID)
         progress = tracker(store, FakeDiscord(), research={LCID_CIK: report}.get)
 
         embed = progress.render(row, None, False)
@@ -259,7 +259,7 @@ async def test_a_finished_card_says_what_was_fastest_watched_and_rejected(tmp_pa
     target = lucid_target(ir=True)
     with DeliveryStore(tmp_path / "state.db", 7) as store:
         calendar = Calendar(store)
-        calendar.add("LCID", 1, NOW, INVESTIGATED)
+        calendar.add("LCID", INVESTIGATED)
         evidence = "Issuer confirmed release time <https://ir.lucidmotors.com/notice>"
         calendar.set_target(target, evidence)
         [row] = calendar.entries()
@@ -307,7 +307,7 @@ async def test_an_unverified_ir_page_says_why_it_isnt_watched(tmp_path: Path) ->
     notes = {LCID_CIK: "No Q2 2026 results headline on the page to check the pattern against"}
     with DeliveryStore(tmp_path / "state.db", 7) as store:
         calendar = Calendar(store)
-        calendar.add("LCID", 1, NOW, INVESTIGATED)
+        calendar.add("LCID", INVESTIGATED)
         calendar.set_target(target, "Manual override")
         [row] = calendar.entries()
         progress = tracker(
@@ -331,7 +331,7 @@ async def test_an_unverified_ir_page_says_why_it_isnt_watched(tmp_path: Path) ->
 async def test_without_a_date_the_card_says_what_it_would_watch(tmp_path: Path) -> None:
     with DeliveryStore(tmp_path / "state.db", 7) as store:
         calendar = Calendar(store)
-        row, _ = calendar.add("LCID", 1, NOW, INVESTIGATED)
+        row, _ = calendar.add("LCID", INVESTIGATED)
         phase = "No release date found yet. Rechecking hourly."
         progress = tracker(store, FakeDiscord(), date_phase={LCID_CIK: phase}.get)
 
@@ -356,7 +356,7 @@ def test_a_scheduled_card_waits_for_ir_verification_to_finish(tmp_path: Path) ->
     target = lucid_target(ir=False)
     with DeliveryStore(tmp_path / "state.db", 7) as store:
         calendar = Calendar(store)
-        row, _ = calendar.add("LCID", 1, NOW, INVESTIGATED)
+        row, _ = calendar.add("LCID", INVESTIGATED)
         progress = tracker(
             store,
             FakeDiscord(),
@@ -375,7 +375,7 @@ def test_the_card_shows_cache_preflight_before_research_completes(tmp_path: Path
     notes: dict[int, list[str]] = {}
     with DeliveryStore(tmp_path / "state.db", 7) as store:
         calendar = Calendar(store)
-        row, _ = calendar.add("LCID", 1, NOW, INVESTIGATED)
+        row, _ = calendar.add("LCID", INVESTIGATED)
         progress = tracker(
             store,
             FakeDiscord(),
@@ -406,7 +406,7 @@ async def test_a_check_saved_in_the_old_format_is_redone(tmp_path: Path) -> None
 
     with DeliveryStore(tmp_path / "state.db", 7) as store:
         calendar = Calendar(store)
-        calendar.add("LCID", 1, NOW, INVESTIGATED)
+        calendar.add("LCID", INVESTIGATED)
         calendar.save_review(LCID_CIK, NOW - timedelta(hours=1), "**Last release | Aug 05**")
         progress = tracker(store, channel, audit=audit)
         task = asyncio.create_task(progress.run())
@@ -423,7 +423,7 @@ async def test_a_removed_ticker_gets_a_closing_card(tmp_path: Path) -> None:
     channel = WatchedDiscord()
     with DeliveryStore(tmp_path / "state.db", 7) as store:
         calendar = Calendar(store)
-        calendar.add("LCID", 1, NOW, INVESTIGATED)
+        calendar.add("LCID", INVESTIGATED)
         calendar.save_review(LCID_CIK, NOW, SPEED.to_json())
         progress = tracker(store, channel)
         task = asyncio.create_task(progress.run())
@@ -459,7 +459,7 @@ async def test_a_page_rejected_at_first_but_verified_later_isnt_listed_as_reject
     target = lucid_target(ir=True)
     with DeliveryStore(tmp_path / "state.db", 7) as store:
         calendar = Calendar(store)
-        calendar.add("LCID", 1, NOW, company)
+        calendar.add("LCID", company)
         calendar.set_target(target, "Manual override")
         [row] = calendar.entries()
         progress = tracker(store, FakeDiscord(), planned=lambda: {target.release_key: target})
@@ -475,7 +475,7 @@ def test_a_lone_timing_isnt_called_the_fastest(tmp_path: Path) -> None:
     speed = Speed(date(2026, 8, 5), archive=[Timing("SEC 8-K acceptance", accepted)])
     with DeliveryStore(tmp_path / "state.db", 7) as store:
         calendar = Calendar(store)
-        row, _ = calendar.add("LCID", 1, NOW, INVESTIGATED)
+        row, _ = calendar.add("LCID", INVESTIGATED)
         fields = lines_of(tracker(store, FakeDiscord()).render(row, speed.to_json(), False))
     # One time isn't a race, so nothing is called the fastest
     assert "⚡ Fastest last time" not in fields
@@ -498,7 +498,7 @@ def test_a_minute_resolution_timestamp_cannot_win_by_seconds(tmp_path: Path) -> 
     )
     with DeliveryStore(tmp_path / "state.db", 7) as store:
         calendar = Calendar(store)
-        row, _ = calendar.add("LCID", 1, NOW, INVESTIGATED)
+        row, _ = calendar.add("LCID", INVESTIGATED)
         fields = lines_of(tracker(store, FakeDiscord()).render(row, speed.to_json(), False))
 
     assert "⚡ Fastest last time" not in fields

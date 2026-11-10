@@ -186,7 +186,7 @@ async def test_discovery_waits_out_an_open_window_then_saves_the_issuers_date(
 
     with DeliveryStore(tmp_path / "state.db", 7) as store:
         calendar = Calendar(store)
-        calendar.add("NVDA", 1, NOW)
+        calendar.add("NVDA")
         dates = DateDiscovery(calendar, fetcher, lambda: NOW, busy, status)
         task = asyncio.create_task(dates.run())
         try:
@@ -253,7 +253,7 @@ async def test_a_date_found_as_a_window_opens_or_after_untrack_isnt_saved(
     statuses: list[str] = []
     with DeliveryStore(tmp_path / "state.db", 7) as store:
         calendar = Calendar(store)
-        row, _ = calendar.add("NVDA", 1, NOW)
+        row, _ = calendar.add("NVDA")
 
         def interrupt() -> None:
             nonlocal window_open
@@ -277,7 +277,7 @@ async def test_discovery_leaves_an_admin_override_alone(tmp_path: Path) -> None:
     statuses: list[str] = []
     with DeliveryStore(tmp_path / "state.db", 7) as store:
         calendar = Calendar(store)
-        calendar.add("NVDA", 1, NOW)
+        calendar.add("NVDA")
         calendar.set_target(
             manual_target("NVDA", "2026-11-17T16:25", "FY2027Q3", NOW), "Manual override"
         )
@@ -306,7 +306,7 @@ async def test_a_verified_browser_source_joins_the_found_date_and_is_kept(
     statuses: list[str] = []
     with DeliveryStore(tmp_path / "state.db", 7) as store:
         calendar = Calendar(store)
-        calendar.add("NVDA", 1, NOW)
+        calendar.add("NVDA")
         dates = DateDiscovery(calendar, fetcher, lambda: NOW, lambda: False, statuses.append)
         [row] = calendar.entries()
 
@@ -344,7 +344,7 @@ class Lucid:
 
     def __init__(self, store: DeliveryStore, fetcher: RoutedFetcher, key: str | None) -> None:
         self.calendar = Calendar(store)
-        self.calendar.add("LCID", 1, NOW, LUCID)
+        self.calendar.add("LCID", LUCID)
         self.now = NOW
         self.statuses: list[str] = []
         self.dates = DateDiscovery(
@@ -462,7 +462,7 @@ async def test_fmp_isnt_asked_without_a_time_or_fiscal_year_to_go_with_its_date(
     fetcher = RoutedFetcher({FMP_ROUTE: fmp_dates(("2026-11-09", None))})
     with DeliveryStore(tmp_path / "state.db", 7) as store:
         calendar = Calendar(store)
-        calendar.add("LCID", 1, NOW, LUCID.model_copy(update=facts))
+        calendar.add("LCID", LUCID.model_copy(update=facts))
         [row] = calendar.entries()
         dates = DateDiscovery(calendar, fetcher, lambda: NOW, lambda: False, print, "secret")
 
@@ -572,7 +572,7 @@ async def test_a_notice_whose_date_cant_be_read_is_named_on_the_card(tmp_path: P
     )
     with DeliveryStore(tmp_path / "state.db", 7) as store:
         calendar = Calendar(store)
-        row, _ = calendar.add("AMAT", 1, NOW, company)
+        row, _ = calendar.add("AMAT", company)
         dates = DateDiscovery(calendar, fetcher, lambda: NOW, lambda: False, print)
         await dates._check(row)
     assert dates.phases[row.cik] == (

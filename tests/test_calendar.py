@@ -1,4 +1,4 @@
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pytest
@@ -19,9 +19,9 @@ def test_subscription_and_override_survive_restart_and_preserve_file_trials(tmp_
     db = tmp_path / "state.db"
     with DeliveryStore(db, 7) as store:
         calendar = Calendar(store)
-        row, created = calendar.add("NVDA", 1, NOW)
+        row, created = calendar.add("NVDA")
         assert created and row.target is None
-        assert calendar.add("NVDA", 2, NOW) == (row, False)
+        assert calendar.add("NVDA") == (row, False)
         target = manual_target("NVDA", "2026-11-12T16:20", "FY2027Q3", NOW)
         calendar.set_target(target, "Manual override")
 
@@ -38,16 +38,13 @@ def test_subscription_and_override_survive_restart_and_preserve_file_trials(tmp_
         assert calendar.plan({file.release_key: file}) == {file.release_key: file}
 
 
-def test_daily_limit_counts_adds_even_when_an_admin_removes_them(tmp_path: Path) -> None:
+def test_tracking_and_untracking_can_be_repeated(tmp_path: Path) -> None:
     with DeliveryStore(tmp_path / "state.db", 7) as store:
         calendar = Calendar(store)
-        for _ in range(5):
-            row, added = calendar.add("NVDA", 1, NOW)
+        for _ in range(6):
+            row, added = calendar.add("NVDA")
             assert added
             assert calendar.remove(row.cik)
-        with pytest.raises(ValueError, match="5 tickers"):
-            calendar.add("NVDA", 1, NOW)
-        assert calendar.add("NVDA", 1, NOW + timedelta(days=1))[1]
 
 
 def test_override_requires_a_valid_fiscal_period_and_future_time() -> None:
@@ -60,7 +57,7 @@ def test_override_requires_a_valid_fiscal_period_and_future_time() -> None:
 def test_auto_browser_source_preserves_existing_schedule_choices(tmp_path: Path) -> None:
     with DeliveryStore(tmp_path / "state.db", 7) as store:
         calendar = Calendar(store)
-        calendar.add("NVDA", 1, NOW)
+        calendar.add("NVDA")
         target = to_target("NVDA", datetime(2026, 11, 17, 16, 20, tzinfo=ET), 2027, 3)
         target.ir = IRSource(
             listing="https://investor.nvidia.com/news/", headline="Q3", verify_text=True
@@ -86,7 +83,7 @@ def test_saved_automatic_browser_headline_is_repaired_after_restart(tmp_path: Pa
     )
     with DeliveryStore(db, 7) as store:
         calendar = Calendar(store)
-        calendar.add("CRWD", 1, NOW)
+        calendar.add("CRWD")
         calendar.set_target(target, "Issuer notice")
     with DeliveryStore(db, 7) as store:
         [effective] = Calendar(store).plan({}).values()
@@ -112,7 +109,7 @@ def test_a_calendar_saved_before_profiles_is_upgraded_in_place(tmp_path: Path) -
         [nvda] = calendar.entries()
         assert nvda.company == known_companies()["NVDA"]
         lucid = profile("LCID", LCID_CIK, "Lucid Group, Inc.", LCID_SUBMISSIONS, date(2026, 11, 9))
-        calendar.add("LCID", 1, NOW, lucid)
+        calendar.add("LCID", lucid)
         assert [row.company for row in Calendar(store).entries()] == [lucid, nvda.company]
 
 
