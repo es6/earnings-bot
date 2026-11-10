@@ -17,10 +17,10 @@
 #            company labels them. {nth} is first to fourth, {NTH} the same in capitals, and
 #            {ord} is 1st to 4th. {q4:TEXT} is TEXT in a fourth quarter and nothing otherwise,
 #            for headlines that add "and Full Year" then.
-# trial      sources being tried out, recorded on release days but not posted to Discord
-#            until they prove right and fast: broadcom_newsroom, rss (company feeds),
-#            globenewswire and prnewswire_semiconductors (names to match in those feeds), and
-#            pages (URL templates of the release page, fetched whole)
+# trial      more sources, which post like any other (the table keeps its old name):
+#            broadcom_newsroom, rss (company feeds), globenewswire and
+#            prnewswire_semiconductors (names to match in those feeds), and pages (URL
+#            templates of the release page, fetched whole)
 
 [company.AAPL]
 name = "Apple"

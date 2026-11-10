@@ -47,9 +47,10 @@ BROADCOM_RELEASE = "https://www.broadcom.com/api/getmetadata?url={path}&locale=e
 # Matches "Uber Announces Results for Third Quarter 2026" and "Palantir Reports Q2 2026 U.S. Comm
 # Revenue Growth of 149%", but not the earlier "Uber Announces Date of Third Quarter 2026 Results
 # Conference Call" or "Cloudflare Expands EMEA Operations with New Headquarters"
-# "2Q26", "2Q 2026" and "2Q2026" all name a quarter, as in WeRide's "2Q2026 Total Revenue Reached"
+# "2Q26", "2Q 2026", "2Q2026" and "3Q'26" all name a quarter, as in WeRide's "2Q2026 Total
+# Revenue Reached" and Zeta's "Positive GAAP Net Income in 3Q'26"
 _EARNINGS = re.compile(
-    r"results|earnings|\bquarter|\bQ[1-4]\b|\b[1-4]Q\s?(?:20)?\d{2}\b", re.IGNORECASE
+    r"results|earnings|\bquarter|\bQ[1-4]\b|\b[1-4]Q\s?['\u2019]?(?:20)?\d{2}\b", re.IGNORECASE
 )
 _NOT_EARNINGS = re.compile(
     r"webcast|conference call|to host|to announce|schedule|\bdate\b", re.IGNORECASE
@@ -69,9 +70,12 @@ _NOTICE = re.compile(
     re.IGNORECASE,
 )
 _RESULTS_WORD = re.compile(r"\b(?:earnings|results)\b", re.IGNORECASE)
+# A period a release covers: "Q3", "3Q'26", "First Fiscal Quarter", "Full Year", "Nine
+# Months", "Fiscal Year"
 _QUARTER_WORD = re.compile(
-    r"\b(?:q[1-4]|[1-4]q\s?(?:20)?\d{2}|(?:first|second|third|fourth|[1-4](?:st|nd|rd|th))"
-    r"[-\s]+quarter|full[-\s]+year)\b",
+    r"\b(?:q[1-4]|[1-4]q\s?['\u2019]?(?:20)?\d{2}|(?:first|second|third|fourth|[1-4](?:st|nd|rd|th))"
+    r"[-\s]+(?:fiscal[-\s]+)?quarter|full[-\s]+year|(?:three|six|nine|twelve)[-\s]+months"
+    r"|fiscal[-\s]+year)\b",
     re.IGNORECASE,
 )
 _CALL_WORD = re.compile(r"\b(?:conference call|webcast)\b", re.IGNORECASE)
@@ -82,8 +86,13 @@ _REPORT_WORDS = re.compile(
     r"\b(?:total revenue reached|net sales reached)\b",
     re.IGNORECASE,
 )
+# What a results headline reports for its period. Revenue counts: "KULR Reports Third Quarter
+# 2026 Revenue of $7.4 Million", "Palantir Reports Q3 2026 U.S. Comm Revenue Growth of 121%".
+# Plain "sales" doesn't, so a product sales update isn't taken for results.
 _RESULT_HEADING = re.compile(
-    r"\b(?:results|earnings|net sales|net income|net loss|eps)\b", re.IGNORECASE
+    r"\b(?:results|earnings|revenues?|(?:net|total|comparable) sales|net income|net loss"
+    r"|(?:operating |net )?(?:profit|loss)|eps|per share)\b",
+    re.IGNORECASE,
 )
 _OTHER_RESULTS = re.compile(
     r"\bresults? of (?:its |the )?"

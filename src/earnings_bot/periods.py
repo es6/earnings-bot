@@ -53,11 +53,15 @@ def title_period(title: str) -> tuple[int, int] | None:
 
 
 def agrees_with_period(title: str, expected: str | None) -> bool:
+    """Whether a headline is for the expected quarter. The fiscal year may be one off: Home Depot,
+    Lowe's and Target name a fiscal year for the calendar year it starts in, while a plan worked
+    out from the fiscal year end names it for the year it ends in, as NVIDIA does."""
     if not expected:
         return True
     year, quarter = int(expected[2:6]), int(expected[-1])
     if period := title_period(title):
-        return period == (year, quarter)
+        named_year, named_quarter = period
+        return named_quarter == quarter and abs(named_year - year) <= 1
     if match := _QUARTER_ONLY.search(title):
         digit, ordinal, reversed_digit = match.groups()
         return _quarter(digit or reversed_digit, ordinal) == quarter
