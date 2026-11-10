@@ -12,14 +12,14 @@ from pydantic import ValidationError
 from earnings_bot.bot import EarningsBot
 from earnings_bot.config import Settings
 from earnings_bot.recorder import configure_console, load_plan
-from earnings_bot.version import build_version
+from earnings_bot.version import release_version
 
 log = logging.getLogger("earnings_bot")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="earnings-bot", description="Run the Discord bot.")
-    parser.add_argument("--version", action="version", version=build_version())
+    parser.add_argument("--version", action="version", version=release_version())
     parser.add_argument(
         "schedule",
         nargs="?",
