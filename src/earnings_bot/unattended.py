@@ -19,7 +19,13 @@ from earnings_bot.delivery import DeliveryStore, retry_delivery
 from earnings_bot.fetch import Fetcher
 from earnings_bot.formatting import clock, day, duration, period_label, source_label, stamp
 from earnings_bot.issuers import Issuers
-from earnings_bot.pipeline import DiscordPoster, DurableDiscordPoster, Releases, keep_warm
+from earnings_bot.pipeline import (
+    DiscordPoster,
+    DurableDiscordPoster,
+    Releases,
+    ReleaseText,
+    keep_warm,
+)
 from earnings_bot.recorder import (
     Journal,
     Plan,
@@ -33,7 +39,6 @@ from earnings_bot.sec_results import SixKResults
 from earnings_bot.source_audit import audit_sources
 from earnings_bot.sources import EdgarFilings, Sighting, Source
 from earnings_bot.summary import Summarizer
-from earnings_bot.text import release_text, verified_report
 from earnings_bot.track_progress import TrackProgress
 
 SCAN_SECONDS = 3.0
@@ -232,6 +237,7 @@ class DirectoryWatcher:
         # reported once, not every 3 s
         problem = f"{target.ticker} monitoring"
         trial_reads: dict[str, asyncio.Task[None]] = {}
+        trial_text = ReleaseText(self.fetcher, verified_only=True)
 
         def on_new(target: Target, source: Source, sighting: Sighting) -> None:
             measure = self.calendar.contains(target.cik)
@@ -245,7 +251,7 @@ class DirectoryWatcher:
                 and source.name not in trial_reads
             ):
                 trial_reads[source.name] = asyncio.create_task(
-                    self._measure_trial(target, source, sighting)
+                    self._measure_trial(target, source, sighting, trial_text)
                 )
 
         benchmark = None
@@ -279,8 +285,10 @@ class DirectoryWatcher:
                 benchmark.cancel()
                 await asyncio.gather(benchmark, return_exceptions=True)
 
-    async def _measure_trial(self, target: Target, source: Source, sighting: Sighting) -> None:
-        if verified_report(await release_text(self.fetcher, source, sighting)):
+    async def _measure_trial(
+        self, target: Target, source: Source, sighting: Sighting, text: ReleaseText
+    ) -> None:
+        if await text.read(source, sighting):
             self.journal.write(
                 "source_body",
                 ticker=target.ticker,

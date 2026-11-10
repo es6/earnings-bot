@@ -113,8 +113,9 @@ What this tells us:
    a few seconds to about 5 minutes after its stamp. Its CDN can then keep a copy for up to 5 more
    minutes (`s-maxage=300`), so we only poll a cache-busted copy. PR Newswire's earnings
    feed (`https://www.prnewswire.com/rss/financial-services-latest-news/earnings-list.rss`) is
-   read the same way for companies that use it: a schedule entry lists their names under
-   `prnewswire`. Its items also name the company in `dc:contributor`, which is matched too.
+   polled with equivalent percent-encoded paths and a cached backup. The feed must identify
+   the intended category. A schedule lists company names under `prnewswire`. Matching also
+   checks the item's `dc:contributor`.
    The same source reads company press release feeds, such as the ones Equisolve sites publish.
 5. **Sources on trial.** Found on Nov 6, 2026, each answering the bot's normal User-Agent. A
    schedule lists them in a `[target.trial]` table. They're polled and logged like any other
@@ -127,12 +128,13 @@ What this tells us:
      release's text comes from `/api/getmetadata`, which answers 200 with a stub that has no
      `body` for an ID it doesn't know yet.
    - **GlobeNewswire's earnings RSS** (`rss.globenewswire.com/RssFeed/subjectcode/13`, 20 items).
-     Its article pages on `www.globenewswire.com` still answer 403, but the RSS host lets us in
-     and names the company in `dc:contributor`. It's cached for 60 s. A cache-buster reaches the
-     server, but on Nov 6 that server returned the same build as the cached copy, so both copies
-     are polled until a live release shows whether busting helps. For NVIDIA and AMD.
-   - **PR Newswire's Semiconductors feed**, a second PR Newswire feed with its own 60-second
-     timer that carries Broadcom's releases.
+     The feed names the company in `dc:contributor` and carries a short description.
+     Fetch the full report at the same article path on `rss.globenewswire.com` and keep the
+     publisher's original link in Discord. The feed is cached for 60 s. Query variants got
+     independent cache responses on Nov 9, but RSS, Atom and widget JSON returned the same
+     items. Keep polling both RSS copies to compare them at a live release.
+   - **PR Newswire's Semiconductors feed**, a second category that carries Broadcom's releases.
+     It uses equivalent encoded paths at the same two-second polling interval.
    - **Company feeds:** HubSpot's `ir.hubspot.com/rss/news-releases.xml`, whose CDN allows a
      copy to be kept for 30 days (`s-maxage=2592000`), so it's busted like every company feed.
    - **Release pages fetched whole**, on hosts with plain 404s and small 404 pages:
@@ -209,8 +211,8 @@ latest quarter only. The details per company, with the last four 8-K times, are 
 - **PR Newswire is a source,** for Lilly, Home Depot, Target, McDonald's and S&P Global. Its
   earnings feed holds the latest 20 earnings releases, so it's polled every 2 seconds: twenty
   items can turn over within a minute at 4 PM on a busy day. Its CDN keeps a copy for up to 60
-  seconds and ignores cache-busting parameters (a fresh URL came back as a cache hit 38 seconds
-  old), so there's no busted copy to poll. Live data will show how much of that minute it costs.
+  seconds and ignores query parameters. The encoded route preserves the Earnings category and
+  races the cached backup. Timing at a new release will measure the actual lead.
 - **Some own sites have predictable URLs** for the release page or PDF: UnitedHealth, Target,
   Walmart, Goldman Sachs and Microsoft. These are guess templates in `companies.toml`. Others
   name files by random IDs: JPMorgan, Bank of America, and Walmart's PDFs.
@@ -741,5 +743,5 @@ onboarding, including international listings, and more live samples for source r
 | 2026-11-07 | The desktop Chrome IR trial and Tesla's deck User-Agent are the route for sites that block the default client. It's public information either way |
 | 2026-11-09 | Chrome may open any public https page. It refuses plain http, other ports, logins in the URL, private and loopback addresses and local-only names, so a schedule can't point it at this PC or its network. The per-site list is gone |
 | 2026-11-09 | `/track` investigates a company outside the catalog itself: IR site from its last results 8-K, Q4 or RSS feed, Chrome for a site that blocks the bot, wire from the dateline. Again after 30 days |
-| 2026-11-09 | PR Newswire's earnings feed is read from its own server every second, spelling the path in a new letter case each poll, since its CDN keeps copies 60 s and ignores query strings. The cached copy is still read every 2 s as a backup. For Lucid on Nov 9 the server had the results by 16:05:17 and the cached copy reached us at 16:06:02, 2.7 s after @wallstengine posted |
+| 2026-11-09 | Lucid's cached PR Newswire copy reached us at 16:06:02 ET, 2.7 s after @wallstengine posted. Changing letter case got a CDN miss but returned general news. Percent-encoding two letters preserved the requested category and gave independent cache copies for Earnings and Semiconductors. |
 | 2026-11-09 | `/track` takes any ticker on SEC's list, not just the catalog. Others are watched on EDGAR and both wires, matched by their exchange-and-ticker tag, with FMP's date at the time of their recent 8-Ks |

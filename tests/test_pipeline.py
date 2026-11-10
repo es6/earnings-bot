@@ -218,9 +218,16 @@ class ListedLate(RoutedFetcher):
         urgent: bool = False,
         *,
         allow_redirects: bool = True,
+        encoded_url: bool = False,
     ) -> Response:
         response = await super().request(
-            method, url, headers, give_up_after, urgent, allow_redirects=allow_redirects
+            method,
+            url,
+            headers,
+            give_up_after,
+            urgent,
+            allow_redirects=allow_redirects,
+            encoded_url=encoded_url,
         )
         if url.endswith(f"/{FILING_INDEX}"):
             return Response(url, 404, {}, b"", 0.01)
@@ -293,14 +300,13 @@ async def test_trial_sources_dont_post_unless_the_schedule_asks() -> None:
     assert f"[Broadcom newsroom](<{results.url}>)" in poster.calls[0][1]
 
 
-async def test_the_same_release_from_both_copies_of_a_feed_posts_once(
-    release_texts: dict[str, str],
-) -> None:
+async def test_the_same_release_from_both_copies_of_a_feed_posts_and_downloads_once() -> None:
     url = "https://www.globenewswire.com/news-release/2026/11/18/3400000/0/en/nvidia-results.html"
-    release_texts[url] = "the release"
+    article = url.replace("www.", "rss.", 1)
+    fetch = RoutedFetcher({article: (200, b"<p>Revenue and earnings per share. </p>" * 100)})
     poster, log = FakePoster(), io.StringIO()
     nvda = Target(ticker="NVDA", expected=datetime(2026, 11, 18, 16, 20, tzinfo=ET), cik=1045810)
-    release = Release(nvda, poster, fetcher(), Journal(log), None, None)
+    release = Release(nvda, poster, fetch, Journal(log), None, None)
     results = Sighting(url, "NVIDIA Announces Financial Results", url, earnings=True)
 
     release.add(RssFeed("globenewswire", GLOBENEWSWIRE_EARNINGS, ["NVIDIA"]), results)
@@ -309,6 +315,7 @@ async def test_the_same_release_from_both_copies_of_a_feed_posts_once(
 
     assert [kind for kind, _ in poster.calls] == ["send"]
     assert f"[GlobeNewswire](<{url}>)" in poster.calls[0][1]
+    assert fetch.requests == [("GET", article, None)]
     # The text is still fetched without a summarizer, to log when it arrives
     events = [e["event"] for e in map(json.loads, log.getvalue().splitlines())]
     assert events.count("body") == 1
@@ -345,6 +352,7 @@ class UploadedLater(RoutedFetcher):
         urgent: bool = False,
         *,
         allow_redirects: bool = True,
+        encoded_url: bool = False,
     ) -> Response:
         if url != PDF:
             return await super().request(method, url, headers, give_up_after)
