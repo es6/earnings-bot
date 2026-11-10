@@ -19,7 +19,16 @@ from earnings_bot.delivery import DeliveryStore, retry_delivery
 from earnings_bot.fetch import Fetcher
 from earnings_bot.issuers import Issuers
 from earnings_bot.pipeline import DiscordPoster, DurableDiscordPoster, Releases, keep_warm
-from earnings_bot.recorder import ET, Journal, Plan, Polls, Target, Watch, record_target
+from earnings_bot.recorder import (
+    ET,
+    Journal,
+    Plan,
+    Polls,
+    Target,
+    Watch,
+    parse_plan,
+    record_target,
+)
 from earnings_bot.sec_results import SixKResults
 from earnings_bot.source_audit import audit_sources
 from earnings_bot.sources import Sighting, Source
@@ -141,7 +150,7 @@ class DirectoryWatcher:
             else:
                 if current is None or data != current.data:
                     try:
-                        plan = Plan.model_validate(tomllib.loads(data.decode("utf-8-sig")))
+                        plan = parse_plan(data)
                     except (UnicodeError, tomllib.TOMLDecodeError, ValidationError) as error:
                         current = _Schedule(data, current.plan if current else None, str(error))
                     else:

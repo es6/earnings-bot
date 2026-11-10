@@ -84,7 +84,8 @@ for per-release schedule settings.
   schedules there as well.
 - On Windows, [configure Task Scheduler](../README.md#run-continuously-on-windows)
   to run the supervisor. `scripts/run-bot.ps1` restarts the bot after an exit
-  and writes console logs to `recordings/`. Pulling a new revision and
-  restarting on it are operator steps.
+  and writes console logs to `recordings/`. `scripts/update-bot.ps1` moves the
+  checkout to the latest `main` and restarts the bot on it, unless that would
+  interrupt a release window whose alert isn't posted yet.
 - After an outage, a release already out can still be caught during its open
   window. Windows that expired during the gap are reported in the status log.
