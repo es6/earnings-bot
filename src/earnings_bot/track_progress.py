@@ -297,7 +297,9 @@ class TrackProgress:
             # What a window would watch, from what's known so far
             preview = to_target(row.ticker, self.now(), self.now().year, 1, row.company)
             watching = watch_list(preview.sources())
-            if row.company.ir_listing:
+            if row.company.ir_news_api:
+                watching.append("IR newsroom API *(verified after the date is set)*")
+            elif row.company.ir_listing:
                 watching.append("IR press release page *(verified after the date is set)*")
             heading = "👀 Will watch once a date is set"
         embed.add_field(name=heading, value=bullets(watching) or "Nothing yet", inline=False)
@@ -323,7 +325,9 @@ class TrackProgress:
             for check in checks
             if not check.watch
             # Verified for this release since, so it's watched after all
-            and not (target and target.ir and "press release page" in check.source)
+            and not (
+                target and target.ir and target.ir.listing and "press release page" in check.source
+            )
         ]
         if target and target.ir is None and note and issuer_listing(row.ticker, row.company):
             rejected.append(f"**{source_label('browser-ir')}**: {note}")

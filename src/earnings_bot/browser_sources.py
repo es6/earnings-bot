@@ -5,6 +5,7 @@ import os
 import re
 import time
 from dataclasses import replace
+from datetime import date
 from html.parser import HTMLParser
 from typing import Self
 from urllib.parse import urldefrag, urljoin, urlsplit
@@ -14,6 +15,7 @@ from pydantic import BaseModel, model_validator
 
 from earnings_bot.browser import BrowserError, browser_host
 from earnings_bot.fetch import Fetcher, Response
+from earnings_bot.issuer_news import IssuerNews
 from earnings_bot.sources import (
     GuessedFile,
     RssFeed,
@@ -56,6 +58,7 @@ class IRSource(BaseModel):
 
     listing: str | None = None
     rss: str | None = None
+    news_api: str | None = None
     headline: str | None = None
     verify_text: bool = False
     http_first: bool = False
@@ -65,12 +68,14 @@ class IRSource(BaseModel):
 
     @model_validator(mode="after")
     def check_sources(self) -> Self:
-        if bool(self.listing or self.rss) != bool(self.headline):
+        if bool(self.listing or self.rss or self.news_api) != bool(self.headline):
             raise ValueError(
                 "An IR listing or feed requires a headline regex for the scheduled quarter"
             )
         if self.listing:
             browser_host(self.listing)
+        if self.news_api:
+            browser_host(self.news_api)
         if self.http_first and not self.listing:
             raise ValueError("Direct HTTP requires an issuer listing")
         if self.headline:
@@ -90,18 +95,20 @@ class IRSource(BaseModel):
                 _check_pdf(url, warmup)
         if self.tesla_deck:
             _check_tesla(self.tesla_deck)
-        if not (self.listing or self.rss or self.pdfs or self.tesla_deck):
+        if not (self.listing or self.rss or self.news_api or self.pdfs or self.tesla_deck):
             raise ValueError("An IR source must have a listing, feed or at least one PDF")
         return self
 
     def _warmup(self) -> str | None:
         return self.warmup or self.listing or (urljoin(self.rss, "/") if self.rss else None)
 
-    def sources(self) -> list[Source]:
+    def sources(self, day: date | None = None) -> list[Source]:
         sources: list[Source] = []
         if self.listing and self.headline:
             reader = HttpRelease if self.http_first else BrowserRelease
             sources.append(reader(self.listing, self.headline, verify_text=self.verify_text))
+        if self.news_api and self.headline:
+            sources.append(IssuerNews(self.news_api, self.headline, day))
         warmup = self._warmup()
         if warmup:
             if self.rss and self.headline:

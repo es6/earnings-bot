@@ -36,6 +36,7 @@ class BrowserJSON:
     method: str
     path: str
     value: object
+    url: str = ""
 
 
 class BrowserError(Exception):
@@ -380,7 +381,7 @@ async def _observe_json(
                         and ("json" in mime or "text/plain" in mime)
                         and requests[rid] in ("GET", "POST")
                     ):
-                        responses[rid] = (requests[rid], parts.path)
+                        responses[rid] = (requests[rid], response["url"])
                 elif method == "Network.loadingFinished" and rid in responses:
                     candidate = responses.pop(rid)
                     if params["encodedDataLength"] > MAX_JSON_BYTES or command >= 35:
@@ -395,7 +396,7 @@ async def _observe_json(
                     )
                     command += 1
                 elif (response_id := message.get("id")) in pending:
-                    verb, path = pending.pop(response_id)
+                    verb, endpoint = pending.pop(response_id)
                     body = message.get("result", {}).get("body", "")
                     if len(body) > MAX_JSON_BYTES:
                         continue
@@ -406,5 +407,5 @@ async def _observe_json(
                     except (ValueError, KeyError):
                         continue
                     if isinstance(value, dict | list):
-                        results.append(BrowserJSON(verb, path, value))
+                        results.append(BrowserJSON(verb, urlsplit(endpoint).path, value, endpoint))
     return results

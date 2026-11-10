@@ -73,6 +73,8 @@ def source_label(name: str, form: str = "8-K") -> str:
         return "IR press release page, read in Chrome"
     if name == "http-ir":
         return "IR press release page, direct HTTP"
+    if name == "issuer-news":
+        return "IR newsroom API and results PDF, direct HTTP"
     if name == "browser-rss":
         return "IR press release feed, read in Chrome"
     if name.startswith(("browser-pdf:", "tesla-pdf:")):

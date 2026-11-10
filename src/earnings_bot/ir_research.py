@@ -18,6 +18,7 @@ from earnings_bot.browser_sources import (
     issuer_pdf_url,
 )
 from earnings_bot.fetch import Fetcher
+from earnings_bot.issuer_news import IssuerNews
 from earnings_bot.known import NTH, ORD, KnownCompany
 from earnings_bot.sources import looks_like_earnings
 from earnings_bot.text import html_to_text, verified_report
@@ -162,6 +163,20 @@ def quarter_headline(year: int, quarter: int) -> str:
         r"(?=.*\b(?:financial results|earnings|quarterly results|(?:reports?|announces?).*results)"
         r"\b).*"
     )
+
+
+async def verified_news_source(fetcher: Fetcher, api: str | None, period: str) -> IRSource | None:
+    if api is None:
+        return None
+    year, quarter = int(period[2:6]), int(period[-1])
+    prior = (year - 1, 4) if quarter == 1 else (year, quarter - 1)
+    try:
+        probe = IssuerNews(api, quarter_headline(*prior))
+        if probe.parse(await probe.fetch(fetcher)):
+            return IRSource(news_api=api, headline=quarter_headline(year, quarter))
+    except _ERRORS:
+        pass
+    return None
 
 
 async def verified_http_source(

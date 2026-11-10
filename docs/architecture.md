@@ -521,6 +521,9 @@ the HTML pages require Chrome, including canonical Q4 routes behind a homepage r
 Date discovery checks an RSS directory named in the last results release when the primary IR
 site has no verified feed. Quarterly call and webcast headlines qualify for a notice check.
 The notice still has to state when the results will be released.
+When a newsroom renders its cards in the browser, research can verify its observed public,
+same-origin GET API. A dated notice can supply the calendar date. The live poller checks the
+scheduled quarter and date and downloads the issuer-hosted results PDF once it is available.
 Until a wire is found, both Business Wire and PR
 Newswire are watched along with EDGAR. The source audit runs after investigation. For a release
 confirmed before market open, a same-day earnings call can move the watch earlier when the

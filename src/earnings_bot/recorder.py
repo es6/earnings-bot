@@ -202,7 +202,7 @@ class Target(BaseModel):
         sources += [_company_feed(url) for url in self.rss]
         sources += _named_apart([GuessedFile(url) for url in self.guess])
         if self.ir:
-            sources += self.ir.sources()
+            sources += self.ir.sources(self.expected.astimezone(ET).date())
         return sources + self.trial.sources()
 
 
