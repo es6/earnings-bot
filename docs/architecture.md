@@ -591,7 +591,10 @@ site), and reads each page after its scripts have run. That covers lists built f
 redirects such as WeRide's (a plain request is redirected back to the same URL forever) and
 hosted IR pages, without knowing any platform. Up to 10 pages and 90 seconds are spent per
 check. Chrome also returns each link's card, the small block around it, since an events list
-puts the date beside the title, before it (HPE) or after it (WeRide). A date notice it finds is
+puts the date beside the title, before it (HPE) or after it (WeRide). A date named in the
+event headline takes precedence over the date the news item was posted. A news article's
+publication stamp and dates in neighboring cards cannot supply an undated event's date.
+A date notice it finds is
 read the same way as one from a feed, newest-dated first. A notice of the call alone (Autodesk's
 "will share its third quarter fiscal 2027 financial results conference call ... at 2 p.m. PT")
 and the next earnings call on the events page place the release by the call: the evening before

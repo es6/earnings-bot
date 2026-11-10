@@ -30,6 +30,7 @@ from earnings_bot.ir_pages import (
     Moment,
     Render,
     earnings_event,
+    headline_moments,
     moments,
     nav_rank,
     upcoming,
@@ -113,6 +114,13 @@ _BEFORE = re.compile(
     re.IGNORECASE,
 )
 _CALL = re.compile(r"\b(?:conference call|earnings call|webcast)\b", re.IGNORECASE)
+_EVENT_PAGE = re.compile(
+    r"/(?:events?|upcoming-events?|calendar|events-calendar)(?:/|$)", re.IGNORECASE
+)
+_NEWS_ARTICLE = re.compile(
+    r"/(?:press-releases|news-releases|news-details|news-release-details|investor-news-details)/.+",
+    re.IGNORECASE,
+)
 _SAME_DAY = re.compile(r"\b(?:that|the same)\s+(?:day|morning|afternoon|evening)\b", re.IGNORECASE)
 _BREAK = re.compile(r"<br\b[^>]*>", re.IGNORECASE)
 _SENTENCE = re.compile(r"(?<=[.!?])\s+|--+|[\u2013\u2014]")
@@ -598,11 +606,12 @@ async def rendered_date(
     async for page in reader.pages():
         # A notice dated ahead in its headline is surely this quarter's, so it goes first
         notices = sorted(
-            reader.reading.notices, key=lambda notice: not upcoming(moments(notice[1]), today)
+            reader.reading.notices,
+            key=lambda notice: not upcoming(headline_moments(notice[1], today), today),
         )
         for url, title in notices:
             # A notice whose headline gives a date that has passed is an old one
-            dated = moments(title)
+            dated = headline_moments(title, today)
             # A link back to a page already read, as HPE's "/#11-23-2026", isn't a notice page
             if (
                 url in tried
@@ -619,38 +628,62 @@ async def rendered_date(
                 target, evidence = result
                 return (target, f"{evidence} <{url}>"), reader.reading
             # A notice of the call alone still dates the release, which comes before it
-            if call := _call_moment(notice.text, today):
+            if call := _call_moment(notice.text, today, title):
                 events.append((title, call, url, notice.text))
             elif title not in unread:
                 unread.append(title)
         events.extend(_listed_events(page, today))
-    # Each event link's card usually shows its date beside the title
-    events.extend(
-        (title, moment, url, card)
-        for url, title, card in reader.reading.events
-        for moment in upcoming(moments(card), today)[:1]
-    )
+    # Each event link's card usually shows its date beside the title. One the title names
+    # itself comes first, since the card's may be when it was posted
+    for url, title, card in reader.reading.events:
+        named = headline_moments(title, today)
+        dated = moments(card)
+        if named:
+            matched = [moment for moment in dated if moment.day in {item.day for item in named}]
+            dates = [*matched, *named]
+        elif _NEWS_ARTICLE.search(urlsplit(url).path) or len({moment.day for moment in dated}) != 1:
+            continue
+        else:
+            dates = dated
+        if found := upcoming(dates, today):
+            moment = min(found, key=lambda item: (item.day, item.at is None))
+            events.append((title, moment, url, card))
     # An event's own page gives its date when the list doesn't
     for url, title, _ in reader.reading.events[: 0 if events else 2]:
+        if _NEWS_ARTICLE.search(urlsplit(url).path):
+            continue  # Its dated call text was already considered as a notice.
         if page := await reader.open(url):
-            dates = upcoming(moments(page.text[:5000]), today)
-            events.extend((title, moment, url, page.text) for moment in dates[:1])
-    for title, moment, url, text in sorted(events, key=lambda item: item[1].day):
+            dates = moments(page.text[:5000])
+            if len({moment.day for moment in dates}) == 1:
+                events.extend(
+                    (title, moment, url, page.text) for moment in upcoming(dates, today)[:1]
+                )
+    for title, moment, url, text in sorted(
+        events, key=lambda item: (item[1].day, item[1].at is None)
+    ):
         if result := event_target(ticker, company, title, moment, now, text):
             target, evidence = result
             return (target, f"{evidence} <{url}>"), reader.reading
     return None, reader.reading
 
 
-def _call_moment(text: str, today: date) -> Moment | None:
+def _call_moment(text: str, today: date, headline: str = "") -> Moment | None:
     """When a notice says its earnings call is, as in Autodesk's "conference call ... on
-    Tuesday, November 24, 2026, at 2 p.m. Pacific Time (PT)"."""
+    Tuesday, November 24, 2026, at 2 p.m. Pacific Time (PT)". It's on the day the notice's
+    headline names, if it names one: Dell's page runs its headline "... Conference Call Nov. 24
+    ..." into "November 10, 2026 4:05pm EST", when it was posted."""
     found = [
         moment
-        for sentence in _SENTENCE.split(_tidy(text))
+        for line in text.splitlines()
+        for sentence in _SENTENCE.split(_tidy(line))
         if _CALL.search(sentence)
         for moment in upcoming(moments(sentence), today)
     ]
+    if named := headline_moments(headline, today):
+        if not (upcoming_named := upcoming(named, today)):
+            return None
+        day = upcoming_named[0].day
+        found = [moment for moment in found if moment.day == day] or upcoming_named[:1]
     timed = [moment for moment in found if moment.at]
     return (timed or found or [None])[0]
 
@@ -660,7 +693,9 @@ def _listed_events(page: RenderedPage, today: date) -> list[tuple[str, Moment, s
     Earnings Conference Call 2026-11-20 8:00 AM EST"."""
     found = []
     lines = [line.strip() for line in page.text.splitlines() if line.strip()]
-    event_page = re.search(r"(?:events?|calendar)", urlsplit(page.url).path, re.IGNORECASE)
+    path = urlsplit(page.url).path
+    event_page = _EVENT_PAGE.search(path)
+    news_page = _NEWS_ARTICLE.search(path)
     for number, line in enumerate(lines):
         nearby = lines[max(0, number - 3) : number]
         dated_results = (
@@ -670,6 +705,16 @@ def _listed_events(page: RenderedPage, today: date) -> list[tuple[str, Moment, s
             and title_period(line)
         )
         if not (earnings_event(line) or dated_results):
+            continue
+        # A day the headline names is its own, whatever date the line opens with: Dell's IR
+        # home lists "Nov 10, 2026 Dell Technologies to Hold Conference Call Nov. 24 ..."
+        if named := headline_moments(line, today):
+            found.extend((line, moment, page.url, line) for moment in upcoming(named, today)[:1])
+            continue
+        if news_page or (
+            is_date_notice(line) and not dated_results and any(nav_rank(h) == 0 for h in nearby)
+        ):
+            # Undated news headlines can sit beside a publication timestamp.
             continue
         # Some event cards put a standalone date immediately before the title.
         adjacent = [

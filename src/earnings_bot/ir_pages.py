@@ -49,6 +49,7 @@ EVENTS = 1
 RESULTS = 2  # the rank of a "Quarterly Results" link
 INVESTORS = 3  # the rank of an "Investors" link
 # "WeRide Inc. 2026 Q3 Earnings Conference Call", "Q3 2026 Earnings Webcast"
+_PRESS_LINK = re.compile(r"\s+(?:read|view) (?:the )?(?:press|news) release\s*$", re.IGNORECASE)
 _EARNINGS_EVENT = re.compile(
     r"^(?=.*\b(?:earnings|results|financial)\b)"
     r"(?=.*\b(?:call|webcast|conference|release|presentation|announcement)\b)"
@@ -67,6 +68,12 @@ _DAY = re.compile(
     r"|\b(\d{1,2})/(\d{1,2})/(20\d{2})\b",  # 11/20/2026
     re.IGNORECASE,
 )
+# A month and day without a year, as in Dell's "Conference Call Nov. 24 to Discuss ..."
+_YEARLESS = re.compile(
+    rf"\b{_MONTH}\.?\s+(\d{{1,2}})(?:st|nd|rd|th)?\b(?!,?\s*20\d{{2}})", re.IGNORECASE
+)
+# What comes before a quarter's end rather than an event: "quarter ended September 30, 2026"
+_PERIOD_END = re.compile(r"\b(?:ended|ending)\s+(?:on\s+)?$", re.IGNORECASE)
 # The time after a date: " 8:00 AM EST", ", at 8:00 a.m. ET", " | 4:30 PM ET"
 _CLOCK = re.compile(
     r"[\s,|@\u2022\u2013\u2014-]*(?:at\s+)?(?:approximately\s+)?(\d{1,2})(?::(\d{2}))?\s*([ap])\.?\s?m\b\.?"
@@ -134,6 +141,24 @@ def _day(groups: tuple[str | None, ...]) -> date:
     return date(int(groups[11] or 0), int(groups[9] or 0), int(groups[10] or 0))
 
 
+def _timed(text: str, day: date, end: int) -> Moment:
+    """The day, with the time that follows it in `text` from `end`, if any."""
+    if clock := _CLOCK.match(text, end, end + 40):
+        hour, minute, half, zone = clock.groups()
+        if 1 <= int(hour) <= 12 and 0 <= int(minute or 0) <= 59:
+            local = datetime(
+                day.year,
+                day.month,
+                day.day,
+                int(hour) % 12 + (12 if half.lower() == "p" else 0),
+                int(minute or 0),
+                tzinfo=_zone(zone),
+            )
+            at = local.astimezone(ET)
+            return Moment(at.date(), at)
+    return Moment(day, None)
+
+
 def moments(text: str) -> list[Moment]:
     """Every date in the text, with the time that follows it, if any, as in "2026-11-20
     8:00 AM EST" or "Thursday, November 20, 2026 at 8:00 a.m. ET"."""
@@ -144,22 +169,34 @@ def moments(text: str) -> list[Moment]:
             day = _day(match.groups())
         except ValueError:
             continue
-        at = None
-        if clock := _CLOCK.match(text, match.end(), match.end() + 40):
-            hour, minute, half, zone = clock.groups()
-            if 1 <= int(hour) <= 12 and 0 <= int(minute or 0) <= 59:
-                local = datetime(
-                    day.year,
-                    day.month,
-                    day.day,
-                    int(hour) % 12 + (12 if half.lower() == "p" else 0),
-                    int(minute or 0),
-                    tzinfo=_zone(zone),
-                )
-                at = local.astimezone(ET)
-                day = at.date()
-        found.append(Moment(day, at))
+        found.append(_timed(text, day, match.end()))
     return found
+
+
+def headline_moments(headline: str, today: date) -> list[Moment]:
+    """The dates a headline names for its own event, with or without a year. Dell's
+    "Conference Call Nov. 24 to Discuss Third Quarter Fiscal 2027 Financial Results" is on the
+    next Nov 24 from today. A date the headline opens with, as Dell's IR home lists it after
+    "Nov 10, 2026", is when it was posted, and a quarter's end ("quarter ended September 30,
+    2026") isn't the event's day either. Empty when it names no other day."""
+    text = unglue(headline).strip()
+    if posted := _DAY.match(text):
+        text = text[posted.end() :]
+    found = []
+    for match in [*_DAY.finditer(text), *_YEARLESS.finditer(text)]:
+        if _PERIOD_END.search(text[: match.start()]):
+            continue
+        try:
+            if match.re is _DAY:
+                day = _day(match.groups())
+            else:
+                day = date(today.year, _MONTHS.index(match[1][:3].lower()) + 1, int(match[2]))
+                if day < today:
+                    day = day.replace(year=today.year + 1)
+        except ValueError:
+            continue
+        found.append((match.start(), _timed(text, day, match.end())))
+    return [moment for _, moment in sorted(found, key=lambda item: item[0])]
 
 
 def upcoming(found: list[Moment], today: date, horizon: int = 120) -> list[Moment]:
@@ -187,7 +224,7 @@ def nav_rank(text: str) -> int | None:
 
 def earnings_event(title: str) -> bool:
     """An earnings call, webcast or results release, as an IR site's events page names it."""
-    return bool(_EARNINGS_EVENT.search(title))
+    return bool(_EARNINGS_EVENT.search(_PRESS_LINK.sub("", title)))
 
 
 def _site(host: str) -> str:
