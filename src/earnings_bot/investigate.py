@@ -39,8 +39,9 @@ REINVESTIGATE = timedelta(days=30)
 # Raised when the investigation learns to find more, so companies get looked at again:
 # 1 kept what it checked, 2 reads the wire from any release, skips date notices, looks a few
 # pages back for the latest results and keeps when the IR site says they were posted,
-# 3 follows corporate navigation and embedded listings, 4 reads newsroom cards and archives
-INVESTIGATION = 4
+# 3 follows corporate navigation and embedded listings, 4 reads newsroom cards and archives,
+# 5 finds results exhibits even when ordinary filings crowd the recent SEC list
+INVESTIGATION = 5
 _HOST = re.compile(r"\b((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,})\b", re.IGNORECASE)
 _WEB_HOST = re.compile(r"\b(?:https?://|(?=www\.))" + _HOST.pattern, re.IGNORECASE)
 _IR_HOST = re.compile(r"^(?:ir|investors?|investor-?relations)\.", re.IGNORECASE)
@@ -256,7 +257,8 @@ class Findings:
 
 async def _last_release(fetcher: Fetcher, cik: int) -> str | None:
     """The text of the company's last results release, as filed with its 8-K."""
-    sec = EdgarFilings(cik, limit=40)
+    # Read more rows from the same submissions response. Only results exhibits get fetched.
+    sec = EdgarFilings(cik, limit=500)
     try:
         _, filings = await poll(sec, fetcher)
     except PollError:

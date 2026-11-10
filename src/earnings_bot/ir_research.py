@@ -11,6 +11,7 @@ import aiohttp
 from earnings_bot.browser import BrowserError
 from earnings_bot.browser_sources import (
     BrowserRss,
+    HttpRelease,
     IRSource,
     _ReleaseLinks,
     article_matches,
@@ -160,6 +161,39 @@ def quarter_headline(year: int, quarter: int) -> str:
         rf"(?=.*\b(?:{label})\b)(?=.*\b(?:FY\s*{year % 100:02d}|(?:FY\s*)?{year})\b)"
         r"(?=.*\b(?:financial results|earnings|quarterly results|(?:reports?|announces?).*results)"
         r"\b).*"
+    )
+
+
+async def verified_http_source(
+    fetcher: Fetcher, listing: str | None, period: str
+) -> IRSource | None:
+    """Promote direct HTTP only if the live poller can read the previous results."""
+    if listing is None:
+        return None
+    year, quarter = int(period[2:6]), int(period[-1])
+    prior = (year - 1, 4) if quarter == 1 else (year, quarter - 1)
+    try:
+        probe = HttpRelease(
+            listing, quarter_headline(*prior), verify_text=True, chrome_fallback=False
+        )
+        response = await probe.fetch(fetcher)
+        items = probe.parse(response)
+        if not items:
+            return None
+        item = items[0]
+        if (body := item.body) is None:
+            return None
+        if not verified_report(html_to_text(body.decode(errors="replace"))):
+            pdf = issuer_pdf_url(item.url, body, title=item.title)
+            if not pdf:
+                return None
+            file = await fetcher.request("GET", pdf, give_up_after=4, allow_redirects=False)
+            if file.status != 200 or not file.body.startswith(b"%PDF-"):
+                return None
+    except _ERRORS:
+        return None
+    return IRSource(
+        listing=listing, headline=quarter_headline(year, quarter), verify_text=True, http_first=True
     )
 
 

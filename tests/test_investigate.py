@@ -331,8 +331,12 @@ async def test_a_globenewswire_company_is_matched_there_on_trial(
 
 
 async def test_the_last_release_is_read_from_the_results_8k() -> None:
-    # Newest first: a shareholder vote 8-K and a 10-Q were filed after the results
+    # Newest first: a busy issuer can have dozens of ownership filings after its results.
     filings = [
+        *(
+            (f"0001543151-26-{i:06d}", "4", "", "2026-11-09T21:00:00.000Z", "form4.xml")
+            for i in range(99, 54, -1)
+        ),
         ("0001543151-26-000042", "8-K", "5.07", "2026-11-06T21:00:00.000Z", "uber-vote.htm"),
         ("0001543151-26-000041", "10-Q", "", "2026-11-05T21:00:00.000Z", "uber-10q.htm"),
         (
@@ -356,6 +360,7 @@ async def test_the_last_release_is_read_from_the_results_8k() -> None:
     # Only the results 8-K is read
     assert not any("000154315126000041" in url for _, url, _ in fetcher.requests)
     assert not any("000154315126000042" in url for _, url, _ in fetcher.requests)
+    assert not any("form4.xml" in url for _, url, _ in fetcher.requests)
 
 
 def test_only_companies_outside_the_catalog_are_investigated_and_then_monthly() -> None:

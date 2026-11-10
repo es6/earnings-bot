@@ -25,6 +25,7 @@ from earnings_bot.ir_research import (
     issuer_links,
     issuer_listing,
     verified_browser_source,
+    verified_http_source,
 )
 from earnings_bot.known import (
     NTH,
@@ -66,7 +67,7 @@ _YEAR_FIRST_PERIOD = re.compile(
     rf"\b(?:fiscal(?:\s+year)?|FY)\s*(20\d{{2}})\s+{_NOTICE_QUARTER}\b",
     re.IGNORECASE,
 )
-VERIFYING_IR = "Verifying the issuer's last report in Chrome"
+VERIFYING_IR = "Verifying the issuer's last report"
 _RELEASE = re.compile(
     r"\b(?:will|plans to|expects to|to)\s+(?:report|release|announce|publish|issue)\b"
     r"(?:(?!\b(?:conference call|earnings call|webcast)\b)[^.!?]){0,100}?"
@@ -557,28 +558,47 @@ class DateDiscovery:
         if row.target != target or row.evidence != evidence:
             self.calendar.set_target(target, evidence)
             self.status(f"📅 {describe(target, evidence)}")
-        if target.ir:
-            self.ir_notes.setdefault(row.cik, "Read in Chrome")
+        existing_ir = target.ir
+        if existing_ir and (
+            evidence == MANUAL
+            or existing_ir.http_first
+            or existing_ir.rss
+            or existing_ir.pdfs
+            or existing_ir.tesla_deck
+            or existing_ir.warmup
+            or not existing_ir.verify_text
+            or row.cik in self.ir_notes
+        ):
             return
         if not target.period:
             self.ir_notes[row.cik] = "The release has no fiscal period to match headlines with"
             self.on_progress()
             return
-        listing = issuer_listing(row.ticker, row.company)
+        listing = existing_ir.listing if existing_ir else issuer_listing(row.ticker, row.company)
         if listing:
             self._phase(row.cik, VERIFYING_IR)
-        ir, why = await verified_browser_source(self.fetcher, listing, target.period)
-        self.ir_notes[row.cik] = why
-        self.on_progress()
-        if (
-            ir
-            and not self.busy()
-            and any(
+        ir = (
+            None
+            if evidence == MANUAL
+            else await verified_http_source(self.fetcher, listing, target.period)
+        )
+        if ir:
+            why = "Read last quarter's results over direct HTTP"
+        elif existing_ir:
+            why = "Keeping the previously verified Chrome source"
+        else:
+            ir, why = await verified_browser_source(self.fetcher, listing, target.period)
+        if ir:
+            if self._defer_if_busy(row.cik):
+                return
+            if not any(
                 tracked.target == target and tracked.evidence == evidence
                 for tracked in self.calendar.entries()
-            )
-        ):
+            ):
+                self._phase(row.cik, None)
+                return
             self.calendar.set_target(target.model_copy(update={"ir": ir}), evidence)
+        self.ir_notes[row.cik] = why
         self._phase(row.cik, None)
 
     def _defer_if_busy(self, cik: int) -> bool:

@@ -1,6 +1,7 @@
-"""Issuer listings and PDFs read through desktop Chrome."""
+"""Issuer listings and PDFs read through HTTP or desktop Chrome."""
 
 import json
+import os
 import re
 import time
 from dataclasses import replace
@@ -8,9 +9,10 @@ from html.parser import HTMLParser
 from typing import Self
 from urllib.parse import urldefrag, urljoin, urlsplit
 
+import aiohttp
 from pydantic import BaseModel, model_validator
 
-from earnings_bot.browser import browser_host
+from earnings_bot.browser import BrowserError, browser_host
 from earnings_bot.fetch import Fetcher, Response
 from earnings_bot.sources import (
     GuessedFile,
@@ -56,6 +58,7 @@ class IRSource(BaseModel):
     rss: str | None = None
     headline: str | None = None
     verify_text: bool = False
+    http_first: bool = False
     warmup: str | None = None
     pdfs: list[str] = []
     tesla_deck: str | None = None
@@ -68,6 +71,8 @@ class IRSource(BaseModel):
             )
         if self.listing:
             browser_host(self.listing)
+        if self.http_first and not self.listing:
+            raise ValueError("Direct HTTP requires an issuer listing")
         if self.headline:
             try:
                 re.compile(self.headline)
@@ -95,9 +100,8 @@ class IRSource(BaseModel):
     def sources(self) -> list[Source]:
         sources: list[Source] = []
         if self.listing and self.headline:
-            sources.append(
-                BrowserRelease(self.listing, self.headline, verify_text=self.verify_text)
-            )
+            reader = HttpRelease if self.http_first else BrowserRelease
+            sources.append(reader(self.listing, self.headline, verify_text=self.verify_text))
         warmup = self._warmup()
         if warmup:
             if self.rss and self.headline:
@@ -193,6 +197,8 @@ class BrowserRelease(Source):
         self._headline = re.compile(headline, re.IGNORECASE)
         self._candidate: Sighting | None = None
         self.listing_poll: tuple[Response, float] | None = None
+        self.transport = "chrome"
+        self.listing_transport = "chrome"
 
     @property
     def matched_listing(self) -> bool:
@@ -201,10 +207,15 @@ class BrowserRelease(Source):
     def url(self) -> str:
         return self.listing
 
+    async def request_page(self, fetcher: Fetcher, url: str, *, urgent: bool = False) -> Response:
+        self.transport = "chrome"
+        return await fetcher.browser_request(url, self.listing, self.timeout, urgent=urgent)
+
     async def fetch(self, fetcher: Fetcher) -> Response:
         self._candidate = None
         self.listing_poll = None
-        listing = await fetcher.browser_request(self.listing, self.listing, self.timeout)
+        listing = await self.request_page(fetcher, self.listing)
+        self.listing_transport = self.transport
         self.listing_poll = replace(listing, body=b""), time.monotonic()
         if listing.status != 200:
             return listing
@@ -227,7 +238,9 @@ class BrowserRelease(Source):
                 earnings=True,
                 details={"listing_ms": str(round(listing.elapsed * 1000))},
             )
-            return await fetcher.browser_request(url, self.listing, self.timeout, urgent=True)
+            response = await self.request_page(fetcher, url, urgent=True)
+            self._candidate.details["transport"] = self.transport
+            return response
         return listing
 
     def parse(self, response: Response) -> list[Sighting]:
@@ -239,6 +252,59 @@ class BrowserRelease(Source):
         ):
             return []
         return [replace(candidate, body=response.body)]
+
+
+class HttpRelease(BrowserRelease):
+    """Use the same verified issuer parser over HTTP, with Chrome available on Windows."""
+
+    name = "http-ir"
+
+    def __init__(
+        self,
+        listing: str,
+        headline: str,
+        *,
+        verify_text: bool = False,
+        chrome_fallback: bool | None = None,
+    ) -> None:
+        super().__init__(listing, headline, verify_text=verify_text)
+        self.chrome_fallback = os.name == "nt" if chrome_fallback is None else chrome_fallback
+        self._chrome_until = 0.0
+
+    async def request_page(self, fetcher: Fetcher, url: str, *, urgent: bool = False) -> Response:
+        try_http = time.monotonic() >= self._chrome_until
+        if try_http:
+            try:
+                response = await fetcher.request(
+                    "GET",
+                    url,
+                    {"Cache-Control": "no-cache"},
+                    give_up_after=self.timeout,
+                    urgent=urgent,
+                    allow_redirects=False,
+                )
+            except (aiohttp.ClientError, TimeoutError):
+                if not self.chrome_fallback:
+                    raise
+            else:
+                if (
+                    not self.chrome_fallback
+                    or response.status == 200
+                    or (response.status == 404 and urgent)
+                ):
+                    self.transport = "http"
+                    return response
+        try:
+            response = await super().request_page(fetcher, url, urgent=urgent)
+        except (aiohttp.ClientError, BrowserError, TimeoutError):
+            self._chrome_until = 0.0
+            raise
+        if response.status != 200:
+            self._chrome_until = 0.0
+        elif try_http:
+            # A block can last several polls. Keep using the working browser for a short time.
+            self._chrome_until = time.monotonic() + 30
+        return response
 
 
 class BrowserRss(Source):

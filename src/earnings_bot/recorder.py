@@ -464,9 +464,10 @@ def take(
     if isinstance(w.source, BrowserRelease) and w.source.listing_poll:
         listing, received = w.source.listing_poll
         journal.write(
-            "browser_listing",
+            "http_ir_listing" if w.source.name == "http-ir" else "browser_listing",
             ticker=w.ticker,
             source=w.source.name,
+            transport=w.source.listing_transport,
             sent=sent,
             received=journal.now() - timedelta(seconds=time.monotonic() - received),
             matched=w.source.matched_listing,
