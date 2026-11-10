@@ -42,8 +42,9 @@ REINVESTIGATE = timedelta(days=30)
 # pages back for the latest results and keeps when the IR site says they were posted,
 # 3 follows corporate navigation and embedded listings, 4 reads newsroom cards and archives,
 # 5 finds results behind ordinary filings, 6 checks named RSS indexes and listing HTTP,
-# 7 checks Q4 feeds independently of the issuer homepage, 8 verifies newsroom JSON.
-INVESTIGATION = 8
+# 7 checks Q4 feeds independently of the issuer homepage, 8 verifies newsroom JSON,
+# 9 recognizes more 6-K results language and looks further back for Q4 wire datelines.
+INVESTIGATION = 9
 _HOST = re.compile(r"\b((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,})\b", re.IGNORECASE)
 _WEB_HOST = re.compile(r"\b(?:https?://|(?=www\.))" + _HOST.pattern, re.IGNORECASE)
 _IR_HOST = re.compile(r"^(?:ir|investors?|investor-?relations)\.", re.IGNORECASE)
@@ -297,7 +298,7 @@ def _answer(reply: Response | None) -> str:
 async def _q4_wire(fetcher: Fetcher, host: str) -> tuple[bool, str | None, str]:
     """Whether the host serves Q4's press release JSON, the wire its latest results name, and
     why it doesn't serve it."""
-    reply = await _get(fetcher, Q4PressReleases(host).bodies_url(10))
+    reply = await _get(fetcher, Q4PressReleases(host).bodies_url(20))
     if reply and reply.status in _BLOCKED:
         return False, None, f"Q4 feed returned HTTP {reply.status}"
     if reply is None or reply.status != 200:
