@@ -202,10 +202,17 @@ class InterruptedFetcher(RoutedFetcher):
         urgent: bool = False,
         *,
         allow_redirects: bool = True,
+        encoded_url: bool = False,
     ) -> Response:
         self.interrupt()
         return await super().request(
-            method, url, headers, give_up_after, urgent, allow_redirects=allow_redirects
+            method,
+            url,
+            headers,
+            give_up_after,
+            urgent,
+            allow_redirects=allow_redirects,
+            encoded_url=encoded_url,
         )
 
 

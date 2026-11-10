@@ -22,7 +22,7 @@ from earnings_bot.fetch import Fetcher, Response
 
 BUSINESS_WIRE_EARNINGS = "https://feed.businesswire.com/rss/home/?rss=G1QFDERJXkJeEF9YXA=="
 # The latest 20 releases PR Newswire files under Earnings. Its CDN keeps a copy for up to 60 s
-# and ignores query strings, so FreshPrNewswire busts it another way.
+# and ignores query strings, so FreshPrNewswire uses equivalent encoded paths.
 PR_NEWSWIRE_EARNINGS = (
     "https://www.prnewswire.com/rss/financial-services-latest-news/earnings-list.rss"
 )
@@ -331,26 +331,11 @@ class EdgarLatest(EdgarFilings):
         return sightings
 
 
-def case_variant(url: str, n: int) -> str:
-    """The URL with the letters of its path between the first segment and the extension in the
-    upper and lower case pattern of `n`'s bits, never all lowercase: `n` = 0 gives
-    /rss/Financial-services-latest-news/earnings-list.rss."""
-    parts = urlsplit(url)
-    first, rest = parts.path.removeprefix("/").split("/", 1)
-    stem, dot, extension = rest.rpartition(".")
-    letters = [i for i, char in enumerate(stem) if char.isalpha()]
-    pattern = 1 + n % ((1 << len(letters)) - 1)
-    chars = list(stem)
-    for bit, i in enumerate(letters):
-        if pattern >> bit & 1:
-            chars[i] = chars[i].upper()
-    return urlunsplit(parts._replace(path=f"/{first}/{''.join(chars)}{dot}{extension}"))
-
-
 class RssFeed(Source):
     """An RSS feed, optionally narrowed to items that name one of the given companies."""
 
     interval = 2.0
+    verify_channel = False
 
     def __init__(
         self, name: str, feed_url: str, companies: Sequence[str] = (), bust_cache: bool = False
@@ -374,10 +359,13 @@ class RssFeed(Source):
             root = ET.fromstring(response.body)
         except ET.ParseError as error:
             raise ValueError(f"not valid XML: {error}") from error
+        channel = root.find("channel")
+        if self.verify_channel and (channel is None or channel.findtext("link") != self.feed_url):
+            raise ValueError("RSS response did not identify the requested category")
         if root.tag == f"{_ATOM}feed":  # Apple's newsroom feed, for one
             built = root.findtext(f"{_ATOM}updated")
             entries = [_atom_entry(entry) for entry in root.iter(f"{_ATOM}entry")]
-        elif (channel := root.find("channel")) is not None:
+        elif channel is not None:
             built = channel.findtext("lastBuildDate")
             entries = [_rss_item(item) for item in channel.iter("item")]
         else:
@@ -404,21 +392,41 @@ class RssFeed(Source):
 
 
 class FreshPrNewswire(RssFeed):
-    """A PR Newswire feed from PR Newswire's own server rather than its CDN. The CDN keeps each
-    copy for 60 s and ignores query strings, but it keys copies on the path's letter case, which
-    the server ignores after /rss/. So every poll spells the path a way not asked for before and
-    gets the feed as the server builds it then. On Nov 9, 2026 Lucid's results were in the
-    server's feed by 16:05:17 and reached the cached copy we polled at 16:06:02."""
+    """Rotate equivalent paths with two percent-encoded letters. PR Newswire decodes the path
+    for category lookup, while its CDN caches each spelling separately. Changing letter case
+    also misses the CDN but can silently return the general feed instead of the category."""
 
-    interval = 1.0
+    verify_channel = True
 
-    def __init__(self, name: str, feed_url: str, companies: Sequence[str] = ()) -> None:
+    def __init__(
+        self, name: str, feed_url: str, companies: Sequence[str] = (), *, interval: float = 1.0
+    ) -> None:
         super().__init__(name, feed_url, companies)
-        # A random start, so a restart doesn't ask for spellings the CDN still holds
-        self._spellings = itertools.count(random.randrange(1 << 32))
+        self.interval = interval
+        self._parts = urlsplit(feed_url)
+        # Keep /rss/ and .rss literal. Each of the two category feeds has over 700 spellings.
+        path = self._parts.path
+        letters = [i for i in range(len("/rss/"), len(path) - len(".rss")) if path[i].isalpha()]
+        pairs = list(itertools.combinations(letters, 2))
+        start = random.randrange(len(pairs))
+        self._spellings = itertools.cycle(pairs[start:] + pairs[:start])
 
     def url(self) -> str:
-        return case_variant(self.feed_url, next(self._spellings))
+        positions = next(self._spellings)
+        path = "".join(
+            f"%{ord(char):02X}" if i in positions else char
+            for i, char in enumerate(self._parts.path)
+        )
+        return urlunsplit(self._parts._replace(path=path))
+
+    async def fetch(self, fetcher: Fetcher) -> Response:
+        return await fetcher.request(
+            self.method,
+            self.url(),
+            give_up_after=self.timeout,
+            encoded_url=True,
+            allow_redirects=False,
+        )
 
 
 _ATOM = "{http://www.w3.org/2005/Atom}"

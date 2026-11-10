@@ -1,7 +1,7 @@
 import itertools
 import json
 from datetime import UTC, datetime, timedelta, timezone
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 import pytest
 
@@ -9,6 +9,7 @@ from earnings_bot.fetch import Response, host_gap
 from earnings_bot.sources import (
     GLOBENEWSWIRE_EARNINGS,
     PR_NEWSWIRE_EARNINGS,
+    PR_NEWSWIRE_SEMICONDUCTORS,
     Q4_REFRESH_SECONDS,
     BroadcomNewsroom,
     EdgarFilings,
@@ -19,10 +20,10 @@ from earnings_bot.sources import (
     Q4FinancialReports,
     Q4PressReleases,
     RssFeed,
-    case_variant,
     looks_like_earnings,
     published_time,
 )
+from tests.fakes import FakeSession, SessionFetcher
 
 
 def response(
@@ -580,46 +581,29 @@ def test_backup_and_cached_feeds_dont_take_turns_from_the_fast_ones() -> None:
     assert Q4FinancialReports("investor.uber.com").interval >= Q4_REFRESH_SECONDS
 
 
-def test_a_case_variant_is_never_the_cached_spelling() -> None:
-    assert case_variant(PR_NEWSWIRE_EARNINGS, 0) == (
-        "https://www.prnewswire.com/rss/Financial-services-latest-news/earnings-list.rss"
-    )
-    letters = sum(char.isalpha() for char in "financial-services-latest-newsearnings-list")
-    # Every letter but the first segment's and the extension's can change
-    assert case_variant(PR_NEWSWIRE_EARNINGS, (1 << letters) - 2) == (
-        "https://www.prnewswire.com/rss/FINANCIAL-SERVICES-LATEST-NEWS/EARNINGS-LIST.rss"
-    )
-    # Where the pattern would wrap around to all lowercase, it starts again instead
-    assert case_variant(PR_NEWSWIRE_EARNINGS, (1 << letters) - 1) == case_variant(
-        PR_NEWSWIRE_EARNINGS, 0
-    )
-    spellings = {case_variant(PR_NEWSWIRE_EARNINGS, n) for n in range(500)}
-    assert len(spellings) == 500
-    for url in spellings:
-        assert url != PR_NEWSWIRE_EARNINGS
-        assert url.lower() == PR_NEWSWIRE_EARNINGS
-        # PR Newswire's server answers 404 if /rss/ or the extension changes case
-        assert url.startswith("https://www.prnewswire.com/rss/") and url.endswith(".rss")
-
-
 def test_the_fresh_pr_newswire_copy_asks_for_a_new_spelling_every_poll() -> None:
     fresh = FreshPrNewswire("prnewswire_busted", PR_NEWSWIRE_EARNINGS, ["Lucid Group"])
 
-    urls = [fresh.url() for _ in range(100)]
+    urls = [fresh.url() for _ in range(700)]
 
-    assert len(set(urls)) == 100
-    assert all(url.lower() == PR_NEWSWIRE_EARNINGS for url in urls)
+    assert len(set(urls)) == 700
+    assert all(unquote(url) == PR_NEWSWIRE_EARNINGS and url.count("%") == 2 for url in urls)
     assert PR_NEWSWIRE_EARNINGS not in urls
     # Another window watching the same feed shares its polls, but not the cached copy's
     assert fresh.share_key == FreshPrNewswire("prnewswire_busted", PR_NEWSWIRE_EARNINGS).share_key
     assert fresh.share_key != RssFeed("prnewswire", PR_NEWSWIRE_EARNINGS).share_key
-    # Fresh every second and cached every two fit the host's pacing
-    assert 1 / fresh.interval + 1 / RssFeed.interval <= 1 / host_gap("www.prnewswire.com")
+    # Fresh earnings every second, cached earnings and semis every two fit the host budget.
+    semis = FreshPrNewswire("prnewswire_semiconductors", PR_NEWSWIRE_SEMICONDUCTORS, interval=2)
+    assert 1 / fresh.interval + 1 / RssFeed.interval + 1 / semis.interval <= 1 / host_gap(
+        "www.prnewswire.com"
+    )
 
 
 def test_the_fresh_copy_reads_the_feed_like_the_cached_one() -> None:
     feed = (
-        b'<rss version="2.0"><channel><item><title>Lucid Announces Third Quarter 2026 Results'
+        b'<rss version="2.0"><channel>'
+        + f"<link>{PR_NEWSWIRE_EARNINGS}</link>".encode()
+        + b"<item><title>Lucid Announces Third Quarter 2026 Results"
         b"</title><link>https://www.prnewswire.com/news-releases/lucid-q3.html</link>"
         b"<guid>lucid-q3</guid><description>NEWARK, Calif. /PRNewswire/ -- Lucid Group, Inc."
         b"</description></item><item><title>Acme Reports Results</title>"
@@ -631,3 +615,26 @@ def test_the_fresh_copy_reads_the_feed_like_the_cached_one() -> None:
     [item] = fresh.parse(Response(fresh.url(), 200, {}, feed, 0.01))
 
     assert (item.key, item.earnings) == ("lucid-q3", True)
+
+
+@pytest.mark.parametrize(
+    "channel_link", ["", "https://www.prnewswire.com/rss/news-releases-list.rss"]
+)
+def test_fresh_pr_newswire_rejects_general_news(channel_link: str) -> None:
+    fresh = FreshPrNewswire("prnewswire_busted", PR_NEWSWIRE_EARNINGS)
+    feed = f"<rss><channel><link>{channel_link}</link></channel></rss>"
+
+    with pytest.raises(ValueError, match="requested category"):
+        fresh.parse(response(feed))
+
+
+async def test_fetch_preserves_the_encoded_spelling_on_the_wire() -> None:
+    async def answer(method: str, url: str) -> tuple[int, dict[str, str], bytes]:
+        return 200, {}, b"feed"
+
+    session = FakeSession(answer)
+    source = FreshPrNewswire("prnewswire_busted", PR_NEWSWIRE_EARNINGS)
+    async with SessionFetcher(session) as fetcher:
+        fetched = await source.fetch(fetcher)
+    assert unquote(session.sent[0][2]) == PR_NEWSWIRE_EARNINGS
+    assert session.sent[0][2] == fetched.url != PR_NEWSWIRE_EARNINGS

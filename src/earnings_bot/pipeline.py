@@ -32,6 +32,7 @@ from earnings_bot.sources import (
     GuessedPage,
     Q4FinancialReports,
     Q4PressReleases,
+    RssFeed,
     Sighting,
     Source,
 )
@@ -337,10 +338,9 @@ class Release:
         self.posted = False
         self.has_text = False  # some source has delivered the release's text
         self.first_text_at: datetime | None = None
-        # Both SEC sources list the same 8-K. These make sure its exhibit is read once: one lock
-        # per filing folder, and the text each folder's exhibit gave.
-        self._filing_locks: dict[str, asyncio.Lock] = {}
-        self._filing_texts: dict[str, str] = {}
+        # Both SEC sources can list one filing, and both copies of a feed can list one article.
+        self._body_locks: dict[str, asyncio.Lock] = {}
+        self._body_texts: dict[str, str] = {}
         self.summarizing = False
         self.lock = asyncio.Lock()  # one Discord edit at a time, in order
         self.tasks: set[asyncio.Task[None]] = set()
@@ -592,19 +592,19 @@ class Release:
             await self._summarize(self.summarizer, text, label)
 
     async def _release_text(self, source: Source, sighting: Sighting) -> str | None:
-        """release_text, except that each SEC filing's exhibit is downloaded once. When both SEC
-        sources list one 8-K, the second sighting waits for the first one's read and takes its
-        text. If that read got nothing, the second sighting tries again."""
-        folder = _filing_folder(sighting.url) if isinstance(source, EdgarFilings) else None
-        if folder is None:
+        """Read the text once per SEC filing or feed article. Another sighting retries a miss."""
+        key = _filing_folder(sighting.url) if isinstance(source, EdgarFilings) else None
+        if isinstance(source, RssFeed):
+            key = sighting.url
+        if key is None:
             return await release_text(self.fetcher, source, sighting)
-        async with self._filing_locks.setdefault(folder, asyncio.Lock()):
-            if folder not in self._filing_texts:
+        async with self._body_locks.setdefault(key, asyncio.Lock()):
+            if key not in self._body_texts:
                 text = await release_text(self.fetcher, source, sighting)
                 if text is None:
                     return None
-                self._filing_texts[folder] = text
-            return self._filing_texts[folder]
+                self._body_texts[key] = text
+            return self._body_texts[key]
 
     async def _summarize(self, summarizer: Summarizer, text: str, label: str) -> None:
         self.summarizing = True

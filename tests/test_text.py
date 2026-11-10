@@ -75,14 +75,14 @@ async def test_a_missing_page_or_file_has_no_text() -> None:
     assert fetcher.urgent == [url]  # PDFs aren't read, since the release's page comes too
 
 
-async def test_globenewswire_articles_arent_fetched() -> None:
-    # Only its RSS host lets us in; www.globenewswire.com answers 403
+async def test_globenewswire_article_is_read_from_the_feed_host() -> None:
     url = "https://www.globenewswire.com/news-release/2026/11/18/3400000/0/en/nvidia-results.html"
+    article = url.replace("www.", "rss.", 1)
     feed = RssFeed("globenewswire", "https://rss.globenewswire.com/RssFeed/subjectcode/13")
-    fetcher = RoutedFetcher({})
+    fetcher = RoutedFetcher({article: (200, b"<p>Revenue and earnings per share. </p>" * 100)})
 
-    assert await release_text(fetcher, feed, Sighting(url, "Results", url, earnings=True)) is None
-    assert fetcher.requests == []
+    assert await release_text(fetcher, feed, Sighting(url, "Results", url, earnings=True))
+    assert fetcher.requests == [("GET", article, None)]
 
 
 def test_html_to_text_keeps_paragraphs_and_table_columns() -> None:

@@ -4,9 +4,11 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from types import TracebackType
 from typing import Any, Self, cast
+from urllib.parse import unquote
 
 import aiohttp
 import discord
+from yarl import URL
 
 from earnings_bot.browser import DesktopChrome
 from earnings_bot.fetch import Fetcher, Response
@@ -73,14 +75,16 @@ class RoutedFetcher(Fetcher):
         urgent: bool = False,
         *,
         allow_redirects: bool = True,
+        encoded_url: bool = False,
     ) -> Response:
         self.requests.append((method, url, headers))
         if not allow_redirects:
             self.no_redirect.append(url)
         if urgent:
             self.urgent.append(url)
+        route = unquote(url) if encoded_url else url
         for part, (status, body) in self.routes.items():
-            if part in url:
+            if part in route:
                 return Response(url, status, self.headers, body, 0.01)
         return Response(url, 404, {}, b"", 0.01)
 
@@ -112,14 +116,14 @@ class FakeSession:
     def request(
         self,
         method: str,
-        url: str,
+        url: str | URL,
         *,
         headers: dict[str, str] | None = None,
         timeout: aiohttp.ClientTimeout | None = None,
         allow_redirects: bool = True,
         middlewares: tuple[aiohttp.ClientMiddlewareType, ...] = (),
     ) -> "_FakeReply":
-        return _FakeReply(self, method, url, timeout.total if timeout else None)
+        return _FakeReply(self, method, str(URL(url)), timeout.total if timeout else None)
 
     async def close(self) -> None:
         pass

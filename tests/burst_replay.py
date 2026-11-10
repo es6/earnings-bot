@@ -53,7 +53,7 @@ from earnings_bot.clock import Sample, TrustedClock
 from earnings_bot.fetch import Response
 from earnings_bot.pipeline import Poster, Releases
 from earnings_bot.recorder import ET, Journal, Plan, Target, record
-from earnings_bot.sources import EdgarFilings, Source
+from earnings_bot.sources import PR_NEWSWIRE_EARNINGS, EdgarFilings, Source
 from tests.fakes import FakeSession, SessionFetcher, sec_filing_detail
 
 # Simulated response times in seconds, before the random factor
@@ -394,9 +394,11 @@ class World:
             f"<description>CITY--(WIRE)--{who or title}</description></item>"
             for title, link, who in items[: 20 + len(self.companies)]
         )
+        channel_link = f"<link>{PR_NEWSWIRE_EARNINGS}</link>" if prnewswire else ""
         return 200, (
             '<rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/"><channel>'
-            f"<title>Earnings</title><lastBuildDate>{stamp}</lastBuildDate>{xml}</channel></rss>"
+            f"<title>Earnings</title>{channel_link}<lastBuildDate>{stamp}</lastBuildDate>"
+            f"{xml}</channel></rss>"
         ).encode()
 
     def ir_feed(self, c: Company, out: bool) -> tuple[int, bytes]:
@@ -443,9 +445,16 @@ class ReplayFetcher(SessionFetcher):
         urgent: bool = False,
         *,
         allow_redirects: bool = True,
+        encoded_url: bool = False,
     ) -> Response:
         response = await super().request(
-            method, url, headers, give_up_after, urgent, allow_redirects=allow_redirects
+            method,
+            url,
+            headers,
+            give_up_after,
+            urgent,
+            allow_redirects=allow_redirects,
+            encoded_url=encoded_url,
         )
         route = self.world.route(url)
         self.exchanges.append(
