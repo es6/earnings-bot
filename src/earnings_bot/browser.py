@@ -14,7 +14,7 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urlsplit
+from urllib.parse import urldefrag, urlsplit
 
 import aiohttp
 
@@ -358,7 +358,7 @@ class DesktopChrome:
                         ) or time.monotonic() - started > give_up_after - 1.5:
                             break
                 page = await _evaluate(tab.socket, f"{_READ_PAGE}({MAX_RENDERED_TEXT})")
-            final = str(page["url"])
+            final = urldefrag(str(page["url"])).url
             browser_host(final)  # a redirect to somewhere Chrome may not go isn't read
             return RenderedPage(
                 url=final,

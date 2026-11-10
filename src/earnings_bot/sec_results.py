@@ -53,6 +53,7 @@ _REVENUE_ROW = re.compile(
 )
 _ARCHIVE = re.compile(r"https://www\.sec\.gov/Archives/edgar/data/\d+/(\d{18})/[^/?#]+")
 _ACCESSION = re.compile(r"\d{10}-\d{2}-\d{6}")
+_COVER_END = re.compile(r"^Yes\s*(?:[☐☑☒]|\([xX ]\))?\s+No\s*(?:[☐☑☒]|\([xX ]\))?$", re.IGNORECASE)
 HISTORY_LIMIT = 36
 INTRODUCTION = 5000  # characters in which a results 6-K must announce its results
 
@@ -91,6 +92,15 @@ def is_results_release(text: str, description: str) -> bool:
         ):
             return True
     return False
+
+
+def _after_cover(text: str) -> str:
+    lines = text.splitlines()
+    if any(re.fullmatch(r"FORM\s+6-K", line, re.IGNORECASE) for line in lines[:10]):
+        for number, line in enumerate(lines[:40]):
+            if _COVER_END.fullmatch(line):
+                return "\n".join(lines[number + 1 :])
+    return text
 
 
 class SixKResults:
@@ -152,6 +162,8 @@ class SixKResults:
             if result.status != 200:
                 raise SixKUnavailable(f"results exhibit unavailable (HTTP {result.status})")
             text = await asyncio.to_thread(html_to_text, result.body.decode(errors="replace"))
+            if description == "6-K":
+                text = _after_cover(text)
             if is_results_release(text, description):
                 return _Verdict(body=text.encode())
             for line in text.splitlines()[:8]:

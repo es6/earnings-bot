@@ -19,7 +19,7 @@ flowchart TD
     discovery --> state
     state --> watcher["Directory watcher"]
     files["Optional TOML schedules"] --> watcher
-    sources["IR, newswires, SEC and prepared trials"] -->|poll in parallel during each window| watcher
+    sources["IR, newswires, SEC and exact release URLs"] -->|poll in parallel during each window| watcher
     watcher -->|first eligible sighting| alert["Discord alert, files and summary"]
     watcher --> journal[("Release timing journal")]
     journal --> audit["Latest-release source audit"]
@@ -117,11 +117,8 @@ What this tells us:
    the intended category. A schedule lists company names under `prnewswire`. Matching also
    checks the item's `dc:contributor`.
    The same source reads company press release feeds, such as the ones Equisolve sites publish.
-5. **Sources on trial.** Found on Nov 6, 2026, each answering the bot's normal User-Agent. A
-   schedule lists them in a `[target.trial]` table. They're polled and logged like any other
-   source, but what they see only posts to Discord when the table says `post = true`, which
-   waits until release days show they're right and fast. Until then the summary marks them
-   `trial`.
+5. **Additional release sources.** Existing schedules configure these in `[target.trial]`.
+   They can start or enrich an alert after their release checks pass.
    - **Broadcom's newsroom JSON** (`www.broadcom.com/api/news/newsroom`): every financial
      release, newest first, with its UTC time. It's about 150 KB and takes no paging
      parameters. Cloudflare served a copy 445 s old despite `no-cache`, so it's busted. A
@@ -191,7 +188,7 @@ latest quarter only. The details per company, with the last four 8-K times, are 
 
 - **Which wire a company uses varies, and it isn't always Business Wire.** AMD and NVIDIA use
   GlobeNewswire, whose site returns 403 to us, so their own feeds are the way in. Its RSS host
-  does answer us (found Nov 6), so its earnings feed is on trial. Lilly, Home Depot, Target,
+  answers the bot, and the planner watches it for GlobeNewswire and unknown-wire issuers. Lilly, Home Depot, Target,
   McDonald's, S&P Global and Broadcom use PR Newswire; Broadcom's releases were missed on Oct 31
   and found on Nov 6, filed as "Broadcom Inc.". UnitedHealth, Salesforce, Walmart, JPMorgan,
   Adobe, CrowdStrike and HubSpot use Business Wire. Bank of America, Goldman Sachs, Microsoft and
@@ -224,7 +221,7 @@ latest quarter only. The details per company, with the last four 8-K times, are 
   for Home Depot and McDonald's. A verified result can start or update the alert.
   CrowdStrike's copy on FinancialContent, McDonald's
   MediaRoom newsroom, Broadcom's newsroom API and HubSpot's release feed are independent
-  trials (see [Sources](#sources)). The [manual checks](manual-checks.md) document earlier
+  sources (see [Sources](#sources)). The [manual checks](manual-checks.md) document earlier
   release times.
 
 ### How fresh feeds are
@@ -247,7 +244,7 @@ the request reached the origin:
 | AMD's RSS feed | No cache headers, but CloudFront caches it anyway | No |
 | Coca-Cola's RSS feed | CloudFront | Yes: the busted request was a `MISS` |
 | Target's press release feed | A copy 2.2 hours old | No. Useless for speed; PR Newswire carries Target |
-| GlobeNewswire RSS (Nov 6) | 60 s | Yes, but its server returned the same build as the cached copy, so both are polled on trial |
+| GlobeNewswire RSS (Nov 6) | 60 s | Yes, but its server returned the same build as the cached copy, so both copies race |
 | Broadcom's newsroom JSON (Nov 6) | Cloudflare, despite `no-cache`: one copy was 445 s old | Yes |
 | HubSpot's press release feed (Nov 6) | `max-age=0, s-maxage=2592000` | Busted, since its CDN may keep a copy for 30 days |
 
@@ -482,8 +479,10 @@ What it tells us:
   how fast the source is. Only timestamps that name their time zone qualify: EDGAR's, the
   newswires', company feeds' and Broadcom's. Q4's site-local times don't, and neither does a
   guessed URL's `Last-Modified`, which can be when a copy was generated.
-- **Trial sources don't post** unless the target's `[target.trial]` table says `post = true`.
-  The recorder still logs everything they see. In tests on 2026-10-30, Discord answered every request in 0.1 to 0.6 seconds, and
+- **Release validation.** RSS and issuer press lists require a results headline or results
+  lead. Explicit fiscal periods must match the schedule. Exact report URLs and quarterly
+  tables must return the expected report format. In tests on 2026-10-30, Discord answered
+  every request in 0.1 to 0.6 seconds, and
   every multi-second wait came from discord.py's rate limiter: about 4 seconds on reads, once a
   bucket ran out. In one replay, Discord stamped the alert 0.12 seconds after the sighting, but
   the reply reached the bot only at 2.54 seconds.
@@ -634,7 +633,8 @@ the next fiscal period.
   fiscal period's actual report. The source checks the upcoming fiscal period and usable results
   text.
 - Keep the configured IR, newswire and SEC sources in the same race. The scorecard provides
-  evidence for source tuning, and trial promotion is controlled by the schedule.
+  evidence for source tuning. A verified issuer API and a rendered quarterly page can race
+  alongside each other. A PDF sighting can attach the file to the existing alert.
 
 ### Commands and limits
 
@@ -726,8 +726,8 @@ Where the text comes from:
 | Q4 press release feed | The full release HTML, from the same feed with `bodyType=1` | Ready the moment the release is detected |
 | SEC 8-K | The press release exhibit (EX-99.1), found through the filing's `index.json` | About a minute later for most companies; at the same time for Apple |
 | Guessed or newsroom pages | The page itself | Apple's newsroom |
-| Pages on trial | The page the poll already downloaded | No second request |
-| Broadcom's newsroom (trial) | The `body` field of `/api/getmetadata` | An ID that isn't up yet answers 200 with a stub that has no body, so no text |
+| Exact release pages | The page the poll already downloaded | No second request |
+| Broadcom's newsroom | The `body` field of `/api/getmetadata` | An ID that isn't up yet answers 200 with a stub that has no body, so no text |
 | Business Wire, GlobeNewswire | None | The default HTTP client could not retrieve their articles |
 
 The summary comes from Claude (`claude-opus-5-5`, effort `medium`). It gets the release text,
@@ -760,7 +760,7 @@ stay in the journal. `/watch_status` shows active tickers, the next window, the 
 the latest benchmark comparison.
 
 If the bot starts after publication while the window is still open, supported sources can
-catch up using the release's own timestamp or a verified exact-period trial. A window that
+catch up using the release's own timestamp or a verified exact-period issuer report. A window that
 ended during an outage is reported as a gap. The scope for a future version is broader ticker
 onboarding, including international listings, and more live samples for source rankings.
 

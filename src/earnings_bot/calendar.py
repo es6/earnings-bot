@@ -36,6 +36,7 @@ _CHANNEL_COLUMNS = (
 
 class Calendar:
     def __init__(self, store: DeliveryStore) -> None:
+        self.store = store
         self.db = store.db
         self.channel = store.channel_id
         self.db.executescript("""
@@ -62,6 +63,10 @@ class Calendar:
                 self.db.execute("ALTER TABLE tracked ADD COLUMN profile TEXT")
         # The channel the calendar was in before the bot moved, if it just moved
         self.moved_from = self._follow_channel()
+
+    def delivered(self, release_key: str) -> bool:
+        delivery = self.store.get(release_key)
+        return delivery is not None and delivery.message_id is not None
 
     def _follow_channel(self) -> int | None:
         """When the bot posts to a new channel, its calendar moves there with it: the tracked

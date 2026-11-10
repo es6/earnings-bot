@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 import aiohttp
 from yarl import URL
 
-from earnings_bot.browser import DesktopChrome
+from earnings_bot.browser import DesktopChrome, RenderedPage
 
 # Says who we are, in the same form search engine crawlers use
 USER_AGENT = "Mozilla/5.0 (compatible; earnings-bot/0.1; +https://github.com/es6/earnings-bot)"
@@ -131,6 +131,13 @@ class Fetcher:
         return await self._browser.request(
             url, warmup, give_up_after, lambda host: self.wait_turn(host, urgent)
         )
+
+    async def browser_render(self, url: str, give_up_after: float) -> RenderedPage:
+        if self._session is None:
+            raise RuntimeError("Fetcher must be used with 'async with'")
+        if self._browser is None:
+            self._browser = DesktopChrome()
+        return await self._browser.render(url, give_up_after, self.wait_turn)
 
     async def request(
         self,

@@ -32,7 +32,8 @@ from earnings_bot.browser_sources import BrowserRelease, BrowserRss, IRSource
 from earnings_bot.clock import TrustedClock
 from earnings_bot.config import RecorderSettings
 from earnings_bot.fetch import Fetcher, Response
-from earnings_bot.sec_results import SixKResults, SixKUnavailable
+from earnings_bot.periods import agrees_with_period
+from earnings_bot.sec_results import SixKResults, SixKUnavailable, is_results_release
 from earnings_bot.sources import (
     BUSINESS_WIRE_EARNINGS,
     GLOBENEWSWIRE_EARNINGS,
@@ -51,7 +52,9 @@ from earnings_bot.sources import (
     Sighting,
     Source,
     published_time,
+    results_headline,
 )
+from earnings_bot.text import html_to_text
 
 ET = ZoneInfo("America/New_York")
 
@@ -66,6 +69,10 @@ CACHE_HEADERS = (
     "cf-cache-status",
     "x-cache",
     "x-cache-remote",
+    "x-cache-hits",
+    "x-cache-status",
+    "x-varnish",
+    "cache-status",
 )
 
 # Seconds between clock syncs during a window. A computer's clock can drift by about a
@@ -74,11 +81,11 @@ CLOCK_RESYNC = 300
 
 
 class Trial(BaseModel):
-    """Sources on trial, a `[target.trial]` table in the plan file. They're polled and logged like
-    any other source, but what they see only posts to Discord when `post` is true, once release
-    days have shown they're right and fast."""
+    """More sources for a release, a `[target.trial]` table in the plan file. They post like any
+    other source: a new source goes live, since a release day is the only way to time it. The
+    table keeps its old name, and `post` is ignored, so older schedules still load."""
 
-    post: bool = False
+    post: bool = False  # ignored
     broadcom_newsroom: bool = False  # Broadcom's newsroom JSON
     rss: list[str] = []  # company press release feeds
     globenewswire: list[str] = []  # names to look for in GlobeNewswire's earnings feed
@@ -107,8 +114,6 @@ class Trial(BaseModel):
                 )
             )
         sources += _named_apart([GuessedPage(url) for url in self.pages])
-        for source in sources:
-            source.trial = True
         return sources
 
 
@@ -205,7 +210,7 @@ class Target(BaseModel):
         ]
         sources += _named_apart([GuessedFile(url) for url in self.guess])
         if self.ir:
-            sources += self.ir.sources(self.expected.astimezone(ET).date())
+            sources += self.ir.sources(self.expected.astimezone(ET).date(), self.period)
         return sources + self.trial.sources(self.rss_canonical)
 
 
@@ -287,6 +292,7 @@ class Watch:
     previous: datetime | None = None  # when the last answered poll went out
     problem: str | None = None  # the current error, so a failing source reports it only once
     stopped: str | None = None
+    period: str | None = None
 
     @property
     def done(self) -> bool:
@@ -371,7 +377,41 @@ def _logged(item: Sighting) -> dict[str, Any]:
     # The page itself, when the poll downloaded one, is far too big for the log
     fields = asdict(replace(item, body=None))
     del fields["body"]
+    del fields["lead"]
     return fields
+
+
+def _verified_item(w: Watch, item: Sighting) -> bool:
+    """Validate the period and distinguish a report from other news mentioning a quarter."""
+    if not agrees_with_period(item.title, w.period):
+        return False
+    if isinstance(w.source, RssFeed | BroadcomNewsroom | Q4PressReleases):
+        return results_headline(item.title) or (
+            bool(item.lead)
+            and results_headline(item.lead)
+            and agrees_with_period(item.lead, w.period)
+        )
+    if isinstance(w.source, GuessedPage):
+        if item.body is None:
+            return False
+        if item.body.startswith(b"%PDF-"):
+            return True  # exact, preconfigured file URL
+        return results_headline(item.title) or is_results_release(
+            html_to_text(item.body.decode(errors="replace")), ""
+        )
+    if isinstance(w.source, Q4FinancialReports):
+        label = item.title.split(": ", 1)[-1].casefold()
+        return any(
+            word in label
+            for word in (
+                "release",
+                "financial statements",
+                "earnings presentation",
+                "results snapshot",
+                "shareholder letter",
+            )
+        )
+    return True
 
 
 def _cache_headers(response: Response) -> dict[str, str]:
@@ -389,9 +429,14 @@ def record_items(
     first_poll = w.known is None
     known = w.known if w.known is not None else set[str]()
     new: list[Sighting] = []
-    for item in items:  # a key listed twice counts once
+    for parsed in items:  # a key listed twice counts once
+        item = parsed
         if item.key in known:
             continue
+        if item.earnings and not _verified_item(w, item):
+            if w.source.stop_when_found:
+                continue  # An incomplete page at a guessed URL can still become the report.
+            item = replace(item, earnings=False)
         known.add(item.key)
         if not first_poll:
             new.append(item)
@@ -480,7 +525,11 @@ def take(
     if isinstance(w.source, BrowserRelease) and w.source.listing_poll:
         listing, received = w.source.listing_poll
         journal.write(
-            "http_ir_listing" if w.source.name == "http-ir" else "browser_listing",
+            "issuer_table_listing"
+            if w.source.name == "issuer-table"
+            else "http_ir_listing"
+            if w.source.name == "http-ir"
+            else "browser_listing",
             ticker=w.ticker,
             source=w.source.name,
             transport=w.source.listing_transport,
@@ -540,7 +589,7 @@ async def _verify_sixks(
             item.details.get("form") == "6-K"
             and w.window
             and accepted is not None
-            and w.window[0] <= accepted <= w.window[1]
+            and _caught_up(w, replace(item, earnings=True))
             and item.key not in (w.known or ())
         ):
             try:
@@ -732,7 +781,6 @@ def summarize(target: Target, watches: list[Watch], journal: Journal) -> None:
         sources=[
             {
                 "source": w.source.name,
-                "trial": w.source.trial,
                 "first": w.first,
                 "title": w.first_title,
                 "caught_up": w.caught_up or None,
@@ -810,7 +858,10 @@ async def record_target(
     await sync_clock(journal)
 
     polls = polls or Polls(fetcher, journal)
-    watches = [Watch(target.ticker, source, (start, end)) for source in target.sources()]
+    watches = [
+        Watch(target.ticker, source, (start, end), period=target.period)
+        for source in target.sources()
+    ]
     notify = (lambda source, item: on_new(target, source, item)) if on_new else None
     journal.write(
         "window",
@@ -819,7 +870,6 @@ async def record_target(
         start=start,
         end=end,
         sources=[w.source.name for w in watches],
-        trial=[w.source.name for w in watches if w.source.trial],
     )
     journal.say(f"{target.ticker}: watching {len(watches)} sources until {_clock(end)} ET")
     try:
@@ -836,6 +886,12 @@ FOLLOW_UP = timedelta(hours=10)
 FOLLOW_UP_INTERVAL = 60.0  # seconds
 
 
+def followup_end(target: Target, longest: timedelta) -> datetime:
+    end = target.window[1]
+    day_end = end.astimezone(ET).replace(hour=23, minute=59, second=0, microsecond=0)
+    return min(end + longest, day_end)
+
+
 async def follow_up(
     target: Target,
     watches: list[Watch],
@@ -850,17 +906,14 @@ async def follow_up(
     the alert: Sea's 6-K comes hours after its Business Wire release, and its results page and
     newsroom later still. SEC's latest-filings feed scrolls too fast to read once a minute, so
     the company's own filing list stands in for it."""
-    _, end = target.window
-    day_end = end.astimezone(ET).replace(hour=23, minute=59, second=0, microsecond=0)
-    until = min(end + longest, day_end)
+    start, _ = target.window
+    until = followup_end(target, longest)
     pending = [
         w
         for w in watches
         if w.first is None
         and not w.caught_up
         and w.stopped is None
-        and w.known is not None
-        and not w.source.trial
         and w.source.name != "edgar_latest"
     ]
     if not pending or journal.now() >= until:
@@ -870,6 +923,7 @@ async def follow_up(
     notify = (lambda source, item: on_new(target, source, item)) if on_new else None
     async with asyncio.TaskGroup() as group:
         for w in pending:
+            w.window = (start, until)
             filings = isinstance(w.source, EdgarFilings) and w.source.form == "6-K"
             group.create_task(
                 watch(

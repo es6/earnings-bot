@@ -13,9 +13,10 @@ from urllib.parse import urldefrag, urljoin, urlsplit
 import aiohttp
 from pydantic import BaseModel, model_validator
 
-from earnings_bot.browser import BrowserError, browser_host
+from earnings_bot.browser import BrowserError, DesktopChrome, browser_host
 from earnings_bot.fetch import Fetcher, Response
 from earnings_bot.issuer_news import IssuerNews
+from earnings_bot.quarterly_table import quarter_pdf, rendered_pdf
 from earnings_bot.sources import (
     GuessedFile,
     RssFeed,
@@ -60,6 +61,9 @@ class IRSource(BaseModel):
     listing: str | None = None
     rss: str | None = None
     news_api: str | None = None
+    results_table: str | None = None
+    table_http: bool = False
+    table_rendered: bool = False
     cache_bust_urls: list[str] = []
     headline: str | None = None
     verify_text: bool = False
@@ -78,7 +82,16 @@ class IRSource(BaseModel):
             browser_host(self.listing)
         if self.news_api:
             browser_host(self.news_api)
-        if any(url not in (self.listing, self.news_api, self.rss) for url in self.cache_bust_urls):
+        if self.results_table:
+            browser_host(self.results_table)
+        if (self.table_http or self.table_rendered) and not self.results_table:
+            raise ValueError("Table polling requires an issuer results table")
+        if self.table_http and self.table_rendered:
+            raise ValueError("A rendered results table uses Chrome")
+        if any(
+            url not in (self.listing, self.news_api, self.rss, self.results_table)
+            for url in self.cache_bust_urls
+        ):
             raise ValueError("A cache-busted URL must be a configured listing, API or feed")
         if self.http_first and not self.listing:
             raise ValueError("Direct HTTP requires an issuer listing")
@@ -99,14 +112,21 @@ class IRSource(BaseModel):
                 _check_pdf(url, warmup)
         if self.tesla_deck:
             _check_tesla(self.tesla_deck)
-        if not (self.listing or self.rss or self.news_api or self.pdfs or self.tesla_deck):
+        if not (
+            self.listing
+            or self.rss
+            or self.news_api
+            or self.results_table
+            or self.pdfs
+            or self.tesla_deck
+        ):
             raise ValueError("An IR source must have a listing, feed or at least one PDF")
         return self
 
     def _warmup(self) -> str | None:
         return self.warmup or self.listing or (urljoin(self.rss, "/") if self.rss else None)
 
-    def sources(self, day: date | None = None) -> list[Source]:
+    def sources(self, day: date | None = None, period: str | None = None) -> list[Source]:
         sources: list[Source] = []
         if self.listing and self.headline:
             reader = HttpRelease if self.http_first else BrowserRelease
@@ -125,6 +145,17 @@ class IRSource(BaseModel):
                     self.headline,
                     day,
                     cache_bust=self.news_api in self.cache_bust_urls,
+                )
+            )
+        if self.results_table and period:
+            sources.append(
+                QuarterlyTable(
+                    self.results_table,
+                    int(period[2:6]),
+                    int(period[-1]),
+                    direct=self.table_http,
+                    rendered=self.table_rendered,
+                    cache_bust=self.results_table in self.cache_bust_urls,
                 )
             )
         warmup = self._warmup()
@@ -339,6 +370,109 @@ class HttpRelease(BrowserRelease):
             # A block can last several polls. Keep using the working browser for a short time.
             self._chrome_until = time.monotonic() + 30
         return response
+
+
+class QuarterlyTable(HttpRelease):
+    """Poll the specific quarter's earnings-release cell and download its PDF once."""
+
+    name = "issuer-table"
+
+    def __init__(
+        self,
+        listing: str,
+        year: int,
+        quarter: int,
+        *,
+        direct: bool,
+        rendered: bool = False,
+        cache_bust: bool = False,
+        browser: DesktopChrome | None = None,
+    ) -> None:
+        super().__init__(listing, "", cache_bust=cache_bust)
+        self.year, self.quarter, self.direct = year, quarter, direct
+        self.rendered, self.browser = rendered, browser
+        if rendered:
+            self.interval = 6.0
+
+    async def request_page(self, fetcher: Fetcher, url: str, *, urgent: bool = False) -> Response:
+        if self.direct:
+            return await super().request_page(fetcher, url, urgent=urgent)
+        if self.browser is not None:
+            return await self.browser.request(url, self.listing, self.timeout, fetcher.wait_turn)
+        return await BrowserRelease.request_page(self, fetcher, url, urgent=urgent)
+
+    async def fetch(self, fetcher: Fetcher) -> Response:
+        self._candidate = None
+        self.listing_poll = None
+        url = bust_cache(self.listing) if self.cache_bust else self.listing
+        if self.rendered:
+            sent = time.monotonic()
+            page = (
+                await self.browser.render(url, 10, fetcher.wait_turn)
+                if self.browser
+                else await fetcher.browser_render(url, 10)
+            )
+            listing = Response(url, page.status, {}, b"", time.monotonic() - sent)
+            self.listing_transport = "chrome-rendered"
+            link = rendered_pdf(page, self.year, self.quarter) if page.status == 200 else None
+        else:
+            listing = await self.request_page(fetcher, url)
+            self.listing_transport = self.transport
+            link = (
+                quarter_pdf(self.listing, listing.body, self.year, self.quarter)
+                if listing.status == 200
+                else None
+            )
+        self.listing_poll = replace(listing, body=b""), time.monotonic()
+        if not link:
+            return listing
+        title = f"Q{self.quarter} {self.year} Earnings Release"
+        self._candidate = Sighting(link, title, link, earnings=True)
+        return await self._pdf(fetcher, link)
+
+    async def _pdf(self, fetcher: Fetcher, link: str) -> Response:
+        # InvestorRoom's same-host PDF links redirect to its dedicated file host.
+        if self.direct or browser_host(link) != browser_host(self.listing):
+            response = await fetcher.request(
+                "GET", link, give_up_after=self.timeout, urgent=True, allow_redirects=False
+            )
+            if response.status in (301, 302, 303, 307, 308):
+                location = response.headers.get("location", "")
+                if not location:
+                    return response
+                destination = urljoin(link, location)
+                try:
+                    host = browser_host(destination)
+                except ValueError:
+                    return response
+                if host not in (browser_host(self.listing), "filecache.investorroom.com"):
+                    return response
+                if (
+                    urlsplit(destination).path.rsplit("/", 1)[-1]
+                    != urlsplit(link).path.rsplit("/", 1)[-1]
+                ):
+                    return response
+                response = await fetcher.request(
+                    "GET",
+                    destination,
+                    give_up_after=self.timeout,
+                    urgent=True,
+                    allow_redirects=False,
+                )
+                return replace(response, url=link)
+            return response
+        return await self.request_page(fetcher, link, urgent=True)
+
+    def parse(self, response: Response) -> list[Sighting]:
+        candidate = self._candidate
+        if (
+            candidate
+            and response.url == candidate.url
+            and response.status == 200
+            and response.body.startswith(b"%PDF-")
+        ):
+            return [replace(candidate, body=response.body)]
+        return []
 
 
 class BrowserRss(Source):

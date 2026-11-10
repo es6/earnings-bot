@@ -75,6 +75,14 @@ _QUARTER_WORD = re.compile(
     re.IGNORECASE,
 )
 _CALL_WORD = re.compile(r"\b(?:conference call|webcast)\b", re.IGNORECASE)
+_REPORT_WORDS = re.compile(
+    r"\b(?:financial|operating|quarterly|annual|interim) results\b|"
+    r"\b(?:reports?|reported|posts?|posted) (?:an? )?(?:\d+(?:\.\d+)?% )?"
+    r"(?:increase|decrease|growth) in earnings\b|"
+    r"\b(?:total revenue reached|net sales reached)\b",
+    re.IGNORECASE,
+)
+_RESULT_HEADING = re.compile(r"\b(?:results|earnings|net sales)\b", re.IGNORECASE)
 
 
 def is_date_notice(headline: str) -> bool:
@@ -95,8 +103,16 @@ def looks_like_earnings(headline: str) -> bool:
     )
 
 
+def results_headline(headline: str) -> bool:
+    """A reported result, with stronger evidence than a mention of a quarter."""
+    return looks_like_earnings(headline) and bool(
+        _REPORT_WORDS.search(headline)
+        or (_QUARTER_WORD.search(headline) and _RESULT_HEADING.search(headline))
+    )
+
+
 def bust_cache(url: str) -> str:
-    # A query parameter the CDN hasn't seen before makes it fetch a fresh copy
+    # Vary the URL for caches that include query parameters in their keys.
     return f"{url}{'&' if '?' in url else '?'}_={time.time_ns()}"
 
 
@@ -131,6 +147,7 @@ class Sighting:
     body: bytes | None = field(default=None, repr=False, compare=False)
     # Already listed when the bot started watching, but published inside the window
     caught_up: bool = False
+    lead: str = field(default="", repr=False, compare=False)
 
 
 class Source(ABC):
@@ -144,8 +161,6 @@ class Source(ABC):
     method = "GET"
     ok_statuses = frozenset({200})
     stop_when_found = False  # stop polling once the source lists anything
-    # A source on trial is recorded but doesn't post to Discord unless the schedule asks
-    trial = False
     report_initial = False  # the source can verify that this is the scheduled release
 
     async def fetch(self, fetcher: Fetcher) -> Response:
@@ -420,6 +435,7 @@ class RssFeed(Source):
                     published=entry.published,
                     earnings=looks_like_earnings(entry.title),
                     details={"feed_built": built} if built else {},
+                    lead=entry.lead[:450],
                 )
             )
         return sightings
@@ -503,7 +519,10 @@ def _atom_entry(entry: ET.Element) -> _Entry:
         title=(entry.findtext(f"{_ATOM}title") or "").strip(),
         lead=entry.findtext(f"{_ATOM}content") or entry.findtext(f"{_ATOM}summary") or "",
         link=link,
-        published=entry.findtext(f"{_ATOM}updated"),
+        published=entry.findtext(f"{_ATOM}published") or entry.findtext(f"{_ATOM}updated"),
+        contributor=entry.findtext(f"{_DC}contributor")
+        or entry.findtext("{http://dublincore.org/documents/dcmi-namespace/}contributor")
+        or "",
     )
 
 

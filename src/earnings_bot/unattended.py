@@ -34,7 +34,6 @@ from earnings_bot.pipeline import (
     DiscordPoster,
     DurableDiscordPoster,
     Releases,
-    ReleaseText,
     keep_warm,
 )
 from earnings_bot.recorder import (
@@ -45,6 +44,7 @@ from earnings_bot.recorder import (
     Target,
     Watch,
     follow_up,
+    followup_end,
     parse_plan,
     record_target,
 )
@@ -117,6 +117,7 @@ class DirectoryWatcher:
         self.last_scan: datetime | None = None
         self.since = store.last_scan() or journal.now()
         self.closed: set[tuple[str, datetime]] = set()
+        self.followed: set[tuple[str, datetime]] = set()
 
     def open_windows(self) -> Iterator[tuple[datetime, datetime]]:
         """The windows of the targets being watched, for keep_warm."""
@@ -278,6 +279,15 @@ class DirectoryWatcher:
             token = (key, target.expected)
             if token in self.closed or self.store.window_closed(*token):
                 self.closed.add(token)
+                if (
+                    self.follow_up
+                    and now < followup_end(target, self.follow_up)
+                    and token not in self.followed
+                    and self.calendar.delivered(key)
+                ):
+                    task = asyncio.create_task(self._resume_links(target))
+                    self.windows[key] = _Window(target, task)
+                    self.followed.add(token)
                 continue
             if target.window[1] <= now:
                 if target.window[1] >= self.since:
@@ -302,38 +312,49 @@ class DirectoryWatcher:
             not window.task.done()
             and window.target.window[0] <= browser_horizon
             and window.target.ir is not None
-            and (window.target.ir.listing or window.target.ir.rss or window.target.ir.pdfs)
+            and (
+                window.target.ir.listing
+                or window.target.ir.rss
+                or window.target.ir.pdfs
+                or window.target.ir.results_table
+            )
             for window in self.windows.values()
         ):
             await self.fetcher.close_browser()
+
+    def _on_new(self, target: Target, source: Source, sighting: Sighting) -> None:
+        self.releases.on_new(target, source, sighting, measure=self.calendar.contains(target.cik))
+
+    async def _resume_links(self, target: Target) -> None:
+        watches = [
+            Watch(target.ticker, source, target.window, period=target.period)
+            for source in target.sources()
+        ]
+        try:
+            await self._follow_links(target, watches)
+        except Exception as error:
+            self.journal.write("followup_error", ticker=target.ticker, message=repr(error))
+        finally:
+            await self.releases.finish_target(target)
+
+    async def _follow_links(self, target: Target, watches: list[Watch]) -> None:
+        await follow_up(
+            target, watches, self.fetcher, self.journal, self._on_new, self.sixk, self.follow_up
+        )
+        self._learn_wire(target, watches)
 
     async def _watch(self, target: Target) -> None:
         # The next scan retries a failed window within seconds, so a lasting failure is
         # reported once, not every 3 s
         problem = f"{target.ticker} monitoring"
-        trial_reads: dict[str, asyncio.Task[None]] = {}
-        trial_text = ReleaseText(self.fetcher, verified_only=True)
-
-        def on_new(target: Target, source: Source, sighting: Sighting) -> None:
-            measure = self.calendar.contains(target.cik)
-            self.releases.on_new(target, source, sighting, measure=measure)
-            if (
-                measure
-                and source.trial
-                and not target.trial.post
-                and sighting.earnings
-                and not sighting.caught_up
-                and source.name not in trial_reads
-            ):
-                trial_reads[source.name] = asyncio.create_task(
-                    self._measure_trial(target, source, sighting, trial_text)
-                )
 
         benchmark = None
         if self.benchmark:
             benchmark = asyncio.create_task(self.benchmark.watch(target.ticker, *target.window))
         try:
-            watches = await record_target(target, self.fetcher, self.journal, on_new, self.polls)
+            watches = await record_target(
+                target, self.fetcher, self.journal, self._on_new, self.polls
+            )
             self._problem(problem, None)
             self.store.close_window(target.release_key, target.expected)
             self.dates.changed.set()
@@ -343,12 +364,12 @@ class DirectoryWatcher:
             self.status(_window_report(target, watches, comparison))
             self._learn_wire(target, watches)
             release = self.releases.active.get(target.release_key)
-            if self.follow_up and release is not None and release.posted:
-                await follow_up(
-                    target, watches, self.fetcher, self.journal, on_new, self.sixk, self.follow_up
-                )
+            if self.follow_up and release is not None:
+                await release.finish()
+                if release.posted:
+                    self.followed.add((target.release_key, target.expected))
+                    await self._follow_links(target, watches)
             await self.releases.finish_target(target)
-            await asyncio.gather(*trial_reads.values(), return_exceptions=True)
             if self.calendar.contains(target.cik):
                 self.calendar.clear_review(target.cik)
                 if self.progress:
@@ -358,25 +379,9 @@ class DirectoryWatcher:
             self.journal.write("error", ticker=target.ticker, message=repr(error))
             self._problem(problem, f"failed and will retry: {error!r}")
         finally:
-            for read in trial_reads.values():
-                if not read.done():
-                    read.cancel()
-            await asyncio.gather(*trial_reads.values(), return_exceptions=True)
             if benchmark is not None:
                 benchmark.cancel()
                 await asyncio.gather(benchmark, return_exceptions=True)
-
-    async def _measure_trial(
-        self, target: Target, source: Source, sighting: Sighting, text: ReleaseText
-    ) -> None:
-        if await text.read(source, sighting):
-            self.journal.write(
-                "source_body",
-                ticker=target.ticker,
-                source=source.name,
-                key=sighting.key,
-                url=sighting.url,
-            )
 
     async def _compare(
         self, target: Target, watches: list[Watch], task: asyncio.Task[BenchmarkResult]
@@ -454,7 +459,7 @@ def _benchmark_report(result: BenchmarkResult, alert: datetime | None) -> str:
 def _window_report(target: Target, watches: list[Watch], comparison: str = "") -> str:
     def label(watch: Watch) -> str:
         form = watch.source.form if isinstance(watch.source, EdgarFilings) else "8-K"
-        return source_label(watch.source.name, form) + (" (trial)" if watch.source.trial else "")
+        return source_label(watch.source.name, form)
 
     period = f" {period_label(target.period)}" if target.period else ""
     lines = [f"🏁 **{target.ticker}{period} window closed**"]

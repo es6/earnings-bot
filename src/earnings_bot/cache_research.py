@@ -47,6 +47,7 @@ class CacheRoute:
     url: str
     warmup: str | None = None
     revalidate: bool = False
+    table_period: tuple[int, int] | None = None
 
 
 @dataclass(frozen=True)
@@ -94,7 +95,11 @@ def _rebuilt(response: Response) -> str:
     return f", last rebuilt {day(moment)} at {clock(moment)}"
 
 
-async def probe_cache(get: Callable[[str], Awaitable[Response]], url: str) -> CacheResult:
+async def probe_cache(
+    get: Callable[[str], Awaitable[Response]],
+    url: str,
+    signature: Callable[[bytes], object] | None = None,
+) -> CacheResult:
     """Two plain requests, then two with unique query strings. A verdict needs a cache layer to
     say what it did; a successful buster also needs equivalent content."""
     samples: list[Response] = []
@@ -130,7 +135,8 @@ async def probe_cache(get: Callable[[str], Awaitable[Response]], url: str) -> Ca
             f"({evidence}{_rebuilt(changed[-1])}). New releases show once the site refreshes it",
             stored_only=True,
         )
-    if any(response.body != normal[0].body for response in samples[1:]):
+    copies = [signature(r.body) if signature else r.body for r in samples]
+    if not copies[0] or any(copy != copies[0] for copy in copies[1:]):
         # A query string could pick a different page, so only the same content counts
         return CacheResult("Responses differed. Query bypass unverified")
     if plain[-1].hits and all(layers.passes for layers in busted):

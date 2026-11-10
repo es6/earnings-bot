@@ -213,7 +213,7 @@ class DurableDiscordPoster(DiscordPoster):
         urls = [_line_url(line) for line in lines[2:]]
         for line in content.splitlines()[2:]:
             url = _line_url(line)
-            if url not in urls and not any(_same_filing(url, known) for known in urls):
+            if url not in urls and not any(_same_release_link(url, known) for known in urls):
                 lines.append(line)
                 urls.append(url)
         merged = "\n".join(lines)
@@ -281,6 +281,7 @@ def describe_source(source: Source) -> str:
 
 _FILING_FOLDER = re.compile(r"https://www\.sec\.gov/Archives/edgar/data/\d+/\d+/")
 # A link line's URL, in an alert's `[label](<url>)` lines or the older `label: <url>` ones
+_PRN_EDITION = re.compile(r"https://www\.prnewswire\.com/news-releases/([^/?#]+)-\d{9}\.html")
 _LINE_URL = re.compile(r"<(https?://[^>\s]+)>")
 
 
@@ -307,11 +308,13 @@ def _filing_folder(url: str) -> str | None:
     return match.group(0) if match else None
 
 
-def _same_filing(a: str, b: str) -> bool:
-    """Whether two SEC links point into one filing's folder: one SEC source links its index page
-    and the other its main document."""
+def _same_release_link(a: str, b: str) -> bool:
+    """Collapse alternate links to the same SEC filing or PR Newswire headline."""
     folder = _filing_folder(a)
-    return folder is not None and folder == _filing_folder(b)
+    if folder is not None:
+        return folder == _filing_folder(b)
+    first, second = _PRN_EDITION.fullmatch(a), _PRN_EDITION.fullmatch(b)
+    return bool(first and second and first[1] == second[1])
 
 
 def _file_name(url: str) -> str:
@@ -477,7 +480,7 @@ class Release:
 
     async def _link(self, label: str, url: str) -> None:
         async with self.lock:
-            if url in self.links or any(_same_filing(url, known) for known in self.links):
+            if url in self.links or any(_same_release_link(url, known) for known in self.links):
                 return
             self.links[url] = label
             try:
@@ -792,8 +795,6 @@ class Releases:
         """Called by the recorder for each new item any source lists."""
         if not sighting.earnings:
             return
-        if source.trial and not target.trial.post:
-            return  # logged by the recorder, but not posted until the source is proven
         key = target.release_key
         release = self.active.get(key)
         if release is None:
