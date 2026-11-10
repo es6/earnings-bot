@@ -11,7 +11,7 @@ import aiohttp
 import discord
 
 from earnings_bot.calendar import Calendar, Tracked, evidence_text
-from earnings_bot.date_discovery import CHECKING_CACHE, READING_IR, VERIFYING_IR
+from earnings_bot.date_discovery import CHECKING_CACHE, READING_IR, RECHECKING, VERIFYING_IR
 from earnings_bot.delivery import DeliveryStore
 from earnings_bot.formatting import (
     AMBER,
@@ -160,17 +160,24 @@ class TrackProgress:
 
     def follow_calendar(self) -> None:
         """After the calendar moved to a new channel, its scorecards keep their messages, so
-        they're edited as before instead of posted again."""
-        old = self.calendar.moved_from
-        if old is None:
-            return
-        before, after = f"track:{old}:", f"track:{self.calendar.channel}:"
+        they're edited as before instead of posted again. Any process can have moved the
+        calendar, such as the update script's window check, so this goes by the records
+        themselves: a card kept under another calendar channel's key is this one's."""
+        current = f"track:{self.calendar.channel}:"
+        rows = self.store.db.execute(
+            "SELECT release_key FROM alerts WHERE channel_id = ? AND release_key LIKE 'track:%'",
+            (self.store.channel_id,),
+        ).fetchall()
+        tracked = {str(row.cik) for row in self.calendar.entries()}
         with self.store.db:
-            self.store.db.execute(
-                "UPDATE OR IGNORE alerts SET release_key = ? || substr(release_key, ?) "
-                "WHERE channel_id = ? AND substr(release_key, 1, ?) = ?",
-                (after, len(before) + 1, self.store.channel_id, len(before), before),
-            )
+            for (key,) in rows:
+                _, channel, cik = key.split(":", 2)
+                if channel != str(self.calendar.channel) and cik in tracked:
+                    self.store.db.execute(
+                        "UPDATE OR IGNORE alerts SET release_key = ? "
+                        "WHERE channel_id = ? AND release_key = ?",
+                        (current + cik, self.store.channel_id, key),
+                    )
 
     async def publish(self, cik: int, embed: discord.Embed) -> None:
         shown = embed.to_dict()
@@ -220,7 +227,9 @@ class TrackProgress:
             and not note
             and issuer_listing(row.ticker, row.company)
         )
-        no_date = bool(phase and phase.startswith("No release date"))
+        # Looked for and not found, or not announced yet after the last release
+        no_date = bool(phase and RECHECKING in phase)
+        between = bool(no_date and phase and not phase.startswith("No release date"))
 
         # The checklist, and the color and headline it adds up to
         form = row.company.sec_form or "8-K"
@@ -243,6 +252,8 @@ class TrackProgress:
                 steps.append(f"{WAITING if busy else TODO} IR verification ({pause})")
         elif phase and (phase.startswith("Looking") or phase == READING_IR):
             steps.append(f"{WORKING} {phase}…")
+        elif phase and between:
+            steps.append(f"{WAITING} {phase}")
         elif phase and no_date:
             steps.append(f"{FAILED} {phase}")
         elif phase and phase != CHECKING_CACHE:
