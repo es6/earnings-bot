@@ -66,6 +66,21 @@ def issuer_links(url: str, body: bytes) -> list[tuple[str, str]]:
     )
 
 
+def next_page(listing: str, links: list[tuple[str, str]]) -> str | None:
+    """The link to a press release list's next page, such as "Next" to ?page=1."""
+    path = urlsplit(listing).path
+    return next(
+        (
+            link
+            for link, title in links
+            if urlsplit(link).path == path
+            and urlsplit(link).query
+            and "next" in title.casefold().split()
+        ),
+        None,
+    )
+
+
 def _records(value: object) -> Iterator[dict]:
     if isinstance(value, dict):
         yield value
@@ -178,7 +193,6 @@ async def verified_browser_source(
                 except _ERRORS:
                     pass  # The HTML listing remains a candidate.
             url = listing
-            path = urlsplit(listing).path
             seen = set()
             for _ in range(6):
                 if url in seen:
@@ -189,7 +203,7 @@ async def verified_browser_source(
                     return None, f"Chrome got HTTP {page.status} from <{url}>"
                 links = issuer_links(url, page.body)
                 for link, title in links:
-                    if not pattern.fullmatch(title):
+                    if not pattern.fullmatch(title) or not looks_like_earnings(title):
                         continue
                     article = await browser.request(link, listing, 4, fetcher.wait_turn)
                     text = html_to_text(article.body.decode(errors="replace"))
@@ -205,19 +219,10 @@ async def verified_browser_source(
                         )
                         return source, f"Last quarter's results, “{title}”, read in Chrome"
                     return None, f"Last quarter's article “{title}” didn't read as a results report"
-                next_page = next(
-                    (
-                        link
-                        for link, title in links
-                        if urlsplit(link).path == path
-                        and urlsplit(link).query
-                        and "next" in title.casefold().split()
-                    ),
-                    None,
-                )
-                if next_page is None:
+                following = next_page(listing, links)
+                if following is None:
                     break
-                url = next_page
+                url = following
     except _ERRORS as error:
         return None, f"Chrome couldn't read <{listing}> ({type(error).__name__})"
     return None, f"No {last} results headline on <{listing}> to check the pattern against"

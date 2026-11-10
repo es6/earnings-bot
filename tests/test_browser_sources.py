@@ -306,6 +306,25 @@ def test_browser_feed_and_listing_split_the_same_hosts_poll_budget() -> None:
     assert sum(1 / source.interval for source in sources) == 1
 
 
+async def test_amat_results_are_read_when_the_date_notice_is_listed_first() -> None:
+    listing = "https://ir.appliedmaterials.com/news-releases"
+    release = listing + "/news-release-details/q4-results"
+    title = "Applied Materials Announces Fourth Quarter and Fiscal 2026 Results"
+    links = (
+        '<a href="/news-releases/q4-date">Applied Materials to Report Fourth Quarter and '
+        "Fiscal 2026 Results on Nov. 12, 2026</a>"
+        f'<a href="{release}">{title}</a>'
+    ).encode()
+    body = f"<h1>{title}</h1><p>{'Revenue and earnings per share. ' * 120}</p>".encode()
+    fetcher = BrowserFake([(200, links), (200, body)])
+    source = BrowserRelease(listing, quarter_headline(2026, 4), verify_text=True)
+
+    _, items = await poll(source, fetcher)
+
+    assert [item.url for item in items] == [release]
+    assert fetcher.browser_calls == [(listing, listing, False), (release, listing, True)]
+
+
 @pytest.mark.parametrize("wire_first", [False, True])
 async def test_live_chrome_posts_or_edits_one_alert_with_the_issuer_pdf(wire_first: bool) -> None:
     article_url = "https://ir.lucidmotors.com/news-releases/news-release-details/q3"
@@ -429,7 +448,8 @@ def test_chrome_feed_keeps_watching_when_an_item_is_outside_the_window(
     target = Target(ticker="LCID", cik=1811210, expected=datetime(2026, 11, 9, 16, 5, tzinfo=ET))
     source = BrowserRss(LUCID_RSS, LUCID, LUCID_Q3)
     watch = Watch(target.ticker, source, target.window)
-    log, sightings = io.StringIO(), []
+    log = io.StringIO()
+    sightings: list[Sighting] = []
     journal = Journal(log)
     title = "Lucid Announces Third Quarter 2026 Results"
     article = "https://ir.lucidmotors.com/news-releases/q3"
