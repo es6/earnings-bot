@@ -17,7 +17,8 @@ import aiohttp
 
 from earnings_bot.browser import BrowserError
 from earnings_bot.fetch import Fetcher, Response
-from earnings_bot.ir_research import issuer_links
+from earnings_bot.formatting import clock
+from earnings_bot.ir_research import issuer_links, next_page
 from earnings_bot.issuers import SEC_SUBMISSIONS, filing_form, release_time
 from earnings_bot.known import KnownCompany, SourceCheck, known_companies
 from earnings_bot.recorder import ET, PollError, poll
@@ -26,6 +27,7 @@ from earnings_bot.sources import (
     EdgarFilings,
     Q4PressReleases,
     RssFeed,
+    is_date_notice,
     looks_like_earnings,
     published_time,
 )
@@ -33,6 +35,10 @@ from earnings_bot.text import html_to_text, release_text, verified_report
 
 log = logging.getLogger(__name__)
 REINVESTIGATE = timedelta(days=30)
+# Raised when the investigation learns to find more, so companies get looked at again:
+# 1 kept what it checked, 2 reads the wire from any release, skips date notices, looks a few
+# pages back for the latest results and keeps when the IR site says they were posted
+INVESTIGATION = 2
 _HOST = re.compile(r"\b((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,})\b", re.IGNORECASE)
 _IR_HOST = re.compile(r"^(?:ir|investors?|investor-?relations)\.", re.IGNORECASE)
 _IR_LINK = re.compile(
@@ -57,6 +63,18 @@ _LISTING = re.compile(r"/(?:press|news)[-_]?releases?/?$", re.IGNORECASE)
 # Where IR sites usually keep it, for one whose home page doesn't link it plainly
 _LISTINGS = ("/press-releases", "/news-releases")
 _BLOCKED = frozenset({401, 403, 429})
+# When an IR page says it was posted: "Aug 13, 2026 at 4:01 PM EDT"
+_POSTED = re.compile(
+    r"\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+(\d{1,2}),\s+(20\d{2})"
+    r",?\s+(?:at\s+)?(\d{1,2}):(\d{2})\s*([AP])\.?M\.?\s+(?:EDT|EST|ET|Eastern)\b",
+    re.IGNORECASE,
+)
+_MONTH_NUMBERS = {
+    name: i
+    for i, name in enumerate(
+        ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"), 1
+    )
+}
 _ERRORS = (aiohttp.ClientError, TimeoutError, ValueError, KeyError, TypeError, AttributeError)
 
 
@@ -80,8 +98,8 @@ def due(ticker: str, company: KnownCompany, today: date) -> bool:
     return (
         (company.sec_form is None and not company.eightk)
         or company.investigated is None
-        # Investigated before it kept what it checked, which the scorecard shows
-        or not company.checks
+        # Investigated by an older version, which missed things this one finds
+        or company.investigation < INVESTIGATION
         or today - company.investigated >= REINVESTIGATE
     )
 
@@ -169,6 +187,8 @@ class Findings:
     listing: str | None = None  # read through Chrome
     blocked: bool = False
     wire: str | None = None
+    posted: datetime | None = None  # when the IR site says the latest results were posted
+    release_url: str | None = None
 
     def describe(self, today: date) -> str:
         chrome = f"Chrome reads <{self.listing}>." if self.listing else ""
@@ -264,6 +284,8 @@ async def _feed(fetcher: Fetcher, candidates: list[str]) -> tuple[str | None, st
 class ChromeVisit:
     listing: str | None = None  # the press release list Chrome read
     title: str | None = None  # the latest results it opened from there
+    url: str | None = None  # and their page
+    posted: datetime | None = None  # when that page says they were posted
     wire: str | None = None
     problem: str | None = None  # why it couldn't read the latest results
 
@@ -292,30 +314,75 @@ async def _through_chrome(fetcher: Fetcher, chrome: OpenChrome, home: str) -> Ch
             if visit.listing is None:
                 visit.problem = f"Chrome found no press release list on {host}"
                 return visit
-            articles = [(link, title) for link, title in links if looks_like_earnings(title)]
-            if not articles:
-                visit.problem = f"<{visit.listing}> shows no results headline"
-                return visit
-            # A menu link such as "Quarterly Results" looks like one too, so the first that
-            # reads as a results report counts
-            tried = []
-            for link, title in articles[:3]:
-                article = await browser.request(link, home, 8, fetcher.wait_turn)
-                text = html_to_text(article.body.decode(errors="replace"))
-                if article.status == 200 and verified_report(text):
-                    visit.title = title
-                    visit.wire = wire(text)
-                    return visit
-                tried.append(
-                    f"“{title}” (HTTP {article.status})"
-                    if article.status != 200
-                    else f"“{title}” isn't a results report"
+            notices: list[tuple[str, str]] = []
+            tried: list[str] = []
+            pages = {visit.listing}
+            opened: set[str] = set()
+            # The latest results may be a page or two back, behind newer releases
+            for page_number in range(3):
+                notices += [(link, title) for link, title in links if is_date_notice(title)]
+                articles = {
+                    link: title
+                    for link, title in links
+                    if link not in opened and looks_like_earnings(title)
+                }
+                # A menu link such as "Quarterly Results" looks like one too, so the first that
+                # reads as a results report counts
+                for link, title in list(articles.items())[:3]:
+                    opened.add(link)
+                    article = await browser.request(link, home, 8, fetcher.wait_turn)
+                    text = html_to_text(article.body.decode(errors="replace"))
+                    if article.status == 200 and verified_report(text):
+                        visit.title, visit.url, visit.posted = title, link, posted_time(text)
+                        visit.wire = wire(text)
+                        return visit
+                    tried.append(
+                        f"“{title}” (HTTP {article.status})"
+                        if article.status != 200
+                        else f"“{title}” isn't a results report"
+                    )
+                following = next_page(visit.listing, links)
+                if page_number == 2 or following is None or following in pages:
+                    break
+                pages.add(following)
+                page = await browser.request(following, home, 8, fetcher.wait_turn)
+                if page.status != 200:
+                    break
+                links = issuer_links(following, page.body)
+            if tried:
+                visit.problem = "Chrome opened " + ", ".join(tried)
+            elif notices:
+                visit.problem = (
+                    f"<{visit.listing}> shows a date notice, “{notices[0][1]}”, but no results "
+                    "release to read"
                 )
-            visit.problem = "Chrome opened " + ", ".join(tried)
+            else:
+                visit.problem = f"<{visit.listing}> shows no results headline"
     except (BrowserError, *_ERRORS) as error:
         log.info("Chrome couldn't read %s: %r", home, error)
         visit.problem = f"Chrome couldn't read {host} ({type(error).__name__})"
     return visit
+
+
+def posted_time(text: str) -> datetime | None:
+    """When a release page says it was posted, from near its top."""
+    match = _POSTED.search(text[:1500])
+    if match is None:
+        return None
+    month, day, year, hour, minute, half = match.groups()
+    if not 1 <= int(hour) <= 12:
+        return None
+    try:
+        return datetime(
+            int(year),
+            _MONTH_NUMBERS[month[:3].lower()],
+            int(day),
+            int(hour) % 12 + (12 if half.upper() == "P" else 0),
+            int(minute),
+            tzinfo=ET,
+        )
+    except ValueError:
+        return None
 
 
 def _wire_checks(report: Report, found: str | None) -> None:
@@ -323,13 +390,13 @@ def _wire_checks(report: Report, found: str | None) -> None:
         source = f"{name} earnings feed"
         if found == name:
             trial = " On trial: recorded, not posted yet." if name == "GlobeNewswire" else ""
-            report.watch(source, f"Its latest results release went out on {name}.{trial}")
+            report.watch(source, f"Its releases go out on {name}.{trial}")
         elif found:
-            report.reject(source, f"Its latest results release went out on {found}")
+            report.reject(source, f"Its releases go out on {found}")
         elif name == "GlobeNewswire":
-            report.reject(source, "Its release names no wire, and this feed is only watched then")
+            report.reject(source, "No release named its wire, and this feed is only watched then")
         else:
-            report.watch(source, "Its release names no wire, so both main wires are watched")
+            report.watch(source, "No release named its wire, so both main wires are watched")
 
 
 async def investigate(
@@ -433,10 +500,11 @@ async def investigate(
             # Kept even without readable results: date notices are read from it too
             findings.listing = visit.listing
             if visit.title and visit.listing:
-                report.watch(
-                    f"Press release page <{visit.listing}>, read in Chrome",
-                    f"Chrome read its latest results, “{visit.title}”",
-                )
+                why = f"Chrome read its latest results, “{visit.title}”"
+                if when := visit.posted:
+                    why += f", posted {when:%b} {when.day} at {clock(when)}"
+                report.watch(f"Press release page <{visit.listing}>, read in Chrome", why)
+                findings.posted, findings.release_url = visit.posted, visit.url
             else:
                 report.reject(f"{host} press release page", visit.problem or "Unread")
         if findings.listing is None and not (findings.blocked or findings.q4 or findings.feeds):
@@ -457,10 +525,13 @@ async def investigate(
             "reachable": findings.q4 or bool(findings.feeds),
             "rss": findings.feeds,
             "ir_listing": findings.listing,
+            "ir_posted": findings.posted,
+            "ir_release": findings.release_url,
             "wire": found_wire,
             "trial": trial,
             "evidence": findings.describe(today),
             "investigated": today,
+            "investigation": INVESTIGATION,
             "checks": report.checks,
         }
     )

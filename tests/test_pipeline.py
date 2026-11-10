@@ -501,7 +501,9 @@ async def test_an_alert_with_too_many_links_is_cut_to_discords_limit() -> None:
     assert poster.calls[-1][1].endswith("…")
 
 
-async def test_an_alert_names_the_quarter_and_masks_each_link() -> None:
+async def test_an_alert_names_the_quarter_and_masks_each_link(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     target = Target(
         ticker="LCID",
         expected=datetime(2026, 11, 9, 16, 5, tzinfo=ET),
@@ -510,6 +512,7 @@ async def test_an_alert_names_the_quarter_and_masks_each_link() -> None:
     )
     poster = FakePoster()
     journal = Journal(io.StringIO())
+    monkeypatch.setattr(journal, "now", lambda: target.expected)
     release = Release(target, poster, RoutedFetcher({}), journal, None, None)
     wire = RssFeed("prnewswire_busted", "https://www.prnewswire.com/rss/x.rss", ["Lucid Group"])
     article = "https://www.prnewswire.com/news-releases/lucid-q3.html"

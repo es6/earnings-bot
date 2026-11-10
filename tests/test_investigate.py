@@ -9,17 +9,18 @@ from typing import Self
 
 import pytest
 
-from earnings_bot import date_discovery, investigate
+from earnings_bot import date_discovery, investigate, ir_research
 from earnings_bot.calendar import Calendar, describe
 from earnings_bot.date_discovery import DateDiscovery
 from earnings_bot.delivery import DeliveryStore
 from earnings_bot.fetch import Response
-from earnings_bot.investigate import due, feed_links, ir_hosts, wire
+from earnings_bot.investigate import INVESTIGATION, due, feed_links, ir_hosts, wire
 from earnings_bot.issuers import profile
 from earnings_bot.known import SourceCheck, known_companies, to_target
 from earnings_bot.recorder import ET
 from tests.fakes import RoutedFetcher
 from tests.sec_data import LCID_CIK, LCID_SUBMISSIONS
+from tests.test_date_discovery import AMAT, AMAT_NOTICE_BODY
 from tests.test_pipeline import filing_routes
 
 TODAY = date(2026, 11, 9)
@@ -191,17 +192,17 @@ async def test_a_q4_site_is_polled_directly(released: Callable[[str], None]) -> 
         (
             "PR Newswire earnings feed",
             False,
-            "Its latest results release went out on Business Wire",
+            "Its releases go out on Business Wire",
         ),
         (
             "Business Wire earnings feed",
             True,
-            "Its latest results release went out on Business Wire.",
+            "Its releases go out on Business Wire.",
         ),
         (
             "GlobeNewswire earnings feed",
             False,
-            "Its latest results release went out on Business Wire",
+            "Its releases go out on Business Wire",
         ),
     ]
     target = to_target("LCID", NOW, 2026, 4, found)
@@ -361,11 +362,17 @@ def test_only_companies_outside_the_catalog_are_investigated_and_then_monthly() 
     assert not due("NVDA", known_companies()["NVDA"], TODAY)
     assert due("LCID", LUCID, TODAY)
     checked = [SourceCheck(source="SEC 8-K filings", watch=True, why="Filed here")]
-    looked = LUCID.model_copy(update={"investigated": date(2026, 10, 11), "checks": checked})
+    looked = LUCID.model_copy(
+        update={
+            "investigated": date(2026, 10, 11),
+            "checks": checked,
+            "investigation": INVESTIGATION,
+        }
+    )
     assert not due("LCID", looked, TODAY)
     assert due("LCID", looked, date(2026, 11, 10))
-    # Looked at before the bot kept what it checked
-    assert due("LCID", looked.model_copy(update={"checks": []}), TODAY)
+    # Looked at by an older version of the investigation, which finds less
+    assert due("LCID", looked.model_copy(update={"investigation": INVESTIGATION - 1}), TODAY)
 
 
 NOTICE = {
@@ -477,16 +484,16 @@ async def test_every_source_checked_is_reported_with_why_as_it_goes(
             True,
             f"Chrome read its latest results, “{LUCID_Q2_TITLE}”",
         ),
-        ("PR Newswire earnings feed", True, "Its latest results release went out on PR Newswire."),
+        ("PR Newswire earnings feed", True, "Its releases go out on PR Newswire."),
         (
             "Business Wire earnings feed",
             False,
-            "Its latest results release went out on PR Newswire",
+            "Its releases go out on PR Newswire",
         ),
         (
             "GlobeNewswire earnings feed",
             False,
-            "Its latest results release went out on PR Newswire",
+            "Its releases go out on PR Newswire",
         ),
     ]
     # The scorecard hears of each finding as it's made
@@ -660,3 +667,188 @@ async def test_a_menu_link_that_looks_like_results_isnt_taken_for_them(
         False,
         "Chrome opened “Quarterly Results” isn't a results report",
     ) in [(c.source, c.watch, c.why) for c in found.checks]
+
+
+AMAT_HOME = "https://ir.appliedmaterials.com/"
+AMAT_LIST = "https://ir.appliedmaterials.com/news-releases"
+AMAT_NOTICE = AMAT_LIST + "/news-release-details/applied-materials-report-fourth-quarter"
+AMAT_Q3 = AMAT_LIST + "/news-release-details/applied-materials-announces-third-quarter-2026"
+AMAT_NOTICE_TITLE = (
+    "Applied Materials to Report Fourth Quarter and Fiscal 2026 Results on Nov. 12, 2026"
+)
+
+
+def amat_chrome(results_page: bool = True) -> FakeChrome:
+    """Applied Materials' IR site: the newest page of its list has only the date notice, and
+    its last results are on the next page."""
+    return FakeChrome(
+        {
+            AMAT_HOME: (200, '<a href="/news-releases">News</a>'),
+            AMAT_LIST: (
+                200,
+                f'<a href="{AMAT_NOTICE}">{AMAT_NOTICE_TITLE}</a>'
+                '<a href="/news-releases/news-release-details/kioxia">Applied Materials and '
+                "KIOXIA Partner at the EPIC Center</a>"
+                + ('<a href="?page=1">Next page</a>' if results_page else ""),
+            ),
+            AMAT_LIST + "?page=1": (
+                200,
+                (
+                    f'<a href="{AMAT_Q3}">Applied Materials Announces Third Quarter 2026 '
+                    "Results</a>"
+                    '<a href="?page=0">Previous page</a><a href="?page=2">Next page</a>'
+                ),
+            ),
+            AMAT_Q3: (
+                200,
+                (
+                    "<h1>Applied Materials Announces Third Quarter 2026 Results</h1>"
+                    "<p>Aug 13, 2026 at 4:01 PM EDT</p><p>SANTA CLARA, Calif., Aug. 13, 2026 "
+                    f"(GLOBE NEWSWIRE) -- Applied Materials, Inc. today reported</p>{REPORT}"
+                ),
+            ),
+            AMAT_NOTICE: (
+                200,
+                (
+                    f"<h1>{AMAT_NOTICE_TITLE}</h1><p>SANTA CLARA, Calif., Oct. 22, 2026 "
+                    "(GLOBE NEWSWIRE) -- Applied Materials, Inc. today announced</p>"
+                ),
+            ),
+        }
+    )
+
+
+async def test_chrome_looks_past_a_date_notice_to_the_last_results_and_their_time(
+    released: Callable[[str], None],
+) -> None:
+    # Its 8-K exhibit names the IR site but carries no dateline
+    released("Applied Materials Announces Third Quarter 2026 Results. ir.appliedmaterials.com")
+    fetcher = RoutedFetcher({"ir.appliedmaterials.com/": (403, b"Access Denied")})
+    chrome = amat_chrome()
+
+    found = await investigate.investigate(fetcher, LUCID, TODAY, chrome.open)
+
+    assert [url for url, _ in chrome.calls] == [
+        AMAT_HOME,
+        AMAT_LIST,
+        AMAT_LIST + "?page=1",
+        AMAT_Q3,
+    ]
+    assert (found.ir_listing, found.ir_release) == (AMAT_LIST, AMAT_Q3)
+    assert found.ir_posted == datetime(2026, 8, 13, 16, 1, tzinfo=ET)
+    assert found.wire == "GlobeNewswire"
+    assert (
+        f"Press release page <{AMAT_LIST}>, read in Chrome",
+        True,
+        (
+            "Chrome read its latest results, “Applied Materials Announces Third Quarter 2026 "
+            "Results”, posted Aug 13 at 4:01 PM ET"
+        ),
+    ) in [(c.source, c.watch, c.why) for c in found.checks]
+
+
+async def test_a_date_notice_alone_keeps_both_live_wires(released: Callable[[str], None]) -> None:
+    released("Results. ir.appliedmaterials.com")
+    fetcher = RoutedFetcher({"ir.appliedmaterials.com/": (403, b"Access Denied")})
+
+    found = await investigate.investigate(fetcher, LUCID, TODAY, amat_chrome(False).open)
+
+    assert found.wire == "unknown"
+    target = to_target("LCID", NOW, 2026, 4, found)
+    assert target.prnewswire == target.newswire == LUCID.names
+    assert found.ir_posted is None
+    assert (
+        "ir.appliedmaterials.com press release page",
+        False,
+        f"<{AMAT_LIST}> shows a date notice, “{AMAT_NOTICE_TITLE}”, but no results release to read",
+    ) in [(c.source, c.watch, c.why) for c in found.checks]
+
+
+async def test_only_verified_chrome_results_set_the_wire(
+    released: Callable[[str], None],
+) -> None:
+    released("Results. ir.appliedmaterials.com")
+    fetcher = RoutedFetcher({AMAT_HOME: (403, b"Access Denied")})
+    chrome = amat_chrome()
+    unavailable = AMAT_LIST + "/unavailable"
+    navigation = AMAT_LIST + "/quarterly"
+    chrome.pages[AMAT_LIST] = (
+        200,
+        (
+            f'<a href="{unavailable}">Recent Earnings Results</a>'
+            f'<a href="{navigation}">Quarterly Results</a>'
+            f'<a href="{AMAT_Q3}">Applied Materials Announces Third Quarter 2026 Results</a>'
+        ),
+    )
+    chrome.pages[unavailable] = (404, "<p>(GLOBE NEWSWIRE) --</p>" + REPORT)
+    chrome.pages[navigation] = (200, "<p>Quarterly Results</p>")
+    chrome.pages[AMAT_Q3] = (200, f"<p>{DATELINE}</p>{REPORT}")
+
+    found = await investigate.investigate(fetcher, LUCID, TODAY, chrome.open)
+
+    assert found.ir_release == AMAT_Q3
+    assert found.wire == "PR Newswire"
+
+
+async def test_amat_notice_in_chrome_saves_the_window_and_prepares_live_ir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fetcher = RoutedFetcher({AMAT_HOME: (403, b"Access Denied")})
+    chrome = amat_chrome()
+    chrome.pages[AMAT_NOTICE] = (200, AMAT_NOTICE_BODY)
+    monkeypatch.setattr(fetcher, "research_browser", chrome.open)
+    monkeypatch.setattr(date_discovery, "chrome_available", lambda: True)
+    monkeypatch.setattr(ir_research, "chrome_available", lambda: True)
+    company = AMAT.model_copy(
+        update={
+            "ir_listing": AMAT_LIST,
+            "sec_form": "8-K",
+            "investigated": TODAY,
+            "investigation": INVESTIGATION,
+        }
+    )
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        calendar = Calendar(store)
+        row, _ = calendar.add("AMAT", 1, NOW, company)
+        dates = DateDiscovery(calendar, fetcher, lambda: NOW, lambda: False, lambda _: None)
+        await dates._check(row)
+        [planned] = calendar.entries()
+
+    assert planned.target is not None
+    assert planned.target.expected == datetime(2026, 11, 12, 16, tzinfo=ET)
+    assert planned.target.period == "FY2026Q4"
+    assert planned.evidence == f"Issuer date confirmed, release time estimated <{AMAT_NOTICE}>"
+    assert planned.target.ir and planned.target.ir.listing == AMAT_LIST
+    assert planned.target.ir.verify_text
+
+
+@pytest.mark.parametrize(
+    ("text", "posted"),
+    [
+        ("Title\nAug 13, 2026 at 4:01 PM EDT\nPDF", datetime(2026, 8, 13, 16, 1, tzinfo=ET)),
+        ("November 12, 2026 4:05 p.m. ET", datetime(2026, 11, 12, 16, 5, tzinfo=ET)),
+        ("Feb. 3, 2027, 8:30 AM EST", datetime(2027, 2, 3, 8, 30, tzinfo=ET)),
+        ("Oct 22, 2026 at 12:15 PM Eastern", datetime(2026, 10, 22, 12, 15, tzinfo=ET)),
+        ("Aug 13, 2026", None),
+        ("Feb 30, 2026 at 4:01 PM EDT", None),
+    ],
+)
+def test_a_release_page_says_when_it_was_posted(text: str, posted: datetime | None) -> None:
+    assert investigate.posted_time(text) == posted
+
+
+async def test_an_unreadable_notice_on_the_press_release_list_is_reported() -> None:
+    listing = "https://ir.example.com/news-releases"
+    notice = "https://ir.example.com/news/q4-date"
+    title = "Example to Announce Fourth Quarter Fiscal 2026 Results"
+    fetcher = RoutedFetcher(
+        {
+            notice: (200, b"<p>Details to follow.</p>"),
+            listing: (200, f'<a href="{notice}">{title}</a>'.encode()),
+        }
+    )
+    company = LUCID.model_copy(update={"ir_listing": listing})
+    unread: list[str] = []
+
+    assert await date_discovery.find_date(fetcher, "LCID", NOW, company, unread) is None
+    assert unread == [title]

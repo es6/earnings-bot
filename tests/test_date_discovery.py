@@ -1,7 +1,7 @@
 import asyncio
 import json
 from collections.abc import Callable
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -19,10 +19,12 @@ from earnings_bot.date_discovery import (
 )
 from earnings_bot.delivery import DeliveryStore
 from earnings_bot.fetch import Fetcher, Response
+from earnings_bot.investigate import INVESTIGATION
 from earnings_bot.ir_research import IR_LISTINGS
 from earnings_bot.issuers import profile
-from earnings_bot.known import SourceCheck, known_companies, to_target
+from earnings_bot.known import KnownCompany, SourceCheck, known_companies, to_target
 from earnings_bot.recorder import ET
+from earnings_bot.sources import is_date_notice
 from tests.fakes import RoutedFetcher
 from tests.sec_data import LCID_CIK, LCID_SUBMISSIONS
 
@@ -298,6 +300,7 @@ LUCID = profile("LCID", LCID_CIK, "Lucid Group, Inc.", LCID_SUBMISSIONS, NOW.dat
     update={
         "investigated": NOW.date(),
         "checks": [SourceCheck(source="SEC 8-K filings", watch=True, why="Filed here")],
+        "investigation": INVESTIGATION,
     }
 )
 FMP_ROUTE = "financialmodelingprep.com/stable/earnings?symbol=LCID"
@@ -445,3 +448,159 @@ async def test_fmp_isnt_asked_without_a_time_or_fiscal_year_to_go_with_its_date(
 def test_catalog_companies_have_no_fiscal_year_end_so_fmp_leaves_them_alone() -> None:
     # Their dates come from the issuer, which an FMP guess mustn't replace
     assert all(c.fiscal_year_end is None for c in known_companies().values())
+
+
+# Applied Materials' notice on its IR site, Oct 22, 2026, as Chrome reads it
+AMAT_NOTICE_TITLE = (
+    "Applied Materials to Report Fourth Quarter and Fiscal 2026 Results on Nov. 12, 2026"
+)
+AMAT_NOTICE_BODY = (
+    "<h1>Applied Materials to Report Fourth Quarter and Fiscal 2026 Results on Nov. 12, 2026</h1>"
+    "<p>Oct 22, 2026 at 7:30 AM EDT</p><p>SANTA CLARA, Calif., Oct. 22, 2026 (GLOBE NEWSWIRE) "
+    "-- Applied Materials, Inc. today announced that it will hold its fourth quarter and fiscal "
+    "2026 earnings conference call on Thursday, Nov. 12, 2026, at 4:30 p.m. ET / 1:30 p.m. PT."
+    "</p><p>The call will be webcast live at: https://ir.appliedmaterials.com. A replay will be "
+    "available on the same day by 8:00 p.m. ET / 5:00 p.m. PT.</p>"
+)
+AMAT = KnownCompany(
+    name="APPLIED MATERIALS INC /DE",
+    names=["APPLIED MATERIALS", "NASDAQ: AMAT"],
+    cik=6951,
+    platform="own-site",
+    reachable=False,
+    wire="GlobeNewswire",
+    release_time="16:00",
+    fiscal_year_end="1026",
+    fastest="unknown",
+    evidence="Investigated Nov 09",
+    checked=date(2026, 11, 9),
+)
+
+
+def test_a_headline_with_the_date_is_read_even_when_the_notice_is_about_the_call() -> None:
+    now = datetime(2026, 11, 9, 21, tzinfo=ET)
+
+    result = parse_notice("AMAT", AMAT, AMAT_NOTICE_TITLE, AMAT_NOTICE_BODY, now)
+
+    assert result is not None
+    target, evidence = result
+    # The day from the headline, the time from its past 8-Ks: the call's 4:30 isn't the release
+    assert target.expected == datetime(2026, 11, 12, 16, tzinfo=ET)
+    assert target.period == "FY2026Q4"
+    assert evidence == "Issuer date confirmed, release time estimated"
+    assert (target.before_minutes, target.after_minutes) == (60, 90)
+
+
+@pytest.mark.parametrize(
+    ("title", "period"),
+    [
+        ("Acme to Report Fourth Quarter and Fiscal Year 2026 Results on Nov. 12", "FY2026Q4"),
+        ("Acme to Report Fourth Quarter and Full Year 2026 Results on Nov. 12", "FY2026Q4"),
+        ("Acme to Report Q4 & Fiscal 2026 Results on Sept. 12", "FY2026Q4"),
+        ("Acme to Announce Third Quarter of Fiscal 2026 Results on Nov 12", "FY2026Q3"),
+    ],
+)
+def test_notice_headlines_name_their_quarter_in_several_ways(title: str, period: str) -> None:
+    now = datetime(2026, 8, 1, 9, tzinfo=ET)
+    result = parse_notice("AMAT", AMAT, title, "<p>Details to follow.</p>", now)
+    assert result is not None and result[0].period == period
+
+
+def test_a_reset_isnt_a_date_notice() -> None:
+    assert not is_date_notice("Lucid Announces Operational Reset and Second Quarter 2026 Results")
+    assert is_date_notice("Lucid Sets Date for Third Quarter 2026 Earnings")
+    assert is_date_notice(AMAT_NOTICE_TITLE)
+
+
+async def test_a_notice_whose_date_cant_be_read_is_named_on_the_card(tmp_path: Path) -> None:
+    host = "investors.example.com"
+    company = AMAT.model_copy(
+        update={
+            "q4_host": host,
+            "reachable": True,
+            "investigated": NOW.date(),
+            "sec_form": "8-K",
+        }
+    )
+    unreadable = "Example to Announce Fourth Quarter Fiscal 2026 Results"
+    rows = [{"Headline": unreadable, "Body": "<p>Details to follow.</p>", "LinkToDetailPage": "/n"}]
+    fetcher = RoutedFetcher(
+        {
+            f"{host}/feed/PressRelease.svc": (
+                200,
+                json.dumps({"GetPressReleaseListResult": rows}).encode(),
+            )
+        }
+    )
+    unread: list[str] = []
+
+    assert await find_date(fetcher, "AMAT", NOW, company, unread) is None
+    assert unread == [unreadable]
+
+    company = company.model_copy(
+        update={
+            "checks": [SourceCheck(source="SEC 8-K filings", watch=True, why="Filed here")],
+            "investigation": INVESTIGATION,
+        }
+    )
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        calendar = Calendar(store)
+        row, _ = calendar.add("AMAT", 1, NOW, company)
+        dates = DateDiscovery(calendar, fetcher, lambda: NOW, lambda: False, print)
+        await dates._check(row)
+    assert dates.phases[row.cik] == (
+        f"No release date read yet. It saw the notice “{unreadable}” but couldn't read a date "
+        "from it. Rechecking hourly. A Manage Server member can set one with `/track` and "
+        "`when` and `period`."
+    )
+
+
+def test_a_time_beside_another_days_date_isnt_the_release_time() -> None:
+    now = datetime(2026, 11, 9, 21, tzinfo=ET)
+    body = (
+        "<p>October 22, 2026 at 7:30 AM EDT -- Acme will report its fourth quarter fiscal 2026 "
+        "results on November 12, 2026, after the market close.</p>"
+    )
+
+    result = parse_notice("AMAT", AMAT, "Acme to Report Fourth Quarter Results", body, now)
+
+    assert result is not None
+    target, evidence = result
+    assert target.expected == datetime(2026, 11, 12, 16, tzinfo=ET)
+    assert evidence == "Issuer date confirmed, after market close"
+
+
+def test_a_pages_posted_at_line_isnt_read_with_the_headline_above_it() -> None:
+    now = datetime(2026, 11, 9, 21, tzinfo=ET)
+    body = (
+        "<h1>Acme to Report Fourth Quarter 2026 Results on November 12, 2026</h1>"
+        "<p>Posted at 7:30 AM EDT</p><p>Acme will host a call that afternoon.</p>"
+    )
+
+    result = parse_notice("AMAT", AMAT, "Acme to Report Fourth Quarter 2026 Results", body, now)
+
+    assert result is not None
+    # The time comes from past 8-Ks, not from when the page was posted
+    assert result[0].expected == datetime(2026, 11, 12, 16, tzinfo=ET)
+
+
+@pytest.mark.parametrize("dated", ["", " on November 8, 2026"])
+def test_a_call_date_cannot_fill_in_a_missing_or_past_release_date(dated: str) -> None:
+    title = "Acme to Report Fourth Quarter and Fiscal 2026 Results" + dated
+    body = "<p>Acme will host a conference call on Nov. 13, 2026, at 4:30 p.m. ET.</p>"
+
+    assert parse_notice("AMAT", AMAT, title, body, datetime(2026, 11, 9, tzinfo=ET)) is None
+
+
+def test_dateline_and_html_line_breaks_preserve_a_confirmed_release_time() -> None:
+    title = "Acme Announces Date of Fourth Quarter and Fiscal 2026 Results"
+    body = (
+        "<p>SANTA CLARA, Calif., Nov. 9, 2026 (GLOBE NEWSWIRE) -- Acme will report its "
+        "fourth quarter results on Nov. 12, 2026,<br>at 4:45 p.m. ET.</p>"
+    )
+
+    result = parse_notice("AMAT", AMAT, title, body, datetime(2026, 11, 9, tzinfo=ET))
+
+    assert result is not None
+    assert result[0].expected == datetime(2026, 11, 12, 16, 45, tzinfo=ET)
+    assert result[1] == "Issuer confirmed release time"
