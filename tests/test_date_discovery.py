@@ -7,15 +7,17 @@ from typing import Any
 
 import pytest
 
-from earnings_bot import date_discovery
-from earnings_bot.browser_sources import IRSource
-from earnings_bot.calendar import Calendar, describe, manual_target
+from earnings_bot import date_discovery, ir_research
+from earnings_bot.browser import RenderedPage
+from earnings_bot.browser_sources import IRSource, QuarterlyTable
+from earnings_bot.calendar import Calendar, Tracked, describe, manual_target
 from earnings_bot.date_discovery import (
     CALENDAR_DATE,
     FMP_EARNINGS,
     DateDiscovery,
     find_date,
     parse_notice,
+    rendered_date,
     timed_by_publishers,
 )
 from earnings_bot.delivery import DeliveryStore
@@ -24,10 +26,10 @@ from earnings_bot.investigate import INVESTIGATION
 from earnings_bot.ir_research import IR_LISTINGS
 from earnings_bot.issuers import profile
 from earnings_bot.known import KnownCompany, SourceCheck, known_companies, to_target
-from earnings_bot.recorder import ET
+from earnings_bot.recorder import ET, Target
 from earnings_bot.source_audit import Speed, Timing
 from earnings_bot.sources import is_date_notice
-from tests.fakes import RoutedFetcher
+from tests.fakes import RoutedFetcher, rendered
 from tests.sec_data import LCID_CIK, LCID_SUBMISSIONS
 
 NOW = datetime(2026, 11, 7, 10, tzinfo=ET)
@@ -383,7 +385,7 @@ async def test_fmps_date_at_the_8k_time_sets_a_wide_window(tmp_path: Path) -> No
         assert row.evidence == CALENDAR_DATE
         assert lucid.statuses == [f"📅 {describe(row.target, CALENDAR_DATE)}"]
     # The key goes in a header, not the URL
-    [(_, url, headers)] = fetcher.requests
+    [(_, url, headers)] = [req for req in fetcher.requests if FMP_ROUTE in req[1]]
     assert url == f"{FMP_EARNINGS}?symbol=LCID&limit=5"
     assert headers == {"apikey": "secret"}
 
@@ -394,14 +396,14 @@ async def test_fmp_is_asked_twice_a_day_until_its_window_passes(tmp_path: Path) 
         lucid = Lucid(store, fetcher, "secret")
         await lucid.check()
         await lucid.check()
-        assert len(fetcher.requests) == 1
+        assert sum(FMP_ROUTE in url for _, url, _ in fetcher.requests) == 1
 
         # After the window closes, the remembered answer is no use
         fetcher.routes[FMP_ROUTE] = fmp_dates(("2026-11-09", -2.1), ("2027-02-24", None))
         lucid.now = datetime(2026, 11, 9, 17, 36, tzinfo=ET)
         await lucid.check()
 
-        assert len(fetcher.requests) == 2
+        assert sum(FMP_ROUTE in url for _, url, _ in fetcher.requests) == 2
         assert lucid.row() == (datetime(2027, 2, 24, 16, 5, tzinfo=ET), CALENDAR_DATE)
 
 
@@ -432,7 +434,7 @@ async def test_a_symbol_fmps_plan_doesnt_cover_waits_for_the_next_refresh(
         await lucid.check()
 
         assert lucid.row() == (None, None)
-    assert len(fetcher.requests) == 1
+    assert sum(FMP_ROUTE in url for _, url, _ in fetcher.requests) == 1
 
 
 async def test_an_issuers_date_beats_fmp_and_fmp_needs_a_key(tmp_path: Path) -> None:
@@ -446,13 +448,13 @@ async def test_an_issuers_date_beats_fmp_and_fmp_needs_a_key(tmp_path: Path) -> 
         await lucid.check()
 
         assert lucid.row() == (target.expected, confirmed)
-        assert fetcher.requests == []
+        assert not any(FMP_ROUTE in url for _, url, _ in fetcher.requests)
 
     with DeliveryStore(tmp_path / "keyless.db", 7) as store:
         lucid = Lucid(store, fetcher, None)
         await lucid.check()
         assert lucid.row() == (None, None)
-    assert fetcher.requests == []
+    assert not any(FMP_ROUTE in url for _, url, _ in fetcher.requests)
 
 
 @pytest.mark.parametrize(
@@ -471,7 +473,7 @@ async def test_fmp_isnt_asked_without_a_time_or_fiscal_year_to_go_with_its_date(
         await dates._check(row)
 
         assert calendar.entries() == [row]
-    assert fetcher.requests == []
+    assert not any(FMP_ROUTE in url for _, url, _ in fetcher.requests)
 
 
 def test_catalog_companies_have_no_fiscal_year_end_so_fmp_leaves_them_alone() -> None:
@@ -709,7 +711,8 @@ def test_a_window_opens_by_when_the_ir_site_had_the_last_release_not_sec() -> No
     assert timed_by_publishers(company, None) == company
 
 
-async def test_after_a_release_the_card_says_so_instead_of_no_date(tmp_path: Path) -> None:
+@pytest.mark.parametrize("delivered", [True, False])
+async def test_a_closed_window_needs_evidence_of_a_release(tmp_path: Path, delivered: bool) -> None:
     # TDG, Nov 10: its Q4 results were out, and its own notice for them isn't the next one
     now = datetime(2026, 11, 10, 12, tzinfo=ET)
     company = AMAT.model_copy(
@@ -725,11 +728,212 @@ async def test_after_a_release_the_card_says_so_instead_of_no_date(tmp_path: Pat
         calendar = Calendar(store)
         row, _ = calendar.add("TDG", company)
         calendar.set_target(done, "Issuer date confirmed")
+        if delivered:
+            store.prepare(done.release_key, "Earnings out")
+            store.delivered(done.release_key, 101)
         [row] = calendar.entries()
         dates = DateDiscovery(calendar, RoutedFetcher({}), lambda: now, lambda: False, print)
         await dates._check(row)
 
-    assert dates.phases[row.cik].startswith(
+    expected = (
         "Q4 FY26 results came out Tue, Nov 10. The next release isn't announced yet."
+        if delivered
+        else "Q4 FY26 watch ended Tue, Nov 10 without a confirmed release."
     )
+    assert dates.phases[row.cik].startswith(expected)
     assert "couldn't read a date" not in dates.phases[row.cik]
+
+
+@pytest.mark.parametrize("first_probe_fails", [False, True])
+async def test_track_arms_the_rendered_results_page_alongside_the_issuer_api(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, first_probe_fails: bool
+) -> None:
+    page = "https://www.issuer.example/investor/results"
+    api = "https://www.issuer.example/api/results"
+    pdf = "https://cdn.issuer.example/2026/Issuer-Second-Quarter-2026-Results.pdf"
+    company = AMAT.model_copy(
+        update={
+            "checks": [SourceCheck(source="SEC", watch=True, why="Filed here")],
+            "investigation": INVESTIGATION,
+            "investigated": NOW.date(),
+            "sec_form": "8-K",
+            "ir_results_page": page,
+            "ir_results_api": api,
+        }
+    )
+    listing = f'<a href="{pdf}">Press Release</a>'
+    resources = {"year": 2026, "data": [{"quarter": "Q2", "press_release": pdf}]}
+    fetcher = RoutedFetcher(
+        {
+            page: (200, listing.encode()),
+            api: (200, json.dumps(resources).encode()),
+            pdf: (200, b"%PDF-1.6"),
+        }
+    )
+    monkeypatch.setattr(ir_research, "chrome_available", lambda: True)
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        calendar = Calendar(store)
+        calendar.add("AMAT", company)
+        planned = to_target("AMAT", NOW + timedelta(days=3), 2026, 3, company)
+        calendar.set_target(planned, "Manual override")
+        [row] = calendar.entries()
+        dates = DateDiscovery(calendar, fetcher, lambda: NOW, lambda: False, print)
+        if first_probe_fails:
+            fetcher.routes[page] = (503, b"")
+            await dates._check(row)
+            [row] = calendar.entries()
+            assert row.target and row.target.ir and row.target.ir.news_api == api
+            assert row.target.ir.results_table is None
+            fetcher.routes[page] = (200, listing.encode())
+        await dates._check(row)
+        [row] = calendar.entries()
+
+    assert row.target is not None
+    sources = row.target.sources()
+    assert any(source.name == "issuer-news" for source in sources)
+    tables = [source for source in sources if isinstance(source, QuarterlyTable)]
+    assert len(tables) == 1
+    table = tables[0]
+    assert table.listing == page and table.rendered and not table.direct
+    assert page in fetcher.chrome_calls
+
+
+async def test_a_wire_notice_can_supply_the_date_when_ir_cannot(tmp_path: Path) -> None:
+    archive = "https://www.prnewswire.com/news/cae-inc./"
+    notice = "https://www.prnewswire.com/news-releases/cae-date-302934000.html"
+    title = "CAE to announce second quarter fiscal 2027 financial results"
+    text = (
+        "<p>(NYSE: CAE) will release its second quarter fiscal 2027 results "
+        "after market close on November 11, 2026.</p>"
+    )
+    company = AMAT.model_copy(
+        update={
+            "name": "CAE INC",
+            "sec_form": "8-K",
+            "wire": "PR Newswire",
+            "names": ["CAE"],
+            "ir_listing": None,
+            "ir_home": None,
+            "q4_host": None,
+            "checks": [SourceCheck(source="IR", watch=False, why="Blocked")],
+            "investigation": INVESTIGATION,
+            "investigated": NOW.date(),
+        }
+    )
+    fetcher = RoutedFetcher({archive: (200, f'<a href="{notice}">{title}</a>'.encode())})
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        calendar = Calendar(store)
+        row, _ = calendar.add("CAE", company)
+        dates = DateDiscovery(calendar, fetcher, lambda: NOW, lambda: False, print)
+        fetcher.routes[notice] = (200, text.replace("NYSE: CAE", "NYSE: OTHER").encode())
+        await dates._check(row)
+        [row] = calendar.entries()
+        assert row.target is None
+
+        fetcher.routes[notice] = (200, text.encode())
+        await dates._check(row)
+        [row] = calendar.entries()
+        assert row.target is not None
+        assert row.target.expected.date() == date(2026, 11, 11)
+        assert row.target.period == "FY2027Q2"
+        assert row.evidence and notice in row.evidence
+
+
+@pytest.mark.parametrize(
+    ("text", "day", "time"),
+    [
+        (
+            (
+                "Upcoming Events\nNov 24, 2026 \u2022 3:30 pm CST\n\n"
+                "Dell Technologies Fiscal Year 2027 Third Quarter Results"
+            ),
+            24,
+            "4:30 PM",
+        ),
+        ("John Deere - 4Q Earnings Call\nNovember 25, 2026 09:00 AM - CST", 25, "10:00 AM"),
+        (
+            "Upcoming Events\nNovember 18, 2026 (tentative)\nCompany Q3 2026 Earnings Results",
+            18,
+            None,
+        ),
+    ],
+)
+async def test_event_cards_read_adjacent_dates_and_zones_without_arming_tentative_events(
+    text: str, day: int, time: str | None
+) -> None:
+    url = "https://investor.example.com/"
+    company = AMAT.model_copy(update={"release_time": "06:00", "fiscal_year_end": "1031"})
+
+    async def render(page: str) -> RenderedPage:
+        html = "".join(f"<div>{line}</div>" for line in text.splitlines())
+        return rendered(page, 200, html)
+
+    result, _ = await rendered_date(render, [url], "AMAT", company, NOW, [])
+
+    if time is None:
+        assert result is None
+    else:
+        assert result is not None
+        assert result[0].expected.day == day
+        assert time in result[1]
+        if day == 25:
+            assert result[0].expected.hour == 6
+
+
+async def test_a_morning_results_event_keeps_its_issuer_date_when_history_is_afternoon() -> None:
+    company = AMAT.model_copy(update={"release_time": "16:15", "sec_form": "8-K"})
+
+    async def render(page: str) -> RenderedPage:
+        return rendered(
+            page,
+            200,
+            "<div>November 24, 2026 8:00 AM ET</div>"
+            "<div>Company Third Quarter 2026 Financial Results</div>",
+        )
+
+    result, _ = await rendered_date(
+        render, ["https://issuer.example/events"], "AMAT", company, NOW, []
+    )
+
+    assert result is not None
+    target, _ = result
+    assert target.expected.date() == date(2026, 11, 24)
+    assert target.window[0] < datetime(2026, 11, 24, 8, tzinfo=ET) < target.window[1]
+
+
+async def test_new_watch_is_saved_after_issuer_and_cache_preparation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    company = AMAT.model_copy(
+        update={"sec_form": "8-K", "investigation": INVESTIGATION, "investigated": NOW.date()}
+    )
+    table = "https://issuer.example/2026"
+    target = to_target("AMAT", NOW + timedelta(hours=2), 2026, 3, company)
+    prepared = IRSource(results_table=table, table_http=True)
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        calendar = Calendar(store)
+        row, _ = calendar.add("AMAT", company)
+        dates = DateDiscovery(calendar, RoutedFetcher({}), lambda: NOW, lambda: False, print)
+
+        async def issuer_date(*args: object) -> tuple[Target, str]:
+            return target, "Issuer notice"
+
+        async def issuer_routes(*args: object) -> Target:
+            assert calendar.find("AMAT") == row
+            return target.model_copy(update={"ir": prepared})
+
+        async def preflight(candidate: Tracked, *, save: bool = True) -> Target:
+            assert not save and calendar.find("AMAT") == row
+            assert candidate.target and candidate.target.ir == prepared
+            return candidate.target.model_copy(
+                update={"ir": prepared.model_copy(update={"cache_bust_urls": [table]})}
+            )
+
+        monkeypatch.setattr(dates, "_issuer_date", issuer_date)
+        monkeypatch.setattr(dates, "_issuer_routes", issuer_routes)
+        monkeypatch.setattr(dates, "_prepare_cache", preflight)
+        await dates.run_once(row)
+        [planned] = calendar.entries()
+
+    assert planned.target and planned.target.ir
+    assert planned.target.ir.cache_bust_urls == [table]

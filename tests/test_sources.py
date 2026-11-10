@@ -6,6 +6,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 import pytest
 
 from earnings_bot.fetch import Response, host_gap
+from earnings_bot.periods import agrees_with_period
 from earnings_bot.sources import (
     GLOBENEWSWIRE_EARNINGS,
     PR_NEWSWIRE_EARNINGS,
@@ -22,6 +23,7 @@ from earnings_bot.sources import (
     RssFeed,
     looks_like_earnings,
     published_time,
+    results_headline,
 )
 from tests.fakes import FakeSession, SessionFetcher
 
@@ -51,6 +53,60 @@ def response(
 )
 def test_looks_like_earnings(headline: str, expected: bool) -> None:
     assert looks_like_earnings(headline) is expected
+
+
+@pytest.mark.parametrize(
+    ("headline", "expected"),
+    [
+        # Results releases on the three wires' earnings feeds on Nov 10, 2026
+        ("KULR Reports Third Quarter 2026 Revenue of $7.4 Million, Up 197% Year-Over-Year", True),
+        ("Paysign Reports Record Third Quarter 2026 Revenue of $30.8 Million, Up 43%", True),
+        ("Tidewater Reports Results for the Nine Months Ended September 30, 2026", True),
+        ("EVI Industries Reports Record First Fiscal Quarter Results", True),
+        ("AMCON Distributing Company Reports Results for the Fiscal Year Ended September 30", True),
+        ("MasterCraft Reports Results for the First Three Months of Its Transition Period", True),
+        ("Zeta Global Generates Positive GAAP Net Income in 3Q\u201926", True),
+        ("Intelligent Bio Solutions Reports Record Fiscal First Quarter 2027 Revenue", True),
+        ("Palantir Reports Q3 2026 U.S. Comm Revenue Growth of 121% Y/Y", True),
+        ("The Home Depot Announces Third Quarter Fiscal 2026 Results", True),
+        # Other news that names a quarter or results
+        ("Company posts Q3 product sales figures", False),
+        ("Acme Declares Third Quarter 2026 Dividend", False),
+        ("Acme Reports Q3 2026 Vehicle Production and Deliveries", False),
+        ("Acme Raises Full-Year 2026 Outlook", False),
+        ("Acme Reports Q3 2026 Results of Its Share Repurchase Program", False),
+        ("Acme to Report Third Quarter 2026 Financial Results on November 5", False),
+        ("Acme Announces Positive Topline Results from Phase 3 Trial", False),
+        ("Kin Sells More Policies Than in Any Quarter in Its History", False),
+        (
+            "Q2 Metals Announces PEA with C$13.5 Billion After-Tax NPV for Cisco Lithium Project",
+            False,
+        ),
+    ],
+)
+def test_a_results_headline_reports_on_a_period(headline: str, expected: bool) -> None:
+    # A release this rejects only posts once SEC has it, so real results must get through
+    assert results_headline(headline) is expected
+
+
+@pytest.mark.parametrize(
+    ("headline", "period", "expected"),
+    [
+        # Home Depot names a fiscal year for the calendar year it starts in, while a plan worked
+        # out from its January year end names it for the year it ends in
+        ("The Home Depot Announces Third Quarter Fiscal 2026 Results", "FY2027Q3", True),
+        ("Lowe's Reports Third Quarter 2026 Sales and Earnings Results", "FY2027Q3", True),
+        ("NVIDIA Announces Financial Results for Third Quarter Fiscal 2027", "FY2027Q3", True),
+        ("Company Reports Q2 2026 Financial Results", "FY2026Q3", False),
+        ("Company Reports Q3 2024 Financial Results", "FY2026Q3", False),
+        ("Company Reports Record Third Quarter Revenue", "FY2026Q3", True),
+        ("Company Reports Record Second Quarter Revenue", "FY2026Q3", False),
+    ],
+)
+def test_a_headline_agrees_with_the_planned_quarter(
+    headline: str, period: str, expected: bool
+) -> None:
+    assert agrees_with_period(headline, period) is expected
 
 
 def test_host_gaps() -> None:

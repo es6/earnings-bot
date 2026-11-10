@@ -3,7 +3,7 @@
 from collections.abc import Iterable
 from datetime import datetime
 
-from earnings_bot.browser_sources import HttpRelease
+from earnings_bot.browser_sources import HttpRelease, QuarterlyTable
 from earnings_bot.recorder import ET
 from earnings_bot.sources import EdgarFilings, Source
 
@@ -75,6 +75,8 @@ def source_label(name: str, form: str = "8-K") -> str:
         return "IR press release page, direct HTTP"
     if name == "issuer-news":
         return "IR newsroom API and results PDF, direct HTTP"
+    if name == "issuer-table":
+        return "IR quarterly results PDF"
     if name == "browser-rss":
         return "IR press release feed, read in Chrome"
     if name.startswith(("browser-pdf:", "tesla-pdf:")):
@@ -94,18 +96,16 @@ def source_label(name: str, form: str = "8-K") -> str:
 
 def watch_list(sources: Iterable[Source]) -> list[str]:
     """One line per kind of source, in the order given. Copies of one feed share a line."""
-    lines: dict[str, bool] = {}
+    lines: dict[str, None] = {}
     for source in sources:
         form = source.form if isinstance(source, EdgarFilings) else "8-K"
         label = source_label(source.name, form)
-        if isinstance(source, HttpRelease) and source.chrome_fallback:
+        if isinstance(source, QuarterlyTable):
+            label += ", read in Chrome" if not source.direct else ", direct HTTP"
+        elif isinstance(source, HttpRelease) and source.chrome_fallback:
             label += " (Chrome fallback)"
-        # A line is on trial only if every copy is
-        lines[label] = lines.get(label, True) and source.trial
-    return [
-        label + (" *(trial: recorded, not posted)*" if trial else "")
-        for label, trial in lines.items()
-    ]
+        lines[label] = None
+    return list(lines)
 
 
 def bullets(lines: Iterable[str], limit: int = 1024, bullet: str = "• ") -> str:

@@ -3,8 +3,9 @@
 The bot uses headful Chrome on a separate inactive Windows desktop with
 a temporary profile. During a watch window, Chrome and ordinary HTTP
 requests share per-host pacing. The first browser poll warms the issuer tab.
-Later polls fetch from that tab without reloading the page. The bot keeps
-the complete response in memory for attachments or summaries.
+Later listing and RSS polls fetch from that tab without reloading the page. A
+quarterly page that builds release links with JavaScript is rendered every six
+seconds. The bot keeps verified report responses in memory for attachments or summaries.
 
 The worker has been exercised under an active Windows login session. Chrome
 startup under the Task Scheduler account depends on that account's desktop
@@ -25,6 +26,14 @@ The planner can prepare a listing source after retrieving the previous quarter's
 full report. It checks the upcoming fiscal period and requires usable financial
 results text before recording a sighting. Chrome races the other sources for the
 initial alert and can add the IR link to an alert already posted.
+
+The planner can also watch a quarterly-results page alongside the newsroom, an
+issuer API, or a Q4 feed. It first downloads a prior quarter's PDF through the
+same route. When plain HTTP can read the table, the bot uses that transport.
+When the page needs JavaScript to expose its links, the bot renders it in
+Chrome and checks the link's fiscal period before downloading the PDF.
+A working Chrome route can still return a cached copy. The journal records
+listing timings separately from PDF downloads.
 
 ## Configure a source for one schedule
 
@@ -86,8 +95,8 @@ Tesla has a separate HTTP source with the project name in the User-Agent.
 tesla_deck = "https://assets-ir.tesla.com/tesla-contents/IR/TSLA-Q3-2026-Update.pdf"
 ```
 
-Existing `[target.trial.ir]` entries load as live sources. The `post` switch
-under `[target.trial]` controls the other experimental sources.
+Legacy `[target.trial.ir]` entries load as live sources. The old `post`
+switch is ignored. Every configured source can post after the release checks pass.
 The bot keeps the PDF link if the file exceeds the attachment limit. Use only
 the current quarter's PDF candidates. A verified IR result on the first
 poll counts as a catch-up, so a late start can still see that scheduled result.

@@ -13,13 +13,16 @@ from earnings_bot.browser_sources import (
     BrowserRss,
     HttpRelease,
     IRSource,
+    QuarterlyTable,
     _ReleaseLinks,
     article_matches,
     issuer_pdf_url,
 )
 from earnings_bot.fetch import Fetcher
 from earnings_bot.issuer_news import IssuerNews
-from earnings_bot.known import NTH, ORD, KnownCompany
+from earnings_bot.known import KnownCompany
+from earnings_bot.periods import NTH, ORD
+from earnings_bot.quarterly_table import table_year
 from earnings_bot.sources import looks_like_earnings
 from earnings_bot.text import html_to_text, verified_report
 
@@ -177,6 +180,39 @@ async def verified_news_source(fetcher: Fetcher, api: str | None, period: str) -
     except _ERRORS:
         pass
     return None
+
+
+def prior_period(period: str) -> tuple[int, int]:
+    year, quarter = int(period[2:6]), int(period[-1])
+    return (year - 1, 4) if quarter == 1 else (year, quarter - 1)
+
+
+async def verified_results_table(fetcher: Fetcher, page: str, period: str) -> dict[str, str | bool]:
+    if (year := table_year(page)) is not None and year != int(period[2:6]):
+        return {}  # Last year's table cannot prove the next fiscal year's release route.
+    prior = prior_period(period)
+    try:
+        source = QuarterlyTable(page, *prior, direct=True)
+        source.chrome_fallback = False
+        if source.parse(await source.fetch(fetcher)):
+            return {"results_table": page, "table_http": True}
+    except _ERRORS:
+        pass
+    if chrome_available():
+        try:
+            async with fetcher.research_browser() as browser:
+                for rendered in (False, True):
+                    source = QuarterlyTable(
+                        page, *prior, direct=False, rendered=rendered, browser=browser
+                    )
+                    try:
+                        if source.parse(await source.fetch(fetcher)):
+                            return {"results_table": page, "table_rendered": rendered}
+                    except _ERRORS:
+                        continue
+        except _ERRORS:
+            pass
+    return {}
 
 
 async def verified_http_source(

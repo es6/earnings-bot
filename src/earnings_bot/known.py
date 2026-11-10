@@ -21,11 +21,10 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+from earnings_bot.periods import NTH, ORD
 from earnings_bot.recorder import ET, Target, Trial
 
 COMPANIES = Path(__file__).with_name("companies.toml")
-NTH = ("first", "second", "third", "fourth")
-ORD = ("1st", "2nd", "3rd", "4th")
 # The placeholders a URL template may use; companies.toml explains each one
 FIELDS = frozenset({"yyyy", "mm", "dd", "m", "d", "fy", "fyy", "fq", "nth", "NTH", "ord", "q4"})
 
@@ -70,6 +69,8 @@ class KnownCompany(BaseModel):
     ir_home: str | None = None
     # The public data behind its results page, which can name new results before its newsroom
     ir_results_api: str | None = None
+    ir_results_page: str | None = None
+    ir_browser_rss: str | None = None
     # The latest results on it, and when the IR site says they were posted
     ir_release: str | None = None
     ir_posted: datetime | None = None
@@ -170,6 +171,8 @@ def to_target(
     company = company or known_companies()[ticker]
     business_wire, pr_newswire = wires(company)
     pages = fill(company.trial.pages, expected.date(), fiscal_year, fiscal_quarter)
+    # A company whose wire isn't known is looked for on all three
+    globe = company.trial.globenewswire or (company.names if company.wire == "unknown" else [])
     return Target(
         ticker=ticker,
         expected=expected,
@@ -185,7 +188,7 @@ def to_target(
         guess=[]
         if company.soft_404
         else guess_urls(company, expected.date(), fiscal_year, fiscal_quarter),
-        trial=company.trial.model_copy(update={"pages": pages}),
+        trial=company.trial.model_copy(update={"pages": pages, "globenewswire": globe}),
     )
 
 
@@ -210,12 +213,7 @@ def target_toml(target: Target) -> str:
         ]
     trial = target.trial
     if trial != Trial(post=trial.post):
-        lines += [
-            "",
-            "# Recorded on trial. Set post = true once release days show these are right and fast.",
-            "[target.trial]",
-            f"post = {json.dumps(trial.post)}",
-        ]
+        lines += ["", "# Additional live sources", "[target.trial]"]
         if trial.broadcom_newsroom:
             lines.append("broadcom_newsroom = true")
         for key in ("rss", "globenewswire", "prnewswire_semiconductors", "pages"):

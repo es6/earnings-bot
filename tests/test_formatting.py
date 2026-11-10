@@ -80,22 +80,19 @@ def test_each_source_has_a_plain_name(name: str, label: str) -> None:
     assert source_label(name, form) == label
 
 
-def test_copies_of_a_source_share_a_line_and_trials_are_marked() -> None:
+def test_copies_of_a_source_share_a_line() -> None:
     cached = RssFeed("prnewswire", PR_NEWSWIRE_EARNINGS, ["Lucid Group"])
     fresh = RssFeed("prnewswire_busted", PR_NEWSWIRE_EARNINGS, ["Lucid Group"])
     globe = RssFeed("globenewswire", "https://www.globenewswire.com/rss", ["Lucid Group"])
     globe_busted = RssFeed("globenewswire_busted", "https://www.globenewswire.com/rss", ["Lucid"])
-    globe.trial = globe_busted.trial = True
     chrome = BrowserRelease("https://ir.lucidmotors.com/press-releases", "Results")
-    # A line is only on trial if every copy is
-    fresh.trial = True
     sec = [EdgarFilings(1811210, form="6-K"), EdgarLatest(1811210, form="6-K")]
 
     assert watch_list([*sec, fresh, cached, chrome, globe, globe_busted]) == [
         "SEC 6-K filings",
         "PR Newswire earnings feed",
         "IR press release page, read in Chrome",
-        "GlobeNewswire earnings feed *(trial: recorded, not posted)*",
+        "GlobeNewswire earnings feed",
     ]
 
 

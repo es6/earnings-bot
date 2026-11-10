@@ -339,12 +339,13 @@ async def test_a_site_that_blocks_the_bot_is_read_through_chrome(
         "Investigated Nov 09: ir.lucidmotors.com blocks the bot, so Chrome reads "
         f"<{LUCID_LIST}>. Wire: PR Newswire."
     )
-    # One Chrome session: the site, its press release list, then its latest results
-    assert chrome.started == 1
+    # One session follows the site; a second checks the vendor's optional RSS endpoint.
+    assert chrome.started == 2
     assert chrome.calls == [
         (LUCID_HOME, LUCID_HOME),
         (LUCID_LIST, LUCID_HOME),
         (LUCID_Q2, LUCID_HOME),
+        (LUCID_HOME + "rss/news-releases.xml", LUCID_LIST),
     ]
     # The wire is known now, so only PR Newswire is watched
     target = to_target("LCID", NOW, 2026, 3, found)
@@ -367,7 +368,7 @@ async def test_without_chrome_a_blocked_site_is_reported_and_both_wires_kept(
     assert (found.platform, found.ir_listing, found.wire) == ("own-site", None, "unknown")
     assert found.evidence == (
         "Investigated Nov 09: ir.lucidmotors.com blocks the bot, and Chrome couldn't read it "
-        "either. Wire not found, so both are watched."
+        "either. Wire not found, so all three are watched."
     )
     target = to_target("LCID", NOW, 2026, 3, found)
     assert target.newswire == target.prnewswire == LUCID.names
@@ -427,7 +428,7 @@ async def test_an_issuer_named_rss_index_reaches_a_separate_newsroom(
     assert [url for _, url, _ in fetcher.requests if url == all_news] == []
 
 
-async def test_a_globenewswire_company_is_matched_there_on_trial(
+async def test_a_globenewswire_company_is_matched_there(
     released: Callable[[str], None],
 ) -> None:
     released("SANTA CLARA, Calif., Nov. 3, 2026 (GLOBE NEWSWIRE) -- Example today reported")
@@ -437,9 +438,7 @@ async def test_a_globenewswire_company_is_matched_there_on_trial(
     target = to_target("LCID", NOW, 2026, 3, found)
     assert (target.newswire, target.prnewswire) == ([], [])
     assert target.trial.globenewswire == LUCID.names
-    assert "globenewswire (trial)" in [
-        s.name + (" (trial)" if s.trial else "") for s in target.sources()
-    ]
+    assert "globenewswire" in [s.name for s in target.sources()]
 
 
 async def test_the_last_release_is_read_from_the_results_8k() -> None:
@@ -644,7 +643,12 @@ async def test_chrome_tries_the_usual_list_when_the_home_page_doesnt_link_it(
     found = await investigate.investigate(fetcher, LUCID, TODAY, chrome.open)
 
     assert found.ir_listing == LUCID_LIST
-    assert [url for url, _ in chrome.calls] == [LUCID_HOME, LUCID_LIST, LUCID_Q2]
+    assert [url for url, _ in chrome.calls] == [
+        LUCID_HOME,
+        LUCID_LIST,
+        LUCID_Q2,
+        LUCID_HOME + "rss/news-releases.xml",
+    ]
 
 
 async def test_chrome_tries_another_listing_after_a_timeout(
@@ -716,11 +720,12 @@ async def test_a_site_without_a_q4_feed_or_rss_says_what_was_tried(
     assert checks["ir.example.com press release page"] == (
         "Chrome isn't available on this computer"
     )
-    # The wire isn't named anywhere, so both main ones are watched
+    # The wire isn't named anywhere, so all three are watched
     assert [c.source for c in found.checks if c.watch] == [
         "SEC 8-K filings",
         "PR Newswire earnings feed",
         "Business Wire earnings feed",
+        "GlobeNewswire earnings feed",
     ]
 
 
@@ -887,6 +892,7 @@ async def test_chrome_looks_past_a_date_notice_to_the_last_results_and_their_tim
         AMAT_LIST,
         AMAT_LIST + "?page=1",
         AMAT_Q3,
+        "https://ir.appliedmaterials.com/rss/news-releases.xml",
     ]
     assert (found.ir_listing, found.ir_release) == (AMAT_LIST, AMAT_Q3)
     assert found.ir_posted == datetime(2026, 8, 13, 16, 1, tzinfo=ET)

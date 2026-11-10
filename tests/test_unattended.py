@@ -1,7 +1,6 @@
 import asyncio
 import io
 import itertools
-import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -284,7 +283,7 @@ async def test_a_window_that_keeps_failing_is_reported_once(
     ]
 
 
-async def test_globe_trial_copies_share_one_verified_article_read(
+async def test_both_globenewswire_copies_post_one_alert_from_one_article_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     url = "https://www.globenewswire.com/news-release/2026/11/18/3400000/0/en/nvidia.html"
@@ -320,13 +319,10 @@ async def test_globe_trial_copies_share_one_verified_article_read(
         )
         await runner._watch(target)
 
-    events = list(map(json.loads, log.getvalue().splitlines()))
-    assert {event["source"] for event in events if event["event"] == "source_body"} == {
-        "globenewswire",
-        "globenewswire_busted",
-    }
+    # Both copies of the feed had it: one alert, from one read of the article
+    sends = [content for kind, content in poster.calls if kind == "send"]
+    assert len(sends) == 1 and "[GlobeNewswire](<" in sends[0]
     assert fetcher.requests == [("GET", article, None)]
-    assert poster.calls == []
 
 
 async def test_a_resumed_alert_doesnt_attach_a_file_it_already_has(tmp_path: Path) -> None:
@@ -351,8 +347,15 @@ async def test_a_resumed_alert_adds_only_the_links_it_lacks(tmp_path: Path) -> N
     folder = "https://www.sec.gov/Archives/edgar/data/1543151/000154315126000040"
     first = ["Alert", "Seen", "IR site: <https://ir.example/q3>", f"SEC 8-K: <{folder}/index.htm>"]
     wire = "Business Wire: <https://bw.example/q3>"
+    prn = "https://www.prnewswire.com/news-releases/example-earnings-"
+    first.append(f"PR Newswire: <{prn}302934228.html>")
     # The other SEC source links the same filing's main document
-    later = [*first[:3], f"SEC 8-K: <{folder}/uber-20261104.htm>", wire]
+    later = [
+        *first[:3],
+        f"SEC 8-K: <{folder}/uber-20261104.htm>",
+        f"PR Newswire: <{prn}302934067.html>",
+        wire,
+    ]
     with DeliveryStore(tmp_path / "state.db", 7) as store:
         await channel.poster(store, target).send("\n".join(first))
         resumed = channel.poster(store, target)  # after a restart
@@ -611,3 +614,105 @@ def test_a_window_report_names_the_winner_then_how_far_behind_the_rest_were() ->
         "Already out when the window opened: PR Newswire earnings feed"
     )
     assert unattended._window_report(target, []).splitlines()[1] == "No release seen"
+
+
+async def test_a_restart_resumes_later_links_without_a_second_alert(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    channel = FakeDiscord()
+    fetcher = RoutedFetcher({})
+    journal = Journal(io.StringIO())
+    when = journal.now() - timedelta(minutes=31)
+    target = Target(ticker="SE", cik=1703399, expected=when)
+    (tmp_path / "a.toml").write_text(_plan("SE", target.cik, when), encoding="utf-8")
+    first = "Alert\nSeen\nIR site: <https://example.com/results>"
+    late = "https://example.com/late-6k"
+
+    async def follow(
+        planned: Target,
+        watches: list[Watch],
+        fetch: Fetcher,
+        journal: Journal,
+        on_new: OnNew,
+        *args: object,
+    ) -> None:
+        on_new(
+            planned,
+            EdgarFilings(planned.cik, form="6-K"),
+            Sighting("6-K", "Results", late, earnings=True),
+        )
+
+    monkeypatch.setattr(unattended, "follow_up", follow)
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        await channel.poster(store, target).send(first)
+        store.close_window(target.release_key, target.expected)
+        runner = unattended.DirectoryWatcher(
+            tmp_path,
+            fetcher,
+            journal,
+            Releases(
+                FakePoster,
+                fetcher,
+                journal,
+                None,
+                None,
+                lambda current: channel.poster(store, current),
+            ),
+            store,
+            lambda _: None,
+        )
+        runner.follow_up = timedelta(hours=1)
+        await runner.scan()
+        await asyncio.gather(*(w.task for w in runner.windows.values()))
+        await runner.scan()
+        assert not runner.windows
+
+    assert len(channel.messages) == 1
+    assert "https://example.com/results" in channel.messages[1].content
+    assert late in channel.messages[1].content
+
+
+async def test_changed_sources_rearm_an_active_followup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    journal = Journal(io.StringIO())
+    when = journal.now() - timedelta(minutes=31)
+    target = Target(ticker="SE", cik=1703399, expected=when)
+    plan = tmp_path / "a.toml"
+    plan.write_text(_plan("SE", target.cik, when), encoding="utf-8")
+    fetcher = RoutedFetcher({})
+    started: list[Target] = []
+
+    async def resumed(planned: Target) -> None:
+        started.append(planned)
+        await asyncio.Event().wait()
+
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        store.prepare(target.release_key, "Already delivered")
+        store.delivered(target.release_key, 1)
+        store.close_window(target.release_key, target.expected)
+        runner = unattended.DirectoryWatcher(
+            tmp_path,
+            fetcher,
+            journal,
+            Releases(FakePoster, fetcher, journal, None, None),
+            store,
+            lambda _: None,
+        )
+        runner.follow_up = timedelta(hours=1)
+        monkeypatch.setattr(runner, "_resume_links", resumed)
+        try:
+            await runner.scan()
+            await asyncio.sleep(0)
+            plan.write_text(
+                _plan("SE", target.cik, when) + 'prnewswire = ["Sea Limited"]\n', encoding="utf-8"
+            )
+            await runner.scan()
+            await asyncio.sleep(0)
+            assert [watch.prnewswire for watch in started] == [[], ["Sea Limited"]]
+        finally:
+            for window in runner.windows.values():
+                window.task.cancel()
+            await asyncio.gather(
+                *(window.task for window in runner.windows.values()), return_exceptions=True
+            )

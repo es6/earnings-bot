@@ -31,12 +31,12 @@ _NAV = (
     re.compile(
         r"(?:upcoming |investor |all |view all )?(?:events?|calendar|webcasts?)"
         r"(?: (?:and|&) (?:presentations|webcasts|calendar|news))?"
-        r"|(?:presentations|news) (?:and|&) events",
+        r"|(?:presentations|news) (?:and|&) events|(?:events?|financial|earnings) calendar",
         re.IGNORECASE,
     ),
     re.compile(
         r"(?:quarterly|financial) (?:results|reports|information|earnings)"
-        r"|(?:earnings|results)(?: (?:releases?|reports|center|centre))?",
+        r"|(?:view all )?(?:earnings|results)(?: (?:releases?|reports|center|centre))?",
         re.IGNORECASE,
     ),
     re.compile(
@@ -45,6 +45,7 @@ _NAV = (
         re.IGNORECASE,
     ),
 )
+EVENTS = 1
 RESULTS = 2  # the rank of a "Quarterly Results" link
 INVESTORS = 3  # the rank of an "Investors" link
 # "WeRide Inc. 2026 Q3 Earnings Conference Call", "Q3 2026 Earnings Webcast"
@@ -68,8 +69,9 @@ _DAY = re.compile(
 )
 # The time after a date: " 8:00 AM EST", ", at 8:00 a.m. ET", " | 4:30 PM ET"
 _CLOCK = re.compile(
-    r"[\s,|@\u2013\u2014-]*(?:at\s+)?(?:approximately\s+)?(\d{1,2})(?::(\d{2}))?\s*([ap])\.?\s?m\b\.?"
-    r"\s*\(?\s*(ET|EST|EDT|Eastern(?: Time)?|U\.?S\.? Eastern(?: Time)?|PT|PST|PDT|Pacific"
+    r"[\s,|@\u2022\u2013\u2014-]*(?:at\s+)?(?:approximately\s+)?(\d{1,2})(?::(\d{2}))?\s*([ap])\.?\s?m\b\.?"
+    r"[\s\u2013\u2014-]*\(?\s*"
+    r"(ET|EST|EDT|Eastern(?: Time)?|U\.?S\.? Eastern(?: Time)?|PT|PST|PDT|Pacific"
     r"(?: Time)?|CT|CST|CDT|Central(?: Time)?|MT|MST|MDT|GMT|UTC|BST|CET|CEST|HKT|SGT|"
     r"Hong Kong(?: Time)?|Beijing(?: Time)?|Singapore(?: Time)?)?",
     re.IGNORECASE,
@@ -275,6 +277,8 @@ class IRReader:
         if page is not None:
             self.reading.pages.append(page.url)
             self.sites.add(_site(urlsplit(page.url).hostname or ""))
+            if rank is None and page.url != url and self.reading.home is None:
+                self.reading.home = page.url
             self._collect(page, rank)
         return page
 
@@ -302,18 +306,26 @@ class IRReader:
             reading.home = page.url
         if rank == RESULTS and reading.results_page is None:
             reading.results_page = page.url
+        if reading.results_page is None:
+            reading.results_page = next(
+                (url for rank, url in self._links(page) if rank == RESULTS and url != page.url),
+                None,
+            )
 
     def _links(self, page: RenderedPage) -> list[tuple[int, str]]:
         """Navigation worth following from a page, best first."""
         found: dict[str, int] = {}
         for link, text in page.links:
             rank = nav_rank(text)
-            if rank is None or not _public(link) or _TRANSLATED.match(urlsplit(link).path):
+            url = _plain(link)
+            path = urlsplit(url).path
+            if rank is None or not _public(url) or _TRANSLATED.match(path):
+                continue
+            if rank == 0 and any(part in path for part in ("/detail/", "/news-details/")):
                 continue
             # Stay on the issuer's own sites, though its IR site may be hosted elsewhere
             if rank != INVESTORS and _site(urlsplit(link).hostname or "") not in self.sites:
                 continue
-            url = _plain(link)
             found[url] = min(found.get(url, rank), rank)
         for frame in page.frames:
             if _public(frame) and _FRAME.search(frame):

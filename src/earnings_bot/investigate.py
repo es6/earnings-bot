@@ -48,7 +48,7 @@ REINVESTIGATE = timedelta(days=30)
 # 10 reads the IR site as Chrome renders it, finds IR hosts behind www. and brand domains, and
 # keeps the IR home page for reading dates, 11 reads the IR site from the last three results
 # releases and keeps earlier research when none names one.
-INVESTIGATION = 11
+INVESTIGATION = 12
 _HOST = re.compile(r"\b((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,})\b", re.IGNORECASE)
 _WEB_HOST = re.compile(r"\b(?:https?://|(?=www\.))" + _HOST.pattern, re.IGNORECASE)
 _IR_HOST = re.compile(r"^(?:ir|investors?|investor-?relations)\.", re.IGNORECASE)
@@ -263,6 +263,7 @@ class Findings:
     listing: str | None = None  # read through Chrome
     ir_http_status: int | None = None
     news_api: str | None = None
+    browser_feed: str | None = None
     blocked: bool = False
     wire: str | None = None
     posted: datetime | None = None  # when the IR site says the latest results were posted
@@ -288,7 +289,7 @@ class Findings:
             found = f"{self.site} blocks the bot, and Chrome couldn't read it either."
         else:
             found = f"{self.site} has no feed or press release list the bot could find."
-        on = f"Wire: {self.wire}." if self.wire else "Wire not found, so both are watched."
+        on = f"Wire: {self.wire}." if self.wire else "Wire not found, so all three are watched."
         parts = (f"Investigated {today:%b %d}:", found, chrome, on)
         return " ".join(part for part in parts if part)
 
@@ -587,6 +588,14 @@ async def _through_chrome(
                         landing = await get(investor)
                         if landing is not None and landing.status == 200:
                             linked = _release_pages(investor, landing.body)
+                            fallback.results_page = fallback.results_page or next(
+                                (
+                                    link
+                                    for link, title in issuer_links(investor, landing.body)
+                                    if nav_rank(title) == RESULTS
+                                ),
+                                None,
+                            )
 
             paths = ("/news/default.aspx", *_LISTINGS) if q4 else _LISTINGS
             candidates = [*linked[:2], *(urljoin(home, path) for path in paths)]
@@ -614,6 +623,7 @@ async def _through_chrome(
                     if not links:
                         continue
                     visit = await _read_results(get, url, links, sec_intro)
+                    visit.results_page = fallback.results_page
                     if visit.title:
                         return visit
                     if fallback.listing is None:
@@ -673,9 +683,8 @@ def with_wire(company: KnownCompany, found: str) -> KnownCompany:
     report = Report()
     _wire_checks(report, found)
     checks = [check for check in company.checks if not check.source.endswith("earnings feed")]
-    trial = company.trial
-    if found == "GlobeNewswire":
-        trial = trial.model_copy(update={"globenewswire": company.names})
+    names = company.names if found == "GlobeNewswire" else []
+    trial = company.trial.model_copy(update={"globenewswire": names})
     return company.model_copy(
         update={"wire": found, "checks": [*checks, *report.checks], "trial": trial}
     )
@@ -685,14 +694,11 @@ def _wire_checks(report: Report, found: str | None) -> None:
     for name in ("PR Newswire", "Business Wire", "GlobeNewswire"):
         source = f"{name} earnings feed"
         if found == name:
-            trial = " On trial: recorded, not posted yet." if name == "GlobeNewswire" else ""
-            report.watch(source, f"Its releases go out on {name}.{trial}")
+            report.watch(source, f"Its releases go out on {name}.")
         elif found:
             report.reject(source, f"Its releases go out on {found}")
-        elif name == "GlobeNewswire":
-            report.reject(source, "No release named its wire, and this feed is only watched then")
         else:
-            report.watch(source, "No release named its wire, so both main wires are watched")
+            report.watch(source, "No release named its wire, so all three wires are watched")
 
 
 async def investigate(
@@ -812,6 +818,7 @@ async def investigate(
                 visit.results_page = visit.results_page or rendered.results_page
                 if rendered.title or (rendered.listing and not visit.listing):
                     rendered.problem = rendered.problem or visit.problem
+                    rendered.results_page = visit.results_page
                     visit = rendered
                 elif rendered.problem and not visit.listing:
                     visit.problem = f"{visit.problem}. {rendered.problem}"
@@ -848,6 +855,16 @@ async def investigate(
         report.doing("Checking direct HTTP access to the press release listing")
         response = await _get(fetcher, findings.listing, allow_redirects=False)
         findings.ir_http_status = response.status if response else 0
+        if chrome is not None and not (findings.q4 or findings.feeds) and findings.blocked:
+            feed = urljoin(findings.listing, "/rss/news-releases.xml")
+            try:
+                async with chrome() as browser:
+                    reply = await browser.request(feed, findings.listing, 4, fetcher.wait_turn)
+                if reply.status == 200 and RssFeed("probe", feed).parse(reply):
+                    findings.browser_feed = feed
+                    report.watch(f"Press release feed <{feed}>", "Readable as RSS in Chrome")
+            except (BrowserError, *_ERRORS):
+                pass
         if chrome is not None and not (findings.q4 or findings.feeds or findings.release_url):
             report.doing("Looking for the public data behind the issuer newsroom")
             findings.news_api = await _news_api(fetcher, findings.listing)
@@ -878,10 +895,10 @@ async def investigate(
     report.doing("Choosing its sources")
     _wire_checks(report, findings.wire)
     found_wire = findings.wire or "unknown"
-    trial = company.trial
-    if found_wire == "GlobeNewswire":
-        # GlobeNewswire's earnings feed is still on trial for every company
-        trial = trial.model_copy(update={"globenewswire": company.names})
+    # GlobeNewswire's earnings feed is watched like the other two wires: when it's the wire,
+    # and when no release named one
+    globe = company.names if found_wire in ("GlobeNewswire", "unknown") else []
+    trial = company.trial.model_copy(update={"globenewswire": globe})
     ir = {
         "platform": "q4"
         if findings.q4
@@ -896,6 +913,8 @@ async def investigate(
         "ir_news_api": findings.news_api,
         "ir_home": findings.home,
         "ir_results_api": findings.results_api,
+        "ir_results_page": findings.results_page or company.ir_results_page,
+        "ir_browser_rss": findings.browser_feed or company.ir_browser_rss,
     }
     if not found_ir and earlier:
         ir = {key: getattr(company, key) for key in ir}

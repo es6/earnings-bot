@@ -47,9 +47,10 @@ BROADCOM_RELEASE = "https://www.broadcom.com/api/getmetadata?url={path}&locale=e
 # Matches "Uber Announces Results for Third Quarter 2026" and "Palantir Reports Q2 2026 U.S. Comm
 # Revenue Growth of 149%", but not the earlier "Uber Announces Date of Third Quarter 2026 Results
 # Conference Call" or "Cloudflare Expands EMEA Operations with New Headquarters"
-# "2Q26", "2Q 2026" and "2Q2026" all name a quarter, as in WeRide's "2Q2026 Total Revenue Reached"
+# "2Q26", "2Q 2026", "2Q2026" and "3Q'26" all name a quarter, as in WeRide's "2Q2026 Total
+# Revenue Reached" and Zeta's "Positive GAAP Net Income in 3Q'26"
 _EARNINGS = re.compile(
-    r"results|earnings|\bquarter|\bQ[1-4]\b|\b[1-4]Q\s?(?:20)?\d{2}\b", re.IGNORECASE
+    r"results|earnings|\bquarter|\bQ[1-4]\b|\b[1-4]Q\s?['\u2019]?(?:20)?\d{2}\b", re.IGNORECASE
 )
 _NOT_EARNINGS = re.compile(
     r"webcast|conference call|to host|to announce|schedule|\bdate\b", re.IGNORECASE
@@ -69,12 +70,35 @@ _NOTICE = re.compile(
     re.IGNORECASE,
 )
 _RESULTS_WORD = re.compile(r"\b(?:earnings|results)\b", re.IGNORECASE)
+# A period a release covers: "Q3", "3Q'26", "First Fiscal Quarter", "Full Year", "Nine
+# Months", "Fiscal Year"
 _QUARTER_WORD = re.compile(
-    r"\b(?:q[1-4]|[1-4]q\s?(?:20)?\d{2}|(?:first|second|third|fourth|[1-4](?:st|nd|rd|th))"
-    r"[-\s]+quarter|full[-\s]+year)\b",
+    r"\b(?:q[1-4]|[1-4]q\s?['\u2019]?(?:20)?\d{2}|(?:first|second|third|fourth|[1-4](?:st|nd|rd|th))"
+    r"[-\s]+(?:fiscal[-\s]+)?quarter|full[-\s]+year|(?:three|six|nine|twelve)[-\s]+months"
+    r"|fiscal[-\s]+year)\b",
     re.IGNORECASE,
 )
 _CALL_WORD = re.compile(r"\b(?:conference call|webcast)\b", re.IGNORECASE)
+_REPORT_WORDS = re.compile(
+    r"\b(?:financial|operating|quarterly|annual|interim) results\b|"
+    r"\b(?:reports?|reported|posts?|posted) (?:an? )?(?:\d+(?:\.\d+)?% )?"
+    r"(?:increase|decrease|growth) in earnings\b|"
+    r"\b(?:total revenue reached|net sales reached)\b",
+    re.IGNORECASE,
+)
+# What a results headline reports for its period. Revenue counts: "KULR Reports Third Quarter
+# 2026 Revenue of $7.4 Million", "Palantir Reports Q3 2026 U.S. Comm Revenue Growth of 121%".
+# Plain "sales" doesn't, so a product sales update isn't taken for results.
+_RESULT_HEADING = re.compile(
+    r"\b(?:results|earnings|revenues?|(?:net|total|comparable) sales|net income|net loss"
+    r"|(?:operating |net )?(?:profit|loss)|eps|per share)\b",
+    re.IGNORECASE,
+)
+_OTHER_RESULTS = re.compile(
+    r"\bresults? of (?:its |the )?"
+    r"(?:share (?:buyback|repurchase)|(?:debt |equity )?tender offer)\b",
+    re.IGNORECASE,
+)
 
 
 def is_date_notice(headline: str) -> bool:
@@ -95,8 +119,20 @@ def looks_like_earnings(headline: str) -> bool:
     )
 
 
+def results_headline(headline: str) -> bool:
+    """A reported result, with stronger evidence than a mention of a quarter."""
+    return (
+        looks_like_earnings(headline)
+        and not _OTHER_RESULTS.search(headline)
+        and bool(
+            _REPORT_WORDS.search(headline)
+            or (_QUARTER_WORD.search(headline) and _RESULT_HEADING.search(headline))
+        )
+    )
+
+
 def bust_cache(url: str) -> str:
-    # A query parameter the CDN hasn't seen before makes it fetch a fresh copy
+    # Vary the URL for caches that include query parameters in their keys.
     return f"{url}{'&' if '?' in url else '?'}_={time.time_ns()}"
 
 
@@ -131,6 +167,7 @@ class Sighting:
     body: bytes | None = field(default=None, repr=False, compare=False)
     # Already listed when the bot started watching, but published inside the window
     caught_up: bool = False
+    lead: str = field(default="", repr=False, compare=False)
 
 
 class Source(ABC):
@@ -144,8 +181,6 @@ class Source(ABC):
     method = "GET"
     ok_statuses = frozenset({200})
     stop_when_found = False  # stop polling once the source lists anything
-    # A source on trial is recorded but doesn't post to Discord unless the schedule asks
-    trial = False
     report_initial = False  # the source can verify that this is the scheduled release
 
     async def fetch(self, fetcher: Fetcher) -> Response:
@@ -420,6 +455,7 @@ class RssFeed(Source):
                     published=entry.published,
                     earnings=looks_like_earnings(entry.title),
                     details={"feed_built": built} if built else {},
+                    lead=entry.lead[:450],
                 )
             )
         return sightings
@@ -503,7 +539,10 @@ def _atom_entry(entry: ET.Element) -> _Entry:
         title=(entry.findtext(f"{_ATOM}title") or "").strip(),
         lead=entry.findtext(f"{_ATOM}content") or entry.findtext(f"{_ATOM}summary") or "",
         link=link,
-        published=entry.findtext(f"{_ATOM}updated"),
+        published=entry.findtext(f"{_ATOM}published") or entry.findtext(f"{_ATOM}updated"),
+        contributor=entry.findtext(f"{_DC}contributor")
+        or entry.findtext("{http://dublincore.org/documents/dcmi-namespace/}contributor")
+        or "",
     )
 
 

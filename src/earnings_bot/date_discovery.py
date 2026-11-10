@@ -17,37 +17,43 @@ from zoneinfo import ZoneInfo
 import aiohttp
 
 from earnings_bot.browser import BrowserError, RenderedPage
+from earnings_bot.browser_sources import IRSource
 from earnings_bot.cache_research import CHECKING_CACHE, CacheResult, CacheRoute, probe_cache
 from earnings_bot.calendar import Calendar, Tracked, describe, same_release
 from earnings_bot.fetch import Fetcher, Response
 from earnings_bot.formatting import clock, day, period_label
 from earnings_bot.investigate import OpenChrome, Report, due, investigate
 from earnings_bot.ir_pages import (
+    EVENTS,
     IRReader,
     IRReading,
     Moment,
     Render,
     earnings_event,
     moments,
+    nav_rank,
     upcoming,
 )
 from earnings_bot.ir_research import (
     chrome_available,
     issuer_links,
     issuer_listing,
+    prior_period,
+    quarter_headline,
     verified_browser_source,
     verified_http_source,
     verified_news_source,
+    verified_results_table,
 )
 from earnings_bot.issuer_news import news_records, read_news
 from earnings_bot.known import (
-    NTH,
-    ORD,
     KnownCompany,
     fiscal_period,
     known_companies,
     to_target,
 )
+from earnings_bot.periods import title_period
+from earnings_bot.quarterly_table import quarter_pdf
 from earnings_bot.recorder import ET, PollError, Target, poll
 from earnings_bot.sec_results import SixKResults, SixKUnavailable
 from earnings_bot.source_audit import Speed, published_first
@@ -71,23 +77,6 @@ _PERIOD_END = re.compile(r"\b(?:ended|ending)\s+(?:on\s+)?$", re.IGNORECASE)
 _ABBREVIATED = re.compile(
     r"\b(Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sept?|Oct|Nov|Dec)\.?(?=\s+\d)", re.IGNORECASE
 )
-_NOTICE_QUARTER = rf"(?:Q([1-4])|({'|'.join(NTH + ORD)})[-\s]+quarter)"
-_PERIOD = re.compile(
-    rf"\b{_NOTICE_QUARTER}"
-    # "of fiscal 2026", "and fiscal 2026", "and full year 2025", "and first half 2026"
-    r"\s+(?:(?:and|&)\s+(?:(?:full|first|second)[-\s]+)?(?:half[-\s]+)?|of\s+)?"
-    r"(?:fiscal\s+)?(?:year\s+)?(?:FY\s*)?(20\d{2})\b",
-    re.IGNORECASE,
-)
-_YEAR_FIRST_PERIOD = re.compile(
-    rf"\b(?:fiscal(?:\s+year)?|FY)\s*(20\d{{2}})\s+{_NOTICE_QUARTER}\b",
-    re.IGNORECASE,
-)
-# "WeRide Inc. 2026 Q3 Earnings Conference Call"
-_YEAR_QUARTER = re.compile(
-    rf"\b(20\d{{2}})\s+(?:Q([1-4])|({'|'.join(NTH + ORD)})[-\s]+quarter)\b", re.IGNORECASE
-)
-_SHORT_YEAR = re.compile(r"\bFY\s?(\d{2})\b", re.IGNORECASE)
 # An event the IR site hasn't settled yet, as Lowe's "Earnings Conference Call (tentative)"
 _TENTATIVE = re.compile(r"\b(?:tentative|tbc|tbd|to be confirmed|estimated)\b", re.IGNORECASE)
 EVENT_DATE = "Issuer's earnings event"
@@ -299,7 +288,9 @@ def parse_notice(
         early = expected.replace(hour=6, minute=0)
         target.after_minutes = max(target.after_minutes, (opens - expected) // timedelta(minutes=1))
         target.before_minutes = max(
-            target.before_minutes, (expected - early) // timedelta(minutes=1)
+            target.before_minutes,
+            (expected - early) // timedelta(minutes=1),
+            90 if company.sec_form == "6-K" and not company.release_published else 0,
         )
     return (target, f"Issuer date confirmed, {mode}") if target.window[1] > now else None
 
@@ -463,20 +454,40 @@ async def _listing_date(
     return None
 
 
-def title_period(title: str) -> tuple[int, int] | None:
-    """The fiscal year and quarter a headline or event names: "Q3 2026", "third quarter of
-    fiscal 2026", "fiscal 2026 Q3", "2026 Q3" or "Q4 FY26"."""
-    title = _SHORT_YEAR.sub(r"FY20\1", title)
-    if period := _PERIOD.search(title):
-        digit, ordinal, year = period.groups()
-    elif period := _YEAR_FIRST_PERIOD.search(title) or _YEAR_QUARTER.search(title):
-        year, digit, ordinal = period.groups()
-    else:
+async def _wire_date(
+    fetcher: Fetcher, ticker: str, company: KnownCompany, now: datetime
+) -> tuple[Target, str] | None:
+    """An issuer-authored notice can be public on its wire even when IR is unreadable."""
+    if company.wire not in ("PR Newswire", "unknown"):
         return None
-    if digit:
-        return int(year), int(digit)
-    ordinal = ordinal.lower()
-    return int(year), (NTH.index(ordinal) if ordinal in NTH else ORD.index(ordinal)) + 1
+    slug = re.sub(r"[^a-z0-9]+", "-", company.name.casefold()).strip("-")
+    if not slug:
+        return None
+    exchange = re.compile(rf"\b(?:NASDAQ|NYSE|TSX|AMEX)\s*:\s*{re.escape(ticker)}\b", re.IGNORECASE)
+    for variant in (slug, slug + "."):
+        url = f"https://www.prnewswire.com/news/{variant}/"
+        with suppress(aiohttp.ClientError, TimeoutError, ValueError):
+            listing = await fetcher.request("GET", url, give_up_after=4, allow_redirects=False)
+            if listing.status != 200:
+                continue
+            notices = [
+                (link, title)
+                for link, title in issuer_links(url, listing.body)
+                if urlsplit(link).path.startswith("/news-releases/") and is_date_notice(title)
+            ]
+            for link, title in notices[:3]:
+                page = await fetcher.request("GET", link, give_up_after=4, allow_redirects=False)
+                if page.status != 200:
+                    continue
+                html = page.body.decode(errors="replace")
+                if not exchange.search(html_to_text(html)):
+                    continue
+                if result := parse_notice(ticker, company, title, html, now):
+                    target, evidence = result
+                    # The publisher of the notice is also an available race source.
+                    target.prnewswire = company.names
+                    return target, f"{evidence} <{link}>"
+    return None
 
 
 def timed_by_publishers(company: KnownCompany, review: str | None) -> KnownCompany:
@@ -533,7 +544,8 @@ def event_target(
         )
         before, after = 60, 90
     elif (
-        call.hour < 12
+        _CALL.search(title)
+        and call.hour < 12
         and hour is not None
         and minute is not None
         and hour >= 16
@@ -551,7 +563,8 @@ def event_target(
         )
         if (
             same_day
-            and timedelta(0) < call - same_day <= timedelta(hours=3)
+            and same_day < call
+            and (call - same_day <= timedelta(hours=3) or (same_day.hour < 12 and call.hour < 12))
             and (company.sec_form != "6-K" or company.release_published)
         ):
             expected = same_day
@@ -647,17 +660,28 @@ def _listed_events(page: RenderedPage, today: date) -> list[tuple[str, Moment, s
     """Earnings events a page lists with their dates beside them, as in "WeRide Inc. 2026 Q3
     Earnings Conference Call 2026-11-20 8:00 AM EST"."""
     found = []
-    lines = page.text.splitlines()
+    lines = [line.strip() for line in page.text.splitlines() if line.strip()]
+    event_page = re.search(r"(?:events?|calendar)", urlsplit(page.url).path, re.IGNORECASE)
     for number, line in enumerate(lines):
-        if not earnings_event(line):
-            continue
-        # The event's own line, or a short one right after it that's just its date. Any further
-        # and the date may be the next event's.
-        nearby = [line, *(after for after in lines[number + 1 : number + 2] if len(after) <= 40)]
-        found.extend(
-            (line.strip(), moment, page.url, " ".join(nearby))
-            for moment in upcoming(moments(" ".join(nearby)), today)[:1]
+        nearby = lines[max(0, number - 3) : number]
+        dated_results = (
+            (event_page or any(nav_rank(heading) == EVENTS for heading in nearby))
+            and len(line) <= 160
+            and re.search(r"\b(?:results|earnings)$", line, re.IGNORECASE)
+            and title_period(line)
         )
+        if not (earnings_event(line) or dated_results):
+            continue
+        # Some event cards put a standalone date immediately before the title.
+        adjacent = [
+            lines[i]
+            for i in (number + 1, number - 1)
+            if 0 <= i < len(lines) and len(lines[i]) <= 60
+        ]
+        for entry in (line, *adjacent):
+            if dated := upcoming(moments(entry), today):
+                found.append((line, dated[0], page.url, f"{line} {entry}"))
+                break
     return found
 
 
@@ -670,18 +694,36 @@ def ir_starts(ticker: str, company: KnownCompany) -> list[str]:
     ]
     if company.q4_host:
         origins.append(f"https://{company.q4_host}/")
-    starts = [issuer_listing(ticker, company), company.ir_home, *origins]
+    starts = [company.ir_home, issuer_listing(ticker, company), *origins]
+    if company.ir_home and not origins and not company.ir_listing:
+        # A company's release may give only its retail website. Try standard IR subdomains
+        # of that same corporate domain before giving up on the issuer's calendar.
+        host = urlsplit(company.ir_home).hostname or ""
+        if host.startswith("www."):
+            domain = host.removeprefix("www.")
+            starts += [f"https://{prefix}.{domain}/" for prefix in ("investor", "investors", "ir")]
     return [url for url in dict.fromkeys(starts) if url]
 
 
 def _cache_routes(row: Tracked) -> list[CacheRoute]:
     target, company = row.target, row.company
     ir = target.ir if target else None
-    api = (ir.news_api if ir else None) or company.ir_news_api
+    api = (ir.news_api if ir else None) or company.ir_results_api or company.ir_news_api
     q4_host = target.q4_host if target else company.q4_host
     routes: list[CacheRoute] = []
     if api:
-        routes.append(CacheRoute("IR newsroom API", api))
+        label = "IR results API" if api == company.ir_results_api else "IR newsroom API"
+        routes.append(CacheRoute(label, api))
+    if ir and ir.results_table and not ir.table_rendered and target and target.period:
+        routes.append(
+            CacheRoute(
+                "IR quarterly results table",
+                ir.results_table,
+                warmup=None if ir.table_http else ir.results_table,
+                revalidate=ir.table_http,
+                table_period=prior_period(target.period),
+            )
+        )
     if q4_host:
         q4 = Q4PressReleases(q4_host).url().rsplit("&_=", 1)[0]
         routes.append(CacheRoute("Q4 press releases", q4))
@@ -760,9 +802,11 @@ class DateDiscovery:
         """One hourly check of a company, which never raises."""
         try:
             # Room for a first investigation and a read of the IR site, both through Chrome
-            async with asyncio.timeout(RESEARCH_SECONDS):
-                await self._check(row)
-                if current := self.calendar.find(row.ticker):
+            async with asyncio.timeout(RESEARCH_SECONDS) as research:
+                await self._check(row, preflight=True, deadline=research.when())
+                if (current := self.calendar.find(row.ticker)) and (
+                    current.target is None or current.target.window[1] <= self.now()
+                ):
                     await self._prepare_cache(current)
         except Exception:
             log.exception("Date discovery failed for %s", row.ticker)
@@ -800,7 +844,14 @@ class DateDiscovery:
                     ):
                         target, evidence = result
                         return target, f"{evidence} from issuer 6-K exhibit <{notice.url}>"
-        return await self._ir_site_date(row, now, unread)
+        result = await self._ir_site_date(row, now, unread)
+        if result or (
+            row.target
+            and row.target.window[1] > now
+            and row.evidence not in (CALENDAR_DATE, CALENDAR_6K_DATE)
+        ):
+            return result
+        return await _wire_date(self.fetcher, row.ticker, row.company, now)
 
     async def _ir_site_date(
         self, row: Tracked, now: datetime, unread: list[str]
@@ -847,6 +898,14 @@ class DateDiscovery:
         self.on_progress()
 
     async def _probe_cache(self, route: CacheRoute) -> CacheResult:
+        signature = None
+        if period := route.table_period:
+
+            def table_signature(body: bytes) -> str | None:
+                return quarter_pdf(route.url, body, *period)
+
+            signature = table_signature
+
         async def get(url: str) -> Response:
             if self.busy():
                 raise TimeoutError
@@ -856,7 +915,7 @@ class DateDiscovery:
             )
 
         if route.warmup is None:
-            return await probe_cache(get, route.url)
+            return await probe_cache(get, route.url, signature)
         open_chrome = self.chrome or (self.fetcher.research_browser if chrome_available() else None)
         if open_chrome is None:
             return CacheResult("Desktop Chrome unavailable")
@@ -869,25 +928,27 @@ class DateDiscovery:
                         raise TimeoutError
                     return await browser.request(url, warmup, 4, self.fetcher.wait_turn)
 
-                return await probe_cache(get_browser, route.url)
+                return await probe_cache(get_browser, route.url, signature)
         except (BrowserError, aiohttp.ClientError, TimeoutError, ValueError):
             return CacheResult("Chrome cache comparison failed")
 
-    async def _prepare_cache(self, row: Tracked) -> None:
+    async def _prepare_cache(self, row: Tracked, *, save: bool = True) -> Target | None:
         if self.busy():
             self.checked.pop(row.cik, None)
-            return
+            return row.target
         target, evidence = row.target, row.evidence
         ir = target.ir if target else None
         bust = set(ir.cache_bust_urls if ir else ())
         canonical = set(target.rss_canonical if target else ())
         notes: list[str] = []
+        if ir and ir.table_rendered:
+            notes.append("IR quarterly results page · Chrome navigation cache freshness unverified")
         prior_phase = self.phases.get(row.cik)
         try:
             for route in _cache_routes(row):
                 if self.busy():
                     self.checked.pop(row.cik, None)
-                    return
+                    return target
                 saved = self.cache_results.get(route)
                 if saved and saved[0] > time.monotonic():
                     result = saved[1]
@@ -901,10 +962,10 @@ class DateDiscovery:
                         result = CacheResult("Cache comparison timed out")
                     if self.busy():
                         self.checked.pop(row.cik, None)
-                        return
+                        return target
                     self.cache_results[route] = time.monotonic() + CACHE_REFRESH, result
                 notes.append(f"{route.label} · {result.summary}")
-                if ir and route.url in (ir.news_api, ir.listing, ir.rss):
+                if ir and route.url in (ir.news_api, ir.listing, ir.rss, ir.results_table):
                     if result.query_bust:
                         bust.add(route.url)
                     elif result.canonical_only or result.stored_only:
@@ -915,7 +976,8 @@ class DateDiscovery:
                         canonical.add(route.url)
                     elif result.query_bust:
                         canonical.discard(route.url)
-            if target and evidence and self.calendar.find(row.ticker) == row:
+            updated = target
+            if target and evidence:
                 updated = target.model_copy(
                     update={
                         "ir": ir.model_copy(update={"cache_bust_urls": sorted(bust)})
@@ -924,12 +986,13 @@ class DateDiscovery:
                         "rss_canonical": sorted(canonical),
                     }
                 )
-                if updated != target:
+                if save and updated != target and self.calendar.find(row.ticker) == row:
                     self.calendar.set_target(updated, evidence)
             updated_notes = notes or ["No issuer endpoint available to test"]
             if self.cache_notes.get(row.cik) != updated_notes:
                 self.cache_notes[row.cik] = updated_notes
                 self.on_progress()
+            return updated
         finally:
             if self.phases.get(row.cik) == CHECKING_CACHE:
                 self._phase(row.cik, prior_phase)
@@ -958,14 +1021,15 @@ class DateDiscovery:
         self.calendar.save_profile(row.cik, company)
         return replace(row, company=company)
 
-    async def _check(self, row: Tracked) -> None:
+    async def _check(
+        self, row: Tracked, *, preflight: bool = False, deadline: float | None = None
+    ) -> None:
         row = await self._investigate(row)
         if self._defer_if_busy(row.cik):
             return
         # Place windows by when the release came out last time, not when SEC had it
-        timed = replace(
-            row, company=timed_by_publishers(row.company, self.calendar.review(row.cik)[1])
-        )
+        review = self.calendar.review(row.cik)[1]
+        timed = replace(row, company=timed_by_publishers(row.company, review))
         self._phase(row.cik, "Looking for the next release date")
         now = self.now()
         unread: list[str] = []
@@ -994,7 +1058,14 @@ class DateDiscovery:
             fresh = [
                 t
                 for t in unread
-                if not (dated := moments(t))
+                if (
+                    not (dated := moments(t))
+                    and not (
+                        done
+                        and (named := title_period(t))
+                        and done.period == f"FY{named[0]}Q{named[1]}"
+                    )
+                )
                 or (
                     upcoming(dated, today)
                     and not (last_day and max(m.day for m in dated) <= last_day)
@@ -1009,10 +1080,19 @@ class DateDiscovery:
             read = f" {self.ir_reads[row.cik]}" if row.cik in self.ir_reads else ""
             if done:
                 quarter = period_label(done.period) or "Its latest"
-                status = (
-                    f"{quarter} results came out {day(done.expected)}. The next release "
-                    "isn't announced yet."
+                speed = Speed.from_json(review)
+                confirmed = self.calendar.delivered(done.release_key) or bool(
+                    speed and speed.confident and speed.day == last_day
                 )
+                if confirmed:
+                    status = (
+                        f"{quarter} results came out {day(done.expected)}. The next release "
+                        "isn't announced yet."
+                    )
+                else:
+                    status = (
+                        f"{quarter} watch ended {day(done.expected)} without a confirmed release."
+                    )
             else:
                 status = "No release date read yet."
             self._phase(
@@ -1024,23 +1104,61 @@ class DateDiscovery:
         if self._defer_if_busy(row.cik) or row not in self.calendar.entries():
             return
         if row.target and same_release(target, row.target):
-            if row.target.ir:
-                target.ir = row.target.ir
             feeds = {*target.rss, *target.trial.rss}
-            target.rss_canonical = [url for url in row.target.rss_canonical if url in feeds]
+            target = target.model_copy(
+                update={
+                    "ir": row.target.ir or target.ir,
+                    "rss_canonical": [url for url in row.target.rss_canonical if url in feeds],
+                }
+            )
         if row.company.sec_form == "6-K" and target.sec_form != "6-K":
             target = target.model_copy(update={"sec_form": "6-K"})
-        self._phase(row.cik, None)
+        # Publish the prepared plan together when there is time. Leave several seconds
+        # for the schedule scan and use the available sources if the window is imminent.
+        remaining = (target.window[0] - self.now()).total_seconds() - 5
+        if deadline is not None:
+            remaining = min(remaining, deadline - asyncio.get_running_loop().time() - 1)
+        if remaining > 0:
+            try:
+                async with asyncio.timeout(remaining):
+                    target = await self._issuer_routes(row, target, evidence)
+                    if preflight:
+                        target = (
+                            await self._prepare_cache(
+                                replace(row, target=target, evidence=evidence), save=False
+                            )
+                            or target
+                        )
+            except TimeoutError:
+                self.ir_notes[row.cik] = "Issuer preparation reached the watch deadline"
+            except Exception:
+                log.exception("Issuer source preparation failed for %s", row.ticker)
+                self.ir_notes[row.cik] = "Issuer preparation failed and will be retried"
+        if self._defer_if_busy(row.cik) or self.calendar.find(row.ticker) != row:
+            return
         if row.target != target or row.evidence != evidence:
             self.calendar.set_target(target, evidence)
-            self.status(f"📅 {describe(target, evidence)}")
+            if (
+                row.target is None
+                or row.target.expected != target.expected
+                or row.evidence != evidence
+            ):
+                self.status(f"📅 {describe(target, evidence)}")
+        self._phase(row.cik, None)
+
+    async def _issuer_routes(self, row: Tracked, target: Target, evidence: str) -> Target:
         existing_ir = target.ir
         results_api = row.company.ir_results_api
-        # A results API found since is worth switching to
+        table = row.company.ir_results_page
+        browser_feed = row.company.ir_browser_rss
         newer = bool(results_api and existing_ir and existing_ir.news_api != results_api)
+        extras_due = (table and (not existing_ir or existing_ir.results_table != table)) or (
+            browser_feed and (not existing_ir or existing_ir.rss != browser_feed)
+        )
         if (
             existing_ir
             and not newer
+            and not extras_due
             and (
                 evidence == MANUAL
                 or existing_ir.news_api
@@ -1053,13 +1171,13 @@ class DateDiscovery:
                 or row.cik in self.ir_notes
             )
         ):
-            return
+            return target
         if not target.period:
             self.ir_notes[row.cik] = "The release has no fiscal period to match headlines with"
             self.on_progress()
-            return
+            return target
         listing = existing_ir.listing if existing_ir else issuer_listing(row.ticker, row.company)
-        if listing:
+        if listing or results_api or table or browser_feed:
             self._phase(row.cik, VERIFYING_IR)
         ir = await verified_news_source(self.fetcher, results_api, target.period)
         if ir:
@@ -1075,21 +1193,38 @@ class DateDiscovery:
             if ir:
                 why = "Read last quarter's results over direct HTTP"
             elif existing_ir:
-                why = "Keeping the previously verified Chrome source"
+                why = "Keeping the previously verified issuer source"
             else:
                 ir, why = await verified_browser_source(self.fetcher, listing, target.period)
-        if ir:
-            if self._defer_if_busy(row.cik):
-                return
-            if not any(
-                tracked.target == target and tracked.evidence == evidence
-                for tracked in self.calendar.entries()
-            ):
-                self._phase(row.cik, None)
-                return
-            self.calendar.set_target(target.model_copy(update={"ir": ir}), evidence)
+        # Keep the verified routes together. The table is independent of a newsroom API or RSS.
+        if existing_ir and ir:
+            routes = {
+                **existing_ir.model_dump(exclude_defaults=True, exclude={"cache_bust_urls"}),
+                **ir.model_dump(exclude_defaults=True, exclude={"cache_bust_urls"}),
+            }
+            urls = {routes.get(field) for field in ("listing", "news_api", "rss", "results_table")}
+            ir = IRSource.model_validate(
+                {
+                    **routes,
+                    "cache_bust_urls": [url for url in existing_ir.cache_bust_urls if url in urls],
+                }
+            )
+        elif existing_ir:
+            ir = existing_ir
+        additions: dict[str, str | bool] = {}
+        if table and (not ir or ir.results_table != table):
+            additions.update(await verified_results_table(self.fetcher, table, target.period))
+        if browser_feed and (not ir or not ir.rss) and chrome_available():
+            additions.update(
+                rss=browser_feed,
+                headline=quarter_headline(int(target.period[2:6]), int(target.period[-1])),
+            )
+            if ir and ir.listing and urlsplit(ir.listing).netloc != urlsplit(browser_feed).netloc:
+                additions["warmup"] = urljoin(browser_feed, "/")
+        if additions:
+            ir = IRSource.model_validate({**(ir.model_dump() if ir else {}), **additions})
         self.ir_notes[row.cik] = why
-        self._phase(row.cik, None)
+        return target.model_copy(update={"ir": ir}) if ir else target
 
     def _defer_if_busy(self, cik: int) -> bool:
         if not self.busy():

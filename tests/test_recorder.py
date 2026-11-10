@@ -24,11 +24,13 @@ from earnings_bot.recorder import (
     configure_console,
     follow_up,
     load_plan,
+    record_items,
     summarize,
     sync_clock,
     watch,
 )
-from earnings_bot.sources import GuessedFile, Sighting, Source, published_time
+from earnings_bot.sources import GuessedFile, GuessedPage, RssFeed, Sighting, Source, published_time
+from tests.fakes import RoutedFetcher
 
 
 class ListSource(Source):
@@ -264,7 +266,7 @@ async def test_watch_stops_polling_a_guess_once_found() -> None:
     assert w.first_title == "Item page"
 
 
-def test_trial_sources_come_from_the_targets_trial_table(tmp_path: Path) -> None:
+def test_extra_sources_come_from_the_targets_trial_table(tmp_path: Path) -> None:
     plan_file = tmp_path / "plan.toml"
     plan_file.write_text(
         '[[target]]\nticker = "AVGO"\nexpected = 2026-12-10T16:15:00\ncik = 1730168\n'
@@ -278,19 +280,18 @@ def test_trial_sources_come_from_the_targets_trial_table(tmp_path: Path) -> None
     [target] = load_plan(plan_file).target
     sources = target.sources()
 
-    assert not target.trial.post
-    assert [(s.name, s.trial) for s in sources] == [
-        ("edgar", False),
-        ("edgar_latest", False),
-        ("prnewswire_busted", False),
-        ("prnewswire", False),
-        ("broadcom_newsroom", True),
-        ("rss:ir.hubspot.com", True),
-        ("globenewswire", True),
-        ("globenewswire_busted", True),  # both copies, to see whether busting helps
-        ("prnewswire_semiconductors", True),
-        ("page:news.example.com/q4-results", True),
-        ("page:news.example.com/q4.pdf", True),
+    assert [s.name for s in sources] == [
+        "edgar",
+        "edgar_latest",
+        "prnewswire_busted",
+        "prnewswire",
+        "broadcom_newsroom",
+        "rss:ir.hubspot.com",
+        "globenewswire",
+        "globenewswire_busted",  # both copies, to see whether busting helps
+        "prnewswire_semiconductors",
+        "page:news.example.com/q4-results",
+        "page:news.example.com/q4.pdf",
     ]
     named = {source.name: source for source in sources}
     assert "_=" in named["rss:ir.hubspot.com"].url()  # a company feed is always busted
@@ -438,7 +439,7 @@ async def test_new_items_log_how_long_the_poll_waited_for_its_host() -> None:
     [summary] = [e for e in events(log) if e["event"] == "summary"]
     [row] = cast(list[dict[str, object]], summary["sources"])
     assert (row["queued_median_ms"], row["queued_max_ms"]) == (250, 250)
-    assert (row["timeouts"], row["errors"], row["trial"]) == (1, 0, False)
+    assert (row["timeouts"], row["errors"]) == (1, 0)
 
 
 class PageSource(ListSource):
@@ -734,3 +735,68 @@ async def test_after_the_window_a_source_that_hadnt_shown_the_release_still_link
     # Only the source that hadn't shown it is checked, and its link joins the alert
     assert seen == [("SE", "6-K")]
     assert quiet.polls >= 1 and found.polls == 0
+
+
+def test_new_wire_items_require_a_results_headline_for_the_scheduled_quarter() -> None:
+    source = RssFeed("wire", "https://example.com/rss")
+    journal = Journal(io.StringIO())
+    now = journal.now()
+    watch_state = Watch("XYZ", source, known=set(), period="FY2026Q3")
+    articles = [
+        "Company posts Q3 product sales figures",
+        "Company Reports Q3 2026 Results of Its Share Repurchase Program",
+        "Company to Report Q3 2026 Financial Results",
+        "Company Reports Q2 2026 Financial Results",
+        "Company Reports 2026 Q3 Financial Results, Up 17% over Q3 2025",
+        "Company Reports 2026 Third Quarter Net Income",
+    ]
+    feed = (
+        "<rss><channel>"
+        + "".join(
+            f"<item><title>{title}</title><link>https://example.com/{i}</link></item>"
+            for i, title in enumerate(articles)
+        )
+        + "</channel></rss>"
+    )
+    response = Response(source.url(), 200, {}, feed.encode(), 0.01)
+    sightings: list[Sighting] = []
+
+    record_items(
+        watch_state,
+        source.parse(response),
+        response,
+        journal,
+        now,
+        lambda _, item: sightings.append(item),
+    )
+
+    assert [item.title for item in sightings if item.earnings] == articles[-2:]
+
+
+async def test_resume_enriches_from_a_verified_guessed_page_and_baselines_head_only_urls() -> None:
+    journal = Journal(io.StringIO())
+    now = journal.now()
+    target = Target(ticker="AAA", cik=7, expected=now, after_minutes=0, period="FY2026Q3")
+    report = "https://example.com/third-quarter-2026"
+    file = "https://example.com/latest"
+    body = b"<title>Company Q3 2026 Financial Results</title>" + (
+        b"<p>Quarterly revenue of $2 billion and net income of $100 million.</p>" * 50
+    )
+    fetcher = RoutedFetcher(
+        {report: (200, body), file: (200, b"")},
+        {"content-type": "text/html"},
+    )
+    page = Watch("AAA", GuessedPage(report), target.window, period=target.period)
+    head = Watch("AAA", GuessedFile(file), target.window, period=target.period)
+    sightings: list[Sighting] = []
+
+    await follow_up(
+        target,
+        [page, head],
+        fetcher,
+        journal,
+        lambda _, __, item: sightings.append(item),
+        longest=timedelta(milliseconds=50),
+    )
+
+    assert [item.url for item in sightings if item.earnings] == [report]

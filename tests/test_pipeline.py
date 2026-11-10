@@ -269,14 +269,14 @@ async def test_only_one_summary_when_several_sources_have_the_text(
 
 def broadcom_release() -> tuple[BroadcomNewsroom, Sighting]:
     newsroom = BroadcomNewsroom()
-    newsroom.trial = True
     path = "/company/news/financial-releases/64900"
     title = "Broadcom Inc. Announces Fourth Quarter and Fiscal Year 2026 Financial Results"
     url = f"https://www.broadcom.com{path}"
     return newsroom, Sighting("64900", title, url, earnings=True, details={"path": path})
 
 
-async def test_trial_sources_dont_post_unless_the_schedule_asks() -> None:
+async def test_a_newly_added_source_posts_like_any_other() -> None:
+    # No source waits on a trial: a release day is the only way to time a new one
     posters: list[FakePoster] = []
 
     def new_poster() -> FakePoster:
@@ -286,14 +286,9 @@ async def test_trial_sources_dont_post_unless_the_schedule_asks() -> None:
     releases = Releases(new_poster, fetcher(), Journal(io.StringIO()), None, None)
     newsroom, results = broadcom_release()
     expected = datetime(2026, 12, 10, 16, 15, tzinfo=ET)
-    on_trial = Target(ticker="AVGO", expected=expected, cik=1730168, trial=Trial())
+    added = Target(ticker="AVGO", expected=expected, cik=1730168, trial=Trial())
 
-    releases.on_new(on_trial, newsroom, results)
-    await releases.finish()
-    assert posters == []
-
-    proven = on_trial.model_copy(update={"trial": Trial(post=True, broadcom_newsroom=True)})
-    releases.on_new(proven, newsroom, results)
+    releases.on_new(added, newsroom, results)
     await releases.finish()
     [poster] = posters
     assert [kind for kind, _ in poster.calls] == ["send"]

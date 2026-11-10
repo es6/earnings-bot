@@ -129,7 +129,7 @@ def test_release_time_comes_from_when_results_8ks_were_accepted(
     assert release_time(accepted) == expected
 
 
-def test_a_profile_watches_edgar_and_both_wires() -> None:
+def test_a_profile_watches_edgar_and_all_three_wires() -> None:
     lucid = profile("LCID", LCID_CIK, "Lucid Group, Inc.", LCID_SUBMISSIONS, TODAY)
 
     assert lucid.cik == LCID_CIK
@@ -150,6 +150,8 @@ def test_a_profile_watches_edgar_and_both_wires() -> None:
         "businesswire_busted",
         "prnewswire_busted",
         "prnewswire",
+        "globenewswire",
+        "globenewswire_busted",
     ]
 
 

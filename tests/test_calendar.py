@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from earnings_bot.browser_sources import IRSource
+from earnings_bot.browser_sources import IRSource, QuarterlyTable
 from earnings_bot.calendar import Calendar, manual_target, upcoming
 from earnings_bot.delivery import DeliveryStore
 from earnings_bot.ir_research import IR_LISTINGS, quarter_headline
@@ -151,3 +151,25 @@ def test_the_calendar_follows_the_bot_to_a_new_channel(tmp_path: Path) -> None:
         assert Calendar(store).moved_from is None  # once
     with DeliveryStore(db, 99) as store:
         assert [row.ticker for row in Calendar(store).entries()] == ["HD"]
+
+
+def test_legacy_schedule_keeps_its_key_and_watches_the_researched_table(tmp_path: Path) -> None:
+    target = to_target("NVDA", datetime(2026, 11, 17, 16, 20, tzinfo=ET), 2027, 3)
+    results = "https://investor.nvidia.com/financial-results"
+    target.ir = IRSource(results_table=results, table_rendered=True, cache_bust_urls=[results])
+    manual = IRSource(listing="https://investor.nvidia.com/news/", headline="Q3")
+    file = target.model_copy(update={"period": None, "ir": manual})
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        calendar = Calendar(store)
+        calendar.add("NVDA")
+        calendar.set_target(target, "Issuer notice")
+
+        effective = calendar.plan({file.release_key: file})[file.release_key]
+
+    assert effective.release_key == file.release_key
+    assert effective.ir and effective.ir.listing == manual.listing
+    tables = [source for source in effective.sources() if isinstance(source, QuarterlyTable)]
+    assert len(tables) == 1
+    table = tables[0]
+    assert (table.listing, table.year, table.quarter) == (results, 2027, 3)
+    assert table.rendered and table.cache_bust

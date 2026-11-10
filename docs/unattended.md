@@ -39,8 +39,9 @@ investigates it outside release windows:
 The scorecard is edited as each step runs. When the research finishes it shows
 which source had the last results first, every source it will watch for the next
 release, and each source it checked and rejected, with the reason. The investigation runs again a month later. The date comes
-from the issuer's own notice, including a date announcement furnished on 6-K.
-FMP's earnings calendar can supply a date when `FMP_API_KEY` is set. The bot
+from the issuer's own notice, including a date announcement furnished on 6-K or
+published through its newswire. The planner also reads dated earnings events
+on IR calendars and keeps tentative dates pending. FMP's earnings calendar can supply a date when `FMP_API_KEY` is set. The bot
 estimates the time from recent results filings and uses a wider window. The
 scorecard explains when work is paused for release monitoring and when a
 Manage Server member can supply `when` and `period`.
@@ -53,17 +54,19 @@ Manage Server member can supply `when` and `period`.
    supported feeds or public IR listings, or for a company outside the catalog,
    uses FMP's calendar date. An exact release time uses a 10-minute lead
    for 8-K issuers and a 30-minute lead for 6-K issuers, with 30 minutes of
-   follow-up. A confirmed day with an
-   approximate time uses a wider window. A call-only notice leaves the date
-   pending. Pending issuers are rechecked roughly hourly outside release windows.
+   follow-up. A confirmed day with an approximate time uses a wider window.
+   Publisher timings from a prior quarter can move the window earlier. Pending
+   issuers are rechecked roughly hourly outside release windows.
 3. **Audit the last release.** The scorecard separates measured report-text and
    headline timings from archive timestamp estimates. It includes the
    `@earnings_guy` comparison when X verifies a matching post. Audits run one at
    a time outside release windows and refresh after a monitored release.
 4. **Prepare and watch.** The watcher picks up a confirmed window within a few
    seconds. A matching TOML entry supplies its source settings and release key.
-   The configured sources race in parallel. The first alert-enabled sighting
+   The configured sources race in parallel. The first verified release sighting
    starts the Discord post, which is edited as links, files and any summary arrive.
+   For delivered alerts, late sources are checked until the follow-up cutoff, including
+   after a restart.
 5. **Keep tracking.** After the window, the watcher reports source timing and
    the benchmark result. The subscription remains in place for the next quarter.
 

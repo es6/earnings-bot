@@ -8,13 +8,14 @@ from typing import cast
 import discord
 import pytest
 
+from earnings_bot import recorder
 from earnings_bot.calendar import Calendar, describe
 from earnings_bot.date_discovery import CALENDAR_6K_DATE, DateDiscovery, calendar_date
 from earnings_bot.delivery import DeliveryStore
 from earnings_bot.investigate import INVESTIGATION
 from earnings_bot.issuers import profile
 from earnings_bot.known import SourceCheck
-from earnings_bot.recorder import ET, Journal, Polls, Target, Watch
+from earnings_bot.recorder import ET, Journal, Polls, Target, Watch, follow_up
 from earnings_bot.sec_results import SixKResults, is_results_release
 from earnings_bot.source_audit import Speed, Timing, audit_sources, site_local_time
 from earnings_bot.sources import EdgarFilings, EdgarLatest, Sighting
@@ -463,3 +464,73 @@ def test_a_q4_time_counts_as_eastern_only_when_sec_confirms_it() -> None:
     assert site_local_time("08/13/2026 22:01:00", sec) is None
     assert site_local_time("08/13/2026 06:01:00", sec) is None
     assert site_local_time("08/13/2026 16:01:00", []) is None
+
+
+async def test_a_results_6k_can_begin_after_a_full_cover_page() -> None:
+    cover = "UNITED STATES\nSECURITIES AND EXCHANGE COMMISSION\nFORM 6-K\n"
+    cover += "Cover page item\n" * 15
+    report = (
+        "Company Reports Second Quarter 2026 Financial Results\n"
+        "The company announced its financial results for the quarter ended June 30, 2026.\n"
+        + "Revenue of $4 billion and net income of $300 million.\n"
+        * 55
+    )
+    url = "https://www.sec.gov" + folder(RESULT)
+    filename = f"{url}/cover.htm"
+    filing = Sighting(RESULT, "6-K", filename, details={"form": "6-K"})
+    fetcher = RoutedFetcher({f"{url}/{RESULT}-index.htm": (200, b"Document Format Files")})
+    unexpected = cover + "Yes No (X)\nNon-results disclosure\n" + "Cover page item\n" * 20 + report
+    for body, expected in ((unexpected, False), (cover + "Yes No (X)\n" + report, True)):
+        fetcher.routes[filename] = (
+            200,
+            "".join(f"<p>{line}</p>" for line in body.splitlines()).encode(),
+        )
+        assert bool(await SixKResults(fetcher).verify(filing)) is expected
+
+
+async def test_followup_verifies_a_results_6k_accepted_after_the_window() -> None:
+    journal = Journal(io.StringIO())
+    now = journal.now()
+    target = Target(
+        ticker="BN",
+        cik=CIK,
+        expected=now - timedelta(minutes=1),
+        before_minutes=2,
+        after_minutes=0,
+        sec_form="6-K",
+        period="FY2026Q2",
+    )
+    fetcher = RoutedFetcher(fixtures(filings(accepted=now.isoformat())))
+    # An uninitialized watcher also happens when the bot resumes a delivered alert.
+    watch_state = Watch("BN", EdgarFilings(CIK, form="6-K"), target.window, period=target.period)
+    seen: list[Sighting] = []
+
+    await follow_up(
+        target,
+        [watch_state],
+        fetcher,
+        journal,
+        lambda _, __, item: seen.append(item),
+        SixKResults(fetcher),
+        longest=timedelta(minutes=1, milliseconds=100),
+    )
+
+    assert [item.key for item in seen if item.earnings] == [RESULT]
+
+
+async def test_after_midnight_6k_is_verified_and_catches_up_inside_the_window() -> None:
+    start = datetime(2026, 11, 11, 23, 55, tzinfo=ET)
+    accepted = start + timedelta(minutes=10)
+    source = EdgarFilings(CIK, form="6-K")
+    w = Watch("BN", source, (start, start + timedelta(minutes=40)), period="FY2026Q2")
+    fetcher = RoutedFetcher(fixtures(filings(accepted=accepted.isoformat())))
+    journal = Journal(io.StringIO())
+    response = await fetcher.request("GET", source.url())
+    items = await recorder._verify_sixks(w, response, SixKResults(fetcher), journal)
+    sightings: list[Sighting] = []
+
+    recorder.record_items(
+        w, items, response, journal, accepted, lambda _, item: sightings.append(item)
+    )
+
+    assert [item.key for item in sightings if item.earnings and item.caught_up] == [RESULT]
