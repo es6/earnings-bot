@@ -26,7 +26,9 @@ from earnings_bot.ir_research import (
     issuer_listing,
     verified_browser_source,
     verified_http_source,
+    verified_news_source,
 )
+from earnings_bot.issuer_news import news_records, read_news
 from earnings_bot.known import (
     NTH,
     ORD,
@@ -276,6 +278,18 @@ async def find_date(
     given. The headline of each notice whose date couldn't be read goes in `unread`."""
     company = company or known_companies()[ticker]
     unread = [] if unread is None else unread
+    if api := company.ir_news_api:
+        with suppress(aiohttp.ClientError, TimeoutError, ValueError, KeyError):
+            reply = await read_news(fetcher, api)
+            if reply.status == 200:
+                for row in news_records(api, reply.body):
+                    if result := parse_notice(
+                        ticker, company, row.title, escape(row.description), now
+                    ):
+                        target, evidence = result
+                        return target, f"{evidence} <{row.url}>"
+                    if is_date_notice(row.title):
+                        unread.append(row.title)
     if company.q4_host and company.reachable:
         source = Q4PressReleases(company.q4_host)
         url = source.bodies_url(20)
@@ -578,6 +592,7 @@ class DateDiscovery:
         existing_ir = target.ir
         if existing_ir and (
             evidence == MANUAL
+            or existing_ir.news_api
             or existing_ir.http_first
             or existing_ir.rss
             or existing_ir.pdfs
@@ -594,17 +609,21 @@ class DateDiscovery:
         listing = existing_ir.listing if existing_ir else issuer_listing(row.ticker, row.company)
         if listing:
             self._phase(row.cik, VERIFYING_IR)
-        ir = (
-            None
-            if evidence == MANUAL
-            else await verified_http_source(self.fetcher, listing, target.period)
-        )
+        ir = await verified_news_source(self.fetcher, row.company.ir_news_api, target.period)
         if ir:
-            why = "Read last quarter's results over direct HTTP"
-        elif existing_ir:
-            why = "Keeping the previously verified Chrome source"
+            why = "Read last quarter's report PDF from the issuer newsroom API"
         else:
-            ir, why = await verified_browser_source(self.fetcher, listing, target.period)
+            ir = (
+                None
+                if evidence == MANUAL
+                else await verified_http_source(self.fetcher, listing, target.period)
+            )
+            if ir:
+                why = "Read last quarter's results over direct HTTP"
+            elif existing_ir:
+                why = "Keeping the previously verified Chrome source"
+            else:
+                ir, why = await verified_browser_source(self.fetcher, listing, target.period)
         if ir:
             if self._defer_if_busy(row.cik):
                 return

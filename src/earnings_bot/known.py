@@ -63,6 +63,7 @@ class KnownCompany(BaseModel):
     # The IR site's press release listing and the direct request's status (0 for no response).
     ir_listing: str | None = None
     ir_http_status: int | None = None
+    ir_news_api: str | None = None
     # The latest results on it, and when the IR site says they were posted
     ir_release: str | None = None
     ir_posted: datetime | None = None

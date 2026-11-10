@@ -20,6 +20,7 @@ from earnings_bot.browser_sources import _ReleaseLinks, article_matches
 from earnings_bot.fetch import Fetcher, Response
 from earnings_bot.formatting import clock
 from earnings_bot.ir_research import issuer_links, next_page
+from earnings_bot.issuer_news import news_records, read_news
 from earnings_bot.issuers import SEC_SUBMISSIONS, filing_form, release_time
 from earnings_bot.known import KnownCompany, SourceCheck, known_companies
 from earnings_bot.recorder import ET, PollError, poll
@@ -41,8 +42,8 @@ REINVESTIGATE = timedelta(days=30)
 # pages back for the latest results and keeps when the IR site says they were posted,
 # 3 follows corporate navigation and embedded listings, 4 reads newsroom cards and archives,
 # 5 finds results behind ordinary filings, 6 checks named RSS indexes and listing HTTP,
-# 7 checks Q4 feeds independently of the issuer homepage.
-INVESTIGATION = 7
+# 7 checks Q4 feeds independently of the issuer homepage, 8 verifies newsroom JSON.
+INVESTIGATION = 8
 _HOST = re.compile(r"\b((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,})\b", re.IGNORECASE)
 _WEB_HOST = re.compile(r"\b(?:https?://|(?=www\.))" + _HOST.pattern, re.IGNORECASE)
 _IR_HOST = re.compile(r"^(?:ir|investors?|investor-?relations)\.", re.IGNORECASE)
@@ -237,6 +238,7 @@ class Findings:
     feeds: list[str] = field(default_factory=list)
     listing: str | None = None  # read through Chrome
     ir_http_status: int | None = None
+    news_api: str | None = None
     blocked: bool = False
     wire: str | None = None
     posted: datetime | None = None  # when the IR site says the latest results were posted
@@ -248,6 +250,8 @@ class Findings:
             found = f"Q4 press feed on {self.site}."
         elif self.feeds:
             found = f"Press release feed <{self.feeds[0]}>."
+        elif self.news_api:
+            found = f"Issuer newsroom API <{self.news_api}>."
         elif self.site is None:
             found = "No issuer press release site could be verified."
         elif self.listing:
@@ -370,6 +374,29 @@ async def _named_feed(fetcher: Fetcher, text: str, report: Report) -> tuple[str 
             return feed, found_wire
         report.reject(f"RSS index <{url}>", tried or "No same-site feed links found")
     return None, None
+
+
+async def _news_api(fetcher: Fetcher, listing: str) -> str | None:
+    """Replay only an observed same-origin GET that returns dated issuer releases."""
+    try:
+        host = browser_host(listing)
+        async with fetcher.research_browser() as browser:
+            responses = await browser.inspect_json(listing)
+        for item in responses:
+            if item.method != "GET" or not item.url or browser_host(item.url) != host:
+                continue
+            observed = news_records(item.url, json.dumps(item.value).encode())
+            titles = {row.title for row in observed if looks_like_earnings(row.title)}
+            if not titles:
+                continue
+            direct = await read_news(fetcher, item.url)
+            if direct.status == 200 and any(
+                row.title in titles for row in news_records(item.url, direct.body)
+            ):
+                return item.url
+    except (BrowserError, *_ERRORS):
+        pass
+    return None
 
 
 @dataclass
@@ -688,6 +715,13 @@ async def investigate(
         report.doing("Checking direct HTTP access to the press release listing")
         response = await _get(fetcher, findings.listing, allow_redirects=False)
         findings.ir_http_status = response.status if response else 0
+        if chrome is not None and not (findings.q4 or findings.feeds or findings.release_url):
+            report.doing("Looking for the public data behind the issuer newsroom")
+            findings.news_api = await _news_api(fetcher, findings.listing)
+            if findings.news_api:
+                report.watch(
+                    f"Issuer newsroom API <{findings.news_api}>", "Verified over direct HTTP"
+                )
     report.doing("Choosing its sources")
     _wire_checks(report, findings.wire)
     found_wire = findings.wire or "unknown"
@@ -707,6 +741,7 @@ async def investigate(
             "rss": findings.feeds,
             "ir_listing": findings.listing,
             "ir_http_status": findings.ir_http_status,
+            "ir_news_api": findings.news_api,
             "ir_posted": findings.posted,
             "ir_release": findings.release_url,
             "wire": found_wire,
