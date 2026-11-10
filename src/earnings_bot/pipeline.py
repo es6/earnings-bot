@@ -343,7 +343,12 @@ class ReleaseText:
 
     async def _fetch(self, source: Source, sighting: Sighting) -> str | None:
         text = await release_text(self.fetcher, source, sighting)
-        return text if not self.verified_only or verified_report(text) else None
+        requires_report = (
+            self.verified_only
+            or isinstance(source, BrowserRss)
+            or (isinstance(source, BrowserRelease) and source.verify_text)
+        )
+        return text if not requires_report or verified_report(text) else None
 
 
 class Release:
@@ -402,11 +407,7 @@ class Release:
             self._spawn(self._read_browser_feed(source, sighting, label, measure))
         else:
             if isinstance(source, BrowserRelease) and sighting.body is not None:
-                self._spawn(
-                    self._browser_attachment(
-                        source.listing, sighting.url, sighting.body, source.timeout
-                    )
-                )
+                self._spawn(self._browser_attachment(source, sighting, measure))
             if measure or not self.has_text or (self.summarizer and not self.summarizing):
                 self._spawn(self._read(source, sighting, label, measure))
 
@@ -530,14 +531,15 @@ class Release:
                     raise
                 continue
             if response.status == 200 and await asyncio.to_thread(
-                article_matches, sighting.title, response.body, verify_text=True
+                article_matches,
+                sighting.title,
+                response.body,
+                verify_text=True,
+                article=sighting.url,
             ):
-                self._spawn(
-                    self._browser_attachment(
-                        source.warmup, sighting.url, response.body, source.timeout
-                    )
-                )
-                await self._read(source, replace(sighting, body=response.body), label, measure)
+                read = replace(sighting, body=response.body)
+                self._spawn(self._browser_attachment(source, read, measure))
+                await self._read(source, read, label, measure)
                 return
             if attempt or response.status not in (0, 200, 404):
                 self.journal.write(
@@ -549,9 +551,13 @@ class Release:
                 return
 
     async def _browser_attachment(
-        self, warmup: str, article: str, body: bytes, give_up_after: float
+        self, source: BrowserRelease | BrowserRss, sighting: Sighting, measure: bool
     ) -> None:
-        url = await asyncio.to_thread(issuer_pdf_url, article, body)
+        if sighting.body is None:
+            return
+        url = await asyncio.to_thread(
+            issuer_pdf_url, sighting.url, sighting.body, title=sighting.title
+        )
         if url is None:
             return
         name = self._attachment_name(url)
@@ -559,14 +565,37 @@ class Release:
             return
         self._downloading.add(name)
         try:
+            warmup = source.warmup if isinstance(source, BrowserRss) else source.listing
+            if urlsplit(url).netloc == urlsplit(warmup).netloc:
+                get = partial(
+                    self.fetcher.browser_request, url, warmup, source.timeout, urgent=True
+                )
+            else:
+                get = partial(
+                    self.fetcher.request,
+                    "GET",
+                    url,
+                    give_up_after=source.timeout,
+                    urgent=True,
+                    allow_redirects=False,
+                )
             response = await self._download(
                 name,
-                partial(self.fetcher.browser_request, url, warmup, give_up_after, urgent=True),
+                get,
                 pending_statuses=(0, 404),  # Chrome stops at an opaque redirect with status 0.
             )
         finally:
             self._downloading.discard(name)
         if response.status == 200 and response.body.startswith(b"%PDF-"):
+            if measure and not sighting.caught_up:
+                self.journal.write(
+                    "source_body",
+                    ticker=self.target.ticker,
+                    source=source.name,
+                    key=sighting.key,
+                    url=url,
+                    format="pdf",
+                )
             await self._link(name, url)
             await self._attach(url, response.body)
         elif name not in self.files:

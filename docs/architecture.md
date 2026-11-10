@@ -487,7 +487,8 @@ What it tells us:
   every multi-second wait came from discord.py's rate limiter: about 4 seconds on reads, once a
   bucket ran out. In one replay, Discord stamped the alert 0.12 seconds after the sighting, but
   the reply reached the bot only at 2.54 seconds.
-- For tracked issuers, a `source_body` event records when each source yields verified report text.
+- For tracked issuers, a `source_body` event records when each source yields verified report
+  text or an issuer report PDF.
   The audit ranks those live report times separately from headline sightings. The one-off
   `earnings-bot-record` command uses the same release window and source pollers for local tests.
 
@@ -507,12 +508,14 @@ kind of entry from SEC's data when it's added, and the calendar saves it: the CI
 without its legal ending (when it's more than one word) and the exchange-and-ticker tag for
 wire matching, and the release time from its last four results 8-Ks. Then `investigate.py`
 looks for its sources outside release windows: IR links and matching corporate sites in its
-last results release, including press release listings embedded on a hosted IR site, then the
-site's Q4 feed or RSS feed, its press release list through Chrome when it blocks the bot or has no
-feed, and the wire its latest results' dateline names. Until a wire is found, both Business Wire
-and PR Newswire are watched, along with EDGAR. The source audit runs after the investigation, so
-it ranks what was found. The bot checks
-each tracked issuer for its next notice and audits the most recent actual results independently.
+last results release, including corporate newsrooms and embedded listings. It checks Q4, RSS,
+and the press release list in Chrome. Listing cards can supply a headline through their nested
+heading or an official JSON-LD archive. A results article can supply the full report as an issuer
+PDF. The bot verifies a prior report before enabling that route for the next release, and attaches
+the current PDF when it becomes readable. Until a wire is found, both Business Wire and PR
+Newswire are watched along with EDGAR. The source audit runs after investigation. For a release
+confirmed before market open, a same-day earnings call can move the watch earlier when the
+historical filing times imply a later release.
 A TOML schedule remains available for an operator-specified window or source configuration.
 
 ### What SEC's data gives us

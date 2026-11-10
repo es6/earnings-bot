@@ -1,5 +1,6 @@
 """Issuer listings and PDFs read through desktop Chrome."""
 
+import json
 import re
 import time
 from dataclasses import replace
@@ -23,6 +24,12 @@ from earnings_bot.text import MIN_RELEASE_CHARS, html_to_text, verified_report
 
 _TESLA_AGENT = "earnings-bot/0.1 (public earnings release monitor)"
 _TESLA_PATH = re.compile(r"/tesla-contents/IR/TSLA-Q[1-4]-\d{4}-Update\.pdf")
+_HEADING = re.compile(r"h[1-6]")
+_RESULT_LEDE = re.compile(
+    r"\b(?:today\s+)?(?:announced|reported|released|published)\b[^.!?]{0,120}"
+    r"\b(?:financial results|quarterly results|results for|earnings)\b",
+    re.IGNORECASE,
+)
 
 
 def _check_pdf(url: str, warmup: str) -> None:
@@ -105,25 +112,68 @@ class IRSource(BaseModel):
         return sources
 
 
+def _structured_links(script: str) -> list[tuple[str, str]]:
+    """An issuer can expose older articles in its public JSON-LD list."""
+    try:
+        data = json.loads(script)
+    except (ValueError, RecursionError):
+        return []
+    if isinstance(data, dict):
+        data = data.get("@graph", [data])
+    links = []
+    for node in data if isinstance(data, list) else []:
+        if not isinstance(node, dict) or node.get("@type") != "ItemList":
+            continue
+        items = node.get("itemListElement")
+        for row in items if isinstance(items, list) else []:
+            if not isinstance(row, dict):
+                continue
+            item = row.get("item", row)
+            if isinstance(item, dict):
+                title, url = item.get("name") or item.get("headline"), item.get("url")
+                if isinstance(url, str) and isinstance(title, str):
+                    links.append((url, " ".join(title.split())))
+    return links
+
+
 class _ReleaseLinks(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
         self.links: list[tuple[str, str]] = []
+        self.structured: list[tuple[str, str]] = []
         self._href: str | None = None
         self._text: list[str] = []
+        self._heading: list[str] = []
+        self._in_heading = False
+        self._json_ld = False
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag == "a":
             self._href = dict(attrs).get("href")
             self._text.clear()
+            self._heading.clear()
+            self._in_heading = False
+        elif self._href and _HEADING.fullmatch(tag):
+            self._in_heading = True
+        elif tag == "script":
+            self._json_ld = dict(attrs).get("type") == "application/ld+json"
 
     def handle_data(self, data: str) -> None:
-        if self._href:
+        if self._json_ld:
+            self.structured.extend(_structured_links(data))
+        elif self._href:
             self._text.append(data)
+            if self._in_heading:
+                self._heading.append(data)
 
     def handle_endtag(self, tag: str) -> None:
-        if tag == "a" and self._href:
-            self.links.append((self._href, " ".join("".join(self._text).split())))
+        if tag == "script":
+            self._json_ld = False
+        elif _HEADING.fullmatch(tag):
+            self._in_heading = False
+        elif tag == "a" and self._href:
+            title = " ".join("".join(self._heading or self._text).split())
+            self.links.append((self._href, title))
             self._href = None
 
 
@@ -160,11 +210,14 @@ class BrowserRelease(Source):
             return listing
         parser = _ReleaseLinks()
         parser.feed(listing.body.decode(errors="replace"))
-        for href, headline in parser.links:
+        for href, headline in [*parser.links, *parser.structured]:
             if not self._headline.fullmatch(headline) or not looks_like_earnings(headline):
                 continue
-            url = urldefrag(urljoin(self.listing, href)).url
-            parts = urlsplit(url)
+            try:
+                url = urldefrag(urljoin(self.listing, href)).url
+                parts = urlsplit(url)
+            except ValueError:
+                continue
             if parts.scheme != "https" or parts.netloc != self._host or url == self.listing:
                 continue
             self._candidate = Sighting(
@@ -181,7 +234,9 @@ class BrowserRelease(Source):
         candidate = self._candidate
         if candidate is None or response.status != 200 or response.url != candidate.url:
             return []
-        if not article_matches(candidate.title, response.body, verify_text=self.verify_text):
+        if not article_matches(
+            candidate.title, response.body, verify_text=self.verify_text, article=candidate.url
+        ):
             return []
         return [replace(candidate, body=response.body)]
 
@@ -224,27 +279,43 @@ class BrowserRss(Source):
         return items
 
 
-def article_matches(title: str, body: bytes, *, verify_text: bool) -> bool:
+def article_matches(
+    title: str, body: bytes, *, verify_text: bool, article: str | None = None
+) -> bool:
     text = html_to_text(body.decode(errors="replace"))
-    return (
-        len(text) >= MIN_RELEASE_CHARS
-        and (not verify_text or verified_report(text))
-        and title.casefold() in " ".join(text.split()).casefold()
+    flattened = " ".join(text.split())
+    start = flattened.casefold().find(title.casefold())
+    if len(text) < MIN_RELEASE_CHARS or start < 0:
+        return False
+    return bool(
+        not verify_text
+        or verified_report(text)
+        or (
+            article
+            and _RESULT_LEDE.search(flattened[start : start + 1800])
+            and issuer_pdf_url(article, body, title=title)
+        )
     )
 
 
-def issuer_pdf_url(article: str, body: bytes) -> str | None:
+def issuer_pdf_url(article: str, body: bytes, *, title: str = "") -> str | None:
     parser = _ReleaseLinks()
     parser.feed(body.decode(errors="replace"))
+    host = browser_host(article).removeprefix("www.")
     for href, label in parser.links:
-        if label.casefold() != "pdf version":
-            continue
         try:
             url = urldefrag(urljoin(article, href)).url
-            _check_pdf(url, article)
+            if label.casefold() == "pdf version":
+                _check_pdf(url, article)
+                return url
+            if title and label.casefold().removesuffix(" (opens in a new tab)") == title.casefold():
+                asset = browser_host(url)
+                if (asset == host or asset.endswith(f".{host}")) and urlsplit(
+                    url
+                ).path.lower().endswith(".pdf"):
+                    return url
         except ValueError:
             continue
-        return url
     return None
 
 

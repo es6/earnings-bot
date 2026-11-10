@@ -114,10 +114,10 @@ def _dates(text: str, today: date) -> set[date]:
     return result
 
 
-def _release_time(text: str, day: date) -> datetime | None:
+def _release_time(text: str, day: date, *, allow_call: bool = False) -> datetime | None:
     # Keep the host's call time out even when both times share a sentence.
     for match in _TIME.finditer(text):
-        if _CALL.search(text[: match.start()]):
+        if not allow_call and _CALL.search(text[: match.start()]):
             continue
         # A time right after another day's date, such as when the page was posted, isn't it
         dated = list(_DATE.finditer(text[max(0, match.start() - 30) : match.start()]))
@@ -230,8 +230,19 @@ def parse_notice(
     if (mode == "after market close" and hour < 16) or (mode == "before market open" and hour >= 9):
         hour, minute = map(int, fallback.split(":"))
     expected = datetime(day.year, day.month, day.day, hour, minute, tzinfo=ET)
+    estimate = expected
+    if mode == "before market open":
+        # The issuer's same-day earnings call is a deadline for results, even when the
+        # historical SEC acceptance times would put the estimate later than the call.
+        for sentence in sentences:
+            if (
+                _CALL.search(sentence)
+                and (_SAME_DAY.search(sentence) or day in _dates(sentence, today))
+                and (call := _release_time(sentence, day, allow_call=True))
+            ):
+                expected = min(expected, call)
     target = to_target(ticker, expected, int(year), quarter, company)
-    target.before_minutes = 60
+    target.before_minutes = 90 if expected < estimate else 60
     target.after_minutes = 90
     return (target, f"Issuer date confirmed, {mode}") if target.window[1] > now else None
 
