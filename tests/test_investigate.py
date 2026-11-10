@@ -36,6 +36,11 @@ LUCID_RELEASE = (
 )
 DATELINE = "NEWARK, Calif., Aug. 4, 2026 /PRNewswire/ -- Lucid Group, Inc. (NASDAQ: LCID) today"
 LUCID_Q2_TITLE = "Lucid Announces Operational Reset and Second Quarter 2026 Results"
+# What makes a page read as a results report: figures, and enough of them
+REPORT = (
+    "<p>Revenue was $259 million. Net loss per share was $0.24.</p>"
+    + "<p>Details of the quarter.</p>" * 200
+)
 
 
 class FakeChrome:
@@ -76,7 +81,7 @@ def lucid_chrome() -> FakeChrome:
                     "2026 Results</a>"
                 ),
             ),
-            LUCID_Q2: (200, f"<h1>Second Quarter 2026 Results</h1><p>{DATELINE}</p>"),
+            LUCID_Q2: (200, f"<h1>Second Quarter 2026 Results</h1><p>{DATELINE}</p>{REPORT}"),
         }
     )
 
@@ -624,3 +629,34 @@ async def test_without_chrome_an_open_site_keeps_the_list_a_plain_request_finds(
 
     # Kept for reading date notices, though nothing on it is watched for results
     assert found.ir_listing == "https://ir.example.com/press-releases"
+
+
+async def test_a_menu_link_that_looks_like_results_isnt_taken_for_them(
+    released: Callable[[str], None],
+) -> None:
+    released(LUCID_RELEASE)
+    fetcher = RoutedFetcher({"ir.lucidmotors.com/": (403, b"Access Denied")})
+    chrome = lucid_chrome()
+    menu = "https://ir.lucidmotors.com/financials/quarterly-results"
+    chrome.pages[LUCID_LIST] = (
+        200,
+        f'<a href="{menu}">Quarterly Results</a><a href="{LUCID_Q2}">{LUCID_Q2_TITLE}</a>',
+    )
+    chrome.pages[menu] = (200, "<h1>Quarterly Results</h1><p>Choose a year.</p>")
+
+    found = await investigate.investigate(fetcher, LUCID, TODAY, chrome.open)
+
+    assert (
+        f"Press release page <{LUCID_LIST}>, read in Chrome",
+        True,
+        f"Chrome read its latest results, “{LUCID_Q2_TITLE}”",
+    ) in [(c.source, c.watch, c.why) for c in found.checks]
+
+    # With only the menu link, it says what it opened instead
+    chrome.pages[LUCID_LIST] = (200, f'<a href="{menu}">Quarterly Results</a>')
+    found = await investigate.investigate(fetcher, LUCID, TODAY, chrome.open)
+    assert (
+        "ir.lucidmotors.com press release page",
+        False,
+        "Chrome opened “Quarterly Results” isn't a results report",
+    ) in [(c.source, c.watch, c.why) for c in found.checks]
