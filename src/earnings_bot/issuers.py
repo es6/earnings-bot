@@ -11,19 +11,12 @@ import aiohttp
 from earnings_bot.fetch import Fetcher
 from earnings_bot.known import KnownCompany, known_companies
 from earnings_bot.recorder import ET
-from earnings_bot.sources import SecForm
+from earnings_bot.sources import SecForm, issuer_wire_name
 
 SEC_TICKERS = "https://www.sec.gov/files/company_tickers.json"
 SEC_SUBMISSIONS = "https://data.sec.gov/submissions/CIK{cik:010d}.json"
 TICKERS_REFRESH = 24 * 3600  # seconds; SEC rebuilds the list daily
 _SYMBOL = re.compile(r"[A-Z0-9][A-Z0-9-]{0,9}")
-# Legal-entity endings that headlines leave off: "Lucid Group, Inc." is "Lucid Group"
-_ENTITY = re.compile(
-    r"[,\s]+(?:inc|incorporated|corp|corporation|co|company|ltd|limited|plc|llc|lp|l\.p|n\.v|"
-    r"s\.a|ag|se)\.?$",
-    re.IGNORECASE,
-)
-_STATE = re.compile(r"\s*/\s*[A-Z]{2,}/?$")  # SEC's "Rivian Automotive, Inc. / DE"
 _REGULAR_HOURS = (clock_time(9, 30), clock_time(16))
 _ERRORS = (aiohttp.ClientError, TimeoutError, ValueError, KeyError, TypeError, AttributeError)
 
@@ -37,9 +30,7 @@ def wire_names(title: str, ticker: str) -> list[str]:
     """What identifies the company in a newswire item. Every wire release opens with the
     exchange and ticker, as in "Lucid Group, Inc. (NASDAQ: LCID)". The name alone counts only
     when it's more than one word, since "Block" or "Target" turn up in other companies' news."""
-    name = _STATE.sub("", title).strip()
-    while (shorter := _ENTITY.sub("", name)) != name:
-        name = shorter
+    name = issuer_wire_name(title)
     tickers = dict.fromkeys([ticker, ticker.replace("-", ".")])
     tags = [f"{exchange}: {t}" for t in tickers for exchange in ("NASDAQ", "NYSE")]
     return ([name] if len(name.split()) > 1 else []) + tags

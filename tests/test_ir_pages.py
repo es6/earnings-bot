@@ -9,7 +9,15 @@ from earnings_bot.browser import BrowserError, RenderedPage
 from earnings_bot.date_discovery import EVENT_DATE, event_target, rendered_date, title_period
 from earnings_bot.formatting import period_label
 from earnings_bot.investigate import ir_hosts
-from earnings_bot.ir_pages import IRReader, Moment, moments, nav_rank, upcoming
+from earnings_bot.ir_pages import (
+    IRReader,
+    Moment,
+    earnings_event,
+    headline_moments,
+    moments,
+    nav_rank,
+    upcoming,
+)
 from earnings_bot.ir_research import prior_period, quarter_headline
 from earnings_bot.issuers import fiscal_year_end
 from earnings_bot.recorder import ET
@@ -460,3 +468,134 @@ def test_an_event_naming_no_year_is_planned_as_the_company_names_its_quarters() 
     )
     this = re.compile(quarter_headline(2026, 3), re.IGNORECASE)
     assert this.fullmatch("The Home Depot Announces Third Quarter Fiscal 2026 Results")
+
+
+DELL_TITLE = (
+    "Dell Technologies to Hold Conference Call Nov. 24 to Discuss Third Quarter Fiscal 2027 "
+    "Financial Results"
+)
+
+
+@pytest.mark.parametrize(
+    ("headline", "named"),
+    [
+        # Dell's link, and the line its IR home shows it on, after the day it was posted
+        (f"{DELL_TITLE} Read Press Release", [Moment(date(2026, 11, 24), None)]),
+        (f"Nov 10, 2026 {DELL_TITLE} Read Press Release", [Moment(date(2026, 11, 24), None)]),
+        # With its time, in Central
+        (
+            "Acme Conference Call Nov. 24 at 3:30 p.m. CT",
+            [Moment(date(2026, 11, 24), datetime(2026, 11, 24, 16, 30, tzinfo=ET))],
+        ),
+        # WeRide's events page puts the date after the title
+        (
+            "WeRide Inc. 2026 Q3 Earnings Conference Call 2026-11-20 8:00 AM EST",
+            [Moment(date(2026, 11, 20), datetime(2026, 11, 20, 8, tzinfo=ET))],
+        ),
+        # HPE's puts it first, and the headline names no other day: the caller keeps that one
+        ("11/23/2026 Q4 Fiscal Year 2026 HPE Earnings Conference Call", []),
+        # A quarter's end isn't the event's day
+        ("Acme Conference Call on Results for the Quarter Ended Sept. 30", []),
+        # A day that has passed this year is next year's
+        ("Acme Conference Call Nov. 9", [Moment(date(2027, 11, 9), None)]),
+    ],
+)
+def test_a_headline_names_its_own_day_with_or_without_a_year(
+    headline: str, named: list[Moment]
+) -> None:
+    assert headline_moments(headline, NOW.date()) == named
+
+
+DELL_HOME = "https://investors.delltechnologies.com/"
+DELL_NOTICE = (
+    "https://investors.delltechnologies.com/news-events/press-releases/detail/1661/"
+    "dell-technologies-to-hold-conference-call-nov-24-to-discuss-third-quarter-fiscal-2027-"
+    "financial-results"
+)
+# Dell's IR home and its notice as Chrome showed them on Nov 10, 2026. Each news item opens
+# with the day it was posted
+DELL_SITE = {
+    DELL_HOME: (
+        "<section><h2>Latest News</h2>"
+        f"<p>Nov 10, 2026 <a href='{DELL_NOTICE}'>{DELL_TITLE} Read Press Release</a></p>"
+        "<p>Sep 1, 2026 <a href='/news-events/press-releases/detail/1653/q2'>Dell Technologies "
+        "Delivers Second Quarter Fiscal 2027 Financial Results Read Press Release</a></p>"
+        "<p>Aug 25, 2026 <a href='/news-events/press-releases/detail/1650/conferences'>Dell "
+        "Technologies to Present at Investor Conferences in September Read Press Release</a></p>"
+        "</section>"
+    ),
+    DELL_NOTICE: (
+        f"<h1>{DELL_TITLE}</h1><p>November 10, 2026 4:05pm EST</p>"
+        "<p>ROUND ROCK, Texas--(BUSINESS WIRE)-- Dell Technologies (NYSE: DELL) will conduct a "
+        "conference call Tuesday, Nov. 24, 2026, at 3:30 p.m. CST to discuss its fiscal 2027 "
+        "third quarter financial results. The conference will be available to the public as a "
+        "live, audio-only webcast on Dell Technologies\u2019 website at "
+        "investors.delltechnologies.com.</p>"
+        "<p>The company will issue the results before the conference call broadcast via a press "
+        "release with accompanying financial statements and guidance.</p>"
+    ),
+}
+DELL = ACME.model_copy(update={"fiscal_year_end": "0131", "release_time": "16:10"})
+
+
+@pytest.mark.parametrize("notice_opens", [True, False], ids=["notice", "list-only"])
+async def test_a_notice_posted_today_isnt_an_event_today(notice_opens: bool) -> None:
+    # Dell's call is on Nov 24. Nov 10 is only when its notice was posted, both on the IR home
+    # and on the notice itself, so a watch on Nov 10 would miss the release
+    pages = DELL_SITE if notice_opens else {DELL_HOME: DELL_SITE[DELL_HOME]}
+
+    result, _ = await rendered_date(Site(pages).render, [DELL_HOME], "DELL", DELL, NOW, [])
+
+    assert result is not None
+    target, evidence = result
+    # At its usual 4:10 PM, before the call
+    assert target.expected == datetime(2026, 11, 24, 16, 10, tzinfo=ET)
+    assert target.period == "FY2027Q3"
+    assert evidence.startswith(EVENT_DATE)
+
+
+async def test_a_current_event_beats_a_neighboring_past_release() -> None:
+    home = "https://investors.fedex.com/home/"
+    event = "https://investors.fedex.com/upcoming-events/details/february-call"
+    past = "https://investors.fedex.com/news-releases/details/last-earnings"
+    pages = {
+        home: (
+            "<section><h2>Latest News</h2>"
+            f"<p>Nov 10, 2026 <a href='{past}'>FedEx Reports Strong Third Quarter Results "
+            "Read Press Release</a></p></section>"
+            "<section><h2>Upcoming Events</h2>"
+            f"<p><a href='{event}'>FedEx Q4 CY26 Earnings Call</a></p>"
+            "<p>Tuesday, February 2, 2027 at 04:00 PM CT</p></section>"
+        ),
+    }
+    company = ACME.model_copy(update={"fiscal_year_end": "1231", "release_time": "16:05"})
+
+    result, _ = await rendered_date(Site(pages).render, [home], "FDX", company, NOW, [])
+
+    assert result is not None
+    target, evidence = result
+    assert target.expected == datetime(2027, 2, 2, 16, 5, tzinfo=ET)
+    assert target.period == "FY2026Q4"
+    assert "5:00 PM ET" in evidence
+
+
+async def test_undated_news_notice_does_not_borrow_its_posting_day() -> None:
+    url = "https://issuer.example/news-releases/notice"
+    home = "https://issuer.example/"
+    pages = {
+        home: "<section><h2>Latest News</h2>"
+        f"<p>November 10, 2026 <a href='{url}'>Acme to Hold Q3 2026 Earnings Conference Call"
+        " Read Press Release</a></p></section>",
+        url: "<h1>Acme to Hold Q3 2026 Earnings Conference Call</h1>"
+        "<p>November 10, 2026 4:05 pm ET</p>",
+    }
+
+    result, _ = await rendered_date(Site(pages).render, [home], "X", ACME, NOW, [])
+
+    assert result is None
+
+
+def test_news_link_text_does_not_make_results_an_event() -> None:
+    assert not earnings_event("Company Reports Fourth Quarter Financial Results Read Press Release")
+    assert earnings_event("Company Fourth Quarter Earnings Release")
+    assert earnings_event("Company to Hold Fourth Quarter Earnings Call Read Press Release")

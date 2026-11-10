@@ -13,7 +13,7 @@ from earnings_bot.benchmark import EarningsBenchmark
 from earnings_bot.fetch import Fetcher
 from earnings_bot.formatting import clock
 from earnings_bot.ir_research import inspect_issuer, issuer_listing
-from earnings_bot.known import KnownCompany, wires
+from earnings_bot.known import KnownCompany, wire_publisher, wires
 from earnings_bot.recorder import ET, PollError, Target, poll
 from earnings_bot.sec_results import SixKResults, SixKUnavailable
 from earnings_bot.sources import (
@@ -229,6 +229,7 @@ def _archived_sources(ticker: str, company: KnownCompany, now: datetime) -> list
         q4_host=company.q4_host if company.reachable else None,
         newswire=business_wire,
         prnewswire=pr_newswire,
+        wire_publisher=wire_publisher(company),
         rss=company.rss,
         trial=company.trial.model_copy(update={"pages": []}),
     )

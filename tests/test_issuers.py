@@ -2,10 +2,13 @@
 
 import re
 from datetime import date, datetime
+from pathlib import Path
 
 import pytest
 
 from earnings_bot import issuers
+from earnings_bot.calendar import Calendar
+from earnings_bot.delivery import DeliveryStore
 from earnings_bot.fetch import Response
 from earnings_bot.issuers import Issuers, profile, release_time, symbol, wire_names
 from earnings_bot.known import known_companies, to_target
@@ -219,3 +222,37 @@ async def test_something_that_isnt_a_symbol_isnt_looked_up(typed: str) -> None:
     with pytest.raises(ValueError, match=exactly("Enter a ticker symbol, such as NVDA.")):
         await Issuers(fetcher).company(typed, TODAY)
     assert fetcher.requests == []
+
+
+def test_single_word_publisher_matches_azentas_own_results(tmp_path: Path) -> None:
+    company = profile("AZTA", 933974, "Azenta, Inc.", LCID_SUBMISSIONS, date(2026, 11, 10))
+    target = to_target("AZTA", datetime(2026, 11, 10, 16, 30, tzinfo=ET), 2026, 4, company)
+    title = "Azenta Reports Fourth Quarter and Full Year Results for Fiscal 2026"
+    featured = ("Year-end revenue grew as announced in the release. " * 5) + "(Nasdaq: AZTA)"
+    with_publisher = _item(title, featured, "azenta").replace(
+        "</item>", "<dc:contributor>Azenta, Inc.</dc:contributor></item>"
+    )
+    mismatched_publisher = _item(title, "No exchange tag", "wrong-publisher").replace(
+        "</item>", "<dc:contributor>Another Company</dc:contributor></item>"
+    )
+    feed = (
+        '<rss xmlns:dc="http://purl.org/dc/elements/1.1/"><channel>'
+        f"<link>{PR_NEWSWIRE_EARNINGS}</link>"
+        + with_publisher
+        + _item(title, "No exchange tag", "headline")
+        + mismatched_publisher
+        + _item("Other Company Reports Fourth Quarter Results", "Its customer Azenta", "other")
+        + "</channel></rss>"
+    )
+    response = Response(PR_NEWSWIRE_EARNINGS, 200, {}, feed.encode(), 0.01)
+    assert target.prnewswire == ["NASDAQ: AZTA", "NYSE: AZTA"]
+    # Existing /track rows and matching old TOML files pick up the identity on the next scan.
+    old = target.model_copy(update={"wire_publisher": None})
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        calendar = Calendar(store)
+        calendar.add("AZTA", company)
+        calendar.set_target(old, "Issuer confirmed release time")
+        planned = calendar.plan({old.release_key: old})[old.release_key]
+    for source in planned.sources():
+        if source.name in ("prnewswire", "prnewswire_busted"):
+            assert [item.key for item in source.parse(response)] == ["azenta", "headline"]
