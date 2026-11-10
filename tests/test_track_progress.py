@@ -266,7 +266,7 @@ async def test_a_finished_card_says_what_was_fastest_watched_and_rejected(tmp_pa
         "🥇 **PR Newswire earnings feed** at 4:05:17 PM ET",
         "IR press release page, read in Chrome +1m 42s",
         "SEC 8-K filings +3m 36s",
-        "-# Aug 5 release · seen live by the bot",
+        "-# Aug 5, 2026 release · seen live by the bot",
         "-# [@earnings_guy posted](https://x.com/earnings_guy/status/1) at 16:06:00 ET",
     ]
     assert fields["👀 Watching for the next release"] == [
@@ -431,7 +431,7 @@ def test_a_lone_timing_isnt_called_the_fastest(tmp_path: Path) -> None:
     assert fields["⏱️ Last release"] == [
         "Only one time is known for it: **SEC 8-K filings** at 4:08:17 PM ET.",
         "Which source was first isn't known yet. The next release is timed live.",
-        "-# Aug 5 release · publishers' timestamps",
+        "-# Aug 5, 2026 release · publishers' timestamps",
     ]
 
 

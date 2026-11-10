@@ -32,6 +32,10 @@ _FIGURE = re.compile(
     r"(?:[$€£¥][\s|]*[(-]?\d|\d[\d.,]*\s*(?:%|thousand\b|million\b|billion\b|crore\b))",
     re.IGNORECASE,
 )
+_REVENUE_ROW = re.compile(
+    r"^\s*(?:total\s+)?(?:revenues?|net sales)\s*\|\s*\d[\d,.]*\s*\|\s*\d[\d,.]*",
+    re.IGNORECASE | re.MULTILINE,
+)
 _ARCHIVE = re.compile(r"https://www\.sec\.gov/Archives/edgar/data/\d+/(\d{18})/[^/?#]+")
 _ACCESSION = re.compile(r"\d{10}-\d{2}-\d{6}")
 HISTORY_LIMIT = 36
@@ -62,7 +66,11 @@ def is_results_release(text: str, description: str) -> bool:
         return False
     for announcement in _ANNOUNCES_RESULTS.finditer(introduction):
         context = introduction[max(0, announcement.start() - 75) : announcement.end() + 160]
-        if _PERIOD.search(context) and verified_report(text) and _FIGURE.search(text):
+        if (
+            _PERIOD.search(context)
+            and verified_report(text)
+            and (_FIGURE.search(text) or _REVENUE_ROW.search(text))
+        ):
             return True
     return False
 

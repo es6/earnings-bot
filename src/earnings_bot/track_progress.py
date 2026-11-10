@@ -89,8 +89,9 @@ def _last_release_field(speed: Speed) -> tuple[str, str]:
     if speed.day is None:
         return field, "Couldn't date its last results release."
     basis, timings = speed.fastest()
+    day = f"{speed.day:%b} {speed.day.day}, {speed.day.year}"
     if not timings:
-        return field, f"No timings recorded for its {speed.day:%b} {speed.day.day} release."
+        return field, f"No timings recorded for its {day} release."
     by_label: dict[str, Timing] = {}
     for timing in timings:
         by_label.setdefault(source_label(timing.source, speed.form), timing)
@@ -118,7 +119,7 @@ def _last_release_field(speed: Speed) -> tuple[str, str]:
             f"Only one time is known for it: **{label}** at {when}.",
             "Which source was first isn't known yet. The next release is timed live.",
         ]
-    lines.append(f"-# {speed.day:%b} {speed.day.day} release · {basis}")
+    lines.append(f"-# {day} release · {basis}")
     if speed.benchmark:
         lines.append(f"-# {speed.benchmark}")
     return field, "\n".join(lines)

@@ -16,7 +16,7 @@ from urllib.parse import urljoin, urlsplit
 import aiohttp
 
 from earnings_bot.browser import BrowserError, browser_host
-from earnings_bot.browser_sources import _ReleaseLinks
+from earnings_bot.browser_sources import _ReleaseLinks, article_matches
 from earnings_bot.fetch import Fetcher, Response
 from earnings_bot.formatting import clock
 from earnings_bot.ir_research import issuer_links, next_page
@@ -39,8 +39,8 @@ REINVESTIGATE = timedelta(days=30)
 # Raised when the investigation learns to find more, so companies get looked at again:
 # 1 kept what it checked, 2 reads the wire from any release, skips date notices, looks a few
 # pages back for the latest results and keeps when the IR site says they were posted,
-# 3 follows corporate navigation and embedded listings
-INVESTIGATION = 3
+# 3 follows corporate navigation and embedded listings, 4 reads newsroom cards and archives
+INVESTIGATION = 4
 _HOST = re.compile(r"\b((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,})\b", re.IGNORECASE)
 _WEB_HOST = re.compile(r"\b(?:https?://|(?=www\.))" + _HOST.pattern, re.IGNORECASE)
 _IR_HOST = re.compile(r"^(?:ir|investors?|investor-?relations)\.", re.IGNORECASE)
@@ -62,8 +62,10 @@ _FEED_PATHS = (
     "/press-releases/rss",
     "/news-events/press-releases/rss",
 )
-_LISTING = re.compile(r"/(?:press|news|financial)[-_]?releases?(?:-footer)?/?$", re.IGNORECASE)
-_IR_NAV = re.compile(r"\b(?:investors?|investor relations)\b", re.IGNORECASE)
+_LISTING = re.compile(
+    r"/(?:newsroom|(?:press|news|financial)[-_]?releases?(?:-footer)?)/?$", re.IGNORECASE
+)
+_IR_NAV = re.compile(r"investors?(?: relations| hub| center| centre| information)?", re.IGNORECASE)
 # Where IR sites usually keep it, for one whose home page doesn't link it plainly
 _LISTINGS = ("/press-releases", "/news-releases")
 _BLOCKED = frozenset({401, 403, 429})
@@ -333,7 +335,10 @@ class ChromeVisit:
 
 
 async def _read_results(
-    get: Callable[[str], Awaitable[Response | None]], url: str, links: list[tuple[str, str]]
+    get: Callable[[str], Awaitable[Response | None]],
+    url: str,
+    links: list[tuple[str, str]],
+    sec_intro: str,
 ) -> ChromeVisit:
     visit = ChromeVisit(listing=url)
     notices: list[str] = []
@@ -348,14 +353,18 @@ async def _read_results(
             for link, title in links
             if link not in opened and looks_like_earnings(title)
         }
-        for link, title in list(articles.items())[:3]:
+        # An exact match to the SEC release goes ahead of unrelated "results" in a mixed archive.
+        ranked = sorted(articles.items(), key=lambda item: item[1].casefold() not in sec_intro)
+        for link, title in ranked[:3]:
             opened.add(link)
             article = await get(link)
             if article is None or article.status != 200:
                 tried.append(f"“{title}” ({_answer(article)})")
                 continue
             text = html_to_text(article.body.decode(errors="replace"))
-            if verified_report(text):
+            if verified_report(text) or article_matches(
+                title, article.body, verify_text=True, article=link
+            ):
                 visit.title, visit.url, visit.posted = title, link, posted_time(text)
                 visit.wire = wire(text)
                 return visit
@@ -379,9 +388,12 @@ async def _read_results(
     return visit
 
 
-async def _through_chrome(fetcher: Fetcher, chrome: OpenChrome, home: str) -> ChromeVisit:
+async def _through_chrome(
+    fetcher: Fetcher, chrome: OpenChrome, home: str, sec_release: str
+) -> ChromeVisit:
     """Follow the issuer's navigation and check alternate listings for a verified report."""
     host = urlsplit(home).netloc
+    sec_intro = " ".join(sec_release[:2500].split()).casefold()
     fallback = ChromeVisit()
     try:
         async with chrome() as browser:
@@ -436,7 +448,7 @@ async def _through_chrome(fetcher: Fetcher, chrome: OpenChrome, home: str) -> Ch
                     links = issuer_links(url, reply.body)
                     if not links:
                         continue
-                    visit = await _read_results(get, url, links)
+                    visit = await _read_results(get, url, links, sec_intro)
                     if visit.title:
                         return visit
                     if fallback.listing is None:
@@ -589,7 +601,7 @@ async def investigate(
             report.reject(f"{host} press release page", "Chrome isn't available on this computer")
         else:
             report.doing(f"Opening {host} in Chrome")
-            visit = await _through_chrome(fetcher, chrome, home)
+            visit = await _through_chrome(fetcher, chrome, home, text)
             findings.wire = findings.wire or visit.wire
             # Kept even without readable results: date notices are read from it too
             findings.listing = visit.listing

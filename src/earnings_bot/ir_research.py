@@ -9,7 +9,13 @@ from urllib.parse import urljoin, urlsplit
 import aiohttp
 
 from earnings_bot.browser import BrowserError
-from earnings_bot.browser_sources import BrowserRss, IRSource, _ReleaseLinks, article_matches
+from earnings_bot.browser_sources import (
+    BrowserRss,
+    IRSource,
+    _ReleaseLinks,
+    article_matches,
+    issuer_pdf_url,
+)
 from earnings_bot.fetch import Fetcher
 from earnings_bot.known import NTH, ORD, KnownCompany
 from earnings_bot.sources import looks_like_earnings
@@ -52,18 +58,22 @@ def issuer_links(url: str, body: bytes) -> list[tuple[str, str]]:
     links = _ReleaseLinks()
     links.feed(body.decode(errors="replace"))
     origin = urlsplit(url).netloc
-    return list(
-        dict.fromkeys(
-            (link, title)
-            for href, title in links.links
-            if title
-            and (link := urljoin(url, href))
-            and urlsplit(link).scheme == "https"
-            and urlsplit(link).netloc == origin
-            and not urlsplit(link).fragment
+    articles = []
+    for href, title in [*links.links, *links.structured]:
+        try:
+            link = urljoin(url, href)
+            parts = urlsplit(link)
+        except ValueError:
+            continue
+        if (
+            title
+            and parts.scheme == "https"
+            and parts.netloc == origin
+            and not parts.fragment
             and link != url
-        )
-    )
+        ):
+            articles.append((link, title))
+    return list(dict.fromkeys(articles))
 
 
 def next_page(listing: str, links: list[tuple[str, str]]) -> str | None:
@@ -167,6 +177,7 @@ async def verified_browser_source(
     pattern = re.compile(quarter_headline(prior_year, prior_quarter), re.IGNORECASE)
     headline = quarter_headline(year, quarter)
     last = f"Q{prior_quarter} {prior_year}"
+    problem = f"No {last} results headline on <{listing}> to check the pattern against"
     try:
         async with fetcher.research_browser() as browser:
             if urlsplit(listing).hostname in _CHROME_FEED_HOSTS:
@@ -205,24 +216,30 @@ async def verified_browser_source(
                 for link, title in links:
                     if not pattern.fullmatch(title) or not looks_like_earnings(title):
                         continue
+                    problem = f"Last quarter's article “{title}” didn't read as a results report"
                     article = await browser.request(link, listing, 4, fetcher.wait_turn)
-                    text = html_to_text(article.body.decode(errors="replace"))
-                    if (
-                        article.status == 200
-                        and verified_report(text)
-                        and title.casefold() in " ".join(text.split()).casefold()
+                    if article.status != 200 or not article_matches(
+                        title, article.body, verify_text=True, article=link
                     ):
-                        source = IRSource(
-                            listing=listing,
-                            headline=headline,
-                            verify_text=True,
-                        )
-                        return source, f"Last quarter's results, “{title}”, read in Chrome"
-                    return None, f"Last quarter's article “{title}” didn't read as a results report"
+                        continue
+                    if not verified_report(html_to_text(article.body.decode(errors="replace"))):
+                        pdf = issuer_pdf_url(link, article.body, title=title)
+                        if pdf is None:
+                            continue
+                        if urlsplit(pdf).netloc == urlsplit(listing).netloc:
+                            file = await browser.request(pdf, listing, 4, fetcher.wait_turn)
+                        else:
+                            file = await fetcher.request(
+                                "GET", pdf, give_up_after=4, allow_redirects=False
+                            )
+                        if file.status != 200 or not file.body.startswith(b"%PDF-"):
+                            continue
+                    source = IRSource(listing=listing, headline=headline, verify_text=True)
+                    return source, f"Last quarter's results, “{title}”, read in Chrome"
                 following = next_page(listing, links)
                 if following is None:
                     break
                 url = following
     except _ERRORS as error:
         return None, f"Chrome couldn't read <{listing}> ({type(error).__name__})"
-    return None, f"No {last} results headline on <{listing}> to check the pattern against"
+    return None, problem
