@@ -79,17 +79,18 @@ _RELEASE = re.compile(
 )
 _TIME = re.compile(
     r"\bat\s+(?:approximately\s+|about\s+)?(\d{1,2})(?::(\d{2}))?\s*"
-    r"(am|pm)\s*\(?(ET|EST|EDT|Eastern(?: Time)?|PT|PST|PDT|Pacific(?: Time)?)\b",
+    r"(am|pm)\s*\(?(?:US\s+)?(ET|EST|EDT|Eastern(?: Time)?|PT|PST|PDT|Pacific(?: Time)?)\b",
     re.IGNORECASE,
 )
+_MARKET = r"(?:financial )?markets?"
 _AFTER = re.compile(
-    r"after (?:the )?(?:(?:US|U S) )?"
-    r"(?:market closes?|closing bell|close of (?:the )?market)\b",
+    rf"after (?:the )?(?:(?:US|U S) )?"
+    rf"(?:{_MARKET} closes?|closing bell|close of (?:the )?{_MARKET})\b",
     re.IGNORECASE,
 )
 _BEFORE = re.compile(
-    r"before (?:the )?(?:(?:US|U S) )?"
-    r"(?:market opens?|opening bell|open(?:ing)? of (?:the )?market)\b",
+    rf"before (?:the )?(?:(?:US|U S) )?"
+    rf"(?:{_MARKET} opens?|opening bell|open(?:ing)? of (?:the )?{_MARKET})\b",
     re.IGNORECASE,
 )
 _CALL = re.compile(r"\b(?:conference call|earnings call|webcast)\b", re.IGNORECASE)
@@ -242,6 +243,7 @@ def parse_notice(
         hour, minute = map(int, fallback.split(":"))
     expected = datetime(day.year, day.month, day.day, hour, minute, tzinfo=ET)
     estimate = expected
+    call_deadline = None
     if mode == "before market open":
         # The issuer's same-day earnings call is a deadline for results, even when the
         # historical SEC acceptance times would put the estimate later than the call.
@@ -250,11 +252,16 @@ def parse_notice(
                 _CALL.search(sentence)
                 and (_SAME_DAY.search(sentence) or day in _dates(sentence, today))
                 and (call := _release_time(sentence, day, allow_call=True))
+                and call <= expected.replace(hour=9, minute=30)
             ):
-                expected = min(expected, call)
+                call_deadline = min(call_deadline, call) if call_deadline else call
+        if call_deadline:
+            expected = min(expected, call_deadline)
     target = to_target(ticker, expected, int(year), quarter, company)
     target.before_minutes = 90 if expected < estimate else 60
     target.after_minutes = 90
+    if call_deadline:
+        target.after_minutes = max(90, (call_deadline - expected) // timedelta(minutes=1) + 5)
     return (target, f"Issuer date confirmed, {mode}") if target.window[1] > now else None
 
 

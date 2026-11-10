@@ -182,7 +182,8 @@ async def test_a_q4_site_is_polled_directly(released: Callable[[str], None]) -> 
             True,
             f"Its last results 8-Ks were accepted at {', '.join(LUCID.eightk)} ET",
         ),
-        ("ir.gone.example", False, "Not its IR site (HTTP 404)"),
+        ("ir.gone.example homepage over HTTP", False, "Returned HTTP 404"),
+        ("Q4 press release feed on ir.gone.example", False, "Not a Q4 site (HTTP 404)"),
         ("Q4 press release feed on investors.example.com", True, "Lists its releases and files"),
         (
             "investors.example.com press release page",
@@ -213,6 +214,56 @@ async def test_a_q4_site_is_polled_directly(released: Callable[[str], None]) -> 
         "edgar_latest",
         "businesswire_busted",
     ]
+
+
+async def test_blocked_q4_homepage_does_not_hide_the_issuer_notice(
+    released: Callable[[str], None],
+) -> None:
+    host = "investors.on-running.com"
+    home = f"https://{host}/"
+    canonical = home + "home/default.aspx"
+    listing = home + "news/default.aspx"
+    notice = {
+        "PressReleaseId": "2",
+        "Headline": "On to Release Third Quarter 2026 Results on Tuesday, November 10, 2026",
+        "LinkToDetailPage": "/news/q3-notice",
+        "Body": (
+            "<p>On will release its third quarter 2026 financial results on Tuesday, "
+            "November 10, 2026 before U.S. financial markets open.</p>"
+            "<p>On will host a conference call at 8 a.m. U.S. Eastern Time "
+            "on November 10, 2026.</p>"
+        ),
+    }
+    fetcher = RoutedFetcher(
+        {f"{host}/feed/PressRelease.svc": q4_list(notice, Q4_RESULTS), home: (403, b"Blocked")}
+    )
+    chrome = FakeChrome(
+        {
+            home: (0, ""),
+            canonical: (200, "<h1>Investor Relations</h1>"),
+            listing: (200, '<a href="/news/q2">On Reports Results for Second Quarter 2026</a>'),
+            home + "news/q2": (200, REPORT),
+        }
+    )
+    released(f"Issuer results. See {home}.")
+    company = LUCID.model_copy(update={"release_time": "06:10"})
+    found = await investigate.investigate(fetcher, company, TODAY, chrome.open)
+
+    assert (found.q4_host, found.reachable, found.ir_http_status) == (host, True, 403)
+    assert chrome.calls[:3] == [(home, canonical), (canonical, canonical), (listing, canonical)]
+    result = await date_discovery.find_date(fetcher, "ONON", NOW, found)
+    assert result and result[0].period == "FY2026Q3"
+    assert result[0].expected == datetime(2026, 11, 10, 6, 10, tzinfo=ET)
+    assert result[0].window[1] == datetime(2026, 11, 10, 8, 5, tzinfo=ET)
+    assert result[1] == f"Issuer date confirmed, before market open <{home}news/q3-notice>"
+    no_history = date_discovery.parse_notice(
+        "ONON",
+        found.model_copy(update={"release_time": None}),
+        notice["Headline"],
+        notice["Body"],
+        NOW,
+    )
+    assert no_history and no_history[0].expected.hour == 7
 
 
 async def test_a_site_with_a_feed_is_polled_through_it(released: Callable[[str], None]) -> None:
@@ -523,7 +574,8 @@ async def test_every_source_checked_is_reported_with_why_as_it_goes(
             True,
             f"Its last results 8-Ks were accepted at {', '.join(LUCID.eightk)} ET",
         ),
-        ("ir.lucidmotors.com without Chrome", False, "Blocks automated requests (HTTP 403)"),
+        ("ir.lucidmotors.com homepage over HTTP", False, "Returned HTTP 403"),
+        ("Q4 press release feed on ir.lucidmotors.com", False, "Q4 feed returned HTTP 403"),
         (
             f"Press release page <{LUCID_LIST}>, read in Chrome",
             True,
@@ -548,6 +600,7 @@ async def test_every_source_checked_is_reported_with_why_as_it_goes(
         "Reading its SEC filings",
         "Reading its last results 8-K on SEC",
         "Checking ir.lucidmotors.com",
+        "Looking for a Q4 press release feed on ir.lucidmotors.com",
         "Opening ir.lucidmotors.com in Chrome",
         "Checking direct HTTP access to the press release listing",
         "Choosing its sources",
@@ -691,7 +744,7 @@ async def test_discovery_shows_the_investigation_while_it_runs(
         [row] = calendar.entries()
         assert row.company.checks
     # The scorecard is told at each step and each finding, while the report is there to read
-    assert ("Opening ir.lucidmotors.com in Chrome", 2) in seen
+    assert ("Opening ir.lucidmotors.com in Chrome", 3) in seen
     assert max(count for _, count in seen) == len(row.company.checks)
 
 

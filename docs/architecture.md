@@ -516,6 +516,8 @@ the current PDF when it becomes readable. If the same poller verifies the listin
 report over plain HTTP, the live watch starts with HTTP and uses Chrome on Windows if requests
 fail. Both transports use the same per-host queue and the journal records the transport used.
 The scorecard shows the listing's direct HTTP status separately from the scheduled transport.
+Q4 feeds are verified separately from the homepage. The bot can use the issuer feed when
+the HTML pages require Chrome, including canonical Q4 routes behind a homepage redirect.
 Date discovery checks an RSS directory named in the last results release when the primary IR
 site has no verified feed. Quarterly call and webcast headlines qualify for a notice check.
 The notice still has to state when the results will be released.
