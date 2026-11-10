@@ -2,16 +2,85 @@ import asyncio
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from html.parser import HTMLParser
 from types import TracebackType
 from typing import Any, Self, cast
-from urllib.parse import unquote
+from urllib.parse import unquote, urljoin
 
 import aiohttp
 import discord
 from yarl import URL
 
-from earnings_bot.browser import DesktopChrome
+from earnings_bot.browser import DesktopChrome, RenderedPage
 from earnings_bot.fetch import Fetcher, Response
+from earnings_bot.text import html_to_text
+
+
+class _Anchors(HTMLParser):
+    _BLOCKS = frozenset({"div", "li", "tr", "article", "section"})
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.links: list[tuple[str, str]] = []
+        self.cards: list[str] = []
+        self.frames: list[str] = []
+        self._href: str | None = None
+        self._text: list[str] = []
+        # Each open block's text so far, and the links inside it with how many blocks up
+        # from them it is, as Chrome climbs at most four levels for a card of 400 characters
+        self._blocks: list[tuple[list[str], list[tuple[int, int]]]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        values = dict(attrs)
+        if tag in self._BLOCKS:
+            self._blocks.append(([], []))
+        if tag == "a" and values.get("href"):
+            self._href, self._text = values["href"], []
+        elif tag == "iframe" and values.get("src"):
+            self.frames.append(values["src"] or "")
+
+    def handle_data(self, data: str) -> None:
+        if self._href is not None:
+            self._text.append(data)
+        if self._blocks:
+            self._blocks[-1][0].append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "a" and self._href is not None:
+            text = " ".join("".join(self._text).split())
+            if text:
+                self.links.append((self._href, text))
+                self.cards.append(text)
+                if self._blocks:
+                    self._blocks[-1][1].append((len(self.links) - 1, 0))
+            self._href = None
+        elif tag in self._BLOCKS and self._blocks:
+            parts, waiting = self._blocks.pop()
+            card = " ".join(" ".join(parts).split())
+            climbing = []
+            for index, up in waiting:
+                if up < 4 and len(card) <= 400:
+                    self.cards[index] = card
+                    climbing.append((index, up + 1))
+            if self._blocks:
+                self._blocks[-1][0].extend(parts)
+                self._blocks[-1][1].extend(climbing)
+
+
+def rendered(url: str, status: int, html: str) -> RenderedPage:
+    """What Chrome would show for a page: its text, and its links made absolute."""
+    anchors = _Anchors()
+    anchors.feed(html)
+    title = html.split("<title>", 1)[1].split("</title>", 1)[0] if "<title>" in html else ""
+    return RenderedPage(
+        url=url,
+        status=status,
+        title=title,
+        text=html_to_text(html),
+        links=[(urljoin(url, href), text) for href, text in anchors.links],
+        frames=[urljoin(url, src) for src in anchors.frames],
+        cards=anchors.cards,
+    )
 
 
 def embed_text(embed: discord.Embed | None) -> str:
@@ -40,6 +109,13 @@ class RoutedChrome:
     ) -> Response:
         self.fetcher.chrome_calls.append(url)
         return await self.fetcher.request("GET", url, give_up_after=give_up_after)
+
+    async def render(
+        self, url: str, give_up_after: float, wait_turn: Callable[[str], Awaitable[None]]
+    ) -> RenderedPage:
+        self.fetcher.chrome_calls.append(url)
+        reply = await self.fetcher.request("GET", url, give_up_after=give_up_after)
+        return rendered(url, reply.status, reply.body.decode(errors="replace"))
 
     async def inspect_json(self, url: str) -> list[Any]:
         return []

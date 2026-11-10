@@ -47,7 +47,10 @@ BROADCOM_RELEASE = "https://www.broadcom.com/api/getmetadata?url={path}&locale=e
 # Matches "Uber Announces Results for Third Quarter 2026" and "Palantir Reports Q2 2026 U.S. Comm
 # Revenue Growth of 149%", but not the earlier "Uber Announces Date of Third Quarter 2026 Results
 # Conference Call" or "Cloudflare Expands EMEA Operations with New Headquarters"
-_EARNINGS = re.compile(r"results|earnings|\bquarter|\bQ[1-4]\b|\b[1-4]Q\d{2}\b", re.IGNORECASE)
+# "2Q26", "2Q 2026" and "2Q2026" all name a quarter, as in WeRide's "2Q2026 Total Revenue Reached"
+_EARNINGS = re.compile(
+    r"results|earnings|\bquarter|\bQ[1-4]\b|\b[1-4]Q\s?(?:20)?\d{2}\b", re.IGNORECASE
+)
 _NOT_EARNINGS = re.compile(
     r"webcast|conference call|to host|to announce|schedule|\bdate\b", re.IGNORECASE
 )
@@ -67,7 +70,7 @@ _NOTICE = re.compile(
 )
 _RESULTS_WORD = re.compile(r"\b(?:earnings|results)\b", re.IGNORECASE)
 _QUARTER_WORD = re.compile(
-    r"\b(?:q[1-4]|[1-4]q\d{2}|(?:first|second|third|fourth|[1-4](?:st|nd|rd|th))"
+    r"\b(?:q[1-4]|[1-4]q\s?(?:20)?\d{2}|(?:first|second|third|fourth|[1-4](?:st|nd|rd|th))"
     r"[-\s]+quarter|full[-\s]+year)\b",
     re.IGNORECASE,
 )

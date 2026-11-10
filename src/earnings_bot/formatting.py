@@ -108,13 +108,13 @@ def watch_list(sources: Iterable[Source]) -> list[str]:
     ]
 
 
-def bullets(lines: Iterable[str], limit: int = 1024) -> str:
+def bullets(lines: Iterable[str], limit: int = 1024, bullet: str = "• ") -> str:
     """A bulleted list that fits one embed field, saying how many lines didn't fit."""
     lines = list(lines)
     text = ""
     for i, line in enumerate(lines):
         rest = len(lines) - i - 1
-        candidate = f"{text}\n• {line}" if text else f"• {line}"
+        candidate = f"{text}\n{bullet}{line}" if text else f"{bullet}{line}"
         more = f"\n-# …and {rest} more" if rest else ""
         if len(candidate) + len(more) > limit:
             return text + f"\n-# …and {len(lines) - i} more"
@@ -122,5 +122,5 @@ def bullets(lines: Iterable[str], limit: int = 1024) -> str:
     return text
 
 
-def truncate(text: str, limit: int) -> str:
+def truncate(text: str, limit: int = 1024) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"

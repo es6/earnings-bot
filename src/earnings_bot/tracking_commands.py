@@ -5,12 +5,36 @@ from collections.abc import Callable
 import discord
 from discord import app_commands
 
-from earnings_bot.calendar import describe, manual_target, upcoming
+from earnings_bot.calendar import (
+    describe,
+    manual_target,
+    release_lines,
+    upcoming_releases,
+)
+from earnings_bot.formatting import BLUE, bullets
 from earnings_bot.issuers import symbol
 from earnings_bot.recorder import ET
 from earnings_bot.unattended import DirectoryWatcher
 
 OFFLINE = "⚠️ The earnings calendar is available when the directory watcher is running."
+
+
+def upcoming_embed(watcher: DirectoryWatcher) -> discord.Embed:
+    """The week's releases, grouped by day, each with its expected time and its watch."""
+    now = watcher.journal.now()
+    releases, pending = upcoming_releases(watcher.calendar.entries(), watcher.planned, now)
+    embed = discord.Embed(title="📅 Earnings in the next 7 days", color=BLUE)
+    days: dict[str, list[str]] = {}
+    for target, evidence in releases:
+        local = target.expected.astimezone(ET)
+        days.setdefault(f"{local:%A, %B} {local.day}", []).append(release_lines(target, evidence))
+    for name, lines in list(days.items())[:24]:
+        embed.add_field(name=name, value=bullets(lines, bullet=""), inline=False)
+    if not releases:
+        embed.description = "No releases expected in the next 7 days."
+    if pending:
+        embed.set_footer(text=f"Still looking for dates: {', '.join(pending)}")
+    return embed
 
 
 class TrackingCommands:
@@ -123,15 +147,10 @@ class TrackingCommands:
     async def upcoming(self, interaction: discord.Interaction) -> None:
         watcher = self._watcher(interaction)
         if watcher is None:
-            message = OFFLINE
-        else:
-            rows = upcoming(watcher.calendar.entries(), watcher.planned, watcher.journal.now())
-            message = "\n".join(["📅 **Earnings in the next 7 days**", *rows])
-            if not rows:
-                message = "📅 No earnings windows in the next 7 days."
-            if len(message) > 1950:
-                message = message[:1950].rsplit("\n", 1)[0] + "\n-# …and more after these."
-        await interaction.response.send_message(message, ephemeral=True)
+            await interaction.response.send_message(OFFLINE, ephemeral=True)
+            return
+        embed = upcoming_embed(watcher)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @app_commands.guild_only()
     @app_commands.default_permissions(manage_guild=True)

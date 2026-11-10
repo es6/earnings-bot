@@ -71,6 +71,19 @@ def filing_form(submissions: dict) -> SecForm:
     return "8-K"
 
 
+def fiscal_year_end(submissions: dict) -> str | None:
+    """SEC's MMDD for the company's fiscal year end, or else the end of the period its latest
+    annual report covers. SEC leaves the field empty for some, such as Alibaba."""
+    year_end = submissions.get("fiscalYearEnd") or ""
+    if re.fullmatch(r"\d{4}", year_end):
+        return year_end
+    recent = submissions.get("filings", {}).get("recent", {})
+    for form, period in zip(recent.get("form", []), recent.get("reportDate", []), strict=False):
+        if form in ("10-K", "20-F", "40-F") and re.fullmatch(r"\d{4}-\d{2}-\d{2}", period or ""):
+            return period[5:7] + period[8:10]
+    return None
+
+
 def profile(ticker: str, cik: int, title: str, submissions: dict, today: date) -> KnownCompany:
     """A catalog-style entry for a company nobody has researched yet."""
     recent = submissions["filings"]["recent"]
@@ -79,7 +92,6 @@ def profile(ticker: str, cik: int, title: str, submissions: dict, today: date) -
         for i, form in enumerate(recent["form"])
         if form == "8-K" and "2.02" in recent["items"][i].split(",")
     ][:4]
-    year_end = submissions.get("fiscalYearEnd") or ""
     return KnownCompany(
         name=title,
         names=wire_names(title, ticker),
@@ -93,7 +105,7 @@ def profile(ticker: str, cik: int, title: str, submissions: dict, today: date) -
         fastest="unknown",
         evidence=f"Built from SEC data for {title}, not researched by hand",
         checked=today,
-        fiscal_year_end=year_end if re.fullmatch(r"\d{4}", year_end) else None,
+        fiscal_year_end=fiscal_year_end(submissions),
     )
 
 

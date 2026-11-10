@@ -15,16 +15,18 @@ from urllib.parse import urljoin, urlsplit
 
 import aiohttp
 
-from earnings_bot.browser import BrowserError, browser_host
+from earnings_bot.browser import BrowserError, RenderedPage, browser_host
 from earnings_bot.browser_sources import _ReleaseLinks, article_matches
 from earnings_bot.fetch import Fetcher, Response
 from earnings_bot.formatting import clock
+from earnings_bot.ir_pages import RESULTS, IRReader, nav_rank
 from earnings_bot.ir_research import issuer_links, next_page
 from earnings_bot.issuer_news import news_records, read_news
 from earnings_bot.issuers import SEC_SUBMISSIONS, filing_form, release_time
 from earnings_bot.known import KnownCompany, SourceCheck, known_companies
 from earnings_bot.recorder import ET, PollError, poll
 from earnings_bot.sec_results import SixKResults, SixKUnavailable
+from earnings_bot.source_audit import local_day
 from earnings_bot.sources import (
     EdgarFilings,
     Q4PressReleases,
@@ -43,11 +45,21 @@ REINVESTIGATE = timedelta(days=30)
 # 3 follows corporate navigation and embedded listings, 4 reads newsroom cards and archives,
 # 5 finds results behind ordinary filings, 6 checks named RSS indexes and listing HTTP,
 # 7 checks Q4 feeds independently of the issuer homepage, 8 verifies newsroom JSON,
-# 9 recognizes more 6-K results language and looks further back for Q4 wire datelines.
-INVESTIGATION = 9
+# 9 recognizes more 6-K results language and looks further back for Q4 wire datelines,
+# 10 reads the IR site as Chrome renders it, finds IR hosts behind www. and brand domains, and
+# keeps the IR home page for reading dates.
+INVESTIGATION = 10
 _HOST = re.compile(r"\b((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,})\b", re.IGNORECASE)
 _WEB_HOST = re.compile(r"\b(?:https?://|(?=www\.))" + _HOST.pattern, re.IGNORECASE)
 _IR_HOST = re.compile(r"^(?:ir|investors?|investor-?relations)\.", re.IGNORECASE)
+# A host's last label must be a real top-level domain: "investor.relations" in
+# "investor.relations@hpe.com" and "carly.charlson" in a name aren't sites
+_TLD = re.compile(
+    # Any country's two letters, the common generic ones, and RFC 2606's for examples
+    r"[a-z]{2}|com|net|org|biz|info|global|group|tech|bank|app|inc|company|example",
+    re.IGNORECASE,
+)
+_LEGAL = frozenset({"the", "inc", "co", "corp", "corporation", "company", "ltd", "plc", "group"})
 _IR_LINK = re.compile(
     r"(?:https?://)?([a-z0-9.-]+\.[a-z]{2,})/"
     r"(?:investor-relations|events-news|news-events|press-releases|reports-filings)(?:[/\s]|$)",
@@ -102,6 +114,10 @@ class Chrome(Protocol):
         wait_turn: Callable[[str], Awaitable[None]],
     ) -> Response: ...
 
+    async def render(
+        self, url: str, give_up_after: float, wait_turn: Callable[[str], Awaitable[None]]
+    ) -> RenderedPage: ...
+
 
 OpenChrome = Callable[[], AbstractAsyncContextManager[Chrome]]
 
@@ -121,22 +137,28 @@ def due(ticker: str, company: KnownCompany, today: date) -> bool:
 
 def ir_hosts(text: str, ticker: str | None = None, name: str = "") -> list[str]:
     """IR hosts first, then corporate websites that match the issuer's name."""
-    hosts = dict.fromkeys(host.lower() for host in _HOST.findall(text))
+    hosts = dict.fromkeys(
+        host.lower() for host in _HOST.findall(text) if _TLD.fullmatch(host.rsplit(".", 1)[-1])
+    )
     prefixes = {host.lower() for host in _IR_LINK.findall(text)}
     candidates = []
     for host in hosts:
         without_www = host.removeprefix("www.")
         if ticker and without_www.split(".")[0] == ticker.lower():
             candidates.append(without_www)
-        elif _IR_HOST.match(host) or host in prefixes:
+        # "www.investors.bestbuy.com" is an IR host too
+        elif _IR_HOST.match(without_www) or host in prefixes:
             candidates.append(host)
-    words = re.findall(r"[a-z0-9]+", name.lower())[:3]
+    words = [word for word in re.findall(r"[a-z0-9]+", name.lower()) if word not in _LEGAL][:3]
     brands = {"".join(words[:end]) for end in range(1, len(words) + 1) if len(words[0]) >= 3}
-    candidates.extend(
-        host.lower()
-        for host in _WEB_HOST.findall(text)
-        if host.lower().removeprefix("www.").split(".")[0] in brands
-    )
+    # The name inside a longer brand counts too: Deere & Co is johndeere.com
+    distinctive = {word for word in words[:2] if len(word) >= 5}
+    for host in hosts:
+        label = host.removeprefix("www.").split(".")[0]
+        if len(host.split(".")) > 3:
+            continue
+        if label in brands or any(word in label for word in distinctive):
+            candidates.append(host)
     return list(dict.fromkeys(candidates))
 
 
@@ -244,6 +266,9 @@ class Findings:
     wire: str | None = None
     posted: datetime | None = None  # when the IR site says the latest results were posted
     release_url: str | None = None
+    home: str | None = None  # the IR site's home page
+    results_page: str | None = None  # its "Quarterly Results" page
+    results_api: str | None = None  # the public data behind that page
 
     def describe(self, today: date) -> str:
         chrome = f"Chrome reads <{self.listing}>." if self.listing else ""
@@ -300,7 +325,8 @@ async def _q4_wire(fetcher: Fetcher, host: str) -> tuple[bool, str | None, str]:
     why it doesn't serve it."""
     reply = await _get(fetcher, Q4PressReleases(host).bodies_url(20))
     if reply and reply.status in _BLOCKED:
-        return False, None, f"Q4 feed returned HTTP {reply.status}"
+        # A firewall answers 403 for any path it doesn't know, Q4's or not
+        return False, None, f"Not readable as a Q4 site: its firewall answered HTTP {reply.status}"
     if reply is None or reply.status != 200:
         return False, None, f"Not a Q4 site ({_answer(reply)})"
     try:
@@ -408,6 +434,49 @@ class ChromeVisit:
     posted: datetime | None = None  # when that page says they were posted
     wire: str | None = None
     problem: str | None = None  # why it couldn't read the latest results
+    home: str | None = None  # the IR site's home page, when a corporate site links one
+    home_status: int | None = None  # what the site's home page answered Chrome
+    results_page: str | None = None  # its "Quarterly Results" page
+
+
+async def _rendered_visit(
+    fetcher: Fetcher, chrome: OpenChrome, home: str, sec_release: str
+) -> ChromeVisit:
+    """Find the press release list and the latest results by reading the site's pages as
+    Chrome renders them, through its own navigation."""
+    visit = ChromeVisit()
+    sec_intro = " ".join(sec_release[:2500].split()).casefold()
+    try:
+        async with chrome() as browser:
+
+            async def render(url: str) -> RenderedPage:
+                return await browser.render(url, 15, fetcher.wait_turn)
+
+            reader = IRReader(render, [home], pages=6, seconds=75)
+            async for _ in reader.pages():
+                if reader.reading.listing:
+                    break
+            reading = reader.reading
+            visit.listing, visit.home = reading.listing, reading.home
+            visit.results_page = reading.results_page
+            # An exact match to the SEC release first, then the newest
+            ranked = sorted(reading.results, key=lambda item: item[1].casefold() not in sec_intro)
+            for url, title in ranked[:3]:
+                page = await reader.open(url)
+                if page is None or not verified_report(page.text):
+                    continue
+                visit.title, visit.url = title, url
+                visit.posted, visit.wire = posted_time(page.text), wire(page.text)
+                return visit
+            if not reading.pages:
+                visit.problem = reading.problems[0] if reading.problems else "Chrome read nothing"
+            elif reading.listing:
+                visit.problem = f"Chrome read <{reading.listing}> but no results report on it"
+            else:
+                visit.problem = f"{reading.summary()}, but no press release list"
+    except (BrowserError, *_ERRORS) as error:
+        visit.problem = f"Chrome couldn't render {urlsplit(home).netloc} ({type(error).__name__})"
+    return visit
 
 
 async def _read_results(
@@ -485,12 +554,21 @@ async def _through_chrome(
 
             page = await get(home)
             page_url = home
+            fallback.home_status = page.status if page is not None else None
             if q4 and page is not None and page.status == 0:
                 canonical = await get(warmup)
                 if canonical and canonical.status == 200:
                     page, page_url = canonical, warmup
             linked: list[str] = []
             if page is not None and page.status == 200:
+                fallback.results_page = next(
+                    (
+                        link
+                        for link, title in issuer_links(page_url, page.body)
+                        if nav_rank(title) == RESULTS
+                    ),
+                    None,
+                )
                 linked = _release_pages(page_url, page.body)
                 if not linked:
                     investor = next(
@@ -570,6 +648,35 @@ def posted_time(text: str) -> datetime | None:
         return None
 
 
+_WIRE_SOURCES = (
+    ("businesswire", "Business Wire"),
+    ("prnewswire", "PR Newswire"),
+    ("globenewswire", "GlobeNewswire"),
+)
+
+
+def wire_seen(sources: list[str]) -> str | None:
+    """The newswire whose feed carried a release, from the sources that saw it, first first."""
+    return next(
+        (name for source in sources for prefix, name in _WIRE_SOURCES if source.startswith(prefix)),
+        None,
+    )
+
+
+def with_wire(company: KnownCompany, found: str) -> KnownCompany:
+    """The company once a live release showed its wire: only that wire is watched from then on,
+    and its checks say why. Sea's 6-Ks name no wire, but Business Wire carried its results."""
+    report = Report()
+    _wire_checks(report, found)
+    checks = [check for check in company.checks if not check.source.endswith("earnings feed")]
+    trial = company.trial
+    if found == "GlobeNewswire":
+        trial = trial.model_copy(update={"globenewswire": company.names})
+    return company.model_copy(
+        update={"wire": found, "checks": [*checks, *report.checks], "trial": trial}
+    )
+
+
 def _wire_checks(report: Report, found: str | None) -> None:
     for name in ("PR Newswire", "Business Wire", "GlobeNewswire"):
         source = f"{name} earnings feed"
@@ -626,9 +733,17 @@ async def investigate(
                     "sixk": [f"{stamp.astimezone(ET):%H:%M}" for stamp in accepted],
                 }
             )
-        text = (results[0].body or b"").decode() if results else ""
+        # Every copy of the latest results: a Hong Kong listing files its own announcement
+        # beside the press release, and only the press release names the wire and IR site
+        latest = local_day(results[0].published) if results else None
+        texts = [
+            (result.body or b"").decode()
+            for result in results
+            if local_day(result.published) == latest
+        ]
     else:
-        text = await _last_release(fetcher, company.cik) or ""
+        texts = [await _last_release(fetcher, company.cik) or ""]
+    text = "\n".join(texts)
     times = company.sixk if company.sec_form == "6-K" else company.eightk
     report.watch(
         f"SEC {company.sec_form} filings",
@@ -636,7 +751,7 @@ async def investigate(
         if times
         else f"Every results {company.sec_form} is filed here",
     )
-    findings.wire = wire(text)
+    findings.wire = next((name for copy in texts if (name := wire(copy))), None)
     hosts = ir_hosts(text, ticker, company.name)[:3]
     if not hosts and not _RSS_INDEX.search(text):
         report.reject(
@@ -663,9 +778,13 @@ async def investigate(
             report.watch(f"Q4 press release feed on {host}", "Lists its releases and files")
         else:
             report.reject(f"Q4 press release feed on {host}", why)
-        if not q4 and not blocked and (page is None or page.status != 200):
+        # A site that doesn't answer the bot at all may still open in Chrome; one that
+        # answers 404 doesn't exist
+        unanswered = page is None and chrome is not None
+        if not q4 and not blocked and (page is None or page.status != 200) and not unanswered:
             continue
         findings.site = host
+        findings.home = home
         findings.blocked = blocked
         findings.q4 = q4
         findings.wire = findings.wire or q4_wire
@@ -685,7 +804,19 @@ async def investigate(
         else:
             report.doing(f"Opening {host} in Chrome")
             visit = await _through_chrome(fetcher, chrome, home, text, q4=q4)
+            if not visit.title and visit.home_status not in (404, 410):
+                # Read it as Chrome shows it: lists built by scripts, redirects and all
+                report.doing(f"Reading {host} as Chrome renders it")
+                rendered = await _rendered_visit(fetcher, chrome, home, text)
+                visit.results_page = visit.results_page or rendered.results_page
+                if rendered.title or (rendered.listing and not visit.listing):
+                    rendered.problem = rendered.problem or visit.problem
+                    visit = rendered
+                elif rendered.problem and not visit.listing:
+                    visit.problem = f"{visit.problem}. {rendered.problem}"
+                findings.home = rendered.home or home
             findings.wire = findings.wire or visit.wire
+            findings.results_page = findings.results_page or visit.results_page
             # Kept even without readable results: date notices are read from it too
             findings.listing = visit.listing
             if visit.title and visit.listing:
@@ -723,6 +854,16 @@ async def investigate(
                 report.watch(
                     f"Issuer newsroom API <{findings.news_api}>", "Verified over direct HTTP"
                 )
+    if chrome is not None and findings.results_page and not findings.q4:
+        # A results page's own data can name new results before the newsroom does: Sea's had
+        # its Q3 2026 press release hours before its newsroom listed it
+        report.doing("Looking for the public data behind the results page")
+        findings.results_api = await _news_api(fetcher, findings.results_page)
+        if findings.results_api and findings.results_api != findings.news_api:
+            report.watch(
+                f"Issuer results API <{findings.results_api}>",
+                "Verified over direct HTTP. Lists each quarter's press release",
+            )
     report.doing("Choosing its sources")
     _wire_checks(report, findings.wire)
     found_wire = findings.wire or "unknown"
@@ -743,6 +884,8 @@ async def investigate(
             "ir_listing": findings.listing,
             "ir_http_status": findings.ir_http_status,
             "ir_news_api": findings.news_api,
+            "ir_home": findings.home,
+            "ir_results_api": findings.results_api,
             "ir_posted": findings.posted,
             "ir_release": findings.release_url,
             "wire": found_wire,

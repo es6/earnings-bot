@@ -116,7 +116,7 @@ async def test_nebius_tracks_from_the_issuer_notice_and_verifies_the_previous_pd
     assert saved.target.ir.listing == NEWSROOM
     assert saved.target.ir.http_first
     assert saved.target.period == "FY2026Q3"
-    assert saved.target.window[0] == datetime(2026, 11, 12, 6, 30, tzinfo=ET)
+    assert saved.target.window[0] == datetime(2026, 11, 12, 6, 0, tzinfo=ET)
     assert saved.evidence and NOTICE_URL in saved.evidence
     assert PDF in fetcher.no_redirect
     with DeliveryStore(tmp_path / "state.db", 7) as store:

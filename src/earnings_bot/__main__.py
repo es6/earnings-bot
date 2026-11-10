@@ -48,8 +48,6 @@ def main() -> None:
                 load_plan(args.schedule)  # validate single files before starting
         except (OSError, tomllib.TOMLDecodeError, ValidationError) as error:
             sys.exit(f"Can't read {args.schedule}: {error}")
-        if settings.discord_status_channel_id == settings.discord_channel_id:
-            sys.exit("DISCORD_STATUS_CHANNEL_ID must differ from DISCORD_CHANNEL_ID")
         if settings.anthropic_api_key is None:
             log.warning("ANTHROPIC_API_KEY isn't set, so posts won't get a summary")
         if settings.fmp_api_key is None:

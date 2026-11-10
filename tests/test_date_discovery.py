@@ -1,7 +1,7 @@
 import asyncio
 import json
 from collections.abc import Callable
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +16,7 @@ from earnings_bot.date_discovery import (
     DateDiscovery,
     find_date,
     parse_notice,
+    timed_by_publishers,
 )
 from earnings_bot.delivery import DeliveryStore
 from earnings_bot.fetch import Fetcher, Response
@@ -24,6 +25,7 @@ from earnings_bot.ir_research import IR_LISTINGS
 from earnings_bot.issuers import profile
 from earnings_bot.known import KnownCompany, SourceCheck, known_companies, to_target
 from earnings_bot.recorder import ET
+from earnings_bot.source_audit import Speed, Timing
 from earnings_bot.sources import is_date_notice
 from tests.fakes import RoutedFetcher
 from tests.sec_data import LCID_CIK, LCID_SUBMISSIONS
@@ -539,7 +541,11 @@ def test_a_reset_isnt_a_date_notice() -> None:
     assert is_date_notice(AMAT_NOTICE_TITLE)
 
 
-async def test_a_notice_whose_date_cant_be_read_is_named_on_the_card(tmp_path: Path) -> None:
+async def test_a_notice_whose_date_cant_be_read_is_named_on_the_card(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Chrome reads IR sites on Windows only; the test's fake one stands in on any system
+    monkeypatch.setattr(date_discovery, "chrome_available", lambda: True)
     host = "investors.example.com"
     company = AMAT.model_copy(
         update={
@@ -575,10 +581,11 @@ async def test_a_notice_whose_date_cant_be_read_is_named_on_the_card(tmp_path: P
         row, _ = calendar.add("AMAT", company)
         dates = DateDiscovery(calendar, fetcher, lambda: NOW, lambda: False, print)
         await dates._check(row)
+    # Chrome tried the IR site too, and the card says what came of it
     assert dates.phases[row.cik] == (
-        f"No release date read yet. It saw the notice “{unreadable}” but couldn't read a date "
-        "from it. Rechecking hourly. A Manage Server member can set one with `/track` and "
-        "`when` and `period`."
+        f"No release date read yet. Chrome couldn't open its IR site: {host} answered HTTP 404. "
+        f"It saw the notice “{unreadable}” but couldn't read a date from it. Rechecking hourly. "
+        "A Manage Server member can set one with `/track` and `when` and `period`."
     )
 
 
@@ -631,3 +638,72 @@ def test_dateline_and_html_line_breaks_preserve_a_confirmed_release_time() -> No
     assert result is not None
     assert result[0].expected == datetime(2026, 11, 12, 16, 45, tzinfo=ET)
     assert result[1] == "Issuer confirmed release time"
+
+
+def test_a_morning_call_moves_an_afternoon_estimate_before_it() -> None:
+    # Warner Music's notice names no quarter it can be read from, and gives only the call's
+    # time. Its past 8-Ks came out after the close, but results come before the call.
+    title = (
+        "Warner Music Group Corp. To Conduct Earnings Conference Call On Thursday, "
+        "November 19, 2026"
+    )
+    body = (
+        "<p>NEW YORK--(BUSINESS WIRE)-- Warner Music Group Corp. will release its financial "
+        "results on Thursday, November 19, 2026, for the fourth quarter and fiscal year ended "
+        "September 30, 2026, and will hold an earnings conference call that morning at 8:30 a.m. "
+        "ET.</p>"
+    )
+    company = AMAT.model_copy(update={"release_time": "16:00", "fiscal_year_end": "0930"})
+
+    result = parse_notice("WMG", company, title, body, datetime(2026, 11, 10, 5, tzinfo=ET))
+
+    assert result is not None
+    target, _ = result
+    assert target.period == "FY2026Q4"
+    assert target.expected == datetime(2026, 11, 19, 7, 30, tzinfo=ET)
+    assert target.window[1] >= datetime(2026, 11, 19, 8, 35, tzinfo=ET)
+
+
+def test_before_930_am_is_before_the_open_whatever_the_filing_times() -> None:
+    # TJX's notice; its 8-Ks were accepted around 9:10 AM
+    title = "The TJX Companies, Inc. to Report Q3 FY27 Results November 18, 2026"
+    body = (
+        "<p>The TJX Companies, Inc. today announced that it plans to release its third quarter "
+        "Fiscal 2027 sales and earnings results on Wednesday, November 18, 2026, before 9:30 a.m. "
+        "ET. At 11:00 a.m. ET that day, it will hold a conference call.</p>"
+    )
+    company = AMAT.model_copy(update={"release_time": "09:10", "fiscal_year_end": "0131"})
+
+    result = parse_notice("TJX", company, title, body, datetime(2026, 11, 10, 5, tzinfo=ET))
+
+    assert result is not None
+    target, evidence = result
+    assert evidence == "Issuer date confirmed, before market open"
+    assert target.window == (
+        datetime(2026, 11, 18, 6, 0, tzinfo=ET),
+        datetime(2026, 11, 18, 10, 40, tzinfo=ET),
+    )
+
+
+def test_a_window_opens_by_when_the_ir_site_had_the_last_release_not_sec() -> None:
+    # On, Nov 10: its IR feed had the Q2 results at 5:00 AM and its 6-K came at 6:10, so a
+    # window placed by the 6-K opened at 5:10, after the Q3 release was out
+    day = date(2026, 8, 11)
+    sec = Timing("SEC 6-K acceptance", datetime(2026, 8, 11, 6, 10, 30, tzinfo=ET))
+    speed = Speed(day=day, archive=[sec, Timing("q4_press", datetime(2026, 8, 11, 5, tzinfo=ET))])
+    company = AMAT.model_copy(
+        update={"sec_form": "6-K", "release_time": "06:10", "fiscal_year_end": "1231"}
+    )
+    timed = timed_by_publishers(company, speed.to_json())
+    title = "On to Release Third Quarter 2026 Results on Tuesday, November 10, 2026"
+    body = "<p>On will report its results before the U.S. market opens on November 10, 2026.</p>"
+
+    result = parse_notice("ONON", timed, title, body, datetime(2026, 11, 9, 12, tzinfo=ET))
+
+    assert (timed.release_time, timed.release_published) == ("05:00", True)
+    assert result is not None
+    assert result[0].window[0] <= datetime(2026, 11, 10, 5, tzinfo=ET)
+    # When SEC had it first, its time stands
+    sec_first = Speed(day=day, archive=[sec, Timing("q4_press", sec.at + timedelta(minutes=9))])
+    assert timed_by_publishers(company, sec_first.to_json()) == company
+    assert timed_by_publishers(company, None) == company

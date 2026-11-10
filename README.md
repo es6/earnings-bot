@@ -86,8 +86,8 @@ Run `uv run earnings-bot schedules` to watch every TOML in the directory. Edits 
 are picked up within a few seconds. A malformed edit keeps the last valid version active.
 Use `/watch_status` for the running release version, Git build, next watch window, and last
 successful schedule scan. The release version also appears on scorecards, at startup, and in
-`uv run earnings-bot --version`. Set `DISCORD_STATUS_CHANNEL_ID` to a separate channel to receive
-window reports there. Reports are also written to `schedules/watch.jsonl`.
+`uv run earnings-bot --version`. Set `DISCORD_STATUS_CHANNEL_ID` to receive window reports in
+a channel, which can be the alerts' own. Reports are also written to `schedules/watch.jsonl`.
 
 Window reports use **@earnings_guy** as the main external speed benchmark. The runner
 checks a shared public RSS timeline during release windows and verifies candidate results

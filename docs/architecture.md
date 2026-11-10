@@ -530,8 +530,14 @@ hit a cache, both query responses came back fresh with the same body, or the tes
 inconclusive. It applies a verified query bypass to the issuer listing, API or Chrome feed.
 Direct issuer RSS keeps its default buster unless both query requests are rejected while
 the normal URL works. Q4 and shared newswires keep their source-specific polling strategies.
-Cache headers describe the responding cache. Release-night measurements show when new
-items actually become visible.
+Cache headers describe the responding cache, and a site can sit behind more than one. Every
+layer's report counts: `cf-cache-status`, `x-cache`, RFC 9211 `cache-status`, Varnish's
+`x-cache-hits` and `x-varnish`, and `age`. Notified-hosted IR sites (WeRide, HubSpot) answer
+`cf-cache-status: DYNAMIC` from Cloudflare, while the platform's own cache behind it serves the
+same stored copy (`x-cache-hits: 372`, unchanged `Last-Modified`) to query strings, `no-cache`
+headers and path variants alike. A unique query that comes back as a cache hit means the cache
+ignores queries, so the bot uses the plain URL and says the feed is as fresh as the site's own
+rebuild. Release-night measurements show when new items actually become visible.
 Until a wire is found, both Business Wire and PR
 Newswire are watched along with EDGAR. The source audit runs after investigation. For a release
 confirmed before market open, a same-day earnings call can move the watch earlier when the
@@ -573,8 +579,38 @@ Broadcom's newsroom API, or a supported public listing through desktop Chrome on
 The notice must identify a future date and fiscal period. An explicit release time is used
 when available. For an approximate time, the planner uses the issuer's market-open/close
 wording and the catalog's typical time to place a wider window. A call-only notice leaves the
-ticker awaiting a date. A company outside the catalog has no issuer feed we know, so its date
-comes from FMP's earnings calendar, asked at most twice a day. FMP gives the day but not the
+ticker awaiting a date.
+
+When the feeds, lists and 6-K exhibits give no date, the planner reads the IR site in desktop
+Chrome as a person would (`ir_pages.py`). It opens the IR home, follows the site's own
+navigation ("News Releases", "Events", "Quarterly Results", or "Investors" from a corporate
+site), and reads each page after its scripts have run. That covers lists built from JSON, cookie
+redirects such as WeRide's (a plain request is redirected back to the same URL forever) and
+hosted IR pages, without knowing any platform. Up to 10 pages and 90 seconds are spent per
+check. Chrome also returns each link's card, the small block around it, since an events list
+puts the date beside the title, before it (HPE) or after it (WeRide). A date notice it finds is
+read the same way as one from a feed, newest-dated first. A notice of the call alone (Autodesk's
+"will share its third quarter fiscal 2027 financial results conference call ... at 2 p.m. PT")
+and the next earnings call on the events page place the release by the call: the evening before
+a morning call when past 8-Ks came after the close, at the usual 8-K time when that falls before
+the call, and in the 90 minutes before the call for a 6-K filer, whose 6-K can come hours after
+the release. A "tentative" event is a placeholder and is skipped (Lowe's listed its Q3 call as
+tentative on Dec 9 while reporting Nov 18). A date found this way is read again every six hours,
+not hourly. Translated copies of a site are skipped, since their headlines don't read in English.
+
+Notices name their period many ways ("fourth quarter and fiscal year ended September 30",
+"September quarter", "Q4 FY26", "2026 Q3"). When the headline and text name none it can read,
+the period is the fiscal quarter that ended last before the release day, from SEC's fiscal year
+end, or from the period of the latest 10-K, 20-F or 40-F when SEC's field is empty (Alibaba). A
+same-day call is a deadline for an estimated time: Warner Music's 8-Ks came after the close,
+but its notice's "earnings conference call that morning at 8:30 a.m." puts results before it.
+"Before 9:30 a.m." counts as before the open, and a before-the-open watch runs from 6:00 (or an
+hour before the estimate) to 9:35, since TJX's 8-Ks come at 9:10 while its release may not.
+
+A company outside the catalog has no issuer feed we know, so its date
+comes from FMP's earnings calendar, asked at most twice a day. FMP's free plan answers HTTP 402
+for nearly every symbol (it covered AAPL but none of the 49 tickers evaluated on Nov 10), so in
+practice the issuer's own pages are the source. FMP gives the day but not the
 time, so the window uses the 8-K time with an hour before and 90 minutes after, and the
 fiscal period follows from SEC's fiscal year end. An issuer's own date always wins over FMP's.
 
@@ -768,4 +804,14 @@ onboarding, including international listings, and more live samples for source r
 | 2026-11-09 | Chrome may open any public https page. It refuses plain http, other ports, logins in the URL, private and loopback addresses and local-only names, so a schedule can't point it at this PC or its network. The per-site list is gone |
 | 2026-11-09 | `/track` investigates a company outside the catalog itself: IR site from its last results 8-K, Q4 or RSS feed, Chrome for a site that blocks the bot, wire from the dateline. Again after 30 days |
 | 2026-11-09 | Lucid's cached PR Newswire copy reached us at 16:06:02 ET, 2.7 s after @wallstengine posted. Changing letter case got a CDN miss but returned general news. Percent-encoding two letters preserved the requested category and gave independent cache copies for Earnings and Semiconductors. |
+| 2026-11-10 | Release dates come from reading the IR site as Chrome renders it, through its own navigation, after the feeds and lists. Measured on 49 tickers reporting Nov 11 to 25 with `scripts/track_eval.py`, not on one ticker at a time |
+| 2026-11-10 | A results 6-K may open with Hong Kong exchange disclaimers ("is pleased to announce"), so its first 5,000 characters are read. The speed review times SEC by the day's earliest results 6-K |
+| 2026-11-10 | A results item already listed when a window opens counts as already out if it came earlier that day, up to 12 hours before. On published at 5:00 AM and its watch opened at 5:10, so its 6:07 alert came from SEC, an hour late. A Q4 time's day decides, since it names no zone |
+| 2026-11-10 | The usual release time is when the IR site or a wire had the last release, when that beat SEC: On's IR feed had its Q2 results at 5:00 AM, its 6-K came at 6:10 |
+| 2026-11-10 | After a window that found the release, each source that didn't show it is checked once a minute, for up to 10 hours or to the day's end, so later links still join the alert: Sea's 6-K comes hours after its Business Wire release |
+| 2026-11-10 | Research also reads the public data behind the IR site's "Quarterly Results" page, which can list a press release before the newsroom does. Sea's results API had its Q3 press release while its newsroom still showed the date notice. Results records give a quarter, year and press release PDF |
+| 2026-11-10 | A live release that comes out on a wire teaches the bot that company's wire, so only that wire is watched from then on |
+| 2026-11-10 | Alerts, status and scorecards can share one channel. When the bot's channel changes, the calendar, its alerts and windows, and the scorecards' keys move with it, from the channel that tracked the most companies |
+| 2026-11-10 | The speed review reads a Q4 feed's time, which names no zone, as US Eastern when SEC's acceptance that day falls from an hour before it to six hours after. Wire feeds keep too few items to reach last quarter, so this and the IR site's own times are what SEC's time gets compared with |
+| 2026-11-10 | The cache check reads every cache layer's headers. A cache hit on a unique query means the cache ignores queries, a verified answer, not an unverified one |
 | 2026-11-09 | `/track` takes any ticker on SEC's list, not just the catalog. Others are watched on EDGAR and both wires, matched by their exchange-and-ticker tag, with FMP's date at the time of their recent 8-Ks |

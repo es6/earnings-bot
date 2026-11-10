@@ -1,6 +1,7 @@
 """A client-rendered newsroom can still supply a confirmed date and live PDF."""
 
 import json
+import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import replace
@@ -16,7 +17,8 @@ from earnings_bot.calendar import Calendar
 from earnings_bot.date_discovery import DateDiscovery
 from earnings_bot.delivery import DeliveryStore
 from earnings_bot.fetch import Response
-from earnings_bot.issuer_news import IssuerNews
+from earnings_bot.ir_research import quarter_headline
+from earnings_bot.issuer_news import IssuerNews, news_records
 from earnings_bot.known import KnownCompany
 from earnings_bot.recorder import ET, poll
 from tests.fakes import RoutedChrome, RoutedFetcher
@@ -120,9 +122,11 @@ async def test_track_reads_the_rendered_newsrooms_api_and_prepares_live_pdf(
         dates = DateDiscovery(calendar, fetcher, lambda: NOW, lambda: False, lambda _: None)
         await dates.run_once(row)
         [saved] = calendar.entries()
-        assert dates.cache_notes[row.cik] == [
-            "IR newsroom API · Query bypass verified at the responding cache"
-        ]
+        expected = (
+            "IR newsroom API · Query bypass verified: the plain URL is cached "
+            "(x-cache: TCP_HIT), unique queries reach the server (x-cache: TCP_MISS)"
+        )
+        assert dates.cache_notes[row.cik] == [expected]
 
     assert saved.company.ir_news_api == API
     assert saved.target and saved.target.ir and saved.target.ir.news_api == API
@@ -149,3 +153,30 @@ async def test_the_news_poll_requires_the_right_date_title_origin_and_pdf() -> N
     assert [(item.url, item.body) for item in items] == [(TODAY_PDF, b"%PDF-1.7")]
     assert fetcher.urgent == [TODAY_PDF, TODAY_PDF]
     assert fetcher.no_redirect == [API, TODAY_PDF] * 2
+
+
+def test_a_results_page_api_names_each_quarters_press_release() -> None:
+    # Sea's results page, Nov 10: its Q3 press release hours before its newsroom listed it
+    api = "https://www.sea.com/api/financial/resource"
+    q3 = "https://cdn.sea.com/investor/3Q2026/V/2026.11.10%20Sea%20Third%20Quarter%202026%20Results.pdf"
+    body = json.dumps(
+        [
+            {
+                "year": 2026,
+                "data": [
+                    {"quarter": "Q3", "press_release": q3, "transcript": q3 + "?t"},
+                    {"quarter": "Q2", "press_release": "https://elsewhere.example/q2.pdf"},
+                ],
+            }
+        ]
+    ).encode()
+
+    [record] = news_records(api, body)
+
+    assert (record.title, record.url, record.day) == (
+        "Q3 2026 Financial Results Press Release",
+        q3,
+        date(2026, 11, 10),
+    )
+    # The live source matches it by the quarter's headline pattern
+    assert re.fullmatch(quarter_headline(2026, 3), record.title, re.IGNORECASE)

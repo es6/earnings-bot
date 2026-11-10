@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
 from earnings_bot.delivery import DeliveryStore
-from earnings_bot.formatting import period_label, stamp
+from earnings_bot.formatting import clock, period_label, stamp
 from earnings_bot.ir_research import IR_LISTINGS, quarter_headline
 from earnings_bot.known import KnownCompany, known_companies, to_target
 from earnings_bot.recorder import ET, Target
@@ -21,6 +21,17 @@ class Tracked:
     target: Target | None
     evidence: str | None
     company: KnownCompany
+
+
+# Each table that's kept per channel, and its channel column
+_CHANNEL_COLUMNS = (
+    ("tracked", "channel"),
+    ("tracking_reviews", "channel"),
+    ("tracking_adds", "channel"),
+    ("alerts", "channel_id"),
+    ("windows", "channel_id"),
+    ("watcher", "channel_id"),
+)
 
 
 class Calendar:
@@ -49,6 +60,32 @@ class Calendar:
         if "profile" not in columns:  # a calendar saved before /track took any ticker
             with self.db:
                 self.db.execute("ALTER TABLE tracked ADD COLUMN profile TEXT")
+        # The channel the calendar was in before the bot moved, if it just moved
+        self.moved_from = self._follow_channel()
+
+    def _follow_channel(self) -> int | None:
+        """When the bot posts to a new channel, its calendar moves there with it: the tracked
+        companies, their research, and the alerts and windows already done, so nothing is lost
+        or posted twice. It comes from the channel that tracked the most companies."""
+        if self.db.execute(
+            "SELECT 1 FROM tracked WHERE channel = ? LIMIT 1", (self.channel,)
+        ).fetchone():
+            return None
+        row = self.db.execute(
+            "SELECT channel FROM tracked GROUP BY channel ORDER BY COUNT(*) DESC LIMIT 1"
+        ).fetchone()
+        if row is None:
+            return None
+        old = int(row[0])
+        tables = {row[0] for row in self.db.execute("SELECT name FROM sqlite_master")}
+        with self.db:
+            for table, column in _CHANNEL_COLUMNS:
+                if table in tables:
+                    self.db.execute(
+                        f"UPDATE OR IGNORE {table} SET {column} = ? WHERE {column} = ?",
+                        (self.channel, old),
+                    )
+        return old
 
     def entries(self) -> list[Tracked]:
         return [
@@ -255,11 +292,16 @@ def describe(target: Target, evidence: str) -> str:
     )
 
 
-def upcoming(tracked: list[Tracked], planned: dict[str, Target], now: datetime) -> list[str]:
-    end = now + timedelta(days=7)
+def upcoming_releases(
+    tracked: list[Tracked], planned: dict[str, Target], now: datetime, days: int = 7
+) -> tuple[list[tuple[Target, str]], list[str]]:
+    """Releases expected in the next `days`, soonest first, each with the evidence for its date,
+    and the tracked tickers that have no date yet."""
+    end = now + timedelta(days=days)
     rows = []
     for target in sorted(planned.values(), key=lambda item: item.expected):
-        if now <= target.expected <= end:
+        # A window still open counts, though its expected time has passed
+        if target.window[1] > now and target.expected <= end:
             evidence = next(
                 (
                     row.evidence
@@ -270,8 +312,40 @@ def upcoming(tracked: list[Tracked], planned: dict[str, Target], now: datetime) 
                 ),
                 "Schedule file",
             )
-            rows.append(describe(target, evidence or "Tracked"))
+            rows.append((target, evidence or "Tracked"))
     planned_ciks = {target.cik for target in planned.values() if target.window[1] > now}
-    if pending := [row.ticker for row in tracked if row.cik not in planned_ciks]:
+    pending = [row.ticker for row in tracked if row.cik not in planned_ciks]
+    return rows, pending
+
+
+def upcoming(tracked: list[Tracked], planned: dict[str, Target], now: datetime) -> list[str]:
+    releases, pending = upcoming_releases(tracked, planned, now)
+    rows = [describe(target, evidence) for target, evidence in releases]
+    if pending:
         rows.append(f"-# Still looking for dates: {', '.join(pending)}")
     return rows
+
+
+def exact_time(evidence: str) -> bool:
+    """Whether the evidence gives the release's time, not just its day."""
+    return evidence.startswith(("Issuer confirmed release time", "Manual override"))
+
+
+def window_text(target: Target) -> str:
+    """When the bot watches for a release: "5:10 to 7:40 AM ET" or "3:05 PM to 5:35 PM ET"."""
+    start, end = (clock(moment) for moment in target.window)
+    # Said once when both are in the same half of the day
+    start = start[:-6] if start[-5:] == end[-5:] else start[:-3]
+    return f"{start} to {end}"
+
+
+def release_lines(target: Target, evidence: str) -> str:
+    """Two lines about a planned release: when its results are expected, then when the bot
+    watches and why it believes the date."""
+    period = f" {period_label(target.period)}" if target.period else ""
+    expected = clock(target.expected)
+    when = expected if exact_time(evidence) else f"about {expected}"
+    return (
+        f"**{target.ticker}**{period} · results {when} ({stamp(target.expected, 'R')})\n"
+        f"-# Watching {window_text(target)} · {evidence_text(evidence)}"
+    )

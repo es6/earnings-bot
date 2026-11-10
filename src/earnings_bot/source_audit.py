@@ -5,7 +5,7 @@ import json
 import re
 from collections.abc import Iterator
 from dataclasses import asdict, dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -98,6 +98,18 @@ class Speed:
             return None
 
 
+def published_first(speed: Speed) -> datetime | None:
+    """When the IR site or a wire had the last release, if that was before SEC had it. A 6-K
+    can come an hour or more after the release: On's IR feed had its Q2 results at 5:00 AM, its
+    6-K came at 6:10."""
+    timings = [*speed.measured_headlines, *speed.archive]
+    sec = [t.at for t in timings if t.source.startswith(("SEC ", "edgar"))]
+    others = [t.at for t in timings if not t.source.startswith(("SEC ", "edgar"))]
+    if not sec or not others or min(others) >= min(sec):
+        return None
+    return min(others)
+
+
 def local_day(stamp: str | None) -> date | None:
     if moment := published_time(stamp):
         return moment.astimezone(ET).date()
@@ -106,6 +118,20 @@ def local_day(stamp: str | None) -> date | None:
             return datetime.strptime(stamp, "%m/%d/%Y %H:%M:%S").date()
         except ValueError:
             return None
+    return None
+
+
+def site_local_time(stamp: str | None, timings: list[Timing]) -> datetime | None:
+    """A Q4 site's "08/13/2026 16:01:00", which names no time zone, read as US Eastern, the zone
+    US-listed issuers' IR sites keep. Only when SEC's acceptance that day confirms it: from six
+    hours before to an hour after, as a press release and its filing go."""
+    try:
+        at = datetime.strptime(stamp or "", "%m/%d/%Y %H:%M:%S").replace(tzinfo=ET)
+    except ValueError:
+        return None
+    sec = [timing.at for timing in timings if timing.source.startswith("SEC ")]
+    if any(timedelta(hours=-1) <= filed - at <= timedelta(hours=6) for filed in sec):
+        return at
     return None
 
 
@@ -212,8 +238,10 @@ async def audit_sources(
     recent = await _list(fetcher, sec)
     if sec.form == "6-K":
         try:
+            # The latest release can have two results 6-Ks, as when a Hong Kong listing files
+            # its own announcement hours after the press release
             recent = await (sixk or SixKResults(fetcher)).history(
-                company.cik, now, count=1, filings=recent
+                company.cik, now, count=2, filings=recent
             )
         except SixKUnavailable:
             recent = []
@@ -240,6 +268,12 @@ async def audit_sources(
             anchor = accepted.astimezone(ET).date()
             if exhibit is not None:
                 confidence = True
+                if sec.form == "6-K":
+                    # SEC first had the release with the day's earliest verified results 6-K
+                    accepted, filing = min(
+                        (pair for pair in filings if pair[0].astimezone(ET).date() == anchor),
+                        key=lambda pair: pair[0],
+                    )
                 estimates.append(Timing(f"SEC {sec.form} acceptance", accepted, filing.url))
                 verified.append(sec.name)
             break
@@ -276,6 +310,9 @@ async def audit_sources(
         titles.add(item.title)
         if at := published_time(item.published):
             estimates.append(Timing(source.name, at, item.url))
+        elif at := site_local_time(item.published, estimates):
+            # Shown to the minute: Q4's seconds are usually :00
+            estimates.append(Timing(source.name, at, item.url, resolution_seconds=60))
 
     if anchor is None:
         return Speed(day=None, form=sec.form)

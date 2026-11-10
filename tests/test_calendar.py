@@ -127,3 +127,27 @@ def test_a_company_the_catalog_dropped_is_still_watched_on_edgar(tmp_path: Path)
     target = to_target("GONE", datetime(2027, 1, 5, 16, tzinfo=ET), 2026, 4, row.company)
     assert [source.name for source in target.sources()] == ["edgar", "edgar_latest"]
     assert target.cik == 99
+
+
+def test_the_calendar_follows_the_bot_to_a_new_channel(tmp_path: Path) -> None:
+    # HQ Nest's #market-watch had the calendar; the bot now posts to #bot-testing
+    db = tmp_path / "state.db"
+    with DeliveryStore(db, 1374740009533440074) as store:
+        calendar = Calendar(store)
+        calendar.add("NVDA")
+        calendar.add("AAPL")
+        calendar.save_review(calendar.entries()[0].cik, NOW, "{}")
+        # A smaller one left from an older server's channel stays put
+        store.db.execute("INSERT INTO tracked (channel, cik, ticker) VALUES (99, 354950, 'HD')")
+        store.db.commit()
+
+    with DeliveryStore(db, 1489330380124328027) as store:
+        calendar = Calendar(store)
+
+        assert calendar.moved_from == 1374740009533440074
+        assert [row.ticker for row in calendar.entries()] == ["AAPL", "NVDA"]
+        assert calendar.review(calendar.entries()[0].cik)[1] == "{}"
+    with DeliveryStore(db, 1489330380124328027) as store:
+        assert Calendar(store).moved_from is None  # once
+    with DeliveryStore(db, 99) as store:
+        assert [row.ticker for row in Calendar(store).entries()] == ["HD"]
