@@ -541,7 +541,11 @@ def test_a_reset_isnt_a_date_notice() -> None:
     assert is_date_notice(AMAT_NOTICE_TITLE)
 
 
-async def test_a_notice_whose_date_cant_be_read_is_named_on_the_card(tmp_path: Path) -> None:
+async def test_a_notice_whose_date_cant_be_read_is_named_on_the_card(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Chrome reads IR sites on Windows only; the test's fake one stands in on any system
+    monkeypatch.setattr(date_discovery, "chrome_available", lambda: True)
     host = "investors.example.com"
     company = AMAT.model_copy(
         update={
