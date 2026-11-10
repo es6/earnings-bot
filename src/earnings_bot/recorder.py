@@ -376,10 +376,6 @@ def record_items(
         if item.key in known:
             continue
         known.add(item.key)
-        if isinstance(w.source, BrowserRss) and w.window is not None:
-            published = published_time(item.published)
-            if published is None or published < w.window[0]:
-                continue
         if not first_poll:
             new.append(item)
         elif w.source.report_initial or _caught_up(w, item):
@@ -485,6 +481,8 @@ def take(
         except PollError as error:
             return _failed(w, error, journal)
     if isinstance(w.source, BrowserRss):
+        if w.window is not None:
+            items = [item for item in items if _caught_up(w, item)]
         journal.write(
             "browser_feed",
             ticker=w.ticker,

@@ -37,7 +37,7 @@ LUCID_Q3 = (
 
 
 class BrowserFake(RoutedFetcher):
-    def __init__(self, responses: list[tuple[int, bytes]]) -> None:
+    def __init__(self, responses: list[tuple[int, bytes] | Exception]) -> None:
         super().__init__({})
         self._responses = iter(responses)
         self.browser_calls: list[tuple[str, str, bool]] = []
@@ -46,7 +46,10 @@ class BrowserFake(RoutedFetcher):
         self, url: str, warmup: str, give_up_after: float, *, urgent: bool = False
     ) -> Response:
         self.browser_calls.append((url, warmup, urgent))
-        status, body = next(self._responses)
+        reply = next(self._responses)
+        if isinstance(reply, Exception):
+            raise reply
+        status, body = reply
         return Response(url, status, {"x-cache": f"cache for {url}"}, body, 0.015)
 
 
@@ -202,7 +205,10 @@ async def test_lucids_listing_picks_only_the_quarters_results() -> None:
     assert fetcher.browser_calls == [(LUCID, LUCID, False), (details + "q3", LUCID, True)]
 
 
-async def test_browser_rss_alert_is_visible_before_the_article_is_ready() -> None:
+@pytest.mark.parametrize("first_failure", [(404, b""), TimeoutError()], ids=["missing", "timeout"])
+async def test_browser_rss_alert_is_visible_before_the_article_is_ready(
+    first_failure: tuple[int, bytes] | Exception, monkeypatch: pytest.MonkeyPatch
+) -> None:
     title = "Lucid Announces Third Quarter 2026 Results"
     article = "https://ir.lucidmotors.com/news-releases/q3"
     pdf = "https://ir.lucidmotors.com/node/11211/pdf"
@@ -210,7 +216,7 @@ async def test_browser_rss_alert_is_visible_before_the_article_is_ready() -> Non
         f"<h1>{title}</h1><p>{'Revenue and earnings per share. ' * 120}</p>"
         f'<a href="{pdf}">PDF Version</a>'
     ).encode()
-    notice = rss_item("Lucid to Host Third Quarter 2026 Results Webcast", LUCID + "/webcast")
+    notice = rss_item("Lucid to Report Third Quarter 2026 Results on Nov. 9, 2026", LUCID + "/date")
     foreign = rss_item(title, "https://another.example/q3")
     old = rss_item(title, LUCID + "/old", "Mon, 26 Oct 2026 16:05:00 -0400")
     missing_time = rss_item(title, LUCID + "/undated", "")
@@ -229,8 +235,10 @@ async def test_browser_rss_alert_is_visible_before_the_article_is_ready() -> Non
         [
             (200, rss()),
             (200, rss(notice, foreign, old, missing_time, rss_item(title, article))),
-            (404, b""),
+            first_failure,
             (200, body),
+            (404, b""),
+            (0, b""),
             (200, b"%PDF-1.7"),
         ]
     )
@@ -244,12 +252,14 @@ async def test_browser_rss_alert_is_visible_before_the_article_is_ready() -> Non
     source = next(s for s in target.sources() if isinstance(s, BrowserRss))
     poster, log = FakePoster(), io.StringIO()
     journal = Journal(log)
+    monkeypatch.setattr(journal, "now", lambda: target.expected)
     releases = Releases(lambda: poster, fetcher, journal, None, None)
     watch = Watch(target.ticker, source, target.window)
     for _ in range(2):
         sent = journal.now()
         result, items = await poll(source, fetcher)
         take(watch, sent, result, journal, lambda s, i: releases.on_new(target, s, i), items=items)
+    releases.active[target.release_key].attach_retry = 0.01
     try:
         await asyncio.wait_for(article_requested.wait(), timeout=1)
         assert len(poster.calls) == 1 and poster.calls[0][0] == "send"
@@ -260,9 +270,11 @@ async def test_browser_rss_alert_is_visible_before_the_article_is_ready() -> Non
         await releases.finish()
 
     assert [kind for kind, _ in poster.calls] == ["send", "edit", "attach"]
-    assert fetcher.browser_calls[-3:] == [
+    assert fetcher.browser_calls[-5:] == [
         (article, LUCID, True),
         (article, LUCID, True),
+        (pdf, LUCID, True),
+        (pdf, LUCID, True),
         (pdf, LUCID, True),
     ]
     assert poster.calls[-1] == ("attach", "LCID-FY2026Q3-results.pdf")
@@ -401,3 +413,43 @@ def test_chrome_may_open_any_public_https_page(url: str) -> None:
 def test_chrome_never_opens_this_pc_or_its_network(url: str) -> None:
     with pytest.raises(ValueError, match="Not a public https page"):
         browser_host(url)
+
+
+@pytest.mark.parametrize(
+    ("stamp", "after_baseline"),
+    [
+        ("Mon, 26 Oct 2026 16:05:00 -0400", False),
+        ("Mon, 09 Nov 2026 23:00:00 -0500", True),
+    ],
+    ids=["stale-first-poll", "future-after-baseline"],
+)
+def test_chrome_feed_keeps_watching_when_an_item_is_outside_the_window(
+    stamp: str, after_baseline: bool
+) -> None:
+    target = Target(ticker="LCID", cik=1811210, expected=datetime(2026, 11, 9, 16, 5, tzinfo=ET))
+    source = BrowserRss(LUCID_RSS, LUCID, LUCID_Q3)
+    watch = Watch(target.ticker, source, target.window)
+    log, sightings = io.StringIO(), []
+    journal = Journal(log)
+    title = "Lucid Announces Third Quarter 2026 Results"
+    article = "https://ir.lucidmotors.com/news-releases/q3"
+
+    def deliver(body: bytes) -> None:
+        response = Response(LUCID_RSS, 200, {}, body, 0.02)
+        take(watch, journal.now(), response, journal, lambda _, item: sightings.append(item))
+
+    if after_baseline:
+        deliver(rss())
+    deliver(rss(rss_item(title, article, stamp)))
+    assert not sightings and not watch.done
+
+    # The publisher can correct the timestamp without changing the item's GUID.
+    deliver(rss(rss_item(title, article)))
+    assert [item.url for item in sightings] == [article]
+    assert watch.done
+    checks = [
+        event["matched"]
+        for event in map(json.loads, log.getvalue().splitlines())
+        if event["event"] == "browser_feed"
+    ]
+    assert checks[-2:] == [False, True]
