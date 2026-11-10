@@ -40,8 +40,9 @@ REINVESTIGATE = timedelta(days=30)
 # 1 kept what it checked, 2 reads the wire from any release, skips date notices, looks a few
 # pages back for the latest results and keeps when the IR site says they were posted,
 # 3 follows corporate navigation and embedded listings, 4 reads newsroom cards and archives,
-# 5 finds results behind ordinary filings, 6 reads named RSS indexes and checks listing HTTP
-INVESTIGATION = 6
+# 5 finds results behind ordinary filings, 6 checks named RSS indexes and listing HTTP,
+# 7 checks Q4 feeds independently of the issuer homepage.
+INVESTIGATION = 7
 _HOST = re.compile(r"\b((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,})\b", re.IGNORECASE)
 _WEB_HOST = re.compile(r"\b(?:https?://|(?=www\.))" + _HOST.pattern, re.IGNORECASE)
 _IR_HOST = re.compile(r"^(?:ir|investors?|investor-?relations)\.", re.IGNORECASE)
@@ -284,13 +285,17 @@ async def _get(fetcher: Fetcher, url: str, *, allow_redirects: bool = True) -> R
 
 
 def _answer(reply: Response | None) -> str:
-    return "no answer" if reply is None else f"HTTP {reply.status}"
+    if reply is None:
+        return "no answer"
+    return f"HTTP {reply.status}" if reply.status else "a redirect"
 
 
 async def _q4_wire(fetcher: Fetcher, host: str) -> tuple[bool, str | None, str]:
     """Whether the host serves Q4's press release JSON, the wire its latest results name, and
     why it doesn't serve it."""
     reply = await _get(fetcher, Q4PressReleases(host).bodies_url(10))
+    if reply and reply.status in _BLOCKED:
+        return False, None, f"Q4 feed returned HTTP {reply.status}"
     if reply is None or reply.status != 200:
         return False, None, f"Not a Q4 site ({_answer(reply)})"
     try:
@@ -432,17 +437,18 @@ async def _read_results(
 
 
 async def _through_chrome(
-    fetcher: Fetcher, chrome: OpenChrome, home: str, sec_release: str
+    fetcher: Fetcher, chrome: OpenChrome, home: str, sec_release: str, *, q4: bool = False
 ) -> ChromeVisit:
     """Follow the issuer's navigation and check alternate listings for a verified report."""
     host = urlsplit(home).netloc
+    warmup = urljoin(home, "/home/default.aspx") if q4 else home
     sec_intro = " ".join(sec_release[:2500].split()).casefold()
     fallback = ChromeVisit()
     try:
         async with chrome() as browser:
 
             async def get(url: str) -> Response | None:
-                warm = home if urlsplit(url).netloc == host else url
+                warm = warmup if urlsplit(url).netloc == host else url
                 try:
                     return await browser.request(url, warm, 8, fetcher.wait_turn)
                 except (BrowserError, aiohttp.ClientError, TimeoutError) as error:
@@ -450,14 +456,19 @@ async def _through_chrome(
                     return None
 
             page = await get(home)
+            page_url = home
+            if q4 and page is not None and page.status == 0:
+                canonical = await get(warmup)
+                if canonical and canonical.status == 200:
+                    page, page_url = canonical, warmup
             linked: list[str] = []
             if page is not None and page.status == 200:
-                linked = _release_pages(home, page.body)
+                linked = _release_pages(page_url, page.body)
                 if not linked:
                     investor = next(
                         (
                             link
-                            for link, title in issuer_links(home, page.body)
+                            for link, title in issuer_links(page_url, page.body)
                             if _IR_NAV.fullmatch(title.strip())
                         ),
                         None,
@@ -467,7 +478,8 @@ async def _through_chrome(
                         if landing is not None and landing.status == 200:
                             linked = _release_pages(investor, landing.body)
 
-            candidates = [*linked[:2], *(urljoin(home, path) for path in _LISTINGS)]
+            paths = ("/news/default.aspx", *_LISTINGS) if q4 else _LISTINGS
+            candidates = [*linked[:2], *(urljoin(home, path) for path in paths)]
             opened = {home}
             for candidate in dict.fromkeys(candidates):
                 if candidate in opened:
@@ -613,38 +625,38 @@ async def investigate(
             continue
         report.doing(f"Checking {host}")
         page = await _get(fetcher, home)
-        if page is None or (page.status >= 400 and page.status not in _BLOCKED):
-            report.reject(host, f"Not its IR site ({_answer(page)})")
+        blocked = page is not None and page.status in _BLOCKED
+        if page is None or page.status != 200:
+            report.reject(f"{host} homepage over HTTP", f"Returned {_answer(page)}")
+        # A site can protect its HTML while its official Q4 feed serves the same releases.
+        report.doing(f"Looking for a Q4 press release feed on {host}")
+        q4, q4_wire, why = await _q4_wire(fetcher, host)
+        if q4:
+            report.watch(f"Q4 press release feed on {host}", "Lists its releases and files")
+        else:
+            report.reject(f"Q4 press release feed on {host}", why)
+        if not q4 and not blocked and (page is None or page.status != 200):
             continue
         findings.site = host
-        findings.blocked = page.status in _BLOCKED
-        if findings.blocked:
-            report.reject(
-                f"{host} without Chrome", f"Blocks automated requests (HTTP {page.status})"
+        findings.blocked = blocked
+        findings.q4 = q4
+        findings.wire = findings.wire or q4_wire
+        if not q4 and page is not None and page.status == 200:
+            report.doing(f"Looking for a press release feed on {host}")
+            feed, feed_wire, tried = await _feed(
+                fetcher, feed_links(home, page.body.decode("utf-8", "replace"))
             )
-        else:
-            report.doing(f"Looking for a Q4 press release feed on {host}")
-            findings.q4, q4_wire, why = await _q4_wire(fetcher, host)
-            findings.wire = findings.wire or q4_wire
-            if findings.q4:
-                report.watch(f"Q4 press release feed on {host}", "Lists its releases and files")
+            findings.feeds = [feed] if feed else []
+            findings.wire = findings.wire or feed_wire
+            if feed:
+                report.watch(f"Press release feed <{feed}>", "Lists its releases")
             else:
-                report.reject(f"Q4 press release feed on {host}", why)
-                report.doing(f"Looking for a press release feed on {host}")
-                feed, feed_wire, tried = await _feed(
-                    fetcher, feed_links(home, page.body.decode("utf-8", "replace"))
-                )
-                findings.feeds = [feed] if feed else []
-                findings.wire = findings.wire or feed_wire
-                if feed:
-                    report.watch(f"Press release feed <{feed}>", "Lists its releases")
-                else:
-                    report.reject(f"Press release feed on {host}", f"None found: {tried}")
+                report.reject(f"Press release feed on {host}", f"None found: {tried}")
         if chrome is None:
             report.reject(f"{host} press release page", "Chrome isn't available on this computer")
         else:
             report.doing(f"Opening {host} in Chrome")
-            visit = await _through_chrome(fetcher, chrome, home, text)
+            visit = await _through_chrome(fetcher, chrome, home, text, q4=q4)
             findings.wire = findings.wire or visit.wire
             # Kept even without readable results: date notices are read from it too
             findings.listing = visit.listing
@@ -656,7 +668,12 @@ async def investigate(
                 findings.posted, findings.release_url = visit.posted, visit.url
             else:
                 report.reject(f"{host} press release page", visit.problem or "Unread")
-        if findings.listing is None and not (findings.blocked or findings.q4 or findings.feeds):
+        if (
+            findings.listing is None
+            and page is not None
+            and page.status == 200
+            and not (findings.q4 or findings.feeds)
+        ):
             # The list a plain request finds, for date notices
             findings.listing = next(iter(_release_pages(home, page.body)), None)
         if findings.listing or findings.q4 or findings.feeds:
