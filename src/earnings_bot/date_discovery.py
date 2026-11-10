@@ -938,7 +938,9 @@ class DateDiscovery:
         target, evidence = row.target, row.evidence
         ir = target.ir if target else None
         bust = set(ir.cache_bust_urls if ir else ())
+        spelled = set(ir.spelled_urls if ir else ())
         canonical = set(target.rss_canonical if target else ())
+        spelled_feeds = set(target.rss_spelled if target else ())
         notes: list[str] = []
         if ir and ir.table_rendered:
             notes.append("IR quarterly results page · Chrome navigation cache freshness unverified")
@@ -965,24 +967,40 @@ class DateDiscovery:
                     self.cache_results[route] = time.monotonic() + CACHE_REFRESH, result
                 notes.append(f"{route.label} · {result.summary}")
                 if ir and route.url in (ir.news_api, ir.listing, ir.rss, ir.results_table):
-                    if result.query_bust:
+                    if result.spelled:
+                        spelled.add(route.url)
+                        bust.discard(route.url)
+                    elif result.query_bust:
                         bust.add(route.url)
+                        spelled.discard(route.url)
                     elif result.canonical_only or result.stored_only:
                         bust.discard(route.url)
+                        spelled.discard(route.url)
                 if target and (route.url in target.rss or route.url in target.trial.rss):
                     # A query that gets the same stored copy only costs the cache a lookup
-                    if result.canonical_only or result.stored_only:
+                    if result.spelled:
                         canonical.add(route.url)
+                        spelled_feeds.add(route.url)
+                    elif result.canonical_only or result.stored_only:
+                        canonical.add(route.url)
+                        spelled_feeds.discard(route.url)
                     elif result.query_bust:
                         canonical.discard(route.url)
+                        spelled_feeds.discard(route.url)
             updated = target
             if target and evidence:
                 updated = target.model_copy(
                     update={
-                        "ir": ir.model_copy(update={"cache_bust_urls": sorted(bust)})
+                        "ir": ir.model_copy(
+                            update={
+                                "cache_bust_urls": sorted(bust),
+                                "spelled_urls": sorted(spelled),
+                            }
+                        )
                         if ir
                         else None,
                         "rss_canonical": sorted(canonical),
+                        "rss_spelled": sorted(spelled_feeds),
                     }
                 )
                 if save and updated != target and self.calendar.find(row.ticker) == row:
@@ -1197,15 +1215,18 @@ class DateDiscovery:
                 ir, why = await verified_browser_source(self.fetcher, listing, target.period)
         # Keep the verified routes together. The table is independent of a newsroom API or RSS.
         if existing_ir and ir:
+            # How each URL gets past its cache stays with the URL, if it's still watched
+            cache = {"cache_bust_urls", "spelled_urls"}
             routes = {
-                **existing_ir.model_dump(exclude_defaults=True, exclude={"cache_bust_urls"}),
-                **ir.model_dump(exclude_defaults=True, exclude={"cache_bust_urls"}),
+                **existing_ir.model_dump(exclude_defaults=True, exclude=cache),
+                **ir.model_dump(exclude_defaults=True, exclude=cache),
             }
             urls = {routes.get(field) for field in ("listing", "news_api", "rss", "results_table")}
             ir = IRSource.model_validate(
                 {
                     **routes,
                     "cache_bust_urls": [url for url in existing_ir.cache_bust_urls if url in urls],
+                    "spelled_urls": [url for url in existing_ir.spelled_urls if url in urls],
                 }
             )
         elif existing_ir:

@@ -8,7 +8,13 @@ from urllib.parse import unquote, urljoin, urlsplit
 
 from earnings_bot.browser import browser_host
 from earnings_bot.fetch import Fetcher, Response
-from earnings_bot.sources import Sighting, Source, bust_cache, looks_like_earnings
+from earnings_bot.sources import (
+    Sighting,
+    Source,
+    Spellings,
+    bust_cache,
+    looks_like_earnings,
+)
 
 
 @dataclass(frozen=True)
@@ -118,15 +124,24 @@ class IssuerNews(Source):
     ok_statuses = frozenset({200, 404})
 
     def __init__(
-        self, api: str, headline: str, day: date | None = None, *, cache_bust: bool = False
+        self,
+        api: str,
+        headline: str,
+        day: date | None = None,
+        *,
+        cache_bust: bool = False,
+        spell: bool = False,
     ) -> None:
         browser_host(api)
         self.api, self.day = api, day
         self.headline = re.compile(headline, re.IGNORECASE)
         self.cache_bust = cache_bust
+        self.spellings = Spellings(api) if spell else None
         self.candidate: NewsRecord | None = None
 
     def url(self) -> str:
+        if self.spellings:
+            return self.spellings.next()
         return bust_cache(self.api) if self.cache_bust else self.api
 
     async def fetch(self, fetcher: Fetcher) -> Response:

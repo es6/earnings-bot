@@ -219,6 +219,14 @@ class Calendar:
                                         if url == found.results_table
                                     ),
                                 ],
+                                "spelled_urls": [
+                                    *ir.spelled_urls,
+                                    *(
+                                        url
+                                        for url in found.spelled_urls
+                                        if url == found.results_table
+                                    ),
+                                ],
                             }
                         )
                     if ir.results_table and not (existing.period or ir.table_period):

@@ -93,11 +93,16 @@ class Trial(BaseModel):
     prnewswire_semiconductors: list[str] = []
     pages: list[str] = []  # exact URLs of the release page or file, fetched whole
 
-    def sources(self, rss_canonical: Sequence[str] = ()) -> list[Source]:
+    def sources(
+        self, rss_canonical: Sequence[str] = (), rss_spelled: Sequence[str] = ()
+    ) -> list[Source]:
         sources: list[Source] = []
         if self.broadcom_newsroom:
             sources.append(BroadcomNewsroom())
-        sources += [_company_feed(url, bust_cache=url not in rss_canonical) for url in self.rss]
+        sources += [
+            _company_feed(url, bust_cache=url not in rss_canonical, spell=url in rss_spelled)
+            for url in self.rss
+        ]
         if self.globenewswire:
             # Both copies, so a live release shows whether busting GlobeNewswire's cache helps
             sources += [
@@ -117,8 +122,11 @@ class Trial(BaseModel):
         return sources
 
 
-def _company_feed(url: str, *, bust_cache: bool = True) -> RssFeed:
-    return RssFeed(f"rss:{urlsplit(url).hostname}", url, bust_cache=bust_cache)
+def _company_feed(url: str, *, bust_cache: bool = True, spell: bool = False) -> RssFeed:
+    # A spelled feed's cache ignores query strings, so it gets no query
+    return RssFeed(
+        f"rss:{urlsplit(url).hostname}", url, bust_cache=bust_cache and not spell, spell=spell
+    )
 
 
 def _named_apart[G: GuessedFile](guesses: Sequence[G]) -> list[G]:
@@ -147,6 +155,8 @@ class Target(BaseModel):
     prnewswire: list[str] = []  # names to look for in PR Newswire's earnings feed
     rss: list[str] = []  # the company's own press release feeds
     rss_canonical: list[str] = []  # issuer feeds that reject the query parameter
+    # Issuer feeds whose cache ignores query strings but misses on a new spelling of the path
+    rss_spelled: list[str] = []
     guess: list[str] = []  # file URLs to probe
     ir: IRSource | None = None
     trial: Trial = Trial()
@@ -206,12 +216,15 @@ class Target(BaseModel):
                 RssFeed("prnewswire", PR_NEWSWIRE_EARNINGS, self.prnewswire),
             ]
         sources += [
-            _company_feed(url, bust_cache=url not in self.rss_canonical) for url in self.rss
+            _company_feed(
+                url, bust_cache=url not in self.rss_canonical, spell=url in self.rss_spelled
+            )
+            for url in self.rss
         ]
         sources += _named_apart([GuessedFile(url) for url in self.guess])
         if self.ir:
             sources += self.ir.sources(self.expected.astimezone(ET).date(), self.period)
-        return sources + self.trial.sources(self.rss_canonical)
+        return sources + self.trial.sources(self.rss_canonical, self.rss_spelled)
 
 
 class Plan(BaseModel):

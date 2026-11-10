@@ -4,6 +4,7 @@ per host (per site, for SEC) so that a busy evening can't hammer any one site.""
 import asyncio
 import heapq
 import itertools
+import re
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -72,6 +73,16 @@ class _HostQueue:
     next_turn: float = 0.0  # time.monotonic() from which the host can take another request
     waiting: list[tuple[int, int, asyncio.Future[None]]] = field(default_factory=list)
     dispatcher: asyncio.Task[None] | None = None
+
+
+# An already-encoded URL: allowed characters, and % only as the start of an escape
+_ENCODED = re.compile(r"(?:[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=]|%[0-9A-Fa-f]{2})+")
+
+
+def _as_written(url: str) -> bool:
+    """Whether to send a URL exactly as written. yarl would otherwise decode an escaped letter
+    such as %6E back to "n", undoing a spelling meant to miss a cache."""
+    return "%" in url and bool(_ENCODED.fullmatch(url))
 
 
 class Fetcher:
@@ -193,7 +204,7 @@ class Fetcher:
         started = time.monotonic()
         async with self._session.request(
             method,
-            URL(url, encoded=True) if encoded_url else url,
+            URL(url, encoded=True) if encoded_url or _as_written(url) else url,
             headers=headers,
             timeout=limit,
             allow_redirects=allow_redirects,

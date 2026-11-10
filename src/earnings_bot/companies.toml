@@ -17,6 +17,9 @@
 #            company labels them. {nth} is first to fourth, {NTH} the same in capitals, and
 #            {ord} is 1st to 4th. {q4:TEXT} is TEXT in a fourth quarter and nothing otherwise,
 #            for headlines that add "and Full Year" then.
+# rss_spelled  feeds, in rss or the trial table, polled with a new spelling of the path
+#            each time, a few letters percent-encoded, because their cache ignores query
+#            strings but has no copy of a new spelling
 # trial      more sources, which post like any other (the table keeps its old name):
 #            broadcom_newsroom, rss (company feeds), globenewswire and
 #            prnewswire_semiconductors (names to match in those feeds), and pages (URL
@@ -301,8 +304,9 @@ wire = "Business Wire"
 release_time = "16:05"
 eightk = ["16:15", "16:12", "16:10", "16:20"]
 fastest = "newswire"
-evidence = "Q2 2026: Business Wire 4:05 PM, 8-K 4:15:17 PM. 8-Ks at 4:10 to 4:20 PM over four quarters (a 2026-10-06 layoff 8-K also listed item 2.02 and is left out). ir.hubspot.com is Notified (/node/<id>/html pages) behind Cloudflare, which answers 403 to automated reads, robots.txt included, so file URLs can't be found or guessed. Headlines vary: \"HubSpot Reports Q2 2026 Results\", \"HubSpot Reports Strong Q1 2026 Results\". Nov 6, 2026: the IR site's press release feed, ir.hubspot.com/rss/news-releases.xml, answers us and stamped the Q3 release 4:05 PM. Its CDN may keep a copy for 30 days (s-maxage=2592000), so it's cache-busted."
-checked = 2026-11-06
+evidence = "Q2 2026: Business Wire 4:05 PM, 8-K 4:15:17 PM. 8-Ks at 4:10 to 4:20 PM over four quarters (a 2026-10-06 layoff 8-K also listed item 2.02 and is left out). ir.hubspot.com is Notified (/node/<id>/html pages) behind Cloudflare, which answers 403 to automated reads, robots.txt included, so file URLs can't be found or guessed. Headlines vary: \"HubSpot Reports Q2 2026 Results\", \"HubSpot Reports Strong Q1 2026 Results\". Nov 6, 2026: the IR site's press release feed, ir.hubspot.com/rss/news-releases.xml, answers us and stamped the Q3 release 4:05 PM. Its CDN may keep a copy for 30 days (s-maxage=2592000). Nov 10: query strings got that stored copy too (x-cache-hits 657, built the day before), but each new percent-encoded spelling of the path was built on request, so the feed is polled that way."
+checked = 2026-11-10
+rss_spelled = ["https://ir.hubspot.com/rss/news-releases.xml"]
 
 [company.HUBS.trial]
 rss = ["https://ir.hubspot.com/rss/news-releases.xml"]

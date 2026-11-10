@@ -11,7 +11,7 @@ import re
 import time
 import xml.etree.ElementTree as ET
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Hashable, Sequence
+from collections.abc import Callable, Hashable, Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from email.utils import parsedate_to_datetime
@@ -131,6 +131,75 @@ def results_headline(headline: str) -> bool:
     )
 
 
+class Spellings:
+    """Equivalent spellings of one URL, with a few letters of its path percent-encoded. Sites
+    decode them back to the same page, but a cache keyed on the URL as written has none of them
+    stored, so each new spelling is read from the site itself. HubSpot's IR feed answered every
+    new spelling fresh on Nov 10, 2026, while its plain URL and any query string got a copy from
+    the day before. Some caches keep a copy for weeks, so a spelling isn't asked for twice while
+    new ones are left. `repeat` cycles through a fixed set instead, for a cache whose copies
+    last a minute, like PR Newswire's."""
+
+    def __init__(
+        self,
+        url: str,
+        positions: Sequence[int] | None = None,
+        *,
+        letters: int = 2,
+        repeat: bool = False,
+    ) -> None:
+        self._parts = urlsplit(url)
+        path = self._parts.path
+        if positions is None:
+            positions = spelling_positions(path)
+        self.positions = list(positions)
+        self._letters = self._size = min(letters, len(self.positions))
+        self._used: set[frozenset[int]] = set()
+        self._cycle: Iterator[tuple[int, ...]] | None = None
+        if repeat:
+            sets = list(itertools.combinations(self.positions, self._size))
+            start = random.randrange(len(sets))
+            self._cycle = itertools.cycle(sets[start:] + sets[:start])
+
+    def next(self) -> str:
+        chosen = set(next(self._cycle)) if self._cycle else self._draw()
+        path = "".join(
+            f"%{ord(char):02X}" if i in chosen else char for i, char in enumerate(self._parts.path)
+        )
+        return urlunsplit(self._parts._replace(path=path))
+
+    def _draw(self) -> frozenset[int]:
+        while True:
+            for _ in range(20):
+                chosen = frozenset(random.sample(self.positions, self._size))
+                if chosen not in self._used:
+                    self._used.add(chosen)
+                    return chosen
+            # Most spellings with this many encoded letters are taken, so encode one more
+            self._size += 1
+            if self._size > len(self.positions):
+                self._used.clear()
+                self._size = self._letters
+
+
+def spelling_positions(path: str) -> list[int]:
+    """The letters and hyphens a spelling may encode. The first folder stays as written when
+    the rest of the path has enough of them, since some sites route on it as PR Newswire does
+    on /rss/."""
+    segments = list(re.finditer(r"[^/]+", path))
+
+    def spellable(found: list[re.Match[str]]) -> list[int]:
+        return [
+            i
+            for segment in found
+            for i in range(segment.start(), segment.end())
+            if path[i].isascii() and (path[i].isalpha() or path[i] == "-")
+        ]
+
+    later = spellable(segments[1:])
+    return later if len(later) >= 12 else spellable(segments)
+
+
 def bust_cache(url: str) -> str:
     # Vary the URL for caches that include query parameters in their keys.
     return f"{url}{'&' if '?' in url else '?'}_={time.time_ns()}"
@@ -182,6 +251,7 @@ class Source(ABC):
     ok_statuses = frozenset({200})
     stop_when_found = False  # stop polling once the source lists anything
     report_initial = False  # the source can verify that this is the scheduled release
+    spellings: Spellings | None = None  # a new spelling of the URL each poll
 
     async def fetch(self, fetcher: Fetcher) -> Response:
         return await fetcher.request(self.method, self.url(), give_up_after=self.timeout)
@@ -407,21 +477,42 @@ class RssFeed(Source):
     verify_channel = False
 
     def __init__(
-        self, name: str, feed_url: str, companies: Sequence[str] = (), bust_cache: bool = False
+        self,
+        name: str,
+        feed_url: str,
+        companies: Sequence[str] = (),
+        bust_cache: bool = False,
+        *,
+        spell: bool = False,
     ) -> None:
         self.name = name
         self.feed_url = feed_url
         self.bust_cache = bust_cache
+        # A new spelling of the path each poll, for a feed whose cache ignores query strings
+        self.spellings = Spellings(feed_url) if spell else None
         names = "|".join(re.escape(_straight_quotes(company)) for company in companies)
         self._match = re.compile(rf"\b(?:{names})\b", re.IGNORECASE) if companies else None
 
     @property
     def share_key(self) -> Hashable:
         # Each watch narrows the feed to its own company when it parses the shared response
-        return (type(self).__name__, self.name, self.feed_url, self.bust_cache)
+        spelled = self.spellings is not None
+        return (type(self).__name__, self.name, self.feed_url, self.bust_cache, spelled)
 
     def url(self) -> str:
+        if self.spellings:
+            return self.spellings.next()
         return bust_cache(self.feed_url) if self.bust_cache else self.feed_url
+
+    async def fetch(self, fetcher: Fetcher) -> Response:
+        # A site that stops accepting a spelling may redirect it to the cached URL. Not
+        # following shows that as an error instead of a stale copy.
+        return await fetcher.request(
+            self.method,
+            self.url(),
+            give_up_after=self.timeout,
+            allow_redirects=self.spellings is None,
+        )
 
     def parse(self, response: Response) -> list[Sighting]:
         try:
@@ -473,21 +564,11 @@ class FreshPrNewswire(RssFeed):
     ) -> None:
         super().__init__(name, feed_url, companies)
         self.interval = interval
-        self._parts = urlsplit(feed_url)
-        # Keep /rss/ and .rss literal. Each of the two category feeds has over 700 spellings.
-        path = self._parts.path
+        # Keep /rss/ and .rss literal. Each of the two category feeds has over 700 spellings,
+        # and the CDN keeps a copy for 60 s, so they can come round again.
+        path = urlsplit(feed_url).path
         letters = [i for i in range(len("/rss/"), len(path) - len(".rss")) if path[i].isalpha()]
-        pairs = list(itertools.combinations(letters, 2))
-        start = random.randrange(len(pairs))
-        self._spellings = itertools.cycle(pairs[start:] + pairs[:start])
-
-    def url(self) -> str:
-        positions = next(self._spellings)
-        path = "".join(
-            f"%{ord(char):02X}" if i in positions else char
-            for i, char in enumerate(self._parts.path)
-        )
-        return urlunsplit(self._parts._replace(path=path))
+        self.spellings = Spellings(feed_url, letters, repeat=True)
 
     async def fetch(self, fetcher: Fetcher) -> Response:
         return await fetcher.request(
