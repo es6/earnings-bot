@@ -160,17 +160,24 @@ class TrackProgress:
 
     def follow_calendar(self) -> None:
         """After the calendar moved to a new channel, its scorecards keep their messages, so
-        they're edited as before instead of posted again."""
-        old = self.calendar.moved_from
-        if old is None:
-            return
-        before, after = f"track:{old}:", f"track:{self.calendar.channel}:"
+        they're edited as before instead of posted again. Any process can have moved the
+        calendar, such as the update script's window check, so this goes by the records
+        themselves: a card kept under another calendar channel's key is this one's."""
+        current = f"track:{self.calendar.channel}:"
+        rows = self.store.db.execute(
+            "SELECT release_key FROM alerts WHERE channel_id = ? AND release_key LIKE 'track:%'",
+            (self.store.channel_id,),
+        ).fetchall()
+        tracked = {str(row.cik) for row in self.calendar.entries()}
         with self.store.db:
-            self.store.db.execute(
-                "UPDATE OR IGNORE alerts SET release_key = ? || substr(release_key, ?) "
-                "WHERE channel_id = ? AND substr(release_key, 1, ?) = ?",
-                (after, len(before) + 1, self.store.channel_id, len(before), before),
-            )
+            for (key,) in rows:
+                _, channel, cik = key.split(":", 2)
+                if channel != str(self.calendar.channel) and cik in tracked:
+                    self.store.db.execute(
+                        "UPDATE OR IGNORE alerts SET release_key = ? "
+                        "WHERE channel_id = ? AND release_key = ?",
+                        (current + cik, self.store.channel_id, key),
+                    )
 
     async def publish(self, cik: int, embed: discord.Embed) -> None:
         shown = embed.to_dict()

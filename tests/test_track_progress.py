@@ -526,7 +526,10 @@ async def test_a_moved_calendars_cards_are_edited_not_posted_again(tmp_path: Pat
             audit=never,
         )
         await first.publish(row.cik, card("NVDA · NVIDIA", "Queued"))
-    # The bot now posts to channel 6, and the calendar came along
+    # The bot now posts to channel 6, and the update script's window check moved the calendar
+    # before the bot started
+    with DeliveryStore(state, 6) as store:
+        Calendar(store)
     with DeliveryStore(state, 6) as store, DeliveryStore(cards, 7) as card_store:
         moved = TrackProgress(
             Calendar(store),
