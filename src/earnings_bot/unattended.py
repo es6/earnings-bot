@@ -476,6 +476,7 @@ async def watch_directory(
                 date_phase=watcher.dates.phases.get,
                 research=watcher.dates.reports.get,
                 ir_note=watcher.dates.ir_notes.get,
+                cache_notes=watcher.dates.cache_notes.get,
             )
             watcher.dates.on_progress = watcher.progress.changed.set
             ready(watcher)

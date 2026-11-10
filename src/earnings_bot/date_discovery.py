@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 import aiohttp
 
 from earnings_bot.browser import BrowserError
+from earnings_bot.cache_research import CHECKING_CACHE, CacheResult, CacheRoute, probe_cache
 from earnings_bot.calendar import Calendar, Tracked, describe, same_release
 from earnings_bot.fetch import Fetcher, Response
 from earnings_bot.investigate import OpenChrome, Report, due, investigate
@@ -71,6 +72,7 @@ _YEAR_FIRST_PERIOD = re.compile(
     re.IGNORECASE,
 )
 VERIFYING_IR = "Verifying the issuer's last report"
+CACHE_REFRESH = 24 * 3600
 _RELEASE = re.compile(
     r"\b(?:will|plans to|expects to|to)\s+(?:report|release|announce|publish|issue)\b"
     r"(?:(?!\b(?:conference call|earnings call|webcast)\b)[^.!?]){0,100}?"
@@ -426,6 +428,41 @@ async def _listing_date(
     return None
 
 
+def _cache_routes(row: Tracked) -> list[CacheRoute]:
+    target, company = row.target, row.company
+    ir = target.ir if target else None
+    api = (ir.news_api if ir else None) or company.ir_news_api
+    q4_host = target.q4_host if target else company.q4_host
+    routes: list[CacheRoute] = []
+    if api:
+        routes.append(CacheRoute("IR newsroom API", api))
+    if q4_host:
+        q4 = Q4PressReleases(q4_host).url().rsplit("&_=", 1)[0]
+        routes.append(CacheRoute("Q4 press releases", q4))
+    if ir and ir.rss:
+        warmup = ir.warmup or ir.listing or urljoin(ir.rss, "/")
+        routes.append(CacheRoute("Issuer RSS in Chrome", ir.rss, warmup=warmup))
+    if ir and ir.listing:
+        routes.append(
+            CacheRoute(
+                "IR press release listing",
+                ir.listing,
+                warmup=None if ir.http_first else ir.listing,
+                revalidate=ir.http_first,
+            )
+        )
+    feeds = [*target.rss, *target.trial.rss] if target else [*company.rss, *company.trial.rss]
+    routes.extend(
+        CacheRoute(f"Issuer RSS on {urlsplit(url).hostname}", url) for url in dict.fromkeys(feeds)
+    )
+    if not routes and (listing := issuer_listing(row.ticker, company)):
+        warmup = listing if company.ir_http_status != 200 and chrome_available() else None
+        routes.append(
+            CacheRoute("IR press release listing", listing, warmup=warmup, revalidate=True)
+        )
+    return routes[:3]
+
+
 class DateDiscovery:
     def __init__(
         self,
@@ -448,6 +485,8 @@ class DateDiscovery:
         self.reports: dict[int, Report] = {}
         # Why each tracked company's IR page is or isn't watched in its next window
         self.ir_notes: dict[int, str] = {}
+        self.cache_notes: dict[int, list[str]] = {}
+        self.cache_results: dict[CacheRoute, tuple[float, CacheResult]] = {}
         # Called whenever a phase, report or note changes
         self.on_progress: Callable[[], None] = lambda: None
         self.changed = asyncio.Event()
@@ -474,6 +513,8 @@ class DateDiscovery:
             # Room for a first investigation, which reads several pages through Chrome
             async with asyncio.timeout(300):
                 await self._check(row)
+                if current := self.calendar.find(row.ticker):
+                    await self._prepare_cache(current)
         except Exception:
             log.exception("Date discovery failed for %s", row.ticker)
             self._phase(row.cik, "Research failed. Retrying in an hour.")
@@ -519,6 +560,93 @@ class DateDiscovery:
         else:
             self.phases[cik] = text
         self.on_progress()
+
+    async def _probe_cache(self, route: CacheRoute) -> CacheResult:
+        async def get(url: str) -> Response:
+            if self.busy():
+                raise TimeoutError
+            headers = {"Cache-Control": "no-cache"} if route.revalidate else None
+            return await self.fetcher.request(
+                "GET", url, headers, give_up_after=4, allow_redirects=False
+            )
+
+        if route.warmup is None:
+            return await probe_cache(get, route.url)
+        open_chrome = self.chrome or (self.fetcher.research_browser if chrome_available() else None)
+        if open_chrome is None:
+            return CacheResult("Desktop Chrome unavailable")
+        warmup = route.warmup
+        try:
+            async with asyncio.timeout(30), open_chrome() as browser:
+
+                async def get_browser(url: str) -> Response:
+                    if self.busy():
+                        raise TimeoutError
+                    return await browser.request(url, warmup, 4, self.fetcher.wait_turn)
+
+                return await probe_cache(get_browser, route.url)
+        except (BrowserError, aiohttp.ClientError, TimeoutError, ValueError):
+            return CacheResult("Chrome cache comparison failed")
+
+    async def _prepare_cache(self, row: Tracked) -> None:
+        if self.busy():
+            self.checked.pop(row.cik, None)
+            return
+        target, evidence = row.target, row.evidence
+        ir = target.ir if target else None
+        bust = set(ir.cache_bust_urls if ir else ())
+        canonical = set(target.rss_canonical if target else ())
+        notes: list[str] = []
+        prior_phase = self.phases.get(row.cik)
+        try:
+            for route in _cache_routes(row):
+                if self.busy():
+                    self.checked.pop(row.cik, None)
+                    return
+                saved = self.cache_results.get(route)
+                if saved and saved[0] > time.monotonic():
+                    result = saved[1]
+                else:
+                    if self.phases.get(row.cik) != CHECKING_CACHE:
+                        self._phase(row.cik, CHECKING_CACHE)
+                    try:
+                        async with asyncio.timeout(35):
+                            result = await self._probe_cache(route)
+                    except TimeoutError:
+                        result = CacheResult("Cache comparison timed out")
+                    if self.busy():
+                        self.checked.pop(row.cik, None)
+                        return
+                    self.cache_results[route] = time.monotonic() + CACHE_REFRESH, result
+                notes.append(f"{route.label} · {result.summary}")
+                if ir and route.url in (ir.news_api, ir.listing, ir.rss):
+                    if result.query_bust:
+                        bust.add(route.url)
+                    elif result.canonical_only:
+                        bust.discard(route.url)
+                if target and (route.url in target.rss or route.url in target.trial.rss):
+                    if result.canonical_only:
+                        canonical.add(route.url)
+                    elif result.query_bust:
+                        canonical.discard(route.url)
+            if target and evidence and self.calendar.find(row.ticker) == row:
+                updated = target.model_copy(
+                    update={
+                        "ir": ir.model_copy(update={"cache_bust_urls": sorted(bust)})
+                        if ir
+                        else None,
+                        "rss_canonical": sorted(canonical),
+                    }
+                )
+                if updated != target:
+                    self.calendar.set_target(updated, evidence)
+            updated_notes = notes or ["No issuer endpoint available to test"]
+            if self.cache_notes.get(row.cik) != updated_notes:
+                self.cache_notes[row.cik] = updated_notes
+                self.on_progress()
+        finally:
+            if self.phases.get(row.cik) == CHECKING_CACHE:
+                self._phase(row.cik, prior_phase)
 
     async def _investigate(self, row: Tracked) -> Tracked:
         """Looks for the sources of a company outside the catalog, once and then monthly."""
@@ -581,8 +709,11 @@ class DateDiscovery:
             return
         if self._defer_if_busy(row.cik) or row not in self.calendar.entries():
             return
-        if row.target and row.target.ir and same_release(target, row.target):
-            target.ir = row.target.ir
+        if row.target and same_release(target, row.target):
+            if row.target.ir:
+                target.ir = row.target.ir
+            feeds = {*target.rss, *target.trial.rss}
+            target.rss_canonical = [url for url in row.target.rss_canonical if url in feeds]
         if row.company.sec_form == "6-K" and target.sec_form != "6-K":
             target = target.model_copy(update={"sec_form": "6-K"})
         self._phase(row.cik, None)
