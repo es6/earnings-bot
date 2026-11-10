@@ -29,7 +29,7 @@ from earnings_bot.sources import (
     looks_like_earnings,
     published_time,
 )
-from earnings_bot.text import html_to_text, release_text
+from earnings_bot.text import html_to_text, release_text, verified_report
 
 log = logging.getLogger(__name__)
 REINVESTIGATE = timedelta(days=30)
@@ -296,13 +296,22 @@ async def _through_chrome(fetcher: Fetcher, chrome: OpenChrome, home: str) -> Ch
             if not articles:
                 visit.problem = f"<{visit.listing}> shows no results headline"
                 return visit
-            link, title = articles[0]
-            article = await browser.request(link, home, 8, fetcher.wait_turn)
-            if article.status != 200:
-                visit.problem = f"Chrome got HTTP {article.status} opening “{title}”"
-                return visit
-            visit.title = title
-            visit.wire = wire(html_to_text(article.body.decode(errors="replace")))
+            # A menu link such as "Quarterly Results" looks like one too, so the first that
+            # reads as a results report counts
+            tried = []
+            for link, title in articles[:3]:
+                article = await browser.request(link, home, 8, fetcher.wait_turn)
+                text = html_to_text(article.body.decode(errors="replace"))
+                if article.status == 200 and verified_report(text):
+                    visit.title = title
+                    visit.wire = wire(text)
+                    return visit
+                tried.append(
+                    f"“{title}” (HTTP {article.status})"
+                    if article.status != 200
+                    else f"“{title}” isn't a results report"
+                )
+            visit.problem = "Chrome opened " + ", ".join(tried)
     except (BrowserError, *_ERRORS) as error:
         log.info("Chrome couldn't read %s: %r", home, error)
         visit.problem = f"Chrome couldn't read {host} ({type(error).__name__})"
