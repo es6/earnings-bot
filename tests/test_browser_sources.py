@@ -2,13 +2,21 @@ import asyncio
 import io
 import json
 import tomllib
+from collections.abc import Iterable
 from datetime import datetime
 
 import pytest
 from pydantic import ValidationError
 
 from earnings_bot.browser import BrowserUnavailable, browser_host
-from earnings_bot.browser_sources import BrowserPDF, BrowserRelease, BrowserRss, IRSource, TeslaDeck
+from earnings_bot.browser_sources import (
+    BrowserPDF,
+    BrowserRelease,
+    BrowserRss,
+    HttpRelease,
+    IRSource,
+    TeslaDeck,
+)
 from earnings_bot.fetch import Response
 from earnings_bot.ir_research import quarter_headline, verified_browser_source
 from earnings_bot.known import target_toml
@@ -37,7 +45,7 @@ LUCID_Q3 = (
 
 
 class BrowserFake(RoutedFetcher):
-    def __init__(self, responses: list[tuple[int, bytes] | Exception]) -> None:
+    def __init__(self, responses: Iterable[tuple[int, bytes] | Exception]) -> None:
         super().__init__({})
         self._responses = iter(responses)
         self.browser_calls: list[tuple[str, str, bool]] = []
@@ -98,6 +106,32 @@ async def test_listing_only_or_stub_does_not_signal_a_complete_release() -> None
     _, items = await poll(source, fetcher)
 
     assert items == []
+
+
+@pytest.mark.parametrize("http_status", [200, 403])
+async def test_issuer_http_watch_uses_one_transport_and_keeps_chrome_as_fallback(
+    http_status: int,
+) -> None:
+    listing = f'<a href="{ARTICLE}">{TITLE}</a>'.encode()
+    article = f"<h1>{TITLE}</h1><p>{'Revenue and earnings per share. ' * 120}</p>".encode()
+    chrome_replies = [(200, listing), (200, article)] * 2 if http_status == 403 else []
+    fetcher = BrowserFake(chrome_replies)
+    fetcher.routes = {ARTICLE: (200, article), FICO: (http_status, listing)}
+    source = HttpRelease(FICO, PATTERN, verify_text=True, chrome_fallback=True)
+    expected_transport = "chrome" if http_status == 403 else "http"
+
+    for _ in range(2):
+        _, items = await poll(source, fetcher)
+        assert [item.url for item in items] == [ARTICLE]
+        assert items[0].details["transport"] == source.listing_transport == expected_transport
+
+    if http_status == 403:
+        assert [url for _, url, _ in fetcher.requests] == [FICO]
+        assert len(fetcher.browser_calls) == 4
+    else:
+        assert [url for _, url, _ in fetcher.requests] == [FICO, ARTICLE] * 2
+        assert fetcher.urgent == [ARTICLE, ARTICLE]
+        assert fetcher.browser_calls == []
 
 
 async def test_pdf_ignores_missing_files_and_html_and_reuses_valid_bytes() -> None:

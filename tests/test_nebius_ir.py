@@ -114,10 +114,20 @@ async def test_nebius_tracks_from_the_issuer_notice_and_verifies_the_previous_pd
     assert saved.company.sixk == ["08:55"]
     assert saved.target and saved.target.ir
     assert saved.target.ir.listing == NEWSROOM
+    assert saved.target.ir.http_first
     assert saved.target.period == "FY2026Q3"
     assert saved.target.window[0] == datetime(2026, 11, 12, 6, 30, tzinfo=ET)
     assert saved.evidence and NOTICE_URL in saved.evidence
     assert PDF in fetcher.no_redirect
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        calendar = Calendar(store)
+        old_source = saved.target.ir.model_copy(update={"http_first": False})
+        calendar.set_target(saved.target.model_copy(update={"ir": old_source}), saved.evidence)
+        [old] = calendar.entries()
+        dates = DateDiscovery(calendar, fetcher, lambda: NOW, lambda: False, lambda _: None)
+        await dates.run_once(old)
+        [updated] = calendar.entries()
+        assert updated.target and updated.target.ir and updated.target.ir.http_first
     speed = await audit_sources(fetcher, tmp_path, "NBIS", saved.company, NOW, None)
     assert speed.day == datetime(2026, 8, 12).date()
 

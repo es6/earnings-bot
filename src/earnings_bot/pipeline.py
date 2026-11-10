@@ -567,9 +567,12 @@ class Release:
         try:
             warmup = source.warmup if isinstance(source, BrowserRss) else source.listing
             if urlsplit(url).netloc == urlsplit(warmup).netloc:
-                get = partial(
-                    self.fetcher.browser_request, url, warmup, source.timeout, urgent=True
-                )
+                if isinstance(source, BrowserRelease):
+                    get = partial(source.request_page, self.fetcher, url, urgent=True)
+                else:
+                    get = partial(
+                        self.fetcher.browser_request, url, warmup, source.timeout, urgent=True
+                    )
             else:
                 get = partial(
                     self.fetcher.request,
