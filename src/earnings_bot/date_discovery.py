@@ -55,12 +55,18 @@ _DATE = re.compile(
 _ABBREVIATED = re.compile(
     r"\b(Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sept?|Oct|Nov|Dec)\.?(?=\s+\d)", re.IGNORECASE
 )
+_NOTICE_QUARTER = rf"(?:Q([1-4])|({'|'.join(NTH + ORD)})[-\s]+quarter)"
 _PERIOD = re.compile(
-    rf"\b(?:Q([1-4])|({'|'.join(NTH + ORD)})[-\s]+quarter)"
+    rf"\b{_NOTICE_QUARTER}"
     # "of fiscal 2026", "and fiscal 2026", "and full year 2025"
     r"\s+(?:(?:and|&)\s+(?:full[-\s]+)?|of\s+)?(?:fiscal\s+)?(?:year\s+)?(?:FY\s*)?(20\d{2})\b",
     re.IGNORECASE,
 )
+_YEAR_FIRST_PERIOD = re.compile(
+    rf"\b(?:fiscal(?:\s+year)?|FY)\s*(20\d{{2}})\s+{_NOTICE_QUARTER}\b",
+    re.IGNORECASE,
+)
+VERIFYING_IR = "Verifying the issuer's last report in Chrome"
 _RELEASE = re.compile(
     r"\b(?:will|plans to|expects to|to)\s+(?:report|release|announce|publish|issue)\b"
     r"(?:(?!\b(?:conference call|earnings call|webcast)\b)[^.!?]){0,100}?"
@@ -161,10 +167,13 @@ def parse_notice(
     # Kept apart, so a heading or the page's "posted at" line doesn't run into the next line
     lines = [tidy(line) for line in html_to_text(_BREAK.sub(" ", body)).splitlines()]
     text = " ".join(lines)
-    period = _PERIOD.search(f"{title} {text}")
-    if period is None:
+    notice = f"{title} {text}"
+    if period := _PERIOD.search(notice):
+        digit, ordinal, year = period.groups()
+    elif period := _YEAR_FIRST_PERIOD.search(notice):
+        year, digit, ordinal = period.groups()
+    else:
         return None
-    digit, ordinal, year = period.groups()
     quarter = (
         int(digit)
         if digit
@@ -487,6 +496,8 @@ class DateDiscovery:
         )
         if self.busy() or row not in self.calendar.entries():
             return row
+        # The previous audit may have timed a different set of sources.
+        self.calendar.clear_review(row.cik)
         self.calendar.save_profile(row.cik, company)
         return replace(row, company=company)
 
@@ -542,9 +553,10 @@ class DateDiscovery:
             self.ir_notes[row.cik] = "The release has no fiscal period to match headlines with"
             self.on_progress()
             return
-        ir, why = await verified_browser_source(
-            self.fetcher, issuer_listing(row.ticker, row.company), target.period
-        )
+        listing = issuer_listing(row.ticker, row.company)
+        if listing:
+            self._phase(row.cik, VERIFYING_IR)
+        ir, why = await verified_browser_source(self.fetcher, listing, target.period)
         self.ir_notes[row.cik] = why
         self.on_progress()
         if (
@@ -556,6 +568,7 @@ class DateDiscovery:
             )
         ):
             self.calendar.set_target(target.model_copy(update={"ir": ir}), evidence)
+        self._phase(row.cik, None)
 
     def _defer_if_busy(self, cik: int) -> bool:
         if not self.busy():

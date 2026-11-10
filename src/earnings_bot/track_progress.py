@@ -11,6 +11,7 @@ import aiohttp
 import discord
 
 from earnings_bot.calendar import Calendar, Tracked, evidence_text
+from earnings_bot.date_discovery import VERIFYING_IR
 from earnings_bot.delivery import DeliveryStore
 from earnings_bot.formatting import (
     AMBER,
@@ -33,6 +34,7 @@ from earnings_bot.known import KnownCompany, known_companies, to_target
 from earnings_bot.pipeline import UNKNOWN_MESSAGE
 from earnings_bot.recorder import ET, Target
 from earnings_bot.source_audit import Speed, Timing
+from earnings_bot.version import build_version
 
 log = logging.getLogger(__name__)
 REFRESH = timedelta(days=1)
@@ -190,8 +192,18 @@ class TrackProgress:
         speed = Speed.from_json(review)
         busy = self.busy()
         catalog = row.ticker in known_companies()
-        report = self.research(row.cik) if self._investigating(row) else None
+        investigating = self._investigating(row)
+        report = self.research(row.cik) if investigating else None
         phase = self.date_phase(row.cik)
+        note = self.ir_note(row.cik)
+        ir_pending = bool(
+            target
+            and target.period
+            and not target.ir
+            and not note
+            and issuer_listing(row.ticker, row.company)
+        )
+        no_date = bool(phase and phase.startswith("No release date"))
 
         # The checklist, and the color and headline it adds up to
         form = row.company.sec_form or "8-K"
@@ -200,16 +212,21 @@ class TrackProgress:
             steps.append(f"{DONE} Sources researched by hand")
         elif report is not None:
             steps.append(f"{WORKING} Investigating sources: {report.step}…")
-        elif self._investigating(row):
+        elif investigating:
             pause = "waits for an open release window" if busy else "queued"
             steps.append(f"{WAITING if busy else TODO} Investigating sources ({pause})")
         elif looked := row.company.investigated:
             steps.append(f"{DONE} Sources investigated {looked:%b} {looked.day}")
         if target:
             steps.append(f"{DONE} Release date found")
+            if phase == VERIFYING_IR:
+                steps.append(f"{WORKING} {phase}…")
+            elif ir_pending:
+                pause = "waits for an open release window" if busy else "queued"
+                steps.append(f"{WAITING if busy else TODO} IR verification ({pause})")
         elif phase and phase.startswith("Looking"):
             steps.append(f"{WORKING} {phase}…")
-        elif phase and phase.startswith("No release date"):
+        elif phase and no_date:
             steps.append(f"{FAILED} {phase}")
         elif phase:
             steps.append(f"{WAITING} Release date: {phase.lower()}")
@@ -227,11 +244,19 @@ class TrackProgress:
             steps.append(f"{TODO} Speed history")
 
         working = any(step.startswith(WORKING) for step in steps)
+        complete = (
+            speed is not None
+            and not investigating
+            and not working
+            and not ir_pending
+            and row.cik not in self.audit_failed
+            and (no_date or (target and phase is None))
+        )
         if any(step.startswith(FAILED) for step in steps):
             color = RED if row.cik in self.audit_failed else AMBER
         elif working:
             color = BLUE
-        elif target and speed is not None:
+        elif target and complete:
             color = GREEN
         else:
             color = AMBER
@@ -250,6 +275,9 @@ class TrackProgress:
             description = "Researching. This message updates as it goes."
         else:
             description = "No release date yet."
+        if complete:
+            outcome = "watch scheduled" if target else "awaiting a confirmed date"
+            description = f"**✅ Research complete · {outcome}**\n{description}"
         embed = discord.Embed(
             title=f"{row.ticker} · {row.company.name}", description=description, color=color
         )
@@ -282,7 +310,6 @@ class TrackProgress:
             # Verified for this release since, so it's watched after all
             and not (target and target.ir and "press release page" in check.source)
         ]
-        note = self.ir_note(row.cik)
         if target and target.ir is None and note and issuer_listing(row.ticker, row.company):
             rejected.append(f"**{source_label('browser-ir')}**: {note}")
         if rejected:
@@ -291,7 +318,7 @@ class TrackProgress:
             embed.add_field(
                 name="📝 Research", value=truncate(row.company.evidence, 1024), inline=False
             )
-        embed.set_footer(text="Updated")
+        embed.set_footer(text=f"Earnings Bot {build_version()} · Updated")
         return embed
 
     async def _check(self, row: Tracked) -> None:

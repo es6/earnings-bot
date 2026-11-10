@@ -9,6 +9,7 @@ from earnings_bot.bot import EarningsBot
 from earnings_bot.browser_sources import IRSource
 from earnings_bot.calendar import Calendar
 from earnings_bot.config import Settings
+from earnings_bot.date_discovery import VERIFYING_IR
 from earnings_bot.delivery import DeliveryStore
 from earnings_bot.formatting import GREEN
 from earnings_bot.investigate import INVESTIGATION, Report
@@ -17,6 +18,7 @@ from earnings_bot.known import KnownCompany, SourceCheck, to_target
 from earnings_bot.recorder import ET, Target
 from earnings_bot.source_audit import Speed, Timing
 from earnings_bot.track_progress import CardPoster, TrackProgress
+from earnings_bot.version import build_version
 from tests.fakes import embed_text
 from tests.sec_data import LCID_CIK, LCID_SUBMISSIONS
 from tests.test_unattended import FakeDiscord, FakeMessage
@@ -247,10 +249,12 @@ async def test_a_finished_card_says_what_was_fastest_watched_and_rejected(tmp_pa
     fields = lines_of(embed)
     assert embed.color is not None and embed.color.value == GREEN
     assert embed.description == (
+        "**✅ Research complete · watch scheduled**\n"
         "**Next results:** <t:1794517500:F> (<t:1794517500:R>) · Q3 FY26\n"
         "-# Issuer confirmed release time · [source](<https://ir.lucidmotors.com/notice>) · "
         "watching from 3:55 PM ET"
     )
+    assert embed.footer.text == f"Earnings Bot {build_version()} · Updated"
     assert fields["Progress"] == [
         f"✅ Found in SEC data: CIK {LCID_CIK}, results on Form 8-K",
         "✅ Sources investigated Nov 9",
@@ -311,13 +315,34 @@ async def test_without_a_date_the_card_says_what_it_would_watch(tmp_path: Path) 
         progress = tracker(store, FakeDiscord(), date_phase={LCID_CIK: phase}.get)
 
         embed = progress.render(row, None, False)
+        complete = progress.render(row, SPEED.to_json(), False)
 
     fields = lines_of(embed)
     assert embed.description == "No release date yet."
+    assert complete.description == (
+        "**✅ Research complete · awaiting a confirmed date**\nNo release date yet."
+    )
     assert f"⚠️ {phase}" in fields["Progress"]
     assert fields["👀 Will watch once a date is set"][-1] == (
         "• IR press release page, read in Chrome *(once the date's quarter is known)*"
     )
+
+
+def test_a_scheduled_card_waits_for_ir_verification_to_finish(tmp_path: Path) -> None:
+    target = lucid_target(ir=False)
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        calendar = Calendar(store)
+        row, _ = calendar.add("LCID", 1, NOW, INVESTIGATED)
+        progress = tracker(
+            store,
+            FakeDiscord(),
+            planned=lambda: {target.release_key: target},
+            date_phase=lambda _: VERIFYING_IR,
+        )
+        embed = progress.render(row, SPEED.to_json(), False)
+
+    assert embed.description and "Research complete" not in embed.description
+    assert f"⏳ {VERIFYING_IR}…" in lines_of(embed)["Progress"]
 
 
 async def test_a_check_saved_in_the_old_format_is_redone(tmp_path: Path) -> None:

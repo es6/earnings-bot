@@ -15,7 +15,8 @@ from urllib.parse import urljoin, urlsplit
 
 import aiohttp
 
-from earnings_bot.browser import BrowserError
+from earnings_bot.browser import BrowserError, browser_host
+from earnings_bot.browser_sources import _ReleaseLinks
 from earnings_bot.fetch import Fetcher, Response
 from earnings_bot.formatting import clock
 from earnings_bot.ir_research import issuer_links, next_page
@@ -37,9 +38,11 @@ log = logging.getLogger(__name__)
 REINVESTIGATE = timedelta(days=30)
 # Raised when the investigation learns to find more, so companies get looked at again:
 # 1 kept what it checked, 2 reads the wire from any release, skips date notices, looks a few
-# pages back for the latest results and keeps when the IR site says they were posted
-INVESTIGATION = 2
+# pages back for the latest results and keeps when the IR site says they were posted,
+# 3 follows corporate navigation and embedded listings
+INVESTIGATION = 3
 _HOST = re.compile(r"\b((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,})\b", re.IGNORECASE)
+_WEB_HOST = re.compile(r"\b(?:https?://|(?=www\.))" + _HOST.pattern, re.IGNORECASE)
 _IR_HOST = re.compile(r"^(?:ir|investors?|investor-?relations)\.", re.IGNORECASE)
 _IR_LINK = re.compile(
     r"(?:https?://)?([a-z0-9.-]+\.[a-z]{2,})/"
@@ -59,7 +62,8 @@ _FEED_PATHS = (
     "/press-releases/rss",
     "/news-events/press-releases/rss",
 )
-_LISTING = re.compile(r"/(?:press|news)[-_]?releases?/?$", re.IGNORECASE)
+_LISTING = re.compile(r"/(?:press|news|financial)[-_]?releases?(?:-footer)?/?$", re.IGNORECASE)
+_IR_NAV = re.compile(r"\b(?:investors?|investor relations)\b", re.IGNORECASE)
 # Where IR sites usually keep it, for one whose home page doesn't link it plainly
 _LISTINGS = ("/press-releases", "/news-releases")
 _BLOCKED = frozenset({401, 403, 429})
@@ -104,8 +108,8 @@ def due(ticker: str, company: KnownCompany, today: date) -> bool:
     )
 
 
-def ir_hosts(text: str, ticker: str | None = None) -> list[str]:
-    """Hosts a release names that look like an IR site, in the order it names them."""
+def ir_hosts(text: str, ticker: str | None = None, name: str = "") -> list[str]:
+    """IR hosts first, then corporate websites that match the issuer's name."""
     hosts = dict.fromkeys(host.lower() for host in _HOST.findall(text))
     prefixes = {host.lower() for host in _IR_LINK.findall(text)}
     candidates = []
@@ -115,6 +119,13 @@ def ir_hosts(text: str, ticker: str | None = None) -> list[str]:
             candidates.append(without_www)
         elif _IR_HOST.match(host) or host in prefixes:
             candidates.append(host)
+    words = re.findall(r"[a-z0-9]+", name.lower())[:3]
+    brands = {"".join(words[:end]) for end in range(1, len(words) + 1) if len(words[0]) >= 3}
+    candidates.extend(
+        host.lower()
+        for host in _WEB_HOST.findall(text)
+        if host.lower().removeprefix("www.").split(".")[0] in brands
+    )
     return list(dict.fromkeys(candidates))
 
 
@@ -149,12 +160,43 @@ def feed_links(url: str, html: str) -> list[str]:
     ]
 
 
-def listing(url: str, html: bytes) -> str | None:
-    """The press release list a site's page links to."""
-    return next(
-        (link for link, _ in issuer_links(url, html) if _LISTING.search(urlsplit(link).path)),
-        None,
-    )
+class _IssuerNavigation(_ReleaseLinks):
+    def __init__(self) -> None:
+        super().__init__()
+        self.frames: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        super().handle_starttag(tag, attrs)
+        if tag == "iframe" and (src := dict(attrs).get("src")):
+            self.frames.append(src)
+
+
+def _release_pages(url: str, html: bytes) -> list[str]:
+    """The press release pages linked or embedded by the issuer, including hosted IR sites."""
+    parser = _IssuerNavigation()
+    parser.feed(html.decode(errors="replace"))
+    origin = urlsplit(url)
+    pages = []
+    for href in [*parser.frames, *(href for href, _ in parser.links)]:
+        try:
+            page = urljoin(url, href)
+            parts = urlsplit(page)
+            if not _LISTING.search(parts.path) or (
+                parts.netloc == origin.netloc and parts.path.rstrip("/") == origin.path.rstrip("/")
+            ):
+                continue
+            browser_host(page)
+        except ValueError:
+            continue
+        # Public GCS listings also work without the token attached to their embed URLs.
+        if (
+            parts.hostname
+            and parts.hostname.endswith(".gcs-web.com")
+            and re.fullmatch(r"auth_token=[a-zA-Z0-9-]+", parts.query)
+        ):
+            page = parts._replace(query="").geturl()
+        pages.append(page)
+    return list(dict.fromkeys(pages))
 
 
 @dataclass
@@ -193,7 +235,7 @@ class Findings:
     def describe(self, today: date) -> str:
         chrome = f"Chrome reads <{self.listing}>." if self.listing else ""
         if self.site is None:
-            found = "No IR site found in its last results release."
+            found = "No issuer press release site could be verified."
         elif self.q4:
             found = f"Q4 press feed on {self.site}."
         elif self.feeds:
@@ -290,78 +332,126 @@ class ChromeVisit:
     problem: str | None = None  # why it couldn't read the latest results
 
 
+async def _read_results(
+    get: Callable[[str], Awaitable[Response | None]], url: str, links: list[tuple[str, str]]
+) -> ChromeVisit:
+    visit = ChromeVisit(listing=url)
+    notices: list[str] = []
+    tried: list[str] = []
+    pages = {url}
+    opened: set[str] = set()
+    # Results can be a page or two back behind date notices and general press releases.
+    for page_number in range(3):
+        notices.extend(title for _, title in links if is_date_notice(title))
+        articles = {
+            link: title
+            for link, title in links
+            if link not in opened and looks_like_earnings(title)
+        }
+        for link, title in list(articles.items())[:3]:
+            opened.add(link)
+            article = await get(link)
+            if article is None or article.status != 200:
+                tried.append(f"“{title}” ({_answer(article)})")
+                continue
+            text = html_to_text(article.body.decode(errors="replace"))
+            if verified_report(text):
+                visit.title, visit.url, visit.posted = title, link, posted_time(text)
+                visit.wire = wire(text)
+                return visit
+            tried.append(f"“{title}” isn't a results report")
+        following = next_page(url, links)
+        if page_number == 2 or following is None or following in pages:
+            break
+        pages.add(following)
+        page = await get(following)
+        if page is None or page.status != 200:
+            break
+        links = issuer_links(following, page.body)
+    if tried:
+        visit.problem = "Chrome opened " + ", ".join(tried)
+    elif notices:
+        visit.problem = (
+            f"<{url}> shows a date notice, “{notices[0]}”, but no results release to read"
+        )
+    else:
+        visit.problem = f"<{url}> shows no results headline"
+    return visit
+
+
 async def _through_chrome(fetcher: Fetcher, chrome: OpenChrome, home: str) -> ChromeVisit:
-    """Open the IR site in Chrome, find its press release list and read the latest results on
-    it."""
-    visit = ChromeVisit()
+    """Follow the issuer's navigation and check alternate listings for a verified report."""
     host = urlsplit(home).netloc
+    fallback = ChromeVisit()
     try:
         async with chrome() as browser:
-            page = await browser.request(home, home, 8, fetcher.wait_turn)
-            if page.status != 200:
-                visit.problem = f"Chrome got HTTP {page.status} from {host}"
-                return visit
-            linked = listing(home, page.body)
-            candidates = [f"https://{host}{path}" for path in _LISTINGS]
-            if linked:
-                candidates.insert(0, linked)
-            links: list[tuple[str, str]] = []
-            for url in dict.fromkeys(candidates):
-                page = await browser.request(url, home, 8, fetcher.wait_turn)
-                if page.status == 200 and (links := issuer_links(url, page.body)):
-                    visit.listing = url
-                    break
-            if visit.listing is None:
-                visit.problem = f"Chrome found no press release list on {host}"
-                return visit
-            notices: list[tuple[str, str]] = []
-            tried: list[str] = []
-            pages = {visit.listing}
-            opened: set[str] = set()
-            # The latest results may be a page or two back, behind newer releases
-            for page_number in range(3):
-                notices += [(link, title) for link, title in links if is_date_notice(title)]
-                articles = {
-                    link: title
-                    for link, title in links
-                    if link not in opened and looks_like_earnings(title)
-                }
-                # A menu link such as "Quarterly Results" looks like one too, so the first that
-                # reads as a results report counts
-                for link, title in list(articles.items())[:3]:
-                    opened.add(link)
-                    article = await browser.request(link, home, 8, fetcher.wait_turn)
-                    text = html_to_text(article.body.decode(errors="replace"))
-                    if article.status == 200 and verified_report(text):
-                        visit.title, visit.url, visit.posted = title, link, posted_time(text)
-                        visit.wire = wire(text)
-                        return visit
-                    tried.append(
-                        f"“{title}” (HTTP {article.status})"
-                        if article.status != 200
-                        else f"“{title}” isn't a results report"
+
+            async def get(url: str) -> Response | None:
+                warm = home if urlsplit(url).netloc == host else url
+                try:
+                    return await browser.request(url, warm, 8, fetcher.wait_turn)
+                except (BrowserError, aiohttp.ClientError, TimeoutError) as error:
+                    log.info("Chrome couldn't read a page on %s: %r", urlsplit(url).netloc, error)
+                    return None
+
+            page = await get(home)
+            linked: list[str] = []
+            if page is not None and page.status == 200:
+                linked = _release_pages(home, page.body)
+                if not linked:
+                    investor = next(
+                        (
+                            link
+                            for link, title in issuer_links(home, page.body)
+                            if _IR_NAV.fullmatch(title.strip())
+                        ),
+                        None,
                     )
-                following = next_page(visit.listing, links)
-                if page_number == 2 or following is None or following in pages:
-                    break
-                pages.add(following)
-                page = await browser.request(following, home, 8, fetcher.wait_turn)
-                if page.status != 200:
-                    break
-                links = issuer_links(following, page.body)
-            if tried:
-                visit.problem = "Chrome opened " + ", ".join(tried)
-            elif notices:
-                visit.problem = (
-                    f"<{visit.listing}> shows a date notice, “{notices[0][1]}”, but no results "
-                    "release to read"
+                    if investor:
+                        landing = await get(investor)
+                        if landing is not None and landing.status == 200:
+                            linked = _release_pages(investor, landing.body)
+
+            candidates = [*linked[:2], *(urljoin(home, path) for path in _LISTINGS)]
+            opened = {home}
+            for candidate in dict.fromkeys(candidates):
+                if candidate in opened:
+                    continue
+                opened.add(candidate)
+                listing = await get(candidate)
+                if listing is None or listing.status != 200:
+                    continue
+                # Corporate sites may put the actual release list in an external iframe.
+                delegated = next(
+                    (url for url in _release_pages(candidate, listing.body) if url not in opened),
+                    None,
                 )
-            else:
-                visit.problem = f"<{visit.listing}> shows no results headline"
+                pages = [(candidate, listing)]
+                if delegated:
+                    opened.add(delegated)
+                    hosted = await get(delegated)
+                    if hosted is not None and hosted.status == 200:
+                        pages.insert(0, (delegated, hosted))
+                for url, reply in pages:
+                    links = issuer_links(url, reply.body)
+                    if not links:
+                        continue
+                    visit = await _read_results(get, url, links)
+                    if visit.title:
+                        return visit
+                    if fallback.listing is None:
+                        fallback = visit
+            if fallback.problem is None:
+                fallback.problem = (
+                    f"Chrome got {_answer(page)} from {host}"
+                    if page is None or page.status != 200
+                    else f"Chrome found no press release list on {host}"
+                )
     except (BrowserError, *_ERRORS) as error:
         log.info("Chrome couldn't read %s: %r", home, error)
-        visit.problem = f"Chrome couldn't read {host} ({type(error).__name__})"
-    return visit
+        if fallback.problem is None:
+            fallback.problem = f"Chrome couldn't read {host} ({type(error).__name__})"
+    return fallback
 
 
 def posted_time(text: str) -> datetime | None:
@@ -452,16 +542,20 @@ async def investigate(
         else f"Every results {company.sec_form} is filed here",
     )
     findings.wire = wire(text)
-    hosts = ir_hosts(text, ticker)[:3]
+    hosts = ir_hosts(text, ticker, company.name)[:3]
     if not hosts:
         report.reject(
             "IR site",
-            "Its last results release names no IR site"
+            "No IR site or issuer website identified in its last results release"
             if text
             else f"Couldn't read its last results {company.sec_form}",
         )
     for host in hosts:
         home = f"https://{host}/"
+        try:
+            browser_host(home)
+        except ValueError:
+            continue
         report.doing(f"Checking {host}")
         page = await _get(fetcher, home)
         if page is None or (page.status >= 400 and page.status not in _BLOCKED):
@@ -509,8 +603,9 @@ async def investigate(
                 report.reject(f"{host} press release page", visit.problem or "Unread")
         if findings.listing is None and not (findings.blocked or findings.q4 or findings.feeds):
             # The list a plain request finds, for date notices
-            findings.listing = listing(home, page.body)
-        break
+            findings.listing = next(iter(_release_pages(home, page.body)), None)
+        if findings.listing or findings.q4 or findings.feeds:
+            break
     report.doing("Choosing its sources")
     _wire_checks(report, findings.wire)
     found_wire = findings.wire or "unknown"

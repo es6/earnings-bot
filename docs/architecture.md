@@ -506,7 +506,8 @@ wire names, URL patterns and typical release times. For any other, `issuers.py` 
 kind of entry from SEC's data when it's added, and the calendar saves it: the CIK, the name
 without its legal ending (when it's more than one word) and the exchange-and-ticker tag for
 wire matching, and the release time from its last four results 8-Ks. Then `investigate.py`
-looks for its sources outside release windows: the IR site its last results release names, that
+looks for its sources outside release windows: IR links and matching corporate sites in its
+last results release, including press release listings embedded on a hosted IR site, then the
 site's Q4 feed or RSS feed, its press release list through Chrome when it blocks the bot or has no
 feed, and the wire its latest results' dateline names. Until a wire is found, both Business Wire
 and PR Newswire are watched, along with EDGAR. The source audit runs after the investigation, so

@@ -40,6 +40,7 @@ from earnings_bot.source_audit import audit_sources
 from earnings_bot.sources import EdgarFilings, Sighting, Source
 from earnings_bot.summary import Summarizer
 from earnings_bot.track_progress import TrackProgress
+from earnings_bot.version import build_version
 
 SCAN_SECONDS = 3.0
 
@@ -478,7 +479,7 @@ async def watch_directory(
             )
             watcher.dates.on_progress = watcher.progress.changed.set
             ready(watcher)
-            status(f"🟢 **Earnings monitoring started**, reading `{directory.name}/`")
+            status(f"🟢 **Earnings monitoring started** · {build_version()} · `{directory.name}/`")
             tasks = [
                 asyncio.create_task(recover_pending()),
                 asyncio.create_task(watcher.progress.run()),
