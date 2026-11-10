@@ -64,16 +64,27 @@ class Speed:
     verified: list[str] = field(default_factory=list)  # sources whose archive copy verified
     benchmark: str = ""  # markdown about @earnings_guy's post, if one was found
     ir_json: str = ""  # JSON routes the IR site's pages called, for finding faster sources
+    watched_from: datetime | None = None  # when the bot's watch of that release began
 
     def fastest(self) -> tuple[str, list[Timing]]:
-        """The best evidence of which source was first, and its timings, earliest first."""
-        for basis, timings in (
-            ("seen live by the bot", self.measured_headlines),
-            ("publishers' timestamps", self.archive),
-        ):
-            if timings:
-                return basis, sorted(timings, key=lambda item: (item.at, item.source))
-        return "", []
+        """The best evidence of which source was first, and its timings, earliest first. What
+        the bot saw live counts first, with any publisher's time from before the bot's first
+        sighting: On's IR feed had its Q3 results at 5:00 AM, before its watch opened and an
+        hour before the 6-K the bot saw first."""
+        seen = sorted(self.measured_headlines, key=lambda item: (item.at, item.source))
+        if not seen:
+            stamped = sorted(self.archive, key=lambda item: (item.at, item.source))
+            return ("publishers' timestamps", stamped) if stamped else ("", [])
+        # A stamp from while the bot watched may be when it was scheduled, not when it showed,
+        # so only one from before the watch began counts
+        if self.watched_from is None:
+            return "seen live by the bot", seen
+        sources = {item.source for item in seen}
+        earlier = [t for t in self.archive if t.at < self.watched_from and t.source not in sources]
+        if not earlier:
+            return "seen live by the bot", seen
+        timings = sorted([*earlier, *seen], key=lambda item: (item.at, item.source))
+        return "seen live by the bot, and publishers' earlier timestamps", timings
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), default=lambda value: value.isoformat())
@@ -93,6 +104,9 @@ class Speed:
                 verified=[str(name) for name in data["verified"]],
                 benchmark=str(data["benchmark"]),
                 ir_json=str(data.get("ir_json", "")),
+                watched_from=datetime.fromisoformat(data["watched_from"])
+                if data.get("watched_from")
+                else None,
             )
         except (ValueError, KeyError, TypeError):
             return None
@@ -154,14 +168,18 @@ def _events(directory: Path, ticker: str) -> Iterator[dict[str, Any]]:
 
 def _measurements(
     directory: Path, ticker: str, day: date
-) -> tuple[list[Timing], list[Timing], str]:
+) -> tuple[list[Timing], list[Timing], str, datetime | None]:
     headlines: dict[str, Timing] = {}
     bodies: dict[str, Timing] = {}
     benchmark = ""
+    watched: datetime | None = None
     for event in _events(directory, ticker):
         if event.get("caught_up"):
             continue
         kind = event.get("event")
+        start = published_time(event.get("start")) if kind == "window" else None
+        if start and start.astimezone(ET).date() == day and (watched is None or start < watched):
+            watched = start
         if (
             kind == "benchmark"
             and local_day(event.get("at")) == day
@@ -191,7 +209,7 @@ def _measurements(
         source = event["source"]
         if source not in table or at < table[source].at:
             table[source] = Timing(source, at, event.get("url", ""))
-    return list(headlines.values()), list(bodies.values()), benchmark
+    return list(headlines.values()), list(bodies.values()), benchmark, watched
 
 
 async def _list(fetcher: Fetcher, source: Source) -> list[Sighting]:
@@ -323,7 +341,9 @@ async def audit_sources(
         estimates.append(
             Timing("browser-ir", posted, company.ir_release or "", resolution_seconds=60)
         )
-    heads, bodies, comparison = await asyncio.to_thread(_measurements, directory, ticker, day)
+    heads, bodies, comparison, watched = await asyncio.to_thread(
+        _measurements, directory, ticker, day
+    )
 
     if benchmark and not comparison:
         candidates = [
@@ -347,4 +367,5 @@ async def audit_sources(
         verified=list(dict.fromkeys(verified)),
         benchmark=comparison,
         ir_json=browser,
+        watched_from=watched,
     )

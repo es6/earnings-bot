@@ -20,7 +20,7 @@ from earnings_bot.browser import BrowserError, RenderedPage
 from earnings_bot.cache_research import CHECKING_CACHE, CacheResult, CacheRoute, probe_cache
 from earnings_bot.calendar import Calendar, Tracked, describe, same_release
 from earnings_bot.fetch import Fetcher, Response
-from earnings_bot.formatting import clock
+from earnings_bot.formatting import clock, day, period_label
 from earnings_bot.investigate import OpenChrome, Report, due, investigate
 from earnings_bot.ir_pages import (
     IRReader,
@@ -92,6 +92,7 @@ _SHORT_YEAR = re.compile(r"\bFY\s?(\d{2})\b", re.IGNORECASE)
 _TENTATIVE = re.compile(r"\b(?:tentative|tbc|tbd|to be confirmed|estimated)\b", re.IGNORECASE)
 EVENT_DATE = "Issuer's earnings event"
 READING_IR = "Reading its IR site in Chrome"
+RECHECKING = "Rechecking hourly."
 IR_REREAD = 6 * 3600  # seconds
 RESEARCH_SECONDS = 450  # for one company's hourly check
 VERIFYING_IR = "Verifying the issuer's last report"
@@ -986,18 +987,37 @@ class DateDiscovery:
             target, evidence = saved
         else:
             today = now.astimezone(ET).date()
-            # A notice whose headline dates a release that has passed is last quarter's
-            fresh = [t for t in unread if not (dated := moments(t)) or upcoming(dated, today)]
+            # The release that came and went, whose own notice isn't one for the next
+            done = row.target if row.target and row.target.window[1] <= now else None
+            last_day = done.expected.astimezone(ET).date() if done else None
+            # A notice whose headline dates a release that has passed is an old one
+            fresh = [
+                t
+                for t in unread
+                if not (dated := moments(t))
+                or (
+                    upcoming(dated, today)
+                    and not (last_day and max(m.day for m in dated) <= last_day)
+                )
+            ]
             if fresh:
                 seen = f" It saw the notice “{fresh[0]}” but couldn't read a date from it."
-            elif unread:
+            elif unread and not done:
                 seen = f" Its latest date notice, “{unread[0]}”, is for an earlier release."
             else:
                 seen = ""
             read = f" {self.ir_reads[row.cik]}" if row.cik in self.ir_reads else ""
+            if done:
+                quarter = period_label(done.period) or "Its latest"
+                status = (
+                    f"{quarter} results came out {day(done.expected)}. The next release "
+                    "isn't announced yet."
+                )
+            else:
+                status = "No release date read yet."
             self._phase(
                 row.cik,
-                f"No release date read yet.{read}{seen} Rechecking hourly. A Manage Server "
+                f"{status}{read}{seen} {RECHECKING} A Manage Server "
                 "member can set one with `/track` and `when` and `period`.",
             )
             return

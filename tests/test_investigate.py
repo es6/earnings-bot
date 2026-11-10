@@ -110,10 +110,10 @@ def released(monkeypatch: pytest.MonkeyPatch) -> Callable[[str], None]:
     """Sets the text of the company's last results release, as SEC has it."""
 
     def set_text(text: str) -> None:
-        async def last_release(fetcher: object, cik: int) -> str:
-            return text
+        async def last_releases(fetcher: object, cik: int) -> list[str]:
+            return [text] if text else []
 
-        monkeypatch.setattr(investigate, "_last_release", last_release)
+        monkeypatch.setattr(investigate, "_last_releases", last_releases)
 
     return set_text
 
@@ -466,9 +466,9 @@ async def test_the_last_release_is_read_from_the_results_8k() -> None:
         {"submissions/CIK0001543151.json": (200, submissions), **filing_routes()}
     )
 
-    text = await investigate._last_release(fetcher, 1543151)
+    [text] = await investigate._last_releases(fetcher, 1543151)
 
-    assert text is not None and "Gross bookings grew 21%" in text
+    assert "Gross bookings grew 21%" in text
     # Only the results 8-K is read
     assert not any("000154315126000041" in url for _, url, _ in fetcher.requests)
     assert not any("000154315126000042" in url for _, url, _ in fetcher.requests)
@@ -1136,4 +1136,61 @@ def test_a_live_release_teaches_the_bot_its_wire() -> None:
         ("PR Newswire earnings feed", False),
         ("Business Wire earnings feed", True),
         ("GlobeNewswire earnings feed", False),
+    ]
+
+
+class OnReleases:
+    """On's last three results 6-Ks, newest first. Only the Q2 one names its IR site."""
+
+    def __init__(self, *, named: bool = True) -> None:
+        self.named = named
+
+    async def history(
+        self, cik: int, now: datetime, count: int = 3, filings: object = None
+    ) -> list[Sighting]:
+        site = " Visit investors.on-running.com." if self.named else ""
+
+        def copy(key: str, at: str, text: str) -> Sighting:
+            return Sighting(key, "6-K financial results", "", at, True, body=text.encode())
+
+        return [
+            copy("q3", "2026-11-10T11:06:50Z", "On Reports Results for the Third Quarter"),
+            copy("q2", "2026-08-11T10:10:30Z", f"On Reports Results for the Second Quarter.{site}"),
+            copy("q1", "2026-05-12T10:10:27Z", "On Reports First Quarter 2026 Results"),
+        ]
+
+
+async def test_an_ir_site_named_by_an_earlier_release_is_still_found() -> None:
+    # On's Q3 2026 release left out the IR site its Q2 release named
+    company = LUCID.model_copy(update={"sec_form": "6-K", "name": "On Holding AG"})
+
+    found = await investigate.investigate(
+        RoutedFetcher({}), company, TODAY, None, sixk=cast(SixKResults, OnReleases())
+    )
+
+    assert "investors.on-running.com homepage over HTTP" in [c.source for c in found.checks]
+
+
+async def test_earlier_research_stands_when_no_release_names_an_ir_site() -> None:
+    company = LUCID.model_copy(
+        update={
+            "sec_form": "6-K",
+            "name": "On Holding AG",
+            "platform": "q4",
+            "q4_host": "investors.on-running.com",
+            "reachable": True,
+        }
+    )
+
+    found = await investigate.investigate(
+        RoutedFetcher({}), company, TODAY, None, sixk=cast(SixKResults, OnReleases(named=False))
+    )
+
+    assert (found.platform, found.q4_host, found.reachable) == (
+        "q4",
+        "investors.on-running.com",
+        True,
+    )
+    assert ("Earlier research: investors.on-running.com", True) in [
+        (c.source, c.watch) for c in found.checks
     ]

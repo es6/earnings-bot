@@ -707,3 +707,29 @@ def test_a_window_opens_by_when_the_ir_site_had_the_last_release_not_sec() -> No
     sec_first = Speed(day=day, archive=[sec, Timing("q4_press", sec.at + timedelta(minutes=9))])
     assert timed_by_publishers(company, sec_first.to_json()) == company
     assert timed_by_publishers(company, None) == company
+
+
+async def test_after_a_release_the_card_says_so_instead_of_no_date(tmp_path: Path) -> None:
+    # TDG, Nov 10: its Q4 results were out, and its own notice for them isn't the next one
+    now = datetime(2026, 11, 10, 12, tzinfo=ET)
+    company = AMAT.model_copy(
+        update={
+            "checks": [SourceCheck(source="SEC 8-K filings", watch=True, why="Filed here")],
+            "investigation": INVESTIGATION,
+            "investigated": now.date(),
+            "sec_form": "8-K",
+        }
+    )
+    done = to_target("TDG", datetime(2026, 11, 10, 6, 30, tzinfo=ET), 2026, 4, company)
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        calendar = Calendar(store)
+        row, _ = calendar.add("TDG", company)
+        calendar.set_target(done, "Issuer date confirmed")
+        [row] = calendar.entries()
+        dates = DateDiscovery(calendar, RoutedFetcher({}), lambda: now, lambda: False, print)
+        await dates._check(row)
+
+    assert dates.phases[row.cik].startswith(
+        "Q4 FY26 results came out Tue, Nov 10. The next release isn't announced yet."
+    )
+    assert "couldn't read a date" not in dates.phases[row.cik]

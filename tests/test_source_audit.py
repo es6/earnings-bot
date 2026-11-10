@@ -1,5 +1,5 @@
 import json
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 from earnings_bot.known import known_companies
@@ -13,6 +13,8 @@ def test_last_release_ranks_body_separately_from_headline(tmp_path: Path) -> Non
         return dict(event=kind, at=stamp, seen=stamp, source=source, ticker="NET", **fields)
 
     events = [
+        # When the watch began, so publishers' stamps from before it can count
+        event("window", "21:00:00", "", start="2026-11-05T16:00:00-05:00"),
         event("new", "21:15:01", "ir", title="Third Quarter Earnings", earnings=True),
         event("new", "21:15:02", "wire", title="Third Quarter Earnings", earnings=True),
         event(
@@ -33,7 +35,8 @@ def test_last_release_ranks_body_separately_from_headline(tmp_path: Path) -> Non
     (tmp_path / "replay-NET.jsonl").write_text(
         json.dumps(event("source_body", "21:14:00", "replay")), encoding="utf-8"
     )
-    headlines, bodies, comparison = _measurements(tmp_path, "NET", date(2026, 11, 5))
+    headlines, bodies, comparison, watched = _measurements(tmp_path, "NET", date(2026, 11, 5))
+    assert watched == datetime(2026, 11, 5, 21, tzinfo=UTC)
     speed = Speed(date(2026, 11, 5), measured_headlines=headlines, measured_text=bodies)
     basis, order = speed.fastest()
     assert basis == "seen live by the bot"
@@ -69,6 +72,21 @@ def test_live_sightings_beat_publisher_timestamps_and_timestamps_beat_nothing() 
         [live[1], live[0]],
     )
     assert Speed(date(2026, 11, 5)).fastest() == ("", [])
+    # On, Nov 10: its IR feed had the release at 5:00 AM, before the watch opened at 5:10, and
+    # the bot's first live sighting was SEC's 6-K at 6:07
+    q4 = Timing("q4_press", _at("05:00:00"))
+    sec = Timing("edgar_latest", _at("06:07:05"))
+    early = Speed(
+        date(2026, 11, 5), archive=[q4], measured_headlines=[sec], watched_from=_at("05:10:00")
+    )
+    assert early.fastest() == (
+        "seen live by the bot, and publishers' earlier timestamps",
+        [q4, sec],
+    )
+    # A stamp from while the bot was watching may only be when the release was scheduled
+    assert Speed(
+        date(2026, 11, 5), archive=archive, measured_headlines=live, watched_from=_at("15:05:00")
+    ).fastest() == ("seen live by the bot", [live[1], live[0]])
 
 
 def test_a_saved_speed_check_reads_back_and_an_old_one_doesnt() -> None:

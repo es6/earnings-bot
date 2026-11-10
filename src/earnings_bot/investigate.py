@@ -26,7 +26,6 @@ from earnings_bot.issuers import SEC_SUBMISSIONS, filing_form, release_time
 from earnings_bot.known import KnownCompany, SourceCheck, known_companies
 from earnings_bot.recorder import ET, PollError, poll
 from earnings_bot.sec_results import SixKResults, SixKUnavailable
-from earnings_bot.source_audit import local_day
 from earnings_bot.sources import (
     EdgarFilings,
     Q4PressReleases,
@@ -47,8 +46,9 @@ REINVESTIGATE = timedelta(days=30)
 # 7 checks Q4 feeds independently of the issuer homepage, 8 verifies newsroom JSON,
 # 9 recognizes more 6-K results language and looks further back for Q4 wire datelines,
 # 10 reads the IR site as Chrome renders it, finds IR hosts behind www. and brand domains, and
-# keeps the IR home page for reading dates.
-INVESTIGATION = 10
+# keeps the IR home page for reading dates, 11 reads the IR site from the last three results
+# releases and keeps earlier research when none names one.
+INVESTIGATION = 11
 _HOST = re.compile(r"\b((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,})\b", re.IGNORECASE)
 _WEB_HOST = re.compile(r"\b(?:https?://|(?=www\.))" + _HOST.pattern, re.IGNORECASE)
 _IR_HOST = re.compile(r"^(?:ir|investors?|investor-?relations)\.", re.IGNORECASE)
@@ -90,6 +90,7 @@ _IR_NAV = re.compile(r"investors?(?: relations| hub| center| centre| information
 # Where IR sites usually keep it, for one whose home page doesn't link it plainly
 _LISTINGS = ("/press-releases", "/news-releases")
 _BLOCKED = frozenset({401, 403, 429})
+RELEASES_READ = 3  # recent results releases read for the IR site and wire
 # When an IR page says it was posted: "Aug 13, 2026 at 4:01 PM EDT"
 _POSTED = re.compile(
     r"\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+(\d{1,2}),\s+(20\d{2})"
@@ -292,19 +293,22 @@ class Findings:
         return " ".join(part for part in parts if part)
 
 
-async def _last_release(fetcher: Fetcher, cik: int) -> str | None:
-    """The text of the company's last results release, as filed with its 8-K."""
+async def _last_releases(fetcher: Fetcher, cik: int, count: int = RELEASES_READ) -> list[str]:
+    """The texts of the company's last results releases, as filed with its 8-Ks, newest first."""
     # Read more rows from the same submissions response. Only results exhibits get fetched.
     sec = EdgarFilings(cik, limit=500)
     try:
         _, filings = await poll(sec, fetcher)
     except PollError:
-        return None
+        return []
     results = [filing for filing in filings if filing.earnings and filing.title.startswith("8-K ")]
-    for filing in results[:2]:
+    texts = []
+    for filing in results[: count + 1]:
         if text := await release_text(fetcher, sec, filing):
-            return text
-    return None
+            texts.append(text)
+            if len(texts) == count:
+                break
+    return texts
 
 
 async def _get(fetcher: Fetcher, url: str, *, allow_redirects: bool = True) -> Response | None:
@@ -733,16 +737,13 @@ async def investigate(
                     "sixk": [f"{stamp.astimezone(ET):%H:%M}" for stamp in accepted],
                 }
             )
-        # Every copy of the latest results: a Hong Kong listing files its own announcement
-        # beside the press release, and only the press release names the wire and IR site
-        latest = local_day(results[0].published) if results else None
-        texts = [
-            (result.body or b"").decode()
-            for result in results
-            if local_day(result.published) == latest
-        ]
+        # Every recent results release, newest first. A Hong Kong listing files its own
+        # announcement beside the press release, and a release can leave out the IR site that
+        # the one before named: On's Q2 2026 release named investors.on-running.com, its Q3
+        # release didn't
+        texts = [(result.body or b"").decode() for result in results]
     else:
-        texts = [await _last_release(fetcher, company.cik) or ""]
+        texts = await _last_releases(fetcher, company.cik)
     text = "\n".join(texts)
     times = company.sixk if company.sec_form == "6-K" else company.eightk
     report.watch(
@@ -864,6 +865,16 @@ async def investigate(
                 f"Issuer results API <{findings.results_api}>",
                 "Verified over direct HTTP. Lists each quarter's press release",
             )
+    found_ir = bool(findings.site or findings.feeds or findings.q4 or findings.news_api)
+    earlier = (
+        company.q4_host or company.ir_listing or company.ir_home or next(iter(company.rss), None)
+    )
+    if not found_ir and earlier:
+        # Nothing new to go on, so what earlier research verified stands
+        report.watch(
+            f"Earlier research: {urlsplit(earlier).netloc or earlier}",
+            "Kept, since its recent releases no longer name an IR site",
+        )
     report.doing("Choosing its sources")
     _wire_checks(report, findings.wire)
     found_wire = findings.wire or "unknown"
@@ -871,21 +882,26 @@ async def investigate(
     if found_wire == "GlobeNewswire":
         # GlobeNewswire's earnings feed is still on trial for every company
         trial = trial.model_copy(update={"globenewswire": company.names})
+    ir = {
+        "platform": "q4"
+        if findings.q4
+        else "own-site"
+        if (findings.site or findings.feeds)
+        else "unknown",
+        "q4_host": findings.site if findings.q4 else None,
+        "reachable": findings.q4 or bool(findings.feeds),
+        "rss": findings.feeds,
+        "ir_listing": findings.listing,
+        "ir_http_status": findings.ir_http_status,
+        "ir_news_api": findings.news_api,
+        "ir_home": findings.home,
+        "ir_results_api": findings.results_api,
+    }
+    if not found_ir and earlier:
+        ir = {key: getattr(company, key) for key in ir}
     return company.model_copy(
         update={
-            "platform": "q4"
-            if findings.q4
-            else "own-site"
-            if (findings.site or findings.feeds)
-            else "unknown",
-            "q4_host": findings.site if findings.q4 else None,
-            "reachable": findings.q4 or bool(findings.feeds),
-            "rss": findings.feeds,
-            "ir_listing": findings.listing,
-            "ir_http_status": findings.ir_http_status,
-            "ir_news_api": findings.news_api,
-            "ir_home": findings.home,
-            "ir_results_api": findings.results_api,
+            **ir,
             "ir_posted": findings.posted,
             "ir_release": findings.release_url,
             "wire": found_wire,

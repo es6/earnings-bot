@@ -111,10 +111,10 @@ async def test_track_reads_the_rendered_newsrooms_api_and_prepares_live_pdf(
         checked=NOW.date(),
     )
 
-    async def last_results(*_: object) -> str:
-        return "Sea Limited. See https://www.sea.com/investor/home."
+    async def last_results(*_: object) -> list[str]:
+        return ["Sea Limited. See https://www.sea.com/investor/home."]
 
-    monkeypatch.setattr("earnings_bot.investigate._last_release", last_results)
+    monkeypatch.setattr("earnings_bot.investigate._last_releases", last_results)
     monkeypatch.setattr(date_discovery, "chrome_available", lambda: True)
     with DeliveryStore(tmp_path / "calendar.db", 7) as store:
         calendar = Calendar(store)
