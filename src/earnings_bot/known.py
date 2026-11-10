@@ -62,10 +62,14 @@ class KnownCompany(BaseModel):
     fiscal_year_end: str | None = None
     # The IR site's press release listing, read through desktop Chrome
     ir_listing: str | None = None
+    # The latest results on it, and when the IR site says they were posted
+    ir_release: str | None = None
+    ir_posted: datetime | None = None
     # When the bot last looked for this company's sources itself, for one added from SEC data
     investigated: date | None = None
-    # What that investigation checked, kept and rejected
+    # What that investigation checked, kept and rejected, and which version of it ran
     checks: list[SourceCheck] = []
+    investigation: int = 0
 
 
 @cache

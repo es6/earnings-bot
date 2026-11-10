@@ -57,8 +57,27 @@ _NOT_EARNINGS = re.compile(
 _FILE_TYPES = (".pdf", ".xlsx", ".xls")
 
 
+# A notice of when results come out: "Applied Materials to Report Fourth Quarter and Fiscal
+# 2026 Results on Nov. 12, 2026"
+_NOTICE = re.compile(
+    r"\b(?:(?:sets?|announces?)\s+(?:(?:a|the)\s+)?(?:date|timing)|schedules?|"
+    r"(?:will|to)\s+(?:report|release|announce|publish|issue|host)|"
+    r"conference call|earnings call|webcast)\b",
+    re.IGNORECASE,
+)
+_RESULTS_WORD = re.compile(r"\b(?:earnings|results)\b", re.IGNORECASE)
+
+
+def is_date_notice(headline: str) -> bool:
+    return bool(_NOTICE.search(headline) and _RESULTS_WORD.search(headline))
+
+
 def looks_like_earnings(headline: str) -> bool:
-    return bool(_EARNINGS.search(headline)) and not _NOT_EARNINGS.search(headline)
+    return (
+        bool(_EARNINGS.search(headline))
+        and not _NOT_EARNINGS.search(headline)
+        and not is_date_notice(headline)
+    )
 
 
 def bust_cache(url: str) -> str:

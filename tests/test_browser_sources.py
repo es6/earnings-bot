@@ -188,6 +188,25 @@ async def test_lucids_listing_picks_only_the_quarters_results() -> None:
     assert fetcher.browser_calls == [(LUCID, LUCID, False), (details + "q3", LUCID, True)]
 
 
+async def test_amat_results_are_read_when_the_date_notice_is_listed_first() -> None:
+    listing = "https://ir.appliedmaterials.com/news-releases"
+    release = listing + "/news-release-details/q4-results"
+    title = "Applied Materials Announces Fourth Quarter and Fiscal 2026 Results"
+    links = (
+        '<a href="/news-releases/q4-date">Applied Materials to Report Fourth Quarter and '
+        "Fiscal 2026 Results on Nov. 12, 2026</a>"
+        f'<a href="{release}">{title}</a>'
+    ).encode()
+    body = f"<h1>{title}</h1><p>{'Revenue and earnings per share. ' * 120}</p>".encode()
+    fetcher = BrowserFake([(200, links), (200, body)])
+    source = BrowserRelease(listing, quarter_headline(2026, 4), verify_text=True)
+
+    _, items = await poll(source, fetcher)
+
+    assert [item.url for item in items] == [release]
+    assert fetcher.browser_calls == [(listing, listing, False), (release, listing, True)]
+
+
 @pytest.mark.parametrize("wire_first", [False, True])
 async def test_live_chrome_posts_or_edits_one_alert_with_the_issuer_pdf(wire_first: bool) -> None:
     article_url = "https://ir.lucidmotors.com/news-releases/news-release-details/q3"
