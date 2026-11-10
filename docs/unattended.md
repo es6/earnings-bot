@@ -28,15 +28,18 @@ investigates it outside release windows:
    figures in its exhibit before it can count as an earnings release.
 2. It checks that site for Q4's press release feed, then for an RSS feed. Either
    one is polled directly in release windows.
-3. If the site blocks the bot or has no feed, desktop Chrome reads its press
-   release list instead, as a trial.
+3. Desktop Chrome always opens the site, finds its press release list and reads
+   the latest results there. Once a date is known and last quarter's headline
+   matches the upcoming quarter's pattern, Chrome reads that list live in the
+   window too.
 4. The dateline of its latest results, such as "/PRNewswire/", names its wire.
    Until one is found, both Business Wire and PR Newswire are watched, matching
    the exchange and ticker that open every wire release, such as
    "(NASDAQ: LCID)".
 
-The scorecard shows what it found, and the source audit then ranks those sources
-on the last release. The investigation runs again a month later. The date comes
+The scorecard is edited as each step runs. When the research finishes it shows
+which source had the last results first, every source it will watch for the next
+release, and each source it checked and rejected, with the reason. The investigation runs again a month later. The date comes
 from the issuer's own notice, including a date announcement furnished on 6-K.
 FMP's earnings calendar can supply a date when `FMP_API_KEY` is set. The bot
 estimates the time from recent results filings and uses a wider window. The

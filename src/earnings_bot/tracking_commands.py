@@ -10,7 +10,7 @@ from earnings_bot.issuers import symbol
 from earnings_bot.recorder import ET
 from earnings_bot.unattended import DirectoryWatcher
 
-OFFLINE = "The earnings calendar is available when the directory watcher is running."
+OFFLINE = "⚠️ The earnings calendar is available when the directory watcher is running."
 
 
 class TrackingCommands:
@@ -96,7 +96,7 @@ class TrackingCommands:
             watcher.dates.changed.set()
             if override:
                 watcher.calendar.set_target(override, "Manual override")
-                message = describe(override, "Manual override")
+                message = f"📌 {describe(override, 'Manual override')}"
             else:
                 target = min(
                     (
@@ -107,17 +107,16 @@ class TrackingCommands:
                     key=lambda item: item.expected,
                     default=None,
                 )
-                state = "Tracking" if added else "Already tracking"
-                next_release = (
-                    describe(target, "Scheduled") if target else "Awaiting a confirmed date."
-                )
-                message = f"{state} **{row.ticker}**. {next_release}"
+                state = "✅ Now tracking" if added else "👍 Already tracking"
+                message = f"{state} **{row.ticker}** · {row.company.name}"
+                if target:
+                    message += f"\n{describe(target, 'Scheduled')}"
             if watcher.progress:
                 watcher.progress.changed.set()
                 channel_id = watcher.progress.store.channel_id
-                message += f" Progress appears in <#{channel_id}>."
+                message += f"\nFollow the research live in <#{channel_id}>."
         except ValueError as error:
-            message = str(error)
+            message = f"⚠️ {error}"
         return message
 
     @app_commands.guild_only()
@@ -127,9 +126,11 @@ class TrackingCommands:
             message = OFFLINE
         else:
             rows = upcoming(watcher.calendar.entries(), watcher.planned, watcher.journal.now())
-            message = "\n".join(rows) or "No earnings windows in the next seven days."
+            message = "\n".join(["📅 **Earnings in the next 7 days**", *rows])
+            if not rows:
+                message = "📅 No earnings windows in the next 7 days."
             if len(message) > 1950:
-                message = message[:1950].rsplit("\n", 1)[0] + "\nMore releases are scheduled."
+                message = message[:1950].rsplit("\n", 1)[0] + "\n-# …and more after these."
         await interaction.response.send_message(message, ephemeral=True)
 
     @app_commands.guild_only()
@@ -139,7 +140,7 @@ class TrackingCommands:
         ticker = symbol(ticker)
         try:
             if watcher is None:
-                raise ValueError(OFFLINE)
+                raise LookupError(OFFLINE)
             if not interaction.permissions.manage_guild:
                 raise ValueError("Manage Server is required to remove a ticker.")
             row = watcher.calendar.find(ticker)
@@ -148,10 +149,12 @@ class TrackingCommands:
                 watcher.progress.removed[row.cik] = ticker
                 watcher.progress.changed.set()
             message = (
-                f"Removed **{ticker}** from the calendar."
+                f"🗑️ Removed **{ticker}** from the calendar."
                 if removed
-                else f"**{ticker}** was already absent."
+                else f"**{ticker}** wasn't on the calendar."
             )
+        except LookupError:
+            message = OFFLINE
         except ValueError as error:
-            message = str(error)
+            message = f"⚠️ {error}"
         await interaction.response.send_message(message, ephemeral=True)

@@ -4,13 +4,14 @@ import asyncio
 import json
 import re
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
 from earnings_bot.benchmark import EarningsBenchmark
 from earnings_bot.fetch import Fetcher
+from earnings_bot.formatting import clock
 from earnings_bot.ir_research import inspect_issuer, issuer_listing
 from earnings_bot.known import KnownCompany, wires
 from earnings_bot.recorder import ET, PollError, Target, poll
@@ -33,6 +34,61 @@ class Timing:
     source: str
     at: datetime
     url: str = ""
+
+
+def _timings(rows: object) -> list[Timing]:
+    if not isinstance(rows, list):
+        raise TypeError("timings must be a list")
+    return [
+        Timing(row["source"], datetime.fromisoformat(row["at"]), row.get("url", "")) for row in rows
+    ]
+
+
+@dataclass(frozen=True)
+class Speed:
+    """How fast each source had a company's most recent results."""
+
+    day: date | None  # None when no release could be dated
+    confident: bool = False  # the release's text was verified as a results report
+    form: str = "8-K"
+    measured_text: list[Timing] = field(default_factory=list)  # when the bot read its text live
+    measured_headlines: list[Timing] = field(default_factory=list)  # when the bot saw it live
+    archive: list[Timing] = field(default_factory=list)  # publishers' own timestamps
+    verified: list[str] = field(default_factory=list)  # sources whose archive copy verified
+    benchmark: str = ""  # markdown about @earnings_guy's post, if one was found
+    ir_json: str = ""  # JSON routes the IR site's pages called, for finding faster sources
+
+    def fastest(self) -> tuple[str, list[Timing]]:
+        """The best evidence of which source was first, and its timings, earliest first."""
+        for basis, timings in (
+            ("seen live by the bot", self.measured_headlines),
+            ("publishers' timestamps", self.archive),
+        ):
+            if timings:
+                return basis, sorted(timings, key=lambda item: (item.at, item.source))
+        return "", []
+
+    def to_json(self) -> str:
+        return json.dumps(asdict(self), default=lambda value: value.isoformat())
+
+    @classmethod
+    def from_json(cls, text: str | None) -> "Speed | None":
+        """A saved audit, or None for one saved in an older format or not at all."""
+        try:
+            data = json.loads(text or "")
+            return cls(
+                day=date.fromisoformat(data["day"]) if data["day"] else None,
+                confident=bool(data["confident"]),
+                form=str(data["form"]),
+                measured_text=_timings(data["measured_text"]),
+                measured_headlines=_timings(data["measured_headlines"]),
+                archive=_timings(data["archive"]),
+                verified=[str(name) for name in data["verified"]],
+                benchmark=str(data["benchmark"]),
+                ir_json=str(data.get("ir_json", "")),
+            )
+        except (ValueError, KeyError, TypeError):
+            return None
 
 
 def local_day(stamp: str | None) -> date | None:
@@ -80,11 +136,11 @@ def _measurements(
         ):
             x_at = published_time(event.get("x_posted"))
             discord_at = published_time(event.get("discord_alert"))
-            benchmark = f"@earnings_guy <{post}>"
+            benchmark = f"[@earnings_guy posted]({post})"
             if x_at and discord_at:
                 delta = (discord_at - x_at).total_seconds()
-                direction = "later" if delta > 0 else "earlier"
-                benchmark += f" | Discord {abs(delta):.2f}s {direction}"
+                direction = "after" if delta > 0 else "before"
+                benchmark += f", and our alert went out {abs(delta):.2f}s {direction} it"
         if kind == "new" and event.get("earnings"):
             if not looks_like_earnings(event.get("title", "")) and not event["source"].startswith(
                 "edgar"
@@ -103,15 +159,6 @@ def _measurements(
         if source not in table or at < table[source].at:
             table[source] = Timing(source, at, event.get("url", ""))
     return list(headlines.values()), list(bodies.values()), benchmark
-
-
-def _rank(label: str, items: list[Timing]) -> str:
-    ordered = sorted(items, key=lambda item: (item.at, item.source))
-    if not ordered:
-        return f"{label} | no timing recorded"
-    first = ordered[0]
-    names = [f"{item.source} +{(item.at - first.at).total_seconds():.2f}s" for item in ordered[:6]]
-    return f"{label} | {first.at.astimezone(ET):%H:%M:%S} ET | {', '.join(names)}"
 
 
 async def _list(fetcher: Fetcher, source: Source) -> list[Sighting]:
@@ -151,7 +198,7 @@ async def audit_sources(
     now: datetime,
     benchmark: EarningsBenchmark | None,
     sixk: SixKResults | None = None,
-) -> str:
+) -> Speed:
     """Use the latest dated results. Publisher times are estimates of availability."""
     form = company.sec_form or "8-K"
     sec = EdgarFilings(company.cik, limit=500 if form == "6-K" else 150, form=form)
@@ -224,7 +271,7 @@ async def audit_sources(
             estimates.append(Timing(source.name, at, item.url))
 
     if anchor is None:
-        return "Most recent release could not be anchored to a dated report."
+        return Speed(day=None, form=sec.form)
     day = anchor
     heads, bodies, comparison = await asyncio.to_thread(_measurements, directory, ticker, day)
 
@@ -236,20 +283,18 @@ async def audit_sources(
         ]
         for post in sorted(candidates, key=lambda item: item.posted):
             if await benchmark.verify(post):
-                comparison = (
-                    f"@earnings_guy | {post.posted.astimezone(ET):%H:%M:%S} ET <{post.url}>"
-                )
+                when = clock(post.posted, seconds=True)
+                comparison = f"[@earnings_guy posted]({post.url}) at {when}"
                 break
     browser = await inspect_issuer(fetcher, issuer_listing(ticker, company), day, titles)
-    heading = "Last release" if confidence else f"Likely last release ({sec.form} date)"
-    lines = [
-        f"**{heading} | {day:%b %d, %Y}**",
-        _rank("Measured report text", bodies),
-        _rank("Measured headlines", heads),
-        _rank("Archive times (estimates)", estimates),
-        "Verified archive bodies | " + (", ".join(dict.fromkeys(verified)) or "none found"),
-        comparison or "@earnings_guy | no verified post in the available history",
-    ]
-    if browser:
-        lines.append(browser)
-    return "\n".join(lines)
+    return Speed(
+        day=day,
+        confident=confidence,
+        form=sec.form,
+        measured_text=bodies,
+        measured_headlines=heads,
+        archive=estimates,
+        verified=list(dict.fromkeys(verified)),
+        benchmark=comparison,
+        ir_json=browser,
+    )

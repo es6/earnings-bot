@@ -17,10 +17,10 @@ from earnings_bot.calendar import Calendar
 from earnings_bot.date_discovery import DateDiscovery
 from earnings_bot.delivery import DeliveryStore, retry_delivery
 from earnings_bot.fetch import Fetcher
+from earnings_bot.formatting import clock, day, duration, period_label, source_label, stamp
 from earnings_bot.issuers import Issuers
 from earnings_bot.pipeline import DiscordPoster, DurableDiscordPoster, Releases, keep_warm
 from earnings_bot.recorder import (
-    ET,
     Journal,
     Plan,
     Polls,
@@ -31,7 +31,7 @@ from earnings_bot.recorder import (
 )
 from earnings_bot.sec_results import SixKResults
 from earnings_bot.source_audit import audit_sources
-from earnings_bot.sources import Sighting, Source
+from earnings_bot.sources import EdgarFilings, Sighting, Source
 from earnings_bot.summary import Summarizer
 from earnings_bot.text import release_text, verified_report
 from earnings_bot.track_progress import TrackProgress
@@ -106,27 +106,32 @@ class DirectoryWatcher:
         live = [t.ticker for t in running if t.window[0] <= now < t.window[1]]
         upcoming = [t for t in running if t.window[0] > now]
         next_window = min(upcoming, key=lambda t: t.window[0], default=None)
-        lines = [f"Watching {self.directory.name}/. Active: {', '.join(live) or 'none'}."]
+        lines = [
+            f"🟢 **Watching** `{self.directory.name}/` · live now: {', '.join(live) or 'none'}"
+        ]
         if next_window:
-            start = next_window.window[0].astimezone(ET)
-            lines.append(f"Next: {next_window.ticker} at {start:%b %d %H:%M} ET.")
+            start = next_window.window[0]
+            lines.append(
+                f"⏭️ Next: **{next_window.ticker}** from {day(start)}, {clock(start)} "
+                f"({stamp(start, 'R')})"
+            )
         if self.last_scan:
-            lines.append(f"Last scan: {self.last_scan.astimezone(ET):%H:%M:%S} ET.")
+            lines.append(f"🕑 Last schedule scan {clock(self.last_scan, seconds=True)}")
         if self.problems:
-            lines.append(f"Problems: {len(self.problems)}. See the status log.")
+            lines.append(f"⚠️ {len(self.problems)} problem(s). See the status channel.")
         if self.latest_benchmark:
-            lines.append(self.latest_benchmark)
+            lines.append(f"🏁 {self.latest_benchmark}")
         return "\n".join(lines)
 
     def _problem(self, name: str, message: str | None) -> None:
         previous = self.problems.get(name)
         if message is not None:
             if message != previous:
-                self.status(f"{name}: {message}")
+                self.status(f"⚠️ **{name}**: {message}")
             self.problems[name] = message
         elif previous is not None:
             del self.problems[name]
-            self.status(f"{name}: recovered")
+            self.status(f"✅ **{name}** recovered")
 
     def _targets(self) -> dict[str, Target] | None:
         try:
@@ -184,7 +189,7 @@ class DirectoryWatcher:
                 if not window.task.done():
                     window.task.cancel()
                     await asyncio.gather(window.task, return_exceptions=True)
-                    self.status(f"{window.target.ticker}: schedule changed or removed")
+                    self.status(f"🔁 **{window.target.ticker}**: schedule changed or removed")
                 del self.windows[key]
 
         for key, target in targets.items():
@@ -202,7 +207,9 @@ class DirectoryWatcher:
                         if saved and saved.message_id
                         else "no completed watch was recorded"
                     )
-                    self.status(f"{target.ticker}: window expired and {outcome}")
+                    self.status(
+                        f"⌛ **{target.ticker}**: window ended while the bot was off, and {outcome}"
+                    )
                     self.store.close_window(*token)
                 self.closed.add(token)
                 continue
@@ -340,46 +347,49 @@ def _benchmark_report(result: BenchmarkResult, alert: datetime | None) -> str:
             "unavailable": "lookup unavailable",
             "unverified": "candidate could not be verified",
         }
-        return f"@earnings_guy: {state.get(result.state, 'lookup unavailable')}."
+        return f"@earnings_guy: {state.get(result.state, 'lookup unavailable')}"
     post = result.post
-    local = f"{post.posted.astimezone(ET):%H:%M:%S.%f}"[:-3]
-    text = f"@earnings_guy posted at {local} ET"
+    text = f"[@earnings_guy](<{post.url}>) posted at {clock(post.posted, millis=True)}"
     if alert:
         delta = (alert - post.posted).total_seconds()
         if abs(delta) < 0.005:
-            text += ". Our Discord alert tied"
+            text += ", the same moment as our alert"
         else:
-            direction = "earlier" if delta < 0 else "later"
-            text += f". Our Discord alert was {abs(delta):.2f}s {direction}"
+            direction = "after" if delta < 0 else "before"
+            text += f", {abs(delta):.2f}s {direction} our alert"
     else:
-        text += ". No Discord alert recorded"
-    return f"{text}. <{post.url}>"
+        text += ". No Discord alert was recorded"
+    return text
 
 
 def _window_report(target: Target, watches: list[Watch], comparison: str = "") -> str:
     def label(watch: Watch) -> str:
-        return watch.source.name + (" (trial)" if watch.source.trial else "")
+        form = watch.source.form if isinstance(watch.source, EdgarFilings) else "8-K"
+        return source_label(watch.source.name, form) + (" (trial)" if watch.source.trial else "")
 
-    seen = sorted(
-        ((watch.first, label(watch)) for watch in watches if watch.first),
-    )
+    period = f" {period_label(target.period)}" if target.period else ""
+    lines = [f"🏁 **{target.ticker}{period} window closed**"]
+    seen: dict[str, datetime] = {}
+    for at, name in sorted((watch.first, label(watch)) for watch in watches if watch.first):
+        seen.setdefault(name, at)
     if seen:
-        stamp, winner = seen[0]
-        behind = ", ".join(f"{name} +{(at - stamp).total_seconds():.2f}s" for at, name in seen[1:])
-        local = f"{stamp.astimezone(ET):%H:%M:%S.%f}"[:-3]
-        outcome = f"{winner} first at {local} ET"
-        if behind:
-            outcome += f". {behind}"
+        (winner, first), *rest = seen.items()
+        lines.append(f"🥇 {winner} at {clock(first, millis=True)}")
+        if rest:
+            behind = (f"{name} +{duration((at - first).total_seconds())}" for name, at in rest)
+            lines.append("Then " + " · ".join(behind))
     else:
-        caught_up = ", ".join(label(w) for w in watches if w.caught_up)
-        outcome = f"already out on first poll ({caught_up})" if caught_up else "no release seen"
-    stopped = ", ".join(label(w) for w in watches if w.stopped)
-    if stopped:
-        outcome += f". Stopped sources: {stopped}"
-    heading = f"{target.ticker} window closed."
+        caught_up = list(dict.fromkeys(label(w) for w in watches if w.caught_up))
+        lines.append(
+            "Already out when the window opened: " + ", ".join(caught_up)
+            if caught_up
+            else "No release seen"
+        )
+    if stopped := list(dict.fromkeys(label(w) for w in watches if w.stopped)):
+        lines.append(f"⚠️ Stopped early: {', '.join(stopped)}")
     if comparison:
-        heading += f" {comparison}"
-    return f"{heading} {outcome}."
+        lines.append(f"-# {comparison}")
+    return "\n".join(lines)
 
 
 async def watch_directory(
@@ -426,9 +436,9 @@ async def watch_directory(
                 try:
                     await retry_delivery(partial(poster.send, pending.content))
                 except (aiohttp.ClientError, discord.HTTPException, TimeoutError) as error:
-                    status(f"Pending alert {pending.key} needs attention: {error!r}")
+                    status(f"⚠️ Pending alert {pending.key} needs attention: {error!r}")
                 else:
-                    status(f"Recovered pending alert {pending.key}.")
+                    status(f"✅ Recovered pending alert {pending.key}")
 
         async with Fetcher(sec_user_agent) as fetcher:
             releases = Releases(
@@ -455,9 +465,12 @@ async def watch_directory(
                 watcher.busy,
                 partial(audit_sources, fetcher, directory, benchmark=benchmark, sixk=watcher.sixk),
                 date_phase=watcher.dates.phases.get,
+                research=watcher.dates.reports.get,
+                ir_note=watcher.dates.ir_notes.get,
             )
+            watcher.dates.on_progress = watcher.progress.changed.set
             ready(watcher)
-            status(f"Earnings monitoring started. Reading {directory.name}/.")
+            status(f"🟢 **Earnings monitoring started**, reading `{directory.name}/`")
             tasks = [
                 asyncio.create_task(recover_pending()),
                 asyncio.create_task(watcher.progress.run()),

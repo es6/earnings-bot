@@ -1,23 +1,24 @@
 import asyncio
 import io
 import json
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import cast
 
 import discord
 import pytest
 
-from earnings_bot.calendar import Calendar
+from earnings_bot.calendar import Calendar, describe
 from earnings_bot.date_discovery import CALENDAR_6K_DATE, DateDiscovery, calendar_date
 from earnings_bot.delivery import DeliveryStore
 from earnings_bot.issuers import profile
+from earnings_bot.known import SourceCheck
 from earnings_bot.recorder import ET, Journal, Polls, Target, Watch
 from earnings_bot.sec_results import SixKResults, is_results_release
-from earnings_bot.source_audit import audit_sources
+from earnings_bot.source_audit import Speed, audit_sources
 from earnings_bot.sources import EdgarFilings, EdgarLatest, Sighting
 from earnings_bot.track_progress import TrackProgress
-from tests.fakes import RoutedFetcher, sec_filing_detail
+from tests.fakes import RoutedFetcher, embed_text, sec_filing_detail
 from tests.test_unattended import FakeDiscord
 
 NOW = datetime(2026, 11, 9, 17, tzinfo=ET)
@@ -137,8 +138,8 @@ async def test_saved_bn_profile_is_enriched_and_scheduled_from_issuer_notice(
 ) -> None:
     from earnings_bot import date_discovery
 
-    async def no_trial(*args: object) -> None:
-        return None
+    async def no_trial(*args: object) -> tuple[None, str]:
+        return None, "Not checked in tests"
 
     monkeypatch.setattr(date_discovery, "verified_browser_source", no_trial)
     data = filings()
@@ -165,7 +166,8 @@ async def test_saved_bn_profile_is_enriched_and_scheduled_from_issuer_notice(
         assert found.company.sixk == ["06:45"] and found.company.release_time == "06:45"
         assert found.company.ir_listing == LISTING
         assert found.company.wire == "GlobeNewswire"
-        assert messages[0].startswith("BN: Investigated")
+        assert messages == [f"📅 {describe(found.target, found.evidence or '')}"]
+        assert ("SEC 6-K filings", True) in [(c.source, c.watch) for c in found.company.checks]
         fallback = await calendar_date(fetcher, "test", "BN", found.company, NOW)
         assert fallback and fallback[0].expected.hour == 6 and fallback[1] == CALENDAR_6K_DATE
 
@@ -174,9 +176,9 @@ async def test_source_audit_anchors_on_verified_6k(tmp_path: Path) -> None:
     data = filings()
     company = profile("BN", CIK, "Brookfield Corporation", data, NOW.date())
     fetcher = RoutedFetcher(fixtures(data))
-    score = await audit_sources(fetcher, tmp_path, "BN", company, NOW, None, SixKResults(fetcher))
-    assert "Last release | Aug 13, 2026" in score
-    assert "SEC 6-K acceptance" in score
+    speed = await audit_sources(fetcher, tmp_path, "BN", company, NOW, None, SixKResults(fetcher))
+    assert speed.day == date(2026, 8, 13) and speed.confident and speed.form == "6-K"
+    assert [timing.source for timing in speed.archive] == ["SEC 6-K acceptance"]
 
 
 async def test_an_issuer_notice_filed_on_6k_can_schedule_but_never_alert(tmp_path: Path) -> None:
@@ -185,7 +187,10 @@ async def test_an_issuer_notice_filed_on_6k_can_schedule_but_never_alert(tmp_pat
     routes[f"{folder(ORDINARY)}/exh_991.htm"] = (200, NOTICE_BODY)
     fetcher = RoutedFetcher(routes)
     company = profile("BN", CIK, "Brookfield Corporation", data, NOW.date()).model_copy(
-        update={"investigated": NOW.date()}
+        update={
+            "investigated": NOW.date(),
+            "checks": [SourceCheck(source="SEC 8-K filings", watch=True, why="Filed here")],
+        }
     )
     with DeliveryStore(tmp_path / "state.db", 7) as store:
         calendar = Calendar(store)
@@ -202,11 +207,14 @@ async def test_an_issuer_notice_filed_on_6k_can_schedule_but_never_alert(tmp_pat
 
 
 async def test_scorecard_explains_busy_and_missing_date_states(tmp_path: Path) -> None:
-    async def audit(*args: object) -> str:
-        return "No historical release."
+    async def audit(*args: object) -> Speed:
+        return Speed(None)
 
     company = profile("BN", CIK, "Brookfield Corporation", filings(), NOW.date()).model_copy(
-        update={"investigated": NOW.date()}
+        update={
+            "investigated": NOW.date(),
+            "checks": [SourceCheck(source="SEC 8-K filings", watch=True, why="Filed here")],
+        }
     )
     busy = True
     with DeliveryStore(tmp_path / "state.db", 7) as store:
@@ -224,9 +232,15 @@ async def test_scorecard_explains_busy_and_missing_date_states(tmp_path: Path) -
             audit,
             date_phase=dates.phases.get,
         )
-        assert "waiting for release monitoring" in progress._render(row, None, False)
+        assert "Speed history (waits for an open release window)" in embed_text(
+            progress.render(row, None, False)
+        )
+        await dates._check(row)
+        assert "Release date: waiting for an open release window to close" in embed_text(
+            progress.render(row, None, False)
+        )
         busy = False
         await dates._check(row)
-        score = progress._render(row, None, False)
-        assert "Files results on SEC Form 6-K" in score
-        assert "No confirmed date found" in score and "when" in score and "period" in score
+        score = embed_text(progress.render(row, None, False))
+        assert "results on Form 6-K" in score
+        assert "⚠️ No release date found yet" in score and "`when`" in score and "`period`" in score

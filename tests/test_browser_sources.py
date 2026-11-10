@@ -231,7 +231,7 @@ async def test_live_chrome_posts_or_edits_one_alert_with_the_issuer_pdf(wire_fir
     assert [kind for kind, _ in poster.calls] == (
         ["send", "edit", "edit", "attach"] if wire_first else ["send", "edit", "attach"]
     )
-    assert f"IR site: <{article_url}>" in poster.calls[-2][1]
+    assert f"[IR site](<{article_url}>)" in poster.calls[-2][1]
     assert f"<{pdf_url}>" in poster.calls[-2][1]
     assert poster.calls[-1] == ("attach", "LCID-FY2026Q3-results.pdf")
     assert fetcher.browser_calls[-1] == (pdf_url, LUCID, True)

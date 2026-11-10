@@ -123,10 +123,10 @@ async def test_release_posts_links_files_and_summary(release_texts: dict[str, st
     assert sorted(kinds) == ["attach", "edit", "edit", "send", "summary"]
     first_post = poster.calls[0][1]
     assert first_post.startswith("🚨 **$UBER earnings are out**")
-    assert f"IR site: <{IR_PAGE}>" in first_post
+    assert f"[IR site](<{IR_PAGE}>)" in first_post
     last_edit = [text for kind, text in poster.calls if kind == "edit"][-1]
-    assert f"SEC 8-K: <{FILING}>" in last_edit
-    assert f"Uber-Q3-26-Earnings-Press-Release.pdf: <{PDF}>" in last_edit
+    assert f"[SEC 8-K](<{FILING}>)" in last_edit
+    assert f"[Uber-Q3-26-Earnings-Press-Release.pdf](<{PDF}>)" in last_edit
     summary = next(text for kind, text in poster.calls if kind == "summary")
     assert "from the IR site text" in summary
     assert "12%" in summary
@@ -158,7 +158,7 @@ async def test_both_sec_sources_give_the_filing_one_link() -> None:
     await release.finish()
 
     assert [kind for kind, _ in poster.calls] == ["send"]
-    assert f"SEC 8-K: <{index}>" in poster.calls[0][1]
+    assert f"[SEC 8-K](<{index}>)" in poster.calls[0][1]
 
 
 FOLDER, PRIMARY = FILING.rsplit("/", 1)
@@ -290,7 +290,7 @@ async def test_trial_sources_dont_post_unless_the_schedule_asks() -> None:
     await releases.finish()
     [poster] = posters
     assert [kind for kind, _ in poster.calls] == ["send"]
-    assert f"Broadcom newsroom: <{results.url}>" in poster.calls[0][1]
+    assert f"[Broadcom newsroom](<{results.url}>)" in poster.calls[0][1]
 
 
 async def test_the_same_release_from_both_copies_of_a_feed_posts_once(
@@ -308,7 +308,7 @@ async def test_the_same_release_from_both_copies_of_a_feed_posts_once(
     await release.finish()
 
     assert [kind for kind, _ in poster.calls] == ["send"]
-    assert f"GlobeNewswire: <{url}>" in poster.calls[0][1]
+    assert f"[GlobeNewswire](<{url}>)" in poster.calls[0][1]
     # The text is still fetched without a summarizer, to log when it arrives
     events = [e["event"] for e in map(json.loads, log.getvalue().splitlines())]
     assert events.count("body") == 1
@@ -326,7 +326,7 @@ async def test_an_alert_for_a_release_already_out_says_so() -> None:
     await release.finish()
 
     [(_, alert)] = poster.calls
-    assert "-# Already out when the bot started watching. First seen" in alert
+    assert "-# Already out when the bot started watching · First seen" in alert
 
 
 class UploadedLater(RoutedFetcher):
@@ -491,3 +491,39 @@ async def test_an_alert_with_too_many_links_is_cut_to_discords_limit() -> None:
     longest = max(len(content) for _, content in poster.calls)
     assert longest == pipeline.MAX_CONTENT
     assert poster.calls[-1][1].endswith("…")
+
+
+async def test_an_alert_names_the_quarter_and_masks_each_link() -> None:
+    target = Target(
+        ticker="LCID",
+        expected=datetime(2026, 11, 9, 16, 5, tzinfo=ET),
+        cik=1811210,
+        period="FY2026Q3",
+    )
+    poster = FakePoster()
+    journal = Journal(io.StringIO())
+    release = Release(target, poster, RoutedFetcher({}), journal, None, None)
+    wire = RssFeed("prnewswire_busted", "https://www.prnewswire.com/rss/x.rss", ["Lucid Group"])
+    article = "https://www.prnewswire.com/news-releases/lucid-q3.html"
+    filing = "https://www.sec.gov/Archives/edgar/data/1811210/000162828026072158/index.htm"
+    deck = "https://ir.lucidmotors.com/files/Q3_2026_Results.pdf"
+
+    release.add(
+        wire, Sighting("q3", "Lucid Announces Third Quarter 2026 Results", article, earnings=True)
+    )
+    await release.finish()
+    release.add(EdgarFilings(1811210), Sighting("8k", "8-K 2.02", filing, earnings=True))
+    release.add(GuessedFile(deck), Sighting(deck, "deck", deck, earnings=True, body=b"%PDF-1.7"))
+    await release.finish()
+
+    first = poster.calls[0][1].splitlines()
+    assert first[0] == "🚨 **$LCID Q3 FY26 earnings are out**"
+    assert first[1].startswith("-# First seen ") and first[1].endswith(" PM ET via PR Newswire")
+    assert first[2:] == [f"📰 [PR Newswire](<{article}>)"]
+    last = [content for kind, content in poster.calls if kind == "edit"][-1].splitlines()
+    assert last[2:] == [
+        f"📰 [PR Newswire](<{article}>)",
+        f"🏛️ [SEC 8-K](<{filing}>)",
+        # Markdown in a file's name is escaped, so it shows as written
+        f"📄 [Q3\\_2026\\_Results.pdf](<{deck}>)",
+    ]

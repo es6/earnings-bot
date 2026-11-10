@@ -1,14 +1,17 @@
 """Persistent issuer subscriptions and the next planned release."""
 
+import re
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
 from earnings_bot.delivery import DeliveryStore
+from earnings_bot.formatting import period_label, stamp
 from earnings_bot.ir_research import IR_LISTINGS, quarter_headline
 from earnings_bot.known import KnownCompany, known_companies, to_target
 from earnings_bot.recorder import ET, Target
 
 DAILY_ADDS = 5
+_LINKED = re.compile(r"(.*?)\s*<(https?://[^>\s]+)>")
 MAX_TRACKED = 50
 
 
@@ -252,13 +255,21 @@ def manual_target(
     return to_target(ticker, expected.astimezone(ET), fy, quarter, company)
 
 
+def evidence_text(evidence: str) -> str:
+    """Evidence for a date, with a trailing <link> made a short masked link."""
+    match = _LINKED.fullmatch(evidence)
+    if match is None:
+        return evidence
+    text, url = match.groups()
+    return f"{text} · [source](<{url}>)"
+
+
 def describe(target: Target, evidence: str) -> str:
-    stamp = target.expected.astimezone(ET)
-    start = target.window[0].astimezone(ET)
-    period = f" {target.period}" if target.period else ""
+    """One line about a planned release, with its time in each reader's own time zone."""
+    period = f" {period_label(target.period)}" if target.period else ""
     return (
-        f"**{target.ticker}{period}** · {stamp:%b %d, %H:%M} ET · {evidence}"
-        f" · watches from {start:%H:%M} ET"
+        f"**{target.ticker}**{period} · {stamp(target.expected, 'F')} "
+        f"({stamp(target.expected, 'R')}) · {evidence_text(evidence)}"
     )
 
 
@@ -280,5 +291,5 @@ def upcoming(tracked: list[Tracked], planned: dict[str, Target], now: datetime) 
             rows.append(describe(target, evidence or "Tracked"))
     planned_ciks = {target.cik for target in planned.values() if target.window[1] > now}
     if pending := [row.ticker for row in tracked if row.cik not in planned_ciks]:
-        rows.append(f"Awaiting dates: {', '.join(pending)}")
+        rows.append(f"-# Still looking for dates: {', '.join(pending)}")
     return rows

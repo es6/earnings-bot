@@ -21,7 +21,7 @@ from earnings_bot.delivery import DeliveryStore
 from earnings_bot.fetch import Fetcher, Response
 from earnings_bot.ir_research import IR_LISTINGS
 from earnings_bot.issuers import profile
-from earnings_bot.known import known_companies, to_target
+from earnings_bot.known import SourceCheck, known_companies, to_target
 from earnings_bot.recorder import ET
 from tests.fakes import RoutedFetcher
 from tests.sec_data import LCID_CIK, LCID_SUBMISSIONS
@@ -54,8 +54,11 @@ def no_browser(monkeypatch: pytest.MonkeyPatch) -> None:
     async def nothing(*args: object) -> None:
         return None
 
+    async def unverified(*args: object) -> tuple[None, str]:
+        return None, "Not checked in tests"
+
     monkeypatch.setattr(date_discovery, "_listing_date", nothing)
-    monkeypatch.setattr(date_discovery, "verified_browser_source", nothing)
+    monkeypatch.setattr(date_discovery, "verified_browser_source", unverified)
 
 
 def test_notice_prefers_report_time_over_call_and_preserves_fiscal_year() -> None:
@@ -170,7 +173,7 @@ async def test_discovery_waits_out_an_open_window_then_saves_the_issuers_date(
             assert row.target.expected == datetime(2026, 11, 17, 16, 20, tzinfo=ET)
             evidence = f"Issuer confirmed release time <https://investor.nvidia.com{NVIDIA_LINK}>"
             assert row.evidence == evidence
-            assert statuses == [describe(row.target, evidence)]
+            assert statuses == [f"📅 {describe(row.target, evidence)}"]
 
             # Each issuer is checked about once an hour, so another /track doesn't recheck it
             fetched = len(fetcher.requests)
@@ -258,9 +261,9 @@ async def test_a_verified_browser_source_joins_the_found_date_and_is_kept(
     trial = IRSource(listing=IR_LISTINGS["NVDA"], headline="Third Quarter", verify_text=True)
     verified: list[str] = []
 
-    async def verify(fetcher: Fetcher, ticker: str, period: str) -> IRSource:
+    async def verify(fetcher: Fetcher, ticker: str, period: str) -> tuple[IRSource, str]:
         verified.append(period)
-        return trial
+        return trial, "Last quarter's results read in Chrome"
 
     monkeypatch.setattr(date_discovery, "verified_browser_source", verify)
     fetcher = RoutedFetcher({NVIDIA_FEED: nvidia_notices()})
@@ -275,6 +278,7 @@ async def test_a_verified_browser_source_joins_the_found_date_and_is_kept(
 
         [row] = calendar.entries()
         assert row.target and row.target.ir == trial
+        assert dates.ir_notes[row.cik] == "Last quarter's results read in Chrome"
         # The next hourly check finds the same date, and keeps the trial without verifying again
         await dates._check(row)
         assert calendar.entries() == [row]
@@ -284,7 +288,10 @@ async def test_a_verified_browser_source_joins_the_found_date_and_is_kept(
 
 # Already investigated, so these tests see date discovery alone
 LUCID = profile("LCID", LCID_CIK, "Lucid Group, Inc.", LCID_SUBMISSIONS, NOW.date()).model_copy(
-    update={"investigated": NOW.date()}
+    update={
+        "investigated": NOW.date(),
+        "checks": [SourceCheck(source="SEC 8-K filings", watch=True, why="Filed here")],
+    }
 )
 FMP_ROUTE = "financialmodelingprep.com/stable/earnings?symbol=LCID"
 
@@ -335,7 +342,7 @@ async def test_fmps_date_at_the_8k_time_sets_a_wide_window(tmp_path: Path) -> No
         assert (row.target.before_minutes, row.target.after_minutes) == (60, 90)
         assert row.target.prnewswire == LUCID.names
         assert row.evidence == CALENDAR_DATE
-        assert lucid.statuses == [describe(row.target, CALENDAR_DATE)]
+        assert lucid.statuses == [f"📅 {describe(row.target, CALENDAR_DATE)}"]
     # The key goes in a header, not the URL
     [(_, url, headers)] = fetcher.requests
     assert url == f"{FMP_EARNINGS}?symbol=LCID&limit=5"

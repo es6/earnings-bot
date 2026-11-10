@@ -690,7 +690,9 @@ multiple local instances, writes UTF-8 console logs under `recordings/`, and res
 See the [setup and recovery guide](unattended.md#run-and-recover).
 
 The optional status channel receives startup, schedule problem and window-close reports.
-Per-issuer scorecards show the next date, prepared sources and the latest source audit. In
+Per-issuer scorecards are embeds edited as research runs. They show progress, the next date,
+which source was first last time, the sources to be watched, and each source the investigation
+rejected with its reason. In
 the absence of a status channel the scorecards go to the earnings channel, and status events
 stay in the journal. `/watch_status` shows active tickers, the next window, the last scan and
 the latest benchmark comparison.

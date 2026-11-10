@@ -22,6 +22,7 @@ from earnings_bot.fetch import Response
 from earnings_bot.known import KnownCompany, known_companies, to_target
 from earnings_bot.pipeline import Releases
 from earnings_bot.recorder import ET, Journal
+from earnings_bot.source_audit import Speed
 from earnings_bot.sources import PR_NEWSWIRE_EARNINGS
 from earnings_bot.track_progress import TrackProgress
 from earnings_bot.tracking_commands import OFFLINE, TrackingCommands
@@ -90,7 +91,7 @@ async def call(
     return reply
 
 
-async def never_audit(ticker: str, company: KnownCompany, when: datetime) -> str:
+async def never_audit(ticker: str, company: KnownCompany, when: datetime) -> Speed:
     raise AssertionError("these tests don't run the scorecard's source audit")
 
 
@@ -142,7 +143,7 @@ async def test_track_adds_a_catalog_ticker_once_and_wakes_the_calendar(
 
     reply = await call(commands.track, " nvda ")
 
-    assert reply == "Tracking **NVDA**. Awaiting a confirmed date. Progress appears in <#99>."
+    assert reply == "✅ Now tracking **NVDA** · NVIDIA\nFollow the research live in <#99>."
     assert tracked(watcher) == ["NVDA"]
     # Date discovery and the scorecard look now, not at their next pass
     assert watcher.dates.changed.is_set()
@@ -156,9 +157,11 @@ async def test_track_adds_a_catalog_ticker_once_and_wakes_the_calendar(
 
     reply = await call(commands.track, "NVDA", user=2)
 
-    assert reply == (
-        f"Already tracking **NVDA**. {describe(sooner, 'Scheduled')} Progress appears in <#99>."
-    )
+    assert reply.splitlines() == [
+        "👍 Already tracking **NVDA** · NVIDIA",
+        describe(sooner, "Scheduled"),
+        "Follow the research live in <#99>.",
+    ]
     assert tracked(watcher) == ["NVDA"]
 
 
@@ -193,7 +196,9 @@ async def test_any_ticker_sec_lists_is_tracked_with_what_sec_says_about_it(
 
     reply = await call(commands.track, "lcid", events=events)
 
-    assert reply == "Tracking **LCID**. Awaiting a confirmed date. Progress appears in <#99>."
+    assert reply == (
+        "✅ Now tracking **LCID** · Lucid Group, Inc.\nFollow the research live in <#99>."
+    )
     # Deferred before SEC is asked, since Discord gives up on a reply after 3 seconds
     assert events == ["defer", "request", "request", "reply"]
     [row] = watcher.calendar.entries()
@@ -205,7 +210,7 @@ async def test_any_ticker_sec_lists_is_tracked_with_what_sec_says_about_it(
     # A repeat uses the saved facts without asking SEC again
     events.clear()
     assert (await call(commands.track, "LCID", user=2, events=events)).startswith(
-        "Already tracking **LCID**."
+        "👍 Already tracking **LCID**"
     )
     assert events == ["defer", "reply"]
 
@@ -226,7 +231,7 @@ async def test_any_ticker_sec_lists_is_tracked_with_what_sec_says_about_it(
 async def test_a_ticker_sec_doesnt_list_is_refused(
     watcher: DirectoryWatcher, commands: TrackingCommands, typed: str, refusal: str
 ) -> None:
-    assert await call(commands.track, typed) == refusal
+    assert await call(commands.track, typed) == f"⚠️ {refusal}"
     assert tracked(watcher) == []
     assert not watcher.dates.changed.is_set()
     assert watcher.store.db.execute("SELECT count(*) FROM tracking_adds").fetchone()[0] == 0
@@ -241,12 +246,12 @@ async def test_when_sec_doesnt_answer_nothing_is_saved_and_a_retry_works(
 
     reply = await call(commands.track, "LCID")
 
-    assert reply == "SEC's company data didn't load. Try again in a minute."
+    assert reply == "⚠️ SEC's company data didn't load. Try again in a minute."
     assert tracked(watcher) == []
     assert watcher.store.db.execute("SELECT count(*) FROM tracking_adds").fetchone()[0] == 0
 
     routes[LCID_ROUTE] = (200, json.dumps(LCID_SUBMISSIONS).encode())
-    assert (await call(commands.track, "LCID")).startswith("Tracking **LCID**")
+    assert (await call(commands.track, "LCID")).startswith("✅ Now tracking **LCID**")
 
 
 @pytest.mark.parametrize(
@@ -282,7 +287,7 @@ async def test_a_release_time_override_needs_manage_server_and_both_fields(
 ) -> None:
     reply = await call(commands.track, "NVDA", admin=admin, when=when, period=period)
 
-    assert reply.startswith(refusal)
+    assert reply.startswith(f"⚠️ {refusal}")
     # Refused before anything is saved, so it doesn't use up one of the day's adds either
     assert tracked(watcher) == []
     assert watcher.store.db.execute("SELECT count(*) FROM tracking_adds").fetchone()[0] == 0
@@ -300,7 +305,9 @@ async def test_an_admin_override_pins_the_release_and_can_move_it(
     assert row.target.expected == datetime(2026, 11, 17, 16, 20, tzinfo=ET)
     assert row.target.period == "FY2027Q3"
     assert row.evidence == "Manual override"
-    assert reply == describe(row.target, "Manual override") + " Progress appears in <#99>."
+    assert (
+        reply == f"📌 {describe(row.target, 'Manual override')}\nFollow the research live in <#99>."
+    )
 
     # Pinning an issuer that's already tracked moves its window
     await call(commands.track, "NVDA", admin=True, when="2026-11-17 16:25", period="FY2027Q3")
@@ -317,7 +324,9 @@ async def test_an_admin_can_pin_a_ticker_outside_the_catalog(
 
     [row] = watcher.calendar.entries()
     assert row.target is not None
-    assert reply == describe(row.target, "Manual override") + " Progress appears in <#99>."
+    assert (
+        reply == f"📌 {describe(row.target, 'Manual override')}\nFollow the research live in <#99>."
+    )
     # Its wire isn't known, so both are watched, along with EDGAR
     assert row.target.newswire == row.target.prnewswire == row.company.names
     assert [s.name for s in row.target.sources()] == [
@@ -333,18 +342,20 @@ async def test_the_daily_limit_and_the_calendar_cap_are_explained(
     watcher: DirectoryWatcher, commands: TrackingCommands, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     for ticker in ("AAPL", "AMD", "AMZN", "META", "MSFT"):
-        assert (await call(commands.track, ticker)).startswith(f"Tracking **{ticker}**")
+        assert (await call(commands.track, ticker)).startswith(f"✅ Now tracking **{ticker}**")
 
     reply = await call(commands.track, "NVDA")
 
-    assert reply == "You can add up to 5 tickers per Eastern calendar day."
+    assert reply == "⚠️ You can add up to 5 tickers per Eastern calendar day."
     assert "NVDA" not in tracked(watcher)
     # The limit is per member
-    assert (await call(commands.track, "NVDA", user=2)).startswith("Tracking **NVDA**")
+    assert (await call(commands.track, "NVDA", user=2)).startswith("✅ Now tracking **NVDA**")
 
     # Lower the cap rather than track 50 companies
     monkeypatch.setattr(tracking_calendar, "MAX_TRACKED", 6)
-    assert await call(commands.track, "TSLA", user=3) == "This calendar already tracks 6 companies."
+    assert await call(commands.track, "TSLA", user=3) == (
+        "⚠️ This calendar already tracks 6 companies."
+    )
     assert len(tracked(watcher)) == 6
 
 
@@ -370,26 +381,30 @@ async def test_untrack_needs_manage_server_and_tells_the_scorecard(
     await call(commands.track, "NVDA")
     watcher.progress.changed.clear()
 
-    assert await call(commands.untrack, "nvda") == "Manage Server is required to remove a ticker."
+    assert await call(commands.untrack, "nvda") == (
+        "⚠️ Manage Server is required to remove a ticker."
+    )
     assert tracked(watcher) == ["NVDA"]
     assert not watcher.progress.changed.is_set()
 
     assert await call(commands.untrack, " nvda ", admin=True) == (
-        "Removed **NVDA** from the calendar."
+        "🗑️ Removed **NVDA** from the calendar."
     )
     assert tracked(watcher) == []
     # So the scorecard is edited to say the issuer was removed
     assert watcher.progress.removed == {NVDA_CIK: "NVDA"}
     assert watcher.progress.changed.is_set()
 
-    assert await call(commands.untrack, "NVDA", admin=True) == "**NVDA** was already absent."
-    assert await call(commands.untrack, "ZZZZ", admin=True) == "**ZZZZ** was already absent."
+    assert await call(commands.untrack, "NVDA", admin=True) == "**NVDA** wasn't on the calendar."
+    assert await call(commands.untrack, "ZZZZ", admin=True) == "**ZZZZ** wasn't on the calendar."
 
     # A company from outside the catalog is removed by its ticker, without asking SEC
     await call(commands.track, "LCID")
     fetcher = cast(RoutedFetcher, watcher.issuers.fetcher)
     requests = len(fetcher.requests)
-    assert await call(commands.untrack, "lcid", admin=True) == "Removed **LCID** from the calendar."
+    assert await call(commands.untrack, "lcid", admin=True) == (
+        "🗑️ Removed **LCID** from the calendar."
+    )
     assert tracked(watcher) == []
     assert watcher.progress.removed == {NVDA_CIK: "NVDA", LCID_CIK: "LCID"}
     assert len(fetcher.requests) == requests
@@ -413,7 +428,7 @@ def test_only_managers_see_untrack_and_every_command_is_server_only() -> None:
 async def test_upcoming_lists_the_weeks_windows_and_issuers_awaiting_dates(
     watcher: DirectoryWatcher, commands: TrackingCommands
 ) -> None:
-    assert await call(commands.upcoming) == "No earnings windows in the next seven days."
+    assert await call(commands.upcoming) == "📅 No earnings windows in the next 7 days."
 
     for ticker in ("CRWD", "HD", "NVDA"):
         await call(commands.track, ticker)
@@ -428,10 +443,16 @@ async def test_upcoming_lists_the_weeks_windows_and_issuers_awaiting_dates(
     reply = await call(commands.upcoming)
 
     assert reply.splitlines() == [
+        "📅 **Earnings in the next 7 days**",
         describe(found, evidence),
         describe(nvda, "Schedule file"),
-        "Awaiting dates: CRWD",
+        "-# Still looking for dates: CRWD",
     ]
+    # The evidence's link is a short masked one
+    assert (
+        "Issuer confirmed release time · [source](<https://ir.homedepot.com/news-releases/q3>)"
+        in reply
+    )
 
 
 async def test_a_long_upcoming_list_stops_at_a_whole_line(
@@ -446,8 +467,9 @@ async def test_a_long_upcoming_list_stops_at_a_whole_line(
     lines = (await call(commands.upcoming)).splitlines()
 
     assert len("\n".join(lines)) <= 2000  # Discord's limit for a message
-    assert lines[-1] == "More releases are scheduled."
-    assert lines[:-1] == [describe(t, "Schedule file") for t in targets[: len(lines) - 1]]
+    assert lines[0] == "📅 **Earnings in the next 7 days**"
+    assert lines[-1] == "-# …and more after these."
+    assert lines[1:-1] == [describe(t, "Schedule file") for t in targets[: len(lines) - 2]]
 
 
 PLTR_FEED = "investors.palantir.com/feed/PressRelease.svc/GetPressReleaseList"
@@ -534,12 +556,14 @@ async def test_a_tracked_issuer_with_no_schedule_file_gets_one_alert(tmp_path: P
         await asyncio.gather(*(window.task for window in bot.windows.values()))
 
         [alert] = channel.messages.values()
-        assert "**$PLTR earnings are out**" in alert.content
+        assert "**$PLTR Q4 FY26 earnings are out**" in alert.content
         assert "https://investors.palantir.com/news-details/2027/palantir-reports-q4-2026" in (
             alert.content
         )
-        [report] = [line for line in status if line.startswith("PLTR window closed.")]
-        assert report.startswith("PLTR window closed. q4_press first at")
+        [report] = [line for line in status if "PLTR Q4 FY26 window closed" in line]
+        assert report.splitlines()[1].startswith(
+            "🥇 IR site press releases and files (Q4 feed) at "
+        )
         assert store.window_closed(row.target.release_key, row.target.expected)
         # Still tracked, for the next quarter's date
         assert tracked(bot) == ["PLTR"]
@@ -644,8 +668,8 @@ async def test_a_ticker_outside_the_catalog_gets_its_alert_from_the_wire(
         await asyncio.gather(*(window.task for window in bot.windows.values()))
 
         [alert] = channel.messages.values()
-        assert "**$LCID earnings are out**" in alert.content
+        assert "**$LCID Q3 FY26 earnings are out**" in alert.content
         assert LUCID_RELEASE in alert.content
-        [report] = [line for line in status if line.startswith("LCID window closed.")]
+        [report] = [line for line in status if "LCID Q3 FY26 window closed" in line]
         # PR Newswire's own server had it while its CDN's copy didn't
-        assert report.startswith("LCID window closed. prnewswire_busted first at")
+        assert report.splitlines()[1].startswith("🥇 PR Newswire earnings feed at ")
