@@ -154,9 +154,15 @@ def test_schedule_entries_match_the_database(
     [scheduled] = [t for t in plan.target if t.ticker == ticker]
     expected = scheduled.expected.replace(tzinfo=None)
     database = to_target(ticker, expected, fiscal_year, quarter)
-    # A run can teach us new guesses and trial sources, which past schedules don't have
+    # A run can teach us new guesses, trial sources and spelled feeds, which past schedules
+    # don't have
     assert set(scheduled.guess) <= set(database.guess)
-    update = {"guess": scheduled.guess, "trial": scheduled.trial, "period": scheduled.period}
+    update = {
+        "guess": scheduled.guess,
+        "trial": scheduled.trial,
+        "period": scheduled.period,
+        "rss_spelled": scheduled.rss_spelled,
+    }
     assert database.model_copy(update=update) == scheduled
 
 

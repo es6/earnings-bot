@@ -104,6 +104,9 @@ def watch_list(sources: Iterable[Source]) -> list[str]:
             label += ", read in Chrome" if not source.direct else ", direct HTTP"
         elif isinstance(source, HttpRelease) and source.chrome_fallback:
             label += " (Chrome fallback)"
+        if source.spellings and not source.name.endswith("_busted"):
+            # PR Newswire's spelled copy already says it's cache-busted
+            label += ", new URL spelling each poll"
         lines[label] = None
     return list(lines)
 

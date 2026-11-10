@@ -247,6 +247,10 @@ the request reached the origin:
 | GlobeNewswire RSS (Nov 6) | 60 s | Yes, but its server returned the same build as the cached copy, so both copies race |
 | Broadcom's newsroom JSON (Nov 6) | Cloudflare, despite `no-cache`: one copy was 445 s old | Yes |
 | HubSpot's press release feed (Nov 6) | `max-age=0, s-maxage=2592000` | Busted, since its CDN may keep a copy for 30 days |
+| HubSpot's press release feed (Nov 10) | Its IR platform's Varnish (`x-cache-hits: 657`, built the day before) | No: a unique query got the stored copy too. A new spelling of the path, with a few letters percent-encoded, was built on request every time, so the feed is polled that way |
+| WeRide's press release feed (Nov 10) | The same Varnish setup | No, and every encoded spelling answered 404. New releases show once the site rebuilds it |
+| Nebius's newsroom (Nov 10) | `x-cache: TCP_HIT` | No for queries, yes for a new spelling (`TCP_MISS`) |
+| Q4 JSON feeds (Nov 10) | 10 s | Encoded spellings were `HIT`s too: Cloudflare keys on the decoded path. The page-size variants stay |
 
 `no-cache` made no difference anywhere. What we can do about the rest:
 
@@ -814,6 +818,8 @@ onboarding, including international listings, and more live samples for source r
 | 2026-11-10 | Research reads the IR site from the last three results releases, and keeps what earlier research verified when none names one. On's Q3 2026 6-K left out the IR site its Q2 6-K named, and re-research dropped On's Q4 feed |
 | 2026-11-10 | The speed review ranks a publisher's time from before the watch began beside what the bot saw live: On's IR feed at 5:00 AM before SEC's 6-K at 6:07. A stamp from inside the watch can be a scheduled time, so it doesn't count against a live sighting |
 | 2026-11-10 | After a release, the scorecard says its results came out and the next isn't announced yet, instead of calling its own notice unreadable |
+| 2026-11-10 | Chrome's own cache is off in tabs that render a page, for the page and the data its scripts load. With it on, a second render of a page marked cacheable showed the first copy without asking the site. Fetches from a warm tab already passed `cache: 'no-store'` |
+| 2026-11-10 | When query strings don't get past a cache, the cache check tries two new spellings of the path, with a few letters percent-encoded. If both return the same feed or page from the server, the source asks for a new spelling every poll and never repeats one while others are left, since some caches keep a copy for weeks. A URL with escapes is sent as written: aiohttp would decode them back to the cached URL. HubSpot's feed and Nebius's newsroom qualified on Nov 10; WeRide's 404s every spelling, and Q4's CDN decodes them |
 | 2026-11-10 | No source waits on a trial. A new source posts from its first release day, since a release day is the only way to time it, and the old `post` switch is ignored |
 | 2026-11-10 | A feed item starts an alert when its headline reports a period: a quarter, fiscal year or months, with results, earnings, revenue, income, profit or loss, or a lead that does. On Nov 10 the three wires' earnings feeds carried nine results releases that named revenue or "Results for the Nine Months Ended" rather than "results", and a stricter test would have left them to the 8-K. A named fiscal year may be one off the plan's, since Home Depot, Lowe's and Target name a year for the calendar year it starts in; the quarter must match |
 | 2026-11-10 | Alerts, status and scorecards can share one channel. When the bot's channel changes, the calendar, its alerts and windows, and the scorecards' keys move with it, from the channel that tracked the most companies |

@@ -22,6 +22,7 @@ from earnings_bot.sources import (
     RssFeed,
     Sighting,
     Source,
+    Spellings,
     bust_cache,
     looks_like_earnings,
     published_time,
@@ -66,6 +67,8 @@ class IRSource(BaseModel):
     table_rendered: bool = False
     table_period: str | None = Field(default=None, pattern=r"^FY\d{4}Q[1-4]$")
     cache_bust_urls: list[str] = []
+    # Polled with a new spelling of the path each time: their caches ignore query strings
+    spelled_urls: list[str] = []
     headline: str | None = None
     verify_text: bool = False
     http_first: bool = False
@@ -94,6 +97,11 @@ class IRSource(BaseModel):
             for url in self.cache_bust_urls
         ):
             raise ValueError("A cache-busted URL must be a configured listing, API or feed")
+        if any(
+            url not in (self.listing, self.news_api, self.rss, self.results_table)
+            for url in self.spelled_urls
+        ):
+            raise ValueError("A spelled URL must be a configured listing, API or feed")
         if self.http_first and not self.listing:
             raise ValueError("Direct HTTP requires an issuer listing")
         if self.headline:
@@ -137,6 +145,7 @@ class IRSource(BaseModel):
                     self.headline,
                     verify_text=self.verify_text,
                     cache_bust=self.listing in self.cache_bust_urls,
+                    spell=self.listing in self.spelled_urls,
                 )
             )
         if self.news_api and self.headline:
@@ -146,6 +155,7 @@ class IRSource(BaseModel):
                     self.headline,
                     day,
                     cache_bust=self.news_api in self.cache_bust_urls,
+                    spell=self.news_api in self.spelled_urls,
                 )
             )
         period = period or self.table_period
@@ -158,6 +168,7 @@ class IRSource(BaseModel):
                     direct=self.table_http,
                     rendered=self.table_rendered,
                     cache_bust=self.results_table in self.cache_bust_urls,
+                    spell=self.results_table in self.spelled_urls,
                 )
             )
         warmup = self._warmup()
@@ -165,7 +176,11 @@ class IRSource(BaseModel):
             if self.rss and self.headline:
                 sources.append(
                     BrowserRss(
-                        self.rss, warmup, self.headline, cache_bust=self.rss in self.cache_bust_urls
+                        self.rss,
+                        warmup,
+                        self.headline,
+                        cache_bust=self.rss in self.cache_bust_urls,
+                        spell=self.rss in self.spelled_urls,
                     )
                 )
                 if self.listing and browser_host(self.listing) == browser_host(self.rss):
@@ -253,11 +268,18 @@ class BrowserRelease(Source):
     ok_statuses = frozenset({200, 404})
 
     def __init__(
-        self, listing: str, headline: str, *, verify_text: bool = False, cache_bust: bool = False
+        self,
+        listing: str,
+        headline: str,
+        *,
+        verify_text: bool = False,
+        cache_bust: bool = False,
+        spell: bool = False,
     ) -> None:
         self.listing = listing
         self.verify_text = verify_text
         self.cache_bust = cache_bust
+        self.spellings = Spellings(listing) if spell else None
         self._host = browser_host(listing)
         self._headline = re.compile(headline, re.IGNORECASE)
         self._candidate: Sighting | None = None
@@ -276,11 +298,16 @@ class BrowserRelease(Source):
         self.transport = "chrome"
         return await fetcher.browser_request(url, self.listing, self.timeout, urgent=urgent)
 
+    def listing_url(self) -> str:
+        """The listing as this poll asks for it: a new spelling, a unique query, or plain."""
+        if self.spellings:
+            return self.spellings.next()
+        return bust_cache(self.listing) if self.cache_bust else self.listing
+
     async def fetch(self, fetcher: Fetcher) -> Response:
         self._candidate = None
         self.listing_poll = None
-        url = bust_cache(self.listing) if self.cache_bust else self.listing
-        listing = await self.request_page(fetcher, url)
+        listing = await self.request_page(fetcher, self.listing_url())
         self.listing_transport = self.transport
         self.listing_poll = replace(listing, body=b""), time.monotonic()
         if listing.status != 200:
@@ -332,9 +359,12 @@ class HttpRelease(BrowserRelease):
         *,
         verify_text: bool = False,
         cache_bust: bool = False,
+        spell: bool = False,
         chrome_fallback: bool | None = None,
     ) -> None:
-        super().__init__(listing, headline, verify_text=verify_text, cache_bust=cache_bust)
+        super().__init__(
+            listing, headline, verify_text=verify_text, cache_bust=cache_bust, spell=spell
+        )
         self.chrome_fallback = os.name == "nt" if chrome_fallback is None else chrome_fallback
         self._chrome_until = 0.0
 
@@ -388,9 +418,10 @@ class QuarterlyTable(HttpRelease):
         direct: bool,
         rendered: bool = False,
         cache_bust: bool = False,
+        spell: bool = False,
         browser: DesktopChrome | None = None,
     ) -> None:
-        super().__init__(listing, "", cache_bust=cache_bust)
+        super().__init__(listing, "", cache_bust=cache_bust, spell=spell)
         self.year, self.quarter, self.direct = year, quarter, direct
         self.rendered, self.browser = rendered, browser
         if rendered:
@@ -406,7 +437,7 @@ class QuarterlyTable(HttpRelease):
     async def fetch(self, fetcher: Fetcher) -> Response:
         self._candidate = None
         self.listing_poll = None
-        url = bust_cache(self.listing) if self.cache_bust else self.listing
+        url = self.listing_url()
         if self.rendered:
             sent = time.monotonic()
             page = (
@@ -484,8 +515,17 @@ class BrowserRss(Source):
     interval = 1.0
     stop_when_found = True
 
-    def __init__(self, url: str, warmup: str, headline: str, *, cache_bust: bool = False) -> None:
-        self.feed = RssFeed(self.name, url, bust_cache=cache_bust)
+    def __init__(
+        self,
+        url: str,
+        warmup: str,
+        headline: str,
+        *,
+        cache_bust: bool = False,
+        spell: bool = False,
+    ) -> None:
+        self.feed = RssFeed(self.name, url, bust_cache=cache_bust, spell=spell)
+        self.spellings = self.feed.spellings
         self.warmup = warmup
         self._host = browser_host(url)
         if browser_host(warmup) != self._host:

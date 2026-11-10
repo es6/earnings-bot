@@ -1,4 +1,5 @@
-"""A bounded comparison of the normal issuer URL and unique query strings.
+"""A bounded comparison of the normal issuer URL, unique query strings and, when queries don't
+get past a cache, new spellings of the URL's path.
 
 Sites often sit behind more than one cache: a CDN such as Cloudflare in front, and the IR
 platform's own cache (Varnish and the like) behind it. Each reports itself in its own headers,
@@ -15,7 +16,7 @@ import aiohttp
 from earnings_bot.browser import BrowserError
 from earnings_bot.fetch import Response
 from earnings_bot.formatting import clock, day
-from earnings_bot.sources import bust_cache
+from earnings_bot.sources import Spellings, bust_cache
 
 CHECKING_CACHE = "Checking issuer cache freshness"
 # Headers in which a cache layer says whether it served a stored copy
@@ -39,6 +40,8 @@ class CacheResult:
     query_bust: bool = False  # a unique query string reaches the server behind the cache
     canonical_only: bool = False  # the site rejects query strings, so use the plain URL
     stored_only: bool = False  # every variant got the cache's stored copy
+    # Query strings don't get past the cache, but a new spelling of the path does
+    spelled: bool = False
 
 
 @dataclass(frozen=True)
@@ -86,6 +89,63 @@ def _layers(response: Response) -> _Layers:
     return _Layers(hits, passes)
 
 
+_TITLE = re.compile(
+    rb"<title[^>]*>\s*(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?\s*</title>", re.DOTALL | re.IGNORECASE
+)
+
+
+def _same_resource(plain: bytes, other: bytes, signature: Callable[[bytes], object] | None) -> bool:
+    """Whether another URL returned the same feed or page. A fresh copy can list a release the
+    stored one doesn't have yet, so it only needs the same title."""
+    if signature:
+        return bool(signature(plain)) and signature(plain) == signature(other)
+    if plain == other:
+        return True
+    first, second = _TITLE.search(plain), _TITLE.search(other)
+    return bool(first and second and first[1].strip() and first[1] == second[1])
+
+
+def _modified(response: Response) -> float | None:
+    try:
+        return parsedate_to_datetime(response.headers.get("last-modified", "")).timestamp()
+    except (TypeError, ValueError, IndexError):
+        return None
+
+
+async def _spelled(
+    get: Callable[[str], Awaitable[Response]],
+    url: str,
+    plain: Response,
+    stored: str,
+    signature: Callable[[bytes], object] | None,
+) -> CacheResult | None:
+    """Two new spellings of the path, each with a few letters percent-encoded. They count when
+    both return the same feed or page and no cache served them a stored copy: a layer says it
+    went to the server, or the copy is newer than the plain URL's."""
+    spellings = Spellings(url)
+    if len(spellings.positions) < 8:
+        return None  # too few spellings to poll a release window with
+    reached = ""
+    for _ in range(2):
+        try:
+            response = await get(spellings.next())
+        except (aiohttp.ClientError, BrowserError, TimeoutError, ValueError):
+            return None
+        if response.status != 200 or not _same_resource(plain.body, response.body, signature):
+            return None
+        layers = _layers(response)
+        modified, before = _modified(response), _modified(plain)
+        newer = modified is not None and before is not None and modified > before
+        if layers.hits or not (layers.passes or newer):
+            return None
+        reached = layers.passes[0] if layers.passes else "a newer Last-Modified"
+    return CacheResult(
+        f"Query strings don't get past the cache ({stored}{_rebuilt(plain)}), but a new spelling "
+        f"of the path reaches the server ({reached}). Polled with a new spelling each time",
+        spelled=True,
+    )
+
+
 def _rebuilt(response: Response) -> str:
     """When the stored copy was built, from its Last-Modified header, in Eastern time."""
     try:
@@ -119,6 +179,9 @@ async def probe_cache(
         samples.append(response)
     if len(rejected) == 2:
         statuses = "/".join(str(status) for status in sorted(set(rejected)))
+        stored = _layers(samples[-1]).hits
+        if stored and (found := await _spelled(get, url, samples[-1], stored[0], signature)):
+            return found
         return CacheResult(
             f"Normal URL readable. Both queries rejected (HTTP {statuses})", canonical_only=True
         )
@@ -130,6 +193,8 @@ async def probe_cache(
     if any(layers.hits for layers in busted):
         # A unique query string can't have a stored copy of its own, so the cache ignores it
         evidence = next(layers.hits[0] for layers in busted if layers.hits)
+        if found := await _spelled(get, url, normal[-1], evidence, signature):
+            return found
         return CacheResult(
             f"Query strings don't get past the cache: a unique query got its stored copy too "
             f"({evidence}{_rebuilt(changed[-1])}). New releases show once the site refreshes it",
@@ -155,6 +220,8 @@ async def probe_cache(
     control = normal[-1].headers.get("cache-control", "")
     ttl = re.search(r"(?:^|,\s*)s-maxage\s*=\s*([1-9]\d*)", control, re.IGNORECASE)
     if plain[-1].hits:
+        if found := await _spelled(get, url, normal[-1], plain[-1].hits[0], signature):
+            return found
         return CacheResult(
             f"The plain URL is cached ({plain[-1].hits[0]}), but no cache reported on the "
             "unique queries. Query bypass unverified"
