@@ -213,9 +213,13 @@ class Plan(BaseModel):
 OnNew = Callable[[Target, Source, Sighting], None]
 
 
+def parse_plan(data: bytes) -> Plan:
+    # utf-8-sig, so a schedule saved by Notepad with a byte order mark still reads
+    return Plan.model_validate(tomllib.loads(data.decode("utf-8-sig")))
+
+
 def load_plan(path: Path) -> Plan:
-    with path.open("rb") as file:
-        return Plan.model_validate(tomllib.load(file))
+    return parse_plan(path.read_bytes())
 
 
 def _clock(moment: datetime) -> str:
