@@ -1,6 +1,7 @@
 import asyncio
 import io
 import itertools
+import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -15,7 +16,7 @@ from earnings_bot import unattended
 from earnings_bot.delivery import DeliveryStore
 from earnings_bot.fetch import Fetcher
 from earnings_bot.pipeline import DurableDiscordPoster, Release, Releases
-from earnings_bot.recorder import ET, Journal, OnNew, Polls, Target, Watch
+from earnings_bot.recorder import ET, Journal, OnNew, Polls, Target, Trial, Watch
 from earnings_bot.sources import EdgarFilings, EdgarLatest, RssFeed, Sighting
 from tests.fakes import RoutedFetcher
 from tests.test_pipeline import FakePoster, uber
@@ -281,6 +282,51 @@ async def test_a_window_that_keeps_failing_is_reported_once(
     assert status == [
         "⚠️ **AAA monitoring**: failed and will retry: RuntimeError('feed parser bug')"
     ]
+
+
+async def test_globe_trial_copies_share_one_verified_article_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    url = "https://www.globenewswire.com/news-release/2026/11/18/3400000/0/en/nvidia.html"
+    article = url.replace("www.", "rss.", 1)
+    sighting = Sighting(url, "NVIDIA Reports Third Quarter Results", url, earnings=True)
+
+    async def record(
+        target: Target, fetcher: Fetcher, journal: Journal, on_new: OnNew, polls: Polls
+    ) -> list[Watch]:
+        for source in target.trial.sources():
+            on_new(target, source, sighting)
+        return []
+
+    monkeypatch.setattr(unattended, "record_target", record)
+    fetcher = RoutedFetcher({article: (200, b"<p>Revenue and earnings per share. </p>" * 100)})
+    log, poster = io.StringIO(), FakePoster()
+    journal = Journal(log)
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        runner = unattended.DirectoryWatcher(
+            tmp_path,
+            fetcher,
+            journal,
+            Releases(lambda: poster, fetcher, journal, None, None),
+            store,
+            lambda _: None,
+        )
+        row, _ = runner.calendar.add("NVDA", 1, journal.now())
+        target = Target(
+            ticker="NVDA",
+            cik=row.cik,
+            expected=journal.now(),
+            trial=Trial(globenewswire=["NVIDIA"]),
+        )
+        await runner._watch(target)
+
+    events = list(map(json.loads, log.getvalue().splitlines()))
+    assert {event["source"] for event in events if event["event"] == "source_body"} == {
+        "globenewswire",
+        "globenewswire_busted",
+    }
+    assert fetcher.requests == [("GET", article, None)]
+    assert poster.calls == []
 
 
 async def test_a_resumed_alert_doesnt_attach_a_file_it_already_has(tmp_path: Path) -> None:
