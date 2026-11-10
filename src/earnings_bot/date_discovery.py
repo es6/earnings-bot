@@ -52,6 +52,7 @@ _DATE = re.compile(
     r"\b(" + "|".join(_MONTHS) + r")\s+(\d{1,2})(?:st|nd|rd|th)?(?:,?\s+(20\d{2}))?\b",
     re.IGNORECASE,
 )
+_PERIOD_END = re.compile(r"\b(?:ended|ending)\s+(?:on\s+)?$", re.IGNORECASE)
 # Abbreviated months, as in "Nov. 12, 2026", which would also end a sentence too soon
 _ABBREVIATED = re.compile(
     r"\b(Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sept?|Oct|Nov|Dec)\.?(?=\s+\d)", re.IGNORECASE
@@ -82,10 +83,14 @@ _TIME = re.compile(
     re.IGNORECASE,
 )
 _AFTER = re.compile(
-    r"after (?:the )?(?:(?:US|U S) )?(?:market close|market closes|closing bell)", re.IGNORECASE
+    r"after (?:the )?(?:(?:US|U S) )?"
+    r"(?:market closes?|closing bell|close of (?:the )?market)\b",
+    re.IGNORECASE,
 )
 _BEFORE = re.compile(
-    r"before (?:the )?(?:(?:US|U S) )?(?:market open|market opens|opening bell)", re.IGNORECASE
+    r"before (?:the )?(?:(?:US|U S) )?"
+    r"(?:market opens?|opening bell|open(?:ing)? of (?:the )?market)\b",
+    re.IGNORECASE,
 )
 _CALL = re.compile(r"\b(?:conference call|earnings call|webcast)\b", re.IGNORECASE)
 _SAME_DAY = re.compile(r"\b(?:that|the same)\s+(?:day|morning|afternoon|evening)\b", re.IGNORECASE)
@@ -102,9 +107,12 @@ def _full_months(text: str) -> str:
     )
 
 
-def _dates(text: str, today: date) -> set[date]:
+def _dates(text: str, today: date, *, release: bool = False) -> set[date]:
     result = set()
-    for month, day, year in _DATE.findall(text):
+    for match in _DATE.finditer(text):
+        if release and _PERIOD_END.search(text[: match.start()]):
+            continue
+        month, day, year = match.groups()
         for y in (int(year),) if year else (today.year, today.year + 1):
             try:
                 candidate = date(y, _MONTHS[month.lower()], int(day))
@@ -167,12 +175,14 @@ def parse_notice(
     title = tidy(title)
     # Kept apart, so a heading or the page's "posted at" line doesn't run into the next line
     lines = [tidy(line) for line in html_to_text(_BREAK.sub(" ", body)).splitlines()]
-    text = " ".join(lines)
-    notice = f"{title} {text}"
-    if period := _PERIOD.search(notice):
-        digit, ordinal, year = period.groups()
-    elif period := _YEAR_FIRST_PERIOD.search(notice):
-        year, digit, ordinal = period.groups()
+    # The headline's explicit fiscal period takes precedence over other quarters in the page.
+    for notice in (title, " ".join(lines)):
+        if period := _PERIOD.search(notice):
+            digit, ordinal, year = period.groups()
+            break
+        if period := _YEAR_FIRST_PERIOD.search(notice):
+            year, digit, ordinal = period.groups()
+            break
     else:
         return None
     quarter = (
@@ -191,7 +201,7 @@ def parse_notice(
     release = [part for sentence in sentences if (part := _release_clause(sentence))]
     if not release:
         return None
-    dates = set().union(*(_dates(sentence, today) for sentence in release))
+    dates = set().union(*(_dates(sentence, today, release=True) for sentence in release))
     if (
         not dates
         and not any(_DATE.search(sentence) for sentence in release)

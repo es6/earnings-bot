@@ -315,6 +315,45 @@ async def test_a_release_naming_no_ir_site_still_gives_its_wire(
     )
 
 
+async def test_an_issuer_named_rss_index_reaches_a_separate_newsroom(
+    released: Callable[[str], None],
+) -> None:
+    home = "https://investor.cisco.com/"
+    index = "https://newsroom.cisco.com/rss-feeds"
+    canonical = "https://newsroom.cisco.com/press-room/rss-feeds.html"
+    all_news = "https://newsroom.cisco.com/services/rssfeed.json"
+    press = all_news + "?feed=press-releases"
+    notice = "https://newsroom.cisco.com/notice"
+    title = "Cisco Schedules Conference Call for Q1 Fiscal Year 2027 Financial Results"
+    feed = f"<rss><channel><item><title>{title}</title><link>{notice}</link></item></channel></rss>"
+    released(f"Full financial results are available at {home}. RSS Feed for Cisco: {index}.")
+    fetcher = RoutedFetcher(
+        {
+            home: (403, b""),
+            index: (302, b""),
+            canonical: (
+                200,
+                f'<a href="{all_news}">All news</a><a href="{press}">Press</a>'.encode(),
+            ),
+            press: (200, feed.encode()),
+            notice: (
+                200,
+                b"Results will be released after the close of the market on Nov 12, 2026.",
+            ),
+        },
+        headers={"location": canonical},
+    )
+    found = await investigate.investigate(fetcher, LUCID, TODAY, None, ticker="CSCO")
+
+    assert found.rss == [press]
+    assert any(check.watch and press in check.source for check in found.checks)
+    result = await date_discovery.find_date(fetcher, "CSCO", NOW, found)
+    assert result and result[0].period == "FY2027Q1"
+    assert result[0].expected.date() == date(2026, 11, 12)
+    assert result[1] == f"Issuer date confirmed, after market close <{notice}>"
+    assert [url for _, url, _ in fetcher.requests if url == all_news] == []
+
+
 async def test_a_globenewswire_company_is_matched_there_on_trial(
     released: Callable[[str], None],
 ) -> None:
@@ -477,6 +516,7 @@ async def test_every_source_checked_is_reported_with_why_as_it_goes(
     found = await investigate.investigate(fetcher, LUCID, TODAY, lucid_chrome().open, report=report)
 
     assert found.checks == report.checks
+    assert found.ir_http_status == 403
     assert [(c.source, c.watch, c.why) for c in found.checks] == [
         (
             "SEC 8-K filings",
@@ -509,6 +549,7 @@ async def test_every_source_checked_is_reported_with_why_as_it_goes(
         "Reading its last results 8-K on SEC",
         "Checking ir.lucidmotors.com",
         "Opening ir.lucidmotors.com in Chrome",
+        "Checking direct HTTP access to the press release listing",
         "Choosing its sources",
     ]
 
