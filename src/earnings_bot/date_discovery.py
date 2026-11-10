@@ -20,7 +20,7 @@ import aiohttp
 from earnings_bot.browser import BrowserError
 from earnings_bot.calendar import Calendar, Tracked, describe, same_release
 from earnings_bot.fetch import Fetcher, Response
-from earnings_bot.investigate import OpenChrome, due, investigate
+from earnings_bot.investigate import OpenChrome, Report, due, investigate
 from earnings_bot.ir_research import issuer_links, issuer_listing, verified_browser_source
 from earnings_bot.known import (
     NTH,
@@ -329,6 +329,12 @@ class DateDiscovery:
         self.chrome = chrome  # for investigations; None means desktop Chrome on Windows
         self.sixk = sixk or SixKResults(fetcher)
         self.phases: dict[int, str] = {}
+        # Each running investigation, so the scorecard can follow it
+        self.reports: dict[int, Report] = {}
+        # Why each tracked company's IR page is or isn't watched in its next window
+        self.ir_notes: dict[int, str] = {}
+        # Called whenever a phase, report or note changes
+        self.on_progress: Callable[[], None] = lambda: None
         self.changed = asyncio.Event()
         self.checked: dict[int, float] = {}
         # Each company's FMP answer and when to ask again, as time.monotonic()
@@ -343,15 +349,22 @@ class DateDiscovery:
                 if time.monotonic() < self.checked.get(row.cik, 0):
                     continue
                 self.checked[row.cik] = time.monotonic() + 3600
-                try:
-                    # Room for a first investigation, which may wait for Chrome
-                    async with asyncio.timeout(150):
-                        await self._check(row)
-                except Exception:
-                    log.exception("Date discovery failed for %s", row.ticker)
-                    self.phases[row.cik] = "Issuer research failed. Retrying at the next check."
+                await self.run_once(row)
             with suppress(TimeoutError):
                 await asyncio.wait_for(self.changed.wait(), timeout=60)
+
+    async def run_once(self, row: Tracked) -> None:
+        """One hourly check of a company, which never raises."""
+        try:
+            # Room for a first investigation, which reads several pages through Chrome
+            async with asyncio.timeout(300):
+                await self._check(row)
+        except Exception:
+            log.exception("Date discovery failed for %s", row.ticker)
+            self._phase(row.cik, "Research failed. Retrying in an hour.")
+        finally:
+            if self.reports.pop(row.cik, None):
+                self.on_progress()
 
     async def _calendar_date(self, row: Tracked, now: datetime) -> tuple[Target, str] | None:
         if self.fmp_api_key is None:
@@ -383,27 +396,40 @@ class DateDiscovery:
                     return target, f"{evidence} from issuer 6-K exhibit <{notice.url}>"
         return None
 
+    def _phase(self, cik: int, text: str | None) -> None:
+        if text is None:
+            self.phases.pop(cik, None)
+        else:
+            self.phases[cik] = text
+        self.on_progress()
+
     async def _investigate(self, row: Tracked) -> Tracked:
         """Looks for the sources of a company outside the catalog, once and then monthly."""
         today = self.now().astimezone(ET).date()
         if not due(row.ticker, row.company, today):
             return row
-        self.phases[row.cik] = "Looking for its IR site, feeds and newswire."
+        self._phase(row.cik, "Investigating its sources")
+        report = self.reports[row.cik] = Report(changed=self.on_progress)
         chrome = self.chrome or (self.fetcher.research_browser if os.name == "nt" else None)
         company = await investigate(
-            self.fetcher, row.company, today, chrome, sixk=self.sixk, ticker=row.ticker
+            self.fetcher,
+            row.company,
+            today,
+            chrome,
+            sixk=self.sixk,
+            ticker=row.ticker,
+            report=report,
         )
         if self.busy() or row not in self.calendar.entries():
             return row
         self.calendar.save_profile(row.cik, company)
-        self.status(f"{row.ticker}: {company.evidence}")
         return replace(row, company=company)
 
     async def _check(self, row: Tracked) -> None:
         row = await self._investigate(row)
         if self._defer_if_busy(row.cik):
             return
-        self.phases[row.cik] = "Checking issuer notices for the next release date."
+        self._phase(row.cik, "Looking for the next release date")
         now = self.now()
         saved = (
             (row.target, row.evidence)
@@ -422,9 +448,10 @@ class DateDiscovery:
         elif saved:
             target, evidence = saved
         else:
-            self.phases[row.cik] = (
-                "No confirmed date found. A Manage Server member can set one with "
-                "`/track` using `when` and `period`. Rechecking hourly."
+            self._phase(
+                row.cik,
+                "No release date found yet. Rechecking hourly. A Manage Server member can set "
+                "one with `/track` and `when` and `period`.",
             )
             return
         if self._defer_if_busy(row.cik) or row not in self.calendar.entries():
@@ -433,15 +460,22 @@ class DateDiscovery:
             target.ir = row.target.ir
         if row.company.sec_form == "6-K" and target.sec_form != "6-K":
             target = target.model_copy(update={"sec_form": "6-K"})
-        self.phases.pop(row.cik, None)
+        self._phase(row.cik, None)
         if row.target != target or row.evidence != evidence:
             self.calendar.set_target(target, evidence)
-            self.status(describe(target, evidence))
-        if target.ir or not target.period:
+            self.status(f"📅 {describe(target, evidence)}")
+        if target.ir:
+            self.ir_notes.setdefault(row.cik, "Read in Chrome")
             return
-        ir = await verified_browser_source(
+        if not target.period:
+            self.ir_notes[row.cik] = "The release has no fiscal period to match headlines with"
+            self.on_progress()
+            return
+        ir, why = await verified_browser_source(
             self.fetcher, issuer_listing(row.ticker, row.company), target.period
         )
+        self.ir_notes[row.cik] = why
+        self.on_progress()
         if (
             ir
             and not self.busy()
@@ -456,5 +490,5 @@ class DateDiscovery:
         if not self.busy():
             return False
         self.checked.pop(cik, None)
-        self.phases[cik] = "Issuer research queued after release monitoring."
+        self._phase(cik, "Waiting for an open release window to close")
         return True

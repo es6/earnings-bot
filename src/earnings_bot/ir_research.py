@@ -28,6 +28,11 @@ _ERRORS = (BrowserError, aiohttp.ClientError, TimeoutError, ValueError, KeyError
 _NEWS = re.compile(r"press|release|earnings|report|financial|news", re.IGNORECASE)
 
 
+def chrome_available() -> bool:
+    """Desktop Chrome is driven only on Windows."""
+    return os.name == "nt"
+
+
 def issuer_listing(ticker: str, company: KnownCompany) -> str | None:
     """The press release listing Chrome reads for a company: one the bot found itself, or one
     researched by hand."""
@@ -94,7 +99,7 @@ def matches_release(value: object, day: date, titles: set[str]) -> bool:
 
 
 async def inspect_issuer(fetcher: Fetcher, url: str | None, day: date, titles: set[str]) -> str:
-    if url is None or os.name != "nt":
+    if url is None or not chrome_available():
         return ""
     try:
         async with fetcher.research_browser() as browser:
@@ -126,13 +131,17 @@ def quarter_headline(year: int, quarter: int) -> str:
 
 async def verified_browser_source(
     fetcher: Fetcher, listing: str | None, period: str
-) -> IRSource | None:
-    """Verify the preceding quarter's article before preparing a live browser source."""
-    if os.name != "nt" or listing is None:
-        return None
+) -> tuple[IRSource | None, str]:
+    """A live browser source for `period`, once last quarter's results article verifies on the
+    listing, or why there isn't one."""
+    if not chrome_available():
+        return None, "Chrome isn't available on this computer"
+    if listing is None:
+        return None, "No press release page found for it"
     year, quarter = int(period[2:6]), int(period[-1])
     prior_year, prior_quarter = (year - 1, 4) if quarter == 1 else (year, quarter - 1)
     pattern = re.compile(quarter_headline(prior_year, prior_quarter), re.IGNORECASE)
+    last = f"Q{prior_quarter} {prior_year}"
     try:
         async with fetcher.research_browser() as browser:
             url = listing
@@ -144,7 +153,7 @@ async def verified_browser_source(
                 seen.add(url)
                 page = await browser.request(url, listing, 4, fetcher.wait_turn)
                 if page.status != 200:
-                    return None
+                    return None, f"Chrome got HTTP {page.status} from <{url}>"
                 links = issuer_links(url, page.body)
                 for link, title in links:
                     if not pattern.fullmatch(title):
@@ -156,12 +165,13 @@ async def verified_browser_source(
                         and verified_report(text)
                         and title.casefold() in " ".join(text.split()).casefold()
                     ):
-                        return IRSource(
+                        source = IRSource(
                             listing=listing,
                             headline=quarter_headline(year, quarter),
                             verify_text=True,
                         )
-                    break
+                        return source, f"Last quarter's results, “{title}”, read in Chrome"
+                    return None, f"Last quarter's article “{title}” didn't read as a results report"
                 next_page = next(
                     (
                         link
@@ -175,6 +185,6 @@ async def verified_browser_source(
                 if next_page is None:
                     break
                 url = next_page
-    except _ERRORS:
-        return None
-    return None
+    except _ERRORS as error:
+        return None, f"Chrome couldn't read <{listing}> ({type(error).__name__})"
+    return None, f"No {last} results headline on <{listing}> to check the pattern against"

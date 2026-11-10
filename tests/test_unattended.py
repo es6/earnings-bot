@@ -15,8 +15,8 @@ from earnings_bot import unattended
 from earnings_bot.delivery import DeliveryStore
 from earnings_bot.fetch import Fetcher
 from earnings_bot.pipeline import DurableDiscordPoster, Release, Releases
-from earnings_bot.recorder import Journal, OnNew, Polls, Target, Watch
-from earnings_bot.sources import RssFeed, Sighting
+from earnings_bot.recorder import ET, Journal, OnNew, Polls, Target, Watch
+from earnings_bot.sources import EdgarFilings, EdgarLatest, RssFeed, Sighting
 from tests.fakes import RoutedFetcher
 from tests.test_pipeline import FakePoster, uber
 
@@ -36,6 +36,10 @@ class FakeMessage:
     attachments: list[Any] = field(default_factory=list)
     embed: discord.Embed | None = None
     deleted: bool = False
+
+    @property
+    def embeds(self) -> list[discord.Embed]:
+        return [self.embed] if self.embed else []
 
     async def edit(
         self,
@@ -65,14 +69,16 @@ class FakeDiscord:
         self.fail_before_send = False
         self.lose_response = False
 
-    async def send(self, content: str, *, nonce: str) -> FakeMessage:
+    async def send(
+        self, content: str = "", *, nonce: str, embed: discord.Embed | None = None
+    ) -> FakeMessage:
         self.attempts += 1
         if self.fail_before_send:
             self.fail_before_send = False
             raise TimeoutError("request timed out before delivery")
         if nonce in self.nonces:
             return self.nonces[nonce]
-        message = FakeMessage(next(self.ids), content)
+        message = FakeMessage(next(self.ids), content, embed=embed)
         self.messages[message.id] = self.nonces[nonce] = message
         if self.lose_response:
             self.lose_response = False
@@ -272,7 +278,9 @@ async def test_a_window_that_keeps_failing_is_reported_once(
             await runner.scan()
             await asyncio.gather(*(w.task for w in runner.windows.values()))
 
-    assert status == ["AAA monitoring: failed and will retry: RuntimeError('feed parser bug')"]
+    assert status == [
+        "⚠️ **AAA monitoring**: failed and will retry: RuntimeError('feed parser bug')"
+    ]
 
 
 async def test_a_resumed_alert_doesnt_attach_a_file_it_already_has(tmp_path: Path) -> None:
@@ -358,7 +366,7 @@ async def test_schedule_reload_preserves_running_windows_and_shares_polls(
             assert [t.ticker for t, _ in started] == ["AAA", "BBB"]
             assert all(polls is runner.polls for _, polls in started)
             assert not original.done()
-            assert any(line.startswith("a.toml:") for line in status)
+            assert any(line.startswith("⚠️ **a.toml**:") for line in status)
 
             a.unlink()
             await runner.scan()
@@ -390,7 +398,9 @@ async def test_restart_reports_windows_that_closed_while_offline(tmp_path: Path)
             )
             await watcher.scan()
 
-    assert status == ["GAP: window expired and no completed watch was recorded"]
+    assert status == [
+        "⌛ **GAP**: window ended while the bot was off, and no completed watch was recorded"
+    ]
 
 
 async def test_a_twenty_release_burst_keeps_one_message_per_release_after_restart(
@@ -496,3 +506,62 @@ async def test_a_finished_window_isnt_watched_again_after_a_restart(
             await asyncio.gather(*(w.task for w in runner.windows.values()))
 
     assert started == ["AAA"]
+
+
+async def test_an_alert_from_before_the_new_layout_still_takes_only_new_links(
+    tmp_path: Path,
+) -> None:
+    target = uber()
+    channel = FakeDiscord()
+    folder = "https://www.sec.gov/Archives/edgar/data/1543151/000154315126000040"
+    # Posted by the bot before links were masked
+    old = ["Alert", "Seen", "IR site: <https://ir.example/q3>", f"SEC 8-K: <{folder}/index.htm>"]
+    wire = "📰 [Business Wire](<https://bw.example/q3>)"
+    new = [
+        "Alert",
+        "Seen",
+        "🌐 [IR site](<https://ir.example/q3>)",
+        f"🏛️ [SEC 8-K](<{folder}/uber-20261104.htm>)",
+        wire,
+    ]
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        await channel.poster(store, target).send("\n".join(old))
+        resumed = channel.poster(store, target)  # after a restart into the new layout
+        await resumed.send("\n".join(old))
+        await resumed.edit("\n".join(new))
+
+    assert channel.messages[1].content.splitlines() == [*old, wire]
+
+
+def test_a_window_report_names_the_winner_then_how_far_behind_the_rest_were() -> None:
+    target = Target(
+        ticker="LCID",
+        expected=datetime(2026, 11, 9, 16, 5, tzinfo=ET),
+        cik=1811210,
+        period="FY2026Q3",
+    )
+    first = datetime(2026, 11, 9, 16, 6, 2, 708_000, tzinfo=ET)
+    fresh = RssFeed("prnewswire_busted", "https://www.prnewswire.com/rss/x.rss")
+    cached = RssFeed("prnewswire", "https://www.prnewswire.com/rss/x.rss")
+    window = target.window
+    watches = [
+        Watch("LCID", fresh, window, first=first),
+        Watch("LCID", cached, window, first=first + timedelta(seconds=0.4)),
+        Watch("LCID", EdgarLatest(1811210), window, first=first + timedelta(seconds=171.31)),
+        Watch("LCID", EdgarFilings(1811210), window, stopped="HTTP 403"),
+    ]
+
+    report = unattended._window_report(target, watches, "@earnings_guy: no post found")
+
+    assert report.splitlines() == [
+        "🏁 **LCID Q3 FY26 window closed**",
+        "🥇 PR Newswire earnings feed at 4:06:02.708 PM ET",
+        "Then SEC 8-K filings +2m 51s",
+        "⚠️ Stopped early: SEC 8-K filings",
+        "-# @earnings_guy: no post found",
+    ]
+    caught = [Watch("LCID", fresh, window, caught_up="lucid-q3")]
+    assert unattended._window_report(target, caught).splitlines()[1] == (
+        "Already out when the window opened: PR Newswire earnings feed"
+    )
+    assert unattended._window_report(target, []).splitlines()[1] == "No release seen"

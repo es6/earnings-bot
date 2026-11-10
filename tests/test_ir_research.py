@@ -1,7 +1,16 @@
 import re
 from datetime import date
 
-from earnings_bot.ir_research import issuer_links, matches_release, quarter_headline
+import pytest
+
+from earnings_bot import ir_research
+from earnings_bot.ir_research import (
+    issuer_links,
+    matches_release,
+    quarter_headline,
+    verified_browser_source,
+)
+from tests.fakes import RoutedFetcher
 
 
 def test_inspector_requires_same_record_release_evidence() -> None:
@@ -46,3 +55,65 @@ def test_a_results_headline_that_announces_rather_than_reports_counts() -> None:
         "Lucid Announces Q2 Production and Deliveries, Sets Date for Second Quarter 2026 Earnings"
     )
     assert not pattern.fullmatch("Lucid Announces Second Quarter 2026 Results Conference Call")
+
+
+LISTING = "https://ir.lucidmotors.com/press-releases"
+Q2 = "https://ir.lucidmotors.com/news-releases/q2"
+Q2_TITLE = "Lucid Announces Operational Reset and Second Quarter 2026 Results"
+REPORT = (
+    f"<h1>{Q2_TITLE}</h1><p>Revenue was $259 million. Net loss per share was $0.24.</p>"
+    + "<p>Details of the quarter.</p>" * 200
+)
+
+
+@pytest.fixture
+def chrome(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ir_research, "chrome_available", lambda: True)
+
+
+@pytest.mark.usefixtures("chrome")
+@pytest.mark.parametrize(
+    ("routes", "why"),
+    [
+        (
+            {LISTING: (200, f'<a href="{Q2}">{Q2_TITLE}</a>'), Q2: (200, REPORT)},
+            f"Last quarter's results, “{Q2_TITLE}”, read in Chrome",
+        ),
+        ({LISTING: (403, "Access Denied")}, f"Chrome got HTTP 403 from <{LISTING}>"),
+        (
+            {LISTING: (200, '<a href="/news/day">Lucid to Host Investor Day</a>')},
+            f"No Q2 2026 results headline on <{LISTING}> to check the pattern against",
+        ),
+        (
+            {LISTING: (200, f'<a href="{Q2}">{Q2_TITLE}</a>'), Q2: (200, "<p>Coming soon</p>")},
+            f"Last quarter's article “{Q2_TITLE}” didn't read as a results report",
+        ),
+    ],
+    ids=["verified", "blocked", "no-headline", "not-a-report"],
+)
+async def test_a_live_chrome_source_is_verified_or_says_why_not(
+    routes: dict[str, tuple[int, str]], why: str
+) -> None:
+    fetcher = RoutedFetcher(
+        {url: (status, body.encode()) for url, (status, body) in routes.items()}
+    )
+
+    source, reason = await verified_browser_source(fetcher, LISTING, "FY2026Q3")
+
+    assert reason == why
+    assert (source is not None) == why.endswith("read in Chrome")
+    if source:
+        assert (source.listing, source.verify_text) == (LISTING, True)
+
+
+async def test_no_chrome_or_no_page_says_so(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ir_research, "chrome_available", lambda: False)
+    assert await verified_browser_source(RoutedFetcher({}), LISTING, "FY2026Q3") == (
+        None,
+        "Chrome isn't available on this computer",
+    )
+    monkeypatch.setattr(ir_research, "chrome_available", lambda: True)
+    assert await verified_browser_source(RoutedFetcher({}), None, "FY2026Q3") == (
+        None,
+        "No press release page found for it",
+    )

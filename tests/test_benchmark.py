@@ -135,8 +135,9 @@ async def test_window_report_uses_discord_message_creation_time(
         await runner._watch(target)
 
     assert len(status) == 1
-    assert "Our Discord alert was 2.00s earlier" in status[0]
-    assert f"<{UBER.url}>" in status[0]
+    assert status[0].splitlines()[-1] == (
+        f"-# [@earnings_guy](<{UBER.url}>) posted at 6:55:19.579 AM ET, 2.00s after our alert"
+    )
     assert "@earnings_guy" in runner.health()
     event = json.loads(log.getvalue())
     assert event["period"] == "FY2026Q3"

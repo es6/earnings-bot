@@ -16,7 +16,7 @@ from earnings_bot.delivery import DeliveryStore
 from earnings_bot.fetch import Response
 from earnings_bot.investigate import due, feed_links, ir_hosts, wire
 from earnings_bot.issuers import profile
-from earnings_bot.known import known_companies, to_target
+from earnings_bot.known import SourceCheck, known_companies, to_target
 from earnings_bot.recorder import ET
 from tests.fakes import RoutedFetcher
 from tests.sec_data import LCID_CIK, LCID_SUBMISSIONS
@@ -35,6 +35,7 @@ LUCID_RELEASE = (
     "investor@lucidmotors.com."
 )
 DATELINE = "NEWARK, Calif., Aug. 4, 2026 /PRNewswire/ -- Lucid Group, Inc. (NASDAQ: LCID) today"
+LUCID_Q2_TITLE = "Lucid Announces Operational Reset and Second Quarter 2026 Results"
 
 
 class FakeChrome:
@@ -167,7 +168,37 @@ async def test_a_q4_site_is_polled_directly(released: Callable[[str], None]) -> 
     assert found.evidence == (
         "Investigated Nov 09: Q4 press feed on investors.example.com. Wire: Business Wire."
     )
-    assert chrome.started == 0
+    # The IR site is opened in Chrome even with a feed to poll
+    assert chrome.started == 1
+    assert [(c.source, c.watch, c.why) for c in found.checks] == [
+        (
+            "SEC 8-K filings",
+            True,
+            f"Its last results 8-Ks were accepted at {', '.join(LUCID.eightk)} ET",
+        ),
+        ("ir.gone.example", False, "Not its IR site (HTTP 404)"),
+        ("Q4 press release feed on investors.example.com", True, "Lists its releases and files"),
+        (
+            "investors.example.com press release page",
+            False,
+            "Chrome got HTTP 404 from investors.example.com",
+        ),
+        (
+            "PR Newswire earnings feed",
+            False,
+            "Its latest results release went out on Business Wire",
+        ),
+        (
+            "Business Wire earnings feed",
+            True,
+            "Its latest results release went out on Business Wire.",
+        ),
+        (
+            "GlobeNewswire earnings feed",
+            False,
+            "Its latest results release went out on Business Wire",
+        ),
+    ]
     target = to_target("LCID", NOW, 2026, 4, found)
     assert [s.name for s in target.sources()] == [
         "q4_press",
@@ -324,9 +355,12 @@ async def test_the_last_release_is_read_from_the_results_8k() -> None:
 def test_only_companies_outside_the_catalog_are_investigated_and_then_monthly() -> None:
     assert not due("NVDA", known_companies()["NVDA"], TODAY)
     assert due("LCID", LUCID, TODAY)
-    looked = LUCID.model_copy(update={"investigated": date(2026, 10, 11)})
+    checked = [SourceCheck(source="SEC 8-K filings", watch=True, why="Filed here")]
+    looked = LUCID.model_copy(update={"investigated": date(2026, 10, 11), "checks": checked})
     assert not due("LCID", looked, TODAY)
     assert due("LCID", looked, date(2026, 11, 10))
+    # Looked at before the bot kept what it checked
+    assert due("LCID", looked.model_copy(update={"checks": []}), TODAY)
 
 
 NOTICE = {
@@ -341,10 +375,10 @@ NOTICE = {
 async def test_discovery_investigates_once_then_finds_the_date_on_the_new_feed(
     tmp_path: Path, released: Callable[[str], None], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    async def nothing(*args: object) -> None:
-        return None
+    async def unverified(*args: object) -> tuple[None, str]:
+        return None, "Not checked in tests"
 
-    monkeypatch.setattr(date_discovery, "verified_browser_source", nothing)
+    monkeypatch.setattr(date_discovery, "verified_browser_source", unverified)
     released("Webcast at investors.example.com.")
     fetcher = RoutedFetcher(
         {
@@ -368,7 +402,7 @@ async def test_discovery_investigates_once_then_finds_the_date_on_the_new_feed(
         assert row.evidence == (
             "Issuer date confirmed, after market close <https://investors.example.com/news/notice>"
         )
-        assert statuses == [f"LCID: {row.company.evidence}", describe(row.target, row.evidence)]
+        assert statuses == [f"📅 {describe(row.target, row.evidence)}"]
         assert "q4_press" in [s.name for s in row.target.sources()]
 
         # The next hourly check uses what was found without looking again
@@ -406,3 +440,187 @@ async def test_findings_from_a_check_cut_short_by_a_window_arent_saved(
         [after] = calendar.entries()
         assert after.company == LUCID
     assert statuses == []
+
+
+async def test_every_source_checked_is_reported_with_why_as_it_goes(
+    released: Callable[[str], None],
+) -> None:
+    released(LUCID_RELEASE)
+    fetcher = RoutedFetcher({"ir.lucidmotors.com/": (403, b"Access Denied")})
+    steps: list[str] = []
+    counts: list[int] = []
+    report = investigate.Report()
+
+    def changed() -> None:
+        steps.append(report.step)
+        counts.append(len(report.checks))
+
+    report.changed = changed
+
+    found = await investigate.investigate(fetcher, LUCID, TODAY, lucid_chrome().open, report=report)
+
+    assert found.checks == report.checks
+    assert [(c.source, c.watch, c.why) for c in found.checks] == [
+        (
+            "SEC 8-K filings",
+            True,
+            f"Its last results 8-Ks were accepted at {', '.join(LUCID.eightk)} ET",
+        ),
+        ("ir.lucidmotors.com without Chrome", False, "Blocks automated requests (HTTP 403)"),
+        (
+            f"Press release page <{LUCID_LIST}>, read in Chrome",
+            True,
+            f"Chrome read its latest results, “{LUCID_Q2_TITLE}”",
+        ),
+        ("PR Newswire earnings feed", True, "Its latest results release went out on PR Newswire."),
+        (
+            "Business Wire earnings feed",
+            False,
+            "Its latest results release went out on PR Newswire",
+        ),
+        (
+            "GlobeNewswire earnings feed",
+            False,
+            "Its latest results release went out on PR Newswire",
+        ),
+    ]
+    # The scorecard hears of each finding as it's made
+    assert sorted(set(counts)) == list(range(len(found.checks) + 1))
+    # Each step is announced as it starts
+    assert list(dict.fromkeys(steps)) == [
+        "Reading its SEC filings",
+        "Reading its last results 8-K on SEC",
+        "Checking ir.lucidmotors.com",
+        "Opening ir.lucidmotors.com in Chrome",
+        "Choosing its sources",
+    ]
+
+
+async def test_chrome_tries_the_usual_list_when_the_home_page_doesnt_link_it(
+    released: Callable[[str], None],
+) -> None:
+    released(LUCID_RELEASE)
+    fetcher = RoutedFetcher({"ir.lucidmotors.com/": (403, b"Access Denied")})
+    chrome = lucid_chrome()
+    chrome.pages[LUCID_HOME] = (200, "<a href='/'>Home</a>")
+
+    found = await investigate.investigate(fetcher, LUCID, TODAY, chrome.open)
+
+    assert found.ir_listing == LUCID_LIST
+    assert [url for url, _ in chrome.calls] == [LUCID_HOME, LUCID_LIST, LUCID_Q2]
+
+
+async def test_a_list_without_results_is_kept_for_notices_but_reported(
+    released: Callable[[str], None],
+) -> None:
+    released(LUCID_RELEASE)
+    fetcher = RoutedFetcher({"ir.lucidmotors.com/": (403, b"Access Denied")})
+    chrome = lucid_chrome()
+    chrome.pages[LUCID_LIST] = (200, '<a href="/news/notice">Lucid to Host Investor Day</a>')
+
+    found = await investigate.investigate(fetcher, LUCID, TODAY, chrome.open)
+
+    # Date notices are read from the list, but nothing on it is watched for results yet
+    assert found.ir_listing == LUCID_LIST
+    assert (
+        "ir.lucidmotors.com press release page",
+        False,
+        f"<{LUCID_LIST}> shows no results headline",
+    ) in [(c.source, c.watch, c.why) for c in found.checks]
+
+
+async def test_a_site_without_a_q4_feed_or_rss_says_what_was_tried(
+    released: Callable[[str], None],
+) -> None:
+    released("Webcast at ir.example.com.")
+    fetcher = RoutedFetcher(
+        {
+            "ir.example.com/feed/PressRelease.svc": (404, b""),
+            "/rss": (404, b""),
+            "ir.example.com/": (200, b"<html>"),
+        }
+    )
+
+    found = await investigate.investigate(fetcher, LUCID, TODAY, None)
+
+    checks = {c.source: c.why for c in found.checks if not c.watch}
+    assert checks["Q4 press release feed on ir.example.com"] == "Not a Q4 site (HTTP 404)"
+    assert checks["Press release feed on ir.example.com"] == (
+        "None found: /rss/news-releases.xml HTTP 404, /news-releases/rss HTTP 404, "
+        "/press-releases/rss HTTP 404, /news-events/press-releases/rss HTTP 404"
+    )
+    assert checks["ir.example.com press release page"] == (
+        "Chrome isn't available on this computer"
+    )
+    # The wire isn't named anywhere, so both main ones are watched
+    assert [c.source for c in found.checks if c.watch] == [
+        "SEC 8-K filings",
+        "PR Newswire earnings feed",
+        "Business Wire earnings feed",
+    ]
+
+
+async def test_a_release_naming_no_ir_site_says_so(released: Callable[[str], None]) -> None:
+    released("Results. See www.example.com.")
+    found = await investigate.investigate(RoutedFetcher({}), LUCID, TODAY, None)
+    assert ("IR site", False, "Its last results release names no IR site") in [
+        (c.source, c.watch, c.why) for c in found.checks
+    ]
+
+    released("")
+    found = await investigate.investigate(RoutedFetcher({}), LUCID, TODAY, None)
+    assert ("IR site", False, "Couldn't read its last results 8-K") in [
+        (c.source, c.watch, c.why) for c in found.checks
+    ]
+
+
+async def test_discovery_shows_the_investigation_while_it_runs(
+    tmp_path: Path, released: Callable[[str], None], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def unverified(*args: object) -> tuple[None, str]:
+        return None, "Not checked in tests"
+
+    monkeypatch.setattr(date_discovery, "verified_browser_source", unverified)
+    released(LUCID_RELEASE)
+    fetcher = RoutedFetcher({"ir.lucidmotors.com/": (403, b"Access Denied")})
+    chrome = lucid_chrome()
+    seen: list[tuple[str | None, int]] = []
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        calendar = Calendar(store)
+        calendar.add("LCID", 1, NOW, LUCID)
+        dates = DateDiscovery(
+            calendar, fetcher, lambda: NOW, lambda: False, print, None, chrome.open
+        )
+
+        def progressed() -> None:
+            report = dates.reports.get(LCID_CIK)
+            seen.append((report.step if report else None, len(report.checks) if report else 0))
+
+        dates.on_progress = progressed
+        [row] = calendar.entries()
+        await dates.run_once(row)
+
+        assert dates.reports == {}
+        [row] = calendar.entries()
+        assert row.company.checks
+    # The scorecard is told at each step and each finding, while the report is there to read
+    assert ("Opening ir.lucidmotors.com in Chrome", 2) in seen
+    assert max(count for _, count in seen) == len(row.company.checks)
+
+
+async def test_without_chrome_an_open_site_keeps_the_list_a_plain_request_finds(
+    released: Callable[[str], None],
+) -> None:
+    released("Webcast at ir.example.com.")
+    fetcher = RoutedFetcher(
+        {
+            "ir.example.com/feed/PressRelease.svc": (404, b""),
+            "/rss": (404, b""),
+            "ir.example.com/": (200, b'<a href="/press-releases">Press Releases</a>'),
+        }
+    )
+
+    found = await investigate.investigate(fetcher, LUCID, TODAY, None)
+
+    # Kept for reading date notices, though nothing on it is watched for results
+    assert found.ir_listing == "https://ir.example.com/press-releases"

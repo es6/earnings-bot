@@ -1,12 +1,46 @@
 import asyncio
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from types import TracebackType
-from typing import Self, cast
+from typing import Any, Self, cast
 
 import aiohttp
+import discord
 
+from earnings_bot.browser import DesktopChrome
 from earnings_bot.fetch import Fetcher, Response
+
+
+def embed_text(embed: discord.Embed | None) -> str:
+    """An embed's title, description and fields as plain lines, for asserting on."""
+    if embed is None:
+        return ""
+    parts = [embed.title or "", embed.description or ""]
+    for field in embed.fields:
+        parts += [field.name or "", field.value or ""]
+    return "\n".join(parts)
+
+
+class RoutedChrome:
+    """Desktop Chrome in a test, answering from its fetcher's routes. `opened` counts how often
+    it was started."""
+
+    def __init__(self, fetcher: "RoutedFetcher") -> None:
+        self.fetcher = fetcher
+
+    async def request(
+        self,
+        url: str,
+        warmup: str,
+        give_up_after: float,
+        wait_turn: Callable[[str], Awaitable[None]],
+    ) -> Response:
+        self.fetcher.chrome_calls.append(url)
+        return await self.fetcher.request("GET", url, give_up_after=give_up_after)
+
+    async def inspect_json(self, url: str) -> list[Any]:
+        return []
 
 
 class RoutedFetcher(Fetcher):
@@ -21,6 +55,14 @@ class RoutedFetcher(Fetcher):
         self.requests: list[tuple[str, str, dict[str, str] | None]] = []
         self.no_redirect: list[str] = []
         self.urgent: list[str] = []  # URLs asked for ahead of the host's polls
+        self.chrome_calls: list[str] = []  # URLs read through the research browser
+        self.chrome_opened = 0
+
+    @asynccontextmanager
+    async def research_browser(self) -> AsyncIterator[DesktopChrome]:
+        """Never real Chrome in a test: one that reads the same routes."""
+        self.chrome_opened += 1
+        yield cast(DesktopChrome, RoutedChrome(self))
 
     async def request(
         self,

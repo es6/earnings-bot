@@ -24,6 +24,7 @@ from earnings_bot.browser_sources import BrowserPDF, BrowserRelease, TeslaDeck
 from earnings_bot.delivery import Delivery, DeliveryStore, retry_delivery
 from earnings_bot.estimates import Estimates, EstimatesError, fmp_estimates
 from earnings_bot.fetch import Fetcher, Response
+from earnings_bot.formatting import clock, period_label
 from earnings_bot.recorder import ET, Journal, Plan, Target, record
 from earnings_bot.sources import (
     BroadcomNewsroom,
@@ -200,9 +201,9 @@ class DurableDiscordPoster(DiscordPoster):
 
     def _merge_content(self, existing: str, content: str) -> str:
         lines = existing.splitlines()
-        urls = [line.rsplit("<", 1)[-1].rstrip(">") for line in lines[2:]]
+        urls = [_line_url(line) for line in lines[2:]]
         for line in content.splitlines()[2:]:
-            url = line.rsplit("<", 1)[-1].rstrip(">")
+            url = _line_url(line)
             if url not in urls and not any(_same_filing(url, known) for known in urls):
                 lines.append(line)
                 urls.append(url)
@@ -268,6 +269,25 @@ def describe_source(source: Source) -> str:
 
 
 _FILING_FOLDER = re.compile(r"https://www\.sec\.gov/Archives/edgar/data/\d+/\d+/")
+# A link line's URL, in an alert's `[label](<url>)` lines or the older `label: <url>` ones
+_LINE_URL = re.compile(r"<(https?://[^>\s]+)>")
+
+
+def _line_url(line: str) -> str:
+    urls = _LINE_URL.findall(line)
+    return urls[-1] if urls else line
+
+
+def _icon(label: str) -> str:
+    if label.startswith("SEC "):
+        return "🏛️"
+    if label == "IR site":
+        return "🌐"
+    if label in ("PR Newswire", "Business Wire", "GlobeNewswire"):
+        return "📰"
+    if urlsplit("https://x/" + label).path.lower().endswith(FILE_TYPES):
+        return "📄"
+    return "🔗"
 
 
 def _filing_folder(url: str) -> str | None:
@@ -365,15 +385,21 @@ class Release:
         return round((stamp - self.first_seen).total_seconds(), 2)
 
     def _content(self) -> str:
-        seen = f"{self.first_seen.astimezone(ET):%H:%M:%S.%f}"[:-3] if self.first_seen else ""
+        seen = clock(self.first_seen, millis=True) if self.first_seen else ""
         first_label = next(iter(self.links.values()), "")
+        period = period_label(self.target.period)
         # Not a race won: the release was already out when the bot started watching
-        late = "Already out when the bot started watching. " if self.caught_up else ""
+        late = "Already out when the bot started watching · " if self.caught_up else ""
+        quarter = f" {period}" if period else ""
         lines = [
-            f"🚨 **${self.target.ticker} earnings are out**{self.note}",
-            f"-# {late}First seen {seen} ET on the {first_label}",
+            f"🚨 **${self.target.ticker}{quarter} earnings are out**{self.note}",
+            f"-# {late}First seen {seen} via {first_label}",
         ]
-        lines += [f"{label}: <{url}>" for url, label in self.links.items()]
+        # Masked links in angle brackets, so Discord doesn't add a preview of each page
+        lines += [
+            f"{_icon(label)} [{discord.utils.escape_markdown(label)}](<{url}>)"
+            for url, label in self.links.items()
+        ]
         content = "\n".join(lines)
         return content if len(content) <= MAX_CONTENT else content[: MAX_CONTENT - 1] + "…"
 

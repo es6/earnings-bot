@@ -1,6 +1,7 @@
-"""Edit one durable Discord progress message for each tracked issuer."""
+"""Edit one durable Discord scorecard for each tracked issuer, as the bot researches it."""
 
 import asyncio
+import hashlib
 import logging
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
@@ -9,20 +10,104 @@ from datetime import datetime, timedelta
 import aiohttp
 import discord
 
-from earnings_bot.calendar import Calendar, Tracked, describe
+from earnings_bot.calendar import Calendar, Tracked, evidence_text
 from earnings_bot.delivery import DeliveryStore
-from earnings_bot.investigate import due
-from earnings_bot.known import KnownCompany, known_companies
-from earnings_bot.pipeline import DurableDiscordPoster
+from earnings_bot.formatting import (
+    AMBER,
+    BLUE,
+    GREEN,
+    GREY,
+    RED,
+    bullets,
+    clock,
+    duration,
+    period_label,
+    source_label,
+    stamp,
+    truncate,
+    watch_list,
+)
+from earnings_bot.investigate import Report, due
+from earnings_bot.ir_research import issuer_listing
+from earnings_bot.known import KnownCompany, known_companies, to_target
+from earnings_bot.pipeline import UNKNOWN_MESSAGE
 from earnings_bot.recorder import ET, Target
+from earnings_bot.source_audit import Speed, Timing
 
 log = logging.getLogger(__name__)
 REFRESH = timedelta(days=1)
 
+DONE, WORKING, WAITING, FAILED, TODO = "✅", "⏳", "⏸️", "⚠️", "▫️"
 
-class _ProgressPoster(DurableDiscordPoster):
-    def _merge_content(self, existing: str, content: str) -> str:
-        return content
+
+class CardPoster:
+    """One message holding an embed, sent once and then edited. Its ID is kept in the delivery
+    store, so a restart edits the same message."""
+
+    def __init__(
+        self, channel: discord.abc.Messageable, store: DeliveryStore, key: str, author_id: int
+    ) -> None:
+        self.channel, self.store, self.key, self.author_id = channel, store, key, author_id
+
+    async def show(self, embed: discord.Embed) -> None:
+        title = embed.title or ""
+        saved = self.store.get(self.key)
+        message = None
+        if saved is not None and saved.message_id is not None:
+            try:
+                message = await self.channel.fetch_message(saved.message_id)
+            except discord.NotFound as error:
+                if error.code != UNKNOWN_MESSAGE:
+                    raise
+                self.store.forget(self.key)
+                saved = None
+        if saved is None:
+            saved = self.store.prepare(self.key, title)
+        elif message is None:
+            # Sent before a crash, before its ID was saved
+            after = saved.prepared - timedelta(seconds=5)
+            async for candidate in self.channel.history(limit=50, after=after):
+                if candidate.author.id == self.author_id and any(
+                    shown.title == saved.content for shown in candidate.embeds
+                ):
+                    message = candidate
+                    break
+        if message is None:
+            intent = f"{self.store.channel_id}:{self.key}:{saved.prepared.isoformat()}"
+            nonce = hashlib.blake2s(intent.encode(), digest_size=12).hexdigest()
+            message = await self.channel.send(embed=embed, nonce=nonce)
+        else:
+            await message.edit(content=None, embed=embed)
+        self.store.delivered(self.key, message.id)
+
+
+def _first_lines(speed: Speed) -> str:
+    """Which source had the last results first, and how far behind the others were."""
+    if speed.day is None:
+        return "Couldn't date its last results release."
+    basis, timings = speed.fastest()
+    if not timings:
+        return f"No timings recorded for its {speed.day:%b} {speed.day.day} release."
+    by_label: dict[str, Timing] = {}
+    for timing in timings:
+        by_label.setdefault(source_label(timing.source, speed.form), timing)
+    first, *rest = by_label.items()
+    label, at = first[0], first[1].at
+    if rest:
+        lines = [f"🥇 **{label}** at {clock(at, seconds=True)}"]
+        lines += [f"{name} +{duration((t.at - at).total_seconds())}" for name, t in rest[:4]]
+    else:
+        # First by default, so say so rather than call it a win
+        lines = [
+            (
+                f"**{label}** at {clock(at, seconds=True)}, the only timing left for that release. "
+                "Newswire feeds keep only their latest releases."
+            )
+        ]
+    lines.append(f"-# {speed.day:%b} {speed.day.day} release · {basis}")
+    if speed.benchmark:
+        lines.append(f"-# {speed.benchmark}")
+    return "\n".join(lines)
 
 
 class TrackProgress:
@@ -35,15 +120,19 @@ class TrackProgress:
         planned: Callable[[], dict[str, Target]],
         now: Callable[[], datetime],
         busy: Callable[[], bool],
-        audit: Callable[[str, KnownCompany, datetime], Awaitable[str]],
+        audit: Callable[[str, KnownCompany, datetime], Awaitable[Speed]],
         date_phase: Callable[[int], str | None] | None = None,
+        research: Callable[[int], Report | None] | None = None,
+        ir_note: Callable[[int], str | None] | None = None,
     ) -> None:
         self.calendar, self.store, self.channel = calendar, store, channel
         self.author_id, self.planned, self.now, self.busy = author_id, planned, now, busy
         self.audit = audit
         self.date_phase = date_phase or (lambda _: None)
+        self.research = research or (lambda _: None)
+        self.ir_note = ir_note or (lambda _: None)
         self.changed = asyncio.Event()
-        self.last_sent: dict[int, str] = {}
+        self.last_sent: dict[int, object] = {}
         self.removed: dict[int, str] = {}
         self.next_attempt: dict[int, datetime] = {}
         self.audit_failed: set[int] = set()
@@ -52,18 +141,20 @@ class TrackProgress:
     def _key(self, cik: int) -> str:
         return f"track:{self.calendar.channel}:{cik}"
 
-    async def publish(self, cik: int, content: str) -> None:
-        if self.last_sent.get(cik) == content:
+    async def publish(self, cik: int, embed: discord.Embed) -> None:
+        shown = embed.to_dict()
+        if self.last_sent.get(cik) == shown:
             return
-        poster = _ProgressPoster(self.channel, self.store, self._key(cik), self.author_id)
+        embed.timestamp = self.now()
+        poster = CardPoster(self.channel, self.store, self._key(cik), self.author_id)
         try:
-            await poster.send(content)
+            await poster.show(embed)
         except (discord.HTTPException, aiohttp.ClientError, TimeoutError) as error:
-            log.warning("Couldn't update tracking progress for %s: %s", cik, error)
+            log.warning("Couldn't update the scorecard for %s: %s", cik, error)
         else:
-            self.last_sent[cik] = content
+            self.last_sent[cik] = shown
 
-    def _render(self, row: Tracked, result: str | None, checking: bool) -> str:
+    def _target(self, row: Tracked) -> Target | None:
         now = self.now()
         target = min(
             (
@@ -74,50 +165,128 @@ class TrackProgress:
             key=lambda item: item.expected,
             default=None,
         )
-        # A manually pinned window may have been saved since the last directory scan.
+        # A manually pinned window may have been saved since the last directory scan
         if row.target and row.target.window[1] > now and target is None:
             target = row.target
-        paused = self.busy() and (not target or self._investigating(row) or not result)
-        lines = [f"**Tracking {row.ticker}**"]
+        return target
+
+    def _investigating(self, row: Tracked) -> bool:
+        return due(row.ticker, row.company, self.now().astimezone(ET).date())
+
+    def render(self, row: Tracked, review: str | None, checking: bool) -> discord.Embed:
+        target = self._target(row)
+        speed = Speed.from_json(review)
+        busy = self.busy()
+        catalog = row.ticker in known_companies()
+        report = self.research(row.cik) if self._investigating(row) else None
+        phase = self.date_phase(row.cik)
+
+        # The checklist, and the color and headline it adds up to
+        form = row.company.sec_form or "8-K"
+        steps = [f"{DONE} Found in SEC data: CIK {row.cik}, results on Form {form}"]
+        if catalog:
+            steps.append(f"{DONE} Sources researched by hand")
+        elif report is not None:
+            steps.append(f"{WORKING} Investigating sources: {report.step}…")
+        elif self._investigating(row):
+            pause = "waits for an open release window" if busy else "queued"
+            steps.append(f"{WAITING if busy else TODO} Investigating sources ({pause})")
+        elif looked := row.company.investigated:
+            steps.append(f"{DONE} Sources investigated {looked:%b} {looked.day}")
+        if target:
+            steps.append(f"{DONE} Release date found")
+        elif phase and phase.startswith("Looking"):
+            steps.append(f"{WORKING} {phase}…")
+        elif phase and phase.startswith("No release date"):
+            steps.append(f"{FAILED} {phase}")
+        elif phase:
+            steps.append(f"{WAITING} Release date: {phase.lower()}")
+        else:
+            steps.append(f"{TODO} Release date")
+        if checking:
+            steps.append(f"{WORKING} Checking which source was fastest last time…")
+        elif speed is not None:
+            steps.append(f"{DONE} Speed history checked")
+        elif row.cik in self.audit_failed:
+            steps.append(f"{FAILED} Speed history check failed. Retrying within the hour.")
+        elif busy:
+            steps.append(f"{WAITING} Speed history (waits for an open release window)")
+        else:
+            steps.append(f"{TODO} Speed history")
+
+        working = any(step.startswith(WORKING) for step in steps)
+        if any(step.startswith(FAILED) for step in steps):
+            color = RED if row.cik in self.audit_failed else AMBER
+        elif working:
+            color = BLUE
+        elif target and speed is not None:
+            color = GREEN
+        else:
+            color = AMBER
+
         if target:
             evidence = (
                 row.evidence if row.target and row.target.expected == target.expected else None
             )
-            lines.append(describe(target, evidence or "Schedule file"))
-            names = [
-                source.name + (" (trial)" if source.trial else "") for source in target.sources()
-            ]
-            lines.append("Sources prepared for the window | " + ", ".join(names))
-        elif not paused:
-            lines.append(self.date_phase(row.cik) or "Waiting for issuer date research to start.")
-        if row.company.sec_form == "6-K":
-            lines.append("Files results on SEC Form 6-K.")
-        if row.ticker not in known_companies():
-            lines.append(row.company.evidence)
-        if paused:
-            lines.append("Research is waiting for release monitoring to finish.")
-        elif self._investigating(row):
-            if not self.date_phase(row.cik):
-                lines.append("IR site, feed and newswire investigation queued.")
-        elif checking:
-            lines.append("Checking the last release, issuer endpoints and @earnings_guy.")
-        elif row.cik in self.audit_failed:
-            lines.append("Source audit failed. Retrying at the next check.")
-        elif not result:
-            lines.append("Source audit queued. Active release windows take priority.")
-        if result:
-            lines.append(result)
-        return "\n".join(lines)[:1950]
+            period = f" · {period_label(target.period)}" if target.period else ""
+            description = (
+                f"**Next results:** {stamp(target.expected, 'F')} ({stamp(target.expected, 'R')})"
+                f"{period}\n-# {evidence_text(evidence or 'From a schedule file')} · "
+                f"watching from {clock(target.window[0])}"
+            )
+        elif working:
+            description = "Researching. This message updates as it goes."
+        else:
+            description = "No release date yet."
+        embed = discord.Embed(
+            title=f"{row.ticker} · {row.company.name}", description=description, color=color
+        )
+        embed.add_field(name="Progress", value="\n".join(steps), inline=False)
 
-    def _investigating(self, row: Tracked) -> bool:
-        return due(row.ticker, row.company, self.now().astimezone(ET).date())
+        if speed is not None:
+            embed.add_field(name="⚡ Fastest last time", value=_first_lines(speed), inline=False)
+
+        checks = report.checks if report is not None else row.company.checks
+        if target:
+            sources = target.sources()
+            watching = watch_list(sources)
+            heading = "👀 Watching for the next release"
+        else:
+            # What a window would watch, from what's known so far
+            preview = to_target(row.ticker, self.now(), self.now().year, 1, row.company)
+            watching = watch_list(preview.sources())
+            if row.company.ir_listing:
+                watching.append(
+                    source_label("browser-ir") + " *(once the date's quarter is known)*"
+                )
+            heading = "👀 Will watch once a date is set"
+        embed.add_field(name=heading, value=bullets(watching) or "Nothing yet", inline=False)
+
+        rejected = [
+            f"**{check.source}**: {check.why}"
+            for check in checks
+            if not check.watch
+            # Verified for this release since, so it's watched after all
+            and not (target and target.ir and "press release page" in check.source)
+        ]
+        note = self.ir_note(row.cik)
+        if target and target.ir is None and note and issuer_listing(row.ticker, row.company):
+            rejected.append(f"**{source_label('browser-ir')}**: {note}")
+        if rejected:
+            embed.add_field(name="🚫 Checked and rejected", value=bullets(rejected), inline=False)
+        elif catalog:
+            embed.add_field(
+                name="📝 Research", value=truncate(row.company.evidence, 1024), inline=False
+            )
+        embed.set_footer(text="Updated")
+        return embed
 
     async def _check(self, row: Tracked) -> None:
         now = self.now()
         self.next_attempt[row.cik] = now + timedelta(hours=1)
         try:
             async with asyncio.timeout(90):
-                result = await self.audit(row.ticker, row.company, now)
+                speed = await self.audit(row.ticker, row.company, now)
         except Exception:
             log.exception("Source audit failed for %s", row.ticker)
             self.audit_failed.add(row.cik)
@@ -125,7 +294,7 @@ class TrackProgress:
             return
         self.audit_failed.discard(row.cik)
         if any(item.cik == row.cik for item in self.calendar.entries()):
-            self.calendar.save_review(row.cik, now, result)
+            self.calendar.save_review(row.cik, now, speed.to_json())
         self.changed.set()
 
     async def run(self) -> None:
@@ -144,7 +313,9 @@ class TrackProgress:
                         self.active = None
                 for row in rows:
                     now = self.now()
-                    checked, result = self.calendar.review(row.cik)
+                    checked, review = self.calendar.review(row.cik)
+                    if Speed.from_json(review) is None:
+                        checked = None  # never checked, or saved in an older format
                     if (
                         not busy
                         # Audit the sources the investigation finds, not the ones before it
@@ -155,11 +326,16 @@ class TrackProgress:
                     ):
                         self.active = row.cik, asyncio.create_task(self._check(row))
                     checking = bool(self.active and self.active[0] == row.cik)
-                    await self.publish(row.cik, self._render(row, result, checking))
+                    await self.publish(row.cik, self.render(row, review, checking))
                 for cik, ticker in tuple(self.removed.items()):
                     if self.store.get(self._key(cik)) and not any(row.cik == cik for row in rows):
                         await self.publish(
-                            cik, f"**{ticker}** was removed from the earnings calendar."
+                            cik,
+                            discord.Embed(
+                                title=f"{ticker} · removed",
+                                description="No longer on the earnings calendar.",
+                                color=GREY,
+                            ),
                         )
                     self.removed.pop(cik, None)
                 with suppress(TimeoutError):

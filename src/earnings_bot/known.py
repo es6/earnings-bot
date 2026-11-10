@@ -30,6 +30,14 @@ ORD = ("1st", "2nd", "3rd", "4th")
 FIELDS = frozenset({"yyyy", "mm", "dd", "m", "d", "fy", "fyy", "fq", "nth", "NTH", "ord", "q4"})
 
 
+class SourceCheck(BaseModel):
+    """One source the bot's investigation of a company looked at, and what it decided."""
+
+    source: str  # what was checked, such as "Q4 feed on ir.example.com"
+    watch: bool  # whether it's watched for the next release
+    why: str
+
+
 class KnownCompany(BaseModel):
     name: str
     names: list[str] = []  # how wire headlines name the company
@@ -56,6 +64,8 @@ class KnownCompany(BaseModel):
     ir_listing: str | None = None
     # When the bot last looked for this company's sources itself, for one added from SEC data
     investigated: date | None = None
+    # What that investigation checked, kept and rejected
+    checks: list[SourceCheck] = []
 
 
 @cache
