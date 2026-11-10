@@ -10,7 +10,7 @@ import pytest
 from earnings_bot import date_discovery, ir_research
 from earnings_bot.browser import RenderedPage
 from earnings_bot.browser_sources import IRSource, QuarterlyTable
-from earnings_bot.calendar import Calendar, describe, manual_target
+from earnings_bot.calendar import Calendar, Tracked, describe, manual_target
 from earnings_bot.date_discovery import (
     CALENDAR_DATE,
     FMP_EARNINGS,
@@ -26,7 +26,7 @@ from earnings_bot.investigate import INVESTIGATION
 from earnings_bot.ir_research import IR_LISTINGS
 from earnings_bot.issuers import profile
 from earnings_bot.known import KnownCompany, SourceCheck, known_companies, to_target
-from earnings_bot.recorder import ET
+from earnings_bot.recorder import ET, Target
 from earnings_bot.source_audit import Speed, Timing
 from earnings_bot.sources import is_date_notice
 from tests.fakes import RoutedFetcher, rendered
@@ -744,8 +744,9 @@ async def test_a_closed_window_needs_evidence_of_a_release(tmp_path: Path, deliv
     assert "couldn't read a date" not in dates.phases[row.cik]
 
 
+@pytest.mark.parametrize("first_probe_fails", [False, True])
 async def test_track_arms_the_rendered_results_page_alongside_the_issuer_api(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, first_probe_fails: bool
 ) -> None:
     page = "https://www.issuer.example/investor/results"
     api = "https://www.issuer.example/api/results"
@@ -777,6 +778,13 @@ async def test_track_arms_the_rendered_results_page_alongside_the_issuer_api(
         calendar.set_target(planned, "Manual override")
         [row] = calendar.entries()
         dates = DateDiscovery(calendar, fetcher, lambda: NOW, lambda: False, print)
+        if first_probe_fails:
+            fetcher.routes[page] = (503, b"")
+            await dates._check(row)
+            [row] = calendar.entries()
+            assert row.target and row.target.ir and row.target.ir.news_api == api
+            assert row.target.ir.results_table is None
+            fetcher.routes[page] = (200, listing.encode())
         await dates._check(row)
         [row] = calendar.entries()
 
@@ -870,3 +878,62 @@ async def test_event_cards_read_adjacent_dates_and_zones_without_arming_tentativ
         assert time in result[1]
         if day == 25:
             assert result[0].expected.hour == 6
+
+
+async def test_a_morning_results_event_keeps_its_issuer_date_when_history_is_afternoon() -> None:
+    company = AMAT.model_copy(update={"release_time": "16:15", "sec_form": "8-K"})
+
+    async def render(page: str) -> RenderedPage:
+        return rendered(
+            page,
+            200,
+            "<div>November 24, 2026 8:00 AM ET</div>"
+            "<div>Company Third Quarter 2026 Financial Results</div>",
+        )
+
+    result, _ = await rendered_date(
+        render, ["https://issuer.example/events"], "AMAT", company, NOW, []
+    )
+
+    assert result is not None
+    target, _ = result
+    assert target.expected.date() == date(2026, 11, 24)
+    assert target.window[0] < datetime(2026, 11, 24, 8, tzinfo=ET) < target.window[1]
+
+
+async def test_new_watch_is_saved_after_issuer_and_cache_preparation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    company = AMAT.model_copy(
+        update={"sec_form": "8-K", "investigation": INVESTIGATION, "investigated": NOW.date()}
+    )
+    table = "https://issuer.example/2026"
+    target = to_target("AMAT", NOW + timedelta(hours=2), 2026, 3, company)
+    prepared = IRSource(results_table=table, table_http=True)
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        calendar = Calendar(store)
+        row, _ = calendar.add("AMAT", company)
+        dates = DateDiscovery(calendar, RoutedFetcher({}), lambda: NOW, lambda: False, print)
+
+        async def issuer_date(*args: object) -> tuple[Target, str]:
+            return target, "Issuer notice"
+
+        async def issuer_routes(*args: object) -> Target:
+            assert calendar.find("AMAT") == row
+            return target.model_copy(update={"ir": prepared})
+
+        async def preflight(candidate: Tracked, *, save: bool = True) -> Target:
+            assert not save and calendar.find("AMAT") == row
+            assert candidate.target and candidate.target.ir == prepared
+            return candidate.target.model_copy(
+                update={"ir": prepared.model_copy(update={"cache_bust_urls": [table]})}
+            )
+
+        monkeypatch.setattr(dates, "_issuer_date", issuer_date)
+        monkeypatch.setattr(dates, "_issuer_routes", issuer_routes)
+        monkeypatch.setattr(dates, "_prepare_cache", preflight)
+        await dates.run_once(row)
+        [planned] = calendar.entries()
+
+    assert planned.target and planned.target.ir
+    assert planned.target.ir.cache_bust_urls == [table]

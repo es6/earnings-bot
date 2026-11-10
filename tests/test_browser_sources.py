@@ -19,7 +19,11 @@ from earnings_bot.browser_sources import (
     TeslaDeck,
 )
 from earnings_bot.fetch import Response
-from earnings_bot.ir_research import quarter_headline, verified_browser_source
+from earnings_bot.ir_research import (
+    quarter_headline,
+    verified_browser_source,
+    verified_results_table,
+)
 from earnings_bot.known import target_toml
 from earnings_bot.pipeline import Releases
 from earnings_bot.recorder import ET, Journal, PollError, Target, Watch, poll, take
@@ -515,6 +519,8 @@ async def test_a_quarterly_table_follows_the_issuer_pdf_to_its_file_host() -> No
         <tr><td>Earnings Release</td><td></td><td></td>
             <td><a href="image/Q3-26-ER.pdf">PDF</a></td>
             <td><a href="image/2025-Q4-Earnings-Release.pdf">Stale PDF</a></td></tr></table>"""
+    empty = body.replace(b'<a href="image/Q3-26-ER.pdf">PDF</a>', b"")
+    body = empty + body  # A hidden desktop/mobile copy can come before the populated table.
     fetcher = RoutedFetcher(
         {"image/Q3": (302, b""), filecache: (200, b"%PDF-1.6"), table: (200, body)},
         {"location": filecache},
@@ -527,3 +533,15 @@ async def test_a_quarterly_table_follows_the_issuer_pdf_to_its_file_host() -> No
     other = QuarterlyTable(table, 2026, 4, direct=True)
     assert not other.parse(await other.fetch(fetcher))
     assert fetcher.urgent == [pdf, filecache]
+
+
+async def test_a_prior_fiscal_year_table_cannot_arm_the_next_year() -> None:
+    page = "https://issuer.example/financials/2026"
+    pdf = "https://issuer.example/Q4-2026-ER.pdf"
+    body = b"""<table><tr><th></th><th>Q1</th><th>Q2</th><th>Q3</th><th>Q4</th></tr>
+        <tr><td>Earnings Release</td><td></td><td></td><td></td>
+            <td><a href="/Q4-2026-ER.pdf">PDF</a></td></tr></table>"""
+    fetcher = RoutedFetcher({page: (200, body), pdf: (200, b"%PDF-1.6")})
+
+    assert await verified_results_table(fetcher, page, "FY2027Q1") == {}
+    assert not fetcher.requests

@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 import aiohttp
 
 from earnings_bot.fetch import Fetcher, Response
+from earnings_bot.periods import title_period
 from earnings_bot.sources import EdgarFilings, Sighting, published_time
 from earnings_bot.text import filing_exhibits, html_to_text, verified_report
 
@@ -115,12 +116,19 @@ class SixKResults:
         if filing.details.get("form") != "6-K":
             return None
         if body := (await self._verdict(filing)).body:
+            title = next(
+                (
+                    line
+                    for line in body[:INTRODUCTION].decode(errors="replace").splitlines()[:12]
+                    if _ANNOUNCES_RESULTS.search(line) and title_period(line)
+                ),
+                None,
+            )
+            details = {**filing.details, "verified_6k": "true"}
+            if title:
+                details["results_headline"] = title
             return replace(
-                filing,
-                title="6-K financial results",
-                earnings=True,
-                details={**filing.details, "verified_6k": "true"},
-                body=body,
+                filing, title="6-K financial results", earnings=True, details=details, body=body
             )
         return None
 

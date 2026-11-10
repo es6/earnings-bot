@@ -82,7 +82,14 @@ _REPORT_WORDS = re.compile(
     r"\b(?:total revenue reached|net sales reached)\b",
     re.IGNORECASE,
 )
-_RESULT_HEADING = re.compile(r"\b(?:results|earnings|net sales)\b", re.IGNORECASE)
+_RESULT_HEADING = re.compile(
+    r"\b(?:results|earnings|net sales|net income|net loss|eps)\b", re.IGNORECASE
+)
+_OTHER_RESULTS = re.compile(
+    r"\bresults? of (?:its |the )?"
+    r"(?:share (?:buyback|repurchase)|(?:debt |equity )?tender offer)\b",
+    re.IGNORECASE,
+)
 
 
 def is_date_notice(headline: str) -> bool:
@@ -105,9 +112,13 @@ def looks_like_earnings(headline: str) -> bool:
 
 def results_headline(headline: str) -> bool:
     """A reported result, with stronger evidence than a mention of a quarter."""
-    return looks_like_earnings(headline) and bool(
-        _REPORT_WORDS.search(headline)
-        or (_QUARTER_WORD.search(headline) and _RESULT_HEADING.search(headline))
+    return (
+        looks_like_earnings(headline)
+        and not _OTHER_RESULTS.search(headline)
+        and bool(
+            _REPORT_WORDS.search(headline)
+            or (_QUARTER_WORD.search(headline) and _RESULT_HEADING.search(headline))
+        )
     )
 
 

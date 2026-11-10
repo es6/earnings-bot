@@ -544,7 +544,8 @@ def event_target(
         )
         before, after = 60, 90
     elif (
-        call.hour < 12
+        _CALL.search(title)
+        and call.hour < 12
         and hour is not None
         and minute is not None
         and hour >= 16
@@ -801,9 +802,11 @@ class DateDiscovery:
         """One hourly check of a company, which never raises."""
         try:
             # Room for a first investigation and a read of the IR site, both through Chrome
-            async with asyncio.timeout(RESEARCH_SECONDS):
-                await self._check(row)
-                if current := self.calendar.find(row.ticker):
+            async with asyncio.timeout(RESEARCH_SECONDS) as research:
+                await self._check(row, preflight=True, deadline=research.when())
+                if (current := self.calendar.find(row.ticker)) and (
+                    current.target is None or current.target.window[1] <= self.now()
+                ):
                     await self._prepare_cache(current)
         except Exception:
             log.exception("Date discovery failed for %s", row.ticker)
@@ -929,10 +932,10 @@ class DateDiscovery:
         except (BrowserError, aiohttp.ClientError, TimeoutError, ValueError):
             return CacheResult("Chrome cache comparison failed")
 
-    async def _prepare_cache(self, row: Tracked) -> None:
+    async def _prepare_cache(self, row: Tracked, *, save: bool = True) -> Target | None:
         if self.busy():
             self.checked.pop(row.cik, None)
-            return
+            return row.target
         target, evidence = row.target, row.evidence
         ir = target.ir if target else None
         bust = set(ir.cache_bust_urls if ir else ())
@@ -945,7 +948,7 @@ class DateDiscovery:
             for route in _cache_routes(row):
                 if self.busy():
                     self.checked.pop(row.cik, None)
-                    return
+                    return target
                 saved = self.cache_results.get(route)
                 if saved and saved[0] > time.monotonic():
                     result = saved[1]
@@ -959,7 +962,7 @@ class DateDiscovery:
                         result = CacheResult("Cache comparison timed out")
                     if self.busy():
                         self.checked.pop(row.cik, None)
-                        return
+                        return target
                     self.cache_results[route] = time.monotonic() + CACHE_REFRESH, result
                 notes.append(f"{route.label} · {result.summary}")
                 if ir and route.url in (ir.news_api, ir.listing, ir.rss, ir.results_table):
@@ -973,7 +976,8 @@ class DateDiscovery:
                         canonical.add(route.url)
                     elif result.query_bust:
                         canonical.discard(route.url)
-            if target and evidence and self.calendar.find(row.ticker) == row:
+            updated = target
+            if target and evidence:
                 updated = target.model_copy(
                     update={
                         "ir": ir.model_copy(update={"cache_bust_urls": sorted(bust)})
@@ -982,12 +986,13 @@ class DateDiscovery:
                         "rss_canonical": sorted(canonical),
                     }
                 )
-                if updated != target:
+                if save and updated != target and self.calendar.find(row.ticker) == row:
                     self.calendar.set_target(updated, evidence)
             updated_notes = notes or ["No issuer endpoint available to test"]
             if self.cache_notes.get(row.cik) != updated_notes:
                 self.cache_notes[row.cik] = updated_notes
                 self.on_progress()
+            return updated
         finally:
             if self.phases.get(row.cik) == CHECKING_CACHE:
                 self._phase(row.cik, prior_phase)
@@ -1016,7 +1021,9 @@ class DateDiscovery:
         self.calendar.save_profile(row.cik, company)
         return replace(row, company=company)
 
-    async def _check(self, row: Tracked) -> None:
+    async def _check(
+        self, row: Tracked, *, preflight: bool = False, deadline: float | None = None
+    ) -> None:
         row = await self._investigate(row)
         if self._defer_if_busy(row.cik):
             return
@@ -1097,24 +1104,56 @@ class DateDiscovery:
         if self._defer_if_busy(row.cik) or row not in self.calendar.entries():
             return
         if row.target and same_release(target, row.target):
-            if row.target.ir:
-                target.ir = row.target.ir
             feeds = {*target.rss, *target.trial.rss}
-            target.rss_canonical = [url for url in row.target.rss_canonical if url in feeds]
+            target = target.model_copy(
+                update={
+                    "ir": row.target.ir or target.ir,
+                    "rss_canonical": [url for url in row.target.rss_canonical if url in feeds],
+                }
+            )
         if row.company.sec_form == "6-K" and target.sec_form != "6-K":
             target = target.model_copy(update={"sec_form": "6-K"})
-        self._phase(row.cik, None)
+        # Publish the prepared plan together when there is time. Leave several seconds
+        # for the schedule scan and use the available sources if the window is imminent.
+        remaining = (target.window[0] - self.now()).total_seconds() - 5
+        if deadline is not None:
+            remaining = min(remaining, deadline - asyncio.get_running_loop().time() - 1)
+        if remaining > 0:
+            try:
+                async with asyncio.timeout(remaining):
+                    target = await self._issuer_routes(row, target, evidence)
+                    if preflight:
+                        target = (
+                            await self._prepare_cache(
+                                replace(row, target=target, evidence=evidence), save=False
+                            )
+                            or target
+                        )
+            except TimeoutError:
+                self.ir_notes[row.cik] = "Issuer preparation reached the watch deadline"
+            except Exception:
+                log.exception("Issuer source preparation failed for %s", row.ticker)
+                self.ir_notes[row.cik] = "Issuer preparation failed and will be retried"
+        if self._defer_if_busy(row.cik) or self.calendar.find(row.ticker) != row:
+            return
         if row.target != target or row.evidence != evidence:
             self.calendar.set_target(target, evidence)
-            self.status(f"📅 {describe(target, evidence)}")
+            if (
+                row.target is None
+                or row.target.expected != target.expected
+                or row.evidence != evidence
+            ):
+                self.status(f"📅 {describe(target, evidence)}")
+        self._phase(row.cik, None)
+
+    async def _issuer_routes(self, row: Tracked, target: Target, evidence: str) -> Target:
         existing_ir = target.ir
         results_api = row.company.ir_results_api
         table = row.company.ir_results_page
         browser_feed = row.company.ir_browser_rss
         newer = bool(results_api and existing_ir and existing_ir.news_api != results_api)
-        extras_due = row.cik not in self.ir_notes and (
-            (table and (not existing_ir or existing_ir.results_table != table))
-            or (browser_feed and (not existing_ir or existing_ir.rss != browser_feed))
+        extras_due = (table and (not existing_ir or existing_ir.results_table != table)) or (
+            browser_feed and (not existing_ir or existing_ir.rss != browser_feed)
         )
         if (
             existing_ir
@@ -1132,13 +1171,13 @@ class DateDiscovery:
                 or row.cik in self.ir_notes
             )
         ):
-            return
+            return target
         if not target.period:
             self.ir_notes[row.cik] = "The release has no fiscal period to match headlines with"
             self.on_progress()
-            return
+            return target
         listing = existing_ir.listing if existing_ir else issuer_listing(row.ticker, row.company)
-        if listing:
+        if listing or results_api or table or browser_feed:
             self._phase(row.cik, VERIFYING_IR)
         ir = await verified_news_source(self.fetcher, results_api, target.period)
         if ir:
@@ -1154,7 +1193,7 @@ class DateDiscovery:
             if ir:
                 why = "Read last quarter's results over direct HTTP"
             elif existing_ir:
-                why = "Keeping the previously verified Chrome source"
+                why = "Keeping the previously verified issuer source"
             else:
                 ir, why = await verified_browser_source(self.fetcher, listing, target.period)
         # Keep the verified routes together. The table is independent of a newsroom API or RSS.
@@ -1184,18 +1223,8 @@ class DateDiscovery:
                 additions["warmup"] = urljoin(browser_feed, "/")
         if additions:
             ir = IRSource.model_validate({**(ir.model_dump() if ir else {}), **additions})
-        if ir:
-            if self._defer_if_busy(row.cik):
-                return
-            if not any(
-                tracked.target == target and tracked.evidence == evidence
-                for tracked in self.calendar.entries()
-            ):
-                self._phase(row.cik, None)
-                return
-            self.calendar.set_target(target.model_copy(update={"ir": ir}), evidence)
         self.ir_notes[row.cik] = why
-        self._phase(row.cik, None)
+        return target.model_copy(update={"ir": ir}) if ir else target
 
     def _defer_if_busy(self, cik: int) -> bool:
         if not self.busy():

@@ -54,7 +54,7 @@ from earnings_bot.sources import (
     published_time,
     results_headline,
 )
-from earnings_bot.text import html_to_text
+from earnings_bot.text import html_to_text, verified_report
 
 ET = ZoneInfo("America/New_York")
 
@@ -369,7 +369,9 @@ def _caught_up(w: Watch, item: Sighting) -> bool:
     start, end = w.window
     day = start.astimezone(ET).date()
     if (published := published_time(item.published)) is not None:
-        return start - EARLY_RELEASE <= published <= end and published.astimezone(ET).date() == day
+        return start <= published <= end or (
+            start - EARLY_RELEASE <= published < start and published.astimezone(ET).date() == day
+        )
     return _site_local_day(item.published) == day
 
 
@@ -383,7 +385,7 @@ def _logged(item: Sighting) -> dict[str, Any]:
 
 def _verified_item(w: Watch, item: Sighting) -> bool:
     """Validate the period and distinguish a report from other news mentioning a quarter."""
-    if not agrees_with_period(item.title, w.period):
+    if not agrees_with_period(item.details.get("results_headline", item.title), w.period):
         return False
     if isinstance(w.source, RssFeed | BroadcomNewsroom | Q4PressReleases):
         return results_headline(item.title) or (
@@ -396,8 +398,9 @@ def _verified_item(w: Watch, item: Sighting) -> bool:
             return False
         if item.body.startswith(b"%PDF-"):
             return True  # exact, preconfigured file URL
-        return results_headline(item.title) or is_results_release(
-            html_to_text(item.body.decode(errors="replace")), ""
+        text = html_to_text(item.body.decode(errors="replace"))
+        return (results_headline(item.title) and verified_report(text)) or is_results_release(
+            text, ""
         )
     if isinstance(w.source, Q4FinancialReports):
         label = item.title.split(": ", 1)[-1].casefold()
@@ -924,6 +927,10 @@ async def follow_up(
     async with asyncio.TaskGroup() as group:
         for w in pending:
             w.window = (start, until)
+            if w.known is None and isinstance(w.source, GuessedPage):
+                # A full report at this configured URL can enrich an already delivered alert.
+                # A HEAD-only guess still needs a baseline.
+                w.known = set()
             filings = isinstance(w.source, EdgarFilings) and w.source.form == "6-K"
             group.create_task(
                 watch(

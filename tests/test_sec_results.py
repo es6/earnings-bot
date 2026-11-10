@@ -8,6 +8,7 @@ from typing import cast
 import discord
 import pytest
 
+from earnings_bot import recorder
 from earnings_bot.calendar import Calendar, describe
 from earnings_bot.date_discovery import CALENDAR_6K_DATE, DateDiscovery, calendar_date
 from earnings_bot.delivery import DeliveryStore
@@ -515,3 +516,21 @@ async def test_followup_verifies_a_results_6k_accepted_after_the_window() -> Non
     )
 
     assert [item.key for item in seen if item.earnings] == [RESULT]
+
+
+async def test_after_midnight_6k_is_verified_and_catches_up_inside_the_window() -> None:
+    start = datetime(2026, 11, 11, 23, 55, tzinfo=ET)
+    accepted = start + timedelta(minutes=10)
+    source = EdgarFilings(CIK, form="6-K")
+    w = Watch("BN", source, (start, start + timedelta(minutes=40)), period="FY2026Q2")
+    fetcher = RoutedFetcher(fixtures(filings(accepted=accepted.isoformat())))
+    journal = Journal(io.StringIO())
+    response = await fetcher.request("GET", source.url())
+    items = await recorder._verify_sixks(w, response, SixKResults(fetcher), journal)
+    sightings: list[Sighting] = []
+
+    recorder.record_items(
+        w, items, response, journal, accepted, lambda _, item: sightings.append(item)
+    )
+
+    assert [item.key for item in sightings if item.earnings and item.caught_up] == [RESULT]

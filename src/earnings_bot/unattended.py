@@ -270,6 +270,7 @@ class DirectoryWatcher:
                 if not window.task.done():
                     window.task.cancel()
                     await asyncio.gather(window.task, return_exceptions=True)
+                    self.followed.discard((key, window.target.expected))
                     self.status(f"🔁 **{window.target.ticker}**: schedule changed or removed")
                 del self.windows[key]
 

@@ -35,15 +35,20 @@ def _quarter(digit: str | None, ordinal: str | None) -> int:
 def title_period(title: str) -> tuple[int, int] | None:
     """Read an explicit fiscal year and quarter, including Q3'26 and 3Q2026."""
     title = _SHORT_YEAR.sub(r"FY20\1", title)
-    if match := _PERIOD.search(title):
+    match = min(
+        (found for pattern in (_PERIOD, _YEAR_FIRST, _COMPACT) if (found := pattern.search(title))),
+        key=lambda found: found.start(),
+        default=None,
+    )
+    if match is None:
+        return None
+    if match.re is _PERIOD:
         digit, ordinal, year = match.groups()
-    elif match := _YEAR_FIRST.search(title):
+    elif match.re is _YEAR_FIRST:
         year, digit, ordinal = match.groups()
-    elif match := _COMPACT.search(title):
+    else:
         first, second, short_year = match.groups()
         return 2000 + int(short_year), int(first or second)
-    else:
-        return None
     return int(year), _quarter(digit, ordinal)
 
 

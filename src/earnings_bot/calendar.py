@@ -203,8 +203,28 @@ class Calendar:
                         before_minutes=target.before_minutes,
                         after_minutes=target.after_minutes,
                     )
-                if target.ir and not existing.ir:
-                    updates["ir"] = target.ir
+                if found := target.ir:
+                    ir = existing.ir or found
+                    if found.results_table and not ir.results_table:
+                        ir = ir.model_copy(
+                            update={
+                                "results_table": found.results_table,
+                                "table_http": found.table_http,
+                                "table_rendered": found.table_rendered,
+                                "cache_bust_urls": [
+                                    *ir.cache_bust_urls,
+                                    *(
+                                        url
+                                        for url in found.cache_bust_urls
+                                        if url == found.results_table
+                                    ),
+                                ],
+                            }
+                        )
+                    if ir.results_table and not (existing.period or ir.table_period):
+                        ir = ir.model_copy(update={"table_period": target.period})
+                    if ir != existing.ir:
+                        updates["ir"] = ir
                 if updates:
                     result[existing.release_key] = existing.model_copy(update=updates)
         return result

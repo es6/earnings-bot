@@ -22,6 +22,7 @@ from earnings_bot.fetch import Fetcher
 from earnings_bot.issuer_news import IssuerNews
 from earnings_bot.known import KnownCompany
 from earnings_bot.periods import NTH, ORD
+from earnings_bot.quarterly_table import table_year
 from earnings_bot.sources import looks_like_earnings
 from earnings_bot.text import html_to_text, verified_report
 
@@ -187,6 +188,8 @@ def prior_period(period: str) -> tuple[int, int]:
 
 
 async def verified_results_table(fetcher: Fetcher, page: str, period: str) -> dict[str, str | bool]:
+    if (year := table_year(page)) is not None and year != int(period[2:6]):
+        return {}  # Last year's table cannot prove the next fiscal year's release route.
     prior = prior_period(period)
     try:
         source = QuarterlyTable(page, *prior, direct=True)

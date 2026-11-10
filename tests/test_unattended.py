@@ -670,3 +670,49 @@ async def test_a_restart_resumes_later_links_without_a_second_alert(
     assert len(channel.messages) == 1
     assert "https://example.com/results" in channel.messages[1].content
     assert late in channel.messages[1].content
+
+
+async def test_changed_sources_rearm_an_active_followup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    journal = Journal(io.StringIO())
+    when = journal.now() - timedelta(minutes=31)
+    target = Target(ticker="SE", cik=1703399, expected=when)
+    plan = tmp_path / "a.toml"
+    plan.write_text(_plan("SE", target.cik, when), encoding="utf-8")
+    fetcher = RoutedFetcher({})
+    started: list[Target] = []
+
+    async def resumed(planned: Target) -> None:
+        started.append(planned)
+        await asyncio.Event().wait()
+
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        store.prepare(target.release_key, "Already delivered")
+        store.delivered(target.release_key, 1)
+        store.close_window(target.release_key, target.expected)
+        runner = unattended.DirectoryWatcher(
+            tmp_path,
+            fetcher,
+            journal,
+            Releases(FakePoster, fetcher, journal, None, None),
+            store,
+            lambda _: None,
+        )
+        runner.follow_up = timedelta(hours=1)
+        monkeypatch.setattr(runner, "_resume_links", resumed)
+        try:
+            await runner.scan()
+            await asyncio.sleep(0)
+            plan.write_text(
+                _plan("SE", target.cik, when) + 'prnewswire = ["Sea Limited"]\n', encoding="utf-8"
+            )
+            await runner.scan()
+            await asyncio.sleep(0)
+            assert [watch.prnewswire for watch in started] == [[], ["Sea Limited"]]
+        finally:
+            for window in runner.windows.values():
+                window.task.cancel()
+            await asyncio.gather(
+                *(window.task for window in runner.windows.values()), return_exceptions=True
+            )

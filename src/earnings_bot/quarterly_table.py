@@ -59,6 +59,17 @@ class _Tables(HTMLParser):
                 self.row = self.cell = None
 
 
+def table_year(page: str) -> int | None:
+    parts = urlsplit(page)
+    query = parse_qs(parts.query)
+    labels = [
+        parts.path.rstrip("/").rsplit("/", 1)[-1],
+        *query.get("year", []),
+        *query.get("tab", []),
+    ]
+    return next((int(label) for label in labels if re.fullmatch(r"20[0-9]{2}", label)), None)
+
+
 def quarter_pdf(page: str, body: bytes, year: int, quarter: int) -> str | None:
     parser = _Tables()
     parser.feed(body.decode(errors="replace"))
@@ -87,11 +98,7 @@ def quarter_pdf(page: str, body: bytes, year: int, quarter: int) -> str | None:
 
     # A generic Earnings Release row only counts when the page identifies its fiscal year
     # and the same table has unambiguous, explicitly labelled quarter columns.
-    parts = urlsplit(page)
-    query = parse_qs(parts.query)
-    if parts.path.rstrip("/").rsplit("/", 1)[-1] != str(year) and not any(
-        query.get(key) == [str(year)] for key in ("year", "tab")
-    ):
+    if table_year(page) != year:
         return None
     for table in parser.tables:
         column = None
@@ -100,14 +107,9 @@ def quarter_pdf(page: str, body: bytes, year: int, quarter: int) -> str | None:
             if labels[1:] == ["Q1", "Q2", "Q3", "Q4"]:
                 column = quarter
             elif column is not None and len(row) == 5 and _RELEASE.fullmatch(labels[0]):
-                return next(
-                    (
-                        url
-                        for href in row[column].links
-                        if (url := file(href)) and named_period(url) in (None, (year, quarter))
-                    ),
-                    None,
-                )
+                for href in row[column].links:
+                    if (url := file(href)) and named_period(url) in (None, (year, quarter)):
+                        return url
     return None
 
 
@@ -124,9 +126,9 @@ def rendered_pdf(page: RenderedPage, year: int, quarter: int) -> str | None:
         if not issuer_asset or not path.lower().endswith(".pdf"):
             continue
         filename = re.sub(r"[^\w]+|_", " ", path.rsplit("/", 1)[-1])
-        if _RELEASE.search(label) and (title_period(label) or title_period(filename)) == (
-            year,
-            quarter,
-        ):
+        named = title_period(label)
+        filed = title_period(filename)
+        period = (year, quarter)
+        if _RELEASE.search(label) and (named or filed) == period and filed in (None, period):
             return url
     return None

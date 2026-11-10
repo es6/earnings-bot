@@ -11,7 +11,7 @@ from typing import Self
 from urllib.parse import urldefrag, urljoin, urlsplit
 
 import aiohttp
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from earnings_bot.browser import BrowserError, DesktopChrome, browser_host
 from earnings_bot.fetch import Fetcher, Response
@@ -64,6 +64,7 @@ class IRSource(BaseModel):
     results_table: str | None = None
     table_http: bool = False
     table_rendered: bool = False
+    table_period: str | None = Field(default=None, pattern=r"^FY\d{4}Q[1-4]$")
     cache_bust_urls: list[str] = []
     headline: str | None = None
     verify_text: bool = False
@@ -84,7 +85,7 @@ class IRSource(BaseModel):
             browser_host(self.news_api)
         if self.results_table:
             browser_host(self.results_table)
-        if (self.table_http or self.table_rendered) and not self.results_table:
+        if (self.table_http or self.table_rendered or self.table_period) and not self.results_table:
             raise ValueError("Table polling requires an issuer results table")
         if self.table_http and self.table_rendered:
             raise ValueError("A rendered results table uses Chrome")
@@ -147,6 +148,7 @@ class IRSource(BaseModel):
                     cache_bust=self.news_api in self.cache_bust_urls,
                 )
             )
+        period = period or self.table_period
         if self.results_table and period:
             sources.append(
                 QuarterlyTable(

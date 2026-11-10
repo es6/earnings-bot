@@ -29,7 +29,8 @@ from earnings_bot.recorder import (
     sync_clock,
     watch,
 )
-from earnings_bot.sources import GuessedFile, RssFeed, Sighting, Source, published_time
+from earnings_bot.sources import GuessedFile, GuessedPage, RssFeed, Sighting, Source, published_time
+from tests.fakes import RoutedFetcher
 
 
 class ListSource(Source):
@@ -743,9 +744,11 @@ def test_new_wire_items_require_a_results_headline_for_the_scheduled_quarter() -
     watch_state = Watch("XYZ", source, known=set(), period="FY2026Q3")
     articles = [
         "Company posts Q3 product sales figures",
+        "Company Reports Q3 2026 Results of Its Share Repurchase Program",
         "Company to Report Q3 2026 Financial Results",
         "Company Reports Q2 2026 Financial Results",
-        "Company Reports Q3 2026 Financial Results",
+        "Company Reports 2026 Q3 Financial Results, Up 17% over Q3 2025",
+        "Company Reports 2026 Third Quarter Net Income",
     ]
     feed = (
         "<rss><channel>"
@@ -767,4 +770,33 @@ def test_new_wire_items_require_a_results_headline_for_the_scheduled_quarter() -
         lambda _, item: sightings.append(item),
     )
 
-    assert [item.title for item in sightings if item.earnings] == articles[-1:]
+    assert [item.title for item in sightings if item.earnings] == articles[-2:]
+
+
+async def test_resume_enriches_from_a_verified_guessed_page_and_baselines_head_only_urls() -> None:
+    journal = Journal(io.StringIO())
+    now = journal.now()
+    target = Target(ticker="AAA", cik=7, expected=now, after_minutes=0, period="FY2026Q3")
+    report = "https://example.com/third-quarter-2026"
+    file = "https://example.com/latest"
+    body = b"<title>Company Q3 2026 Financial Results</title>" + (
+        b"<p>Quarterly revenue of $2 billion and net income of $100 million.</p>" * 50
+    )
+    fetcher = RoutedFetcher(
+        {report: (200, body), file: (200, b"")},
+        {"content-type": "text/html"},
+    )
+    page = Watch("AAA", GuessedPage(report), target.window, period=target.period)
+    head = Watch("AAA", GuessedFile(file), target.window, period=target.period)
+    sightings: list[Sighting] = []
+
+    await follow_up(
+        target,
+        [page, head],
+        fetcher,
+        journal,
+        lambda _, __, item: sightings.append(item),
+        longest=timedelta(milliseconds=50),
+    )
+
+    assert [item.url for item in sightings if item.earnings] == [report]
