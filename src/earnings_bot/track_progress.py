@@ -298,11 +298,25 @@ class TrackProgress:
             preview = to_target(row.ticker, self.now(), self.now().year, 1, row.company)
             watching = watch_list(preview.sources())
             if row.company.ir_listing:
-                watching.append(
-                    source_label("browser-ir") + " *(once the date's quarter is known)*"
-                )
+                watching.append("IR press release page *(verified after the date is set)*")
             heading = "👀 Will watch once a date is set"
         embed.add_field(name=heading, value=bullets(watching) or "Nothing yet", inline=False)
+
+        if listing := row.company.ir_listing:
+            status = row.company.ir_http_status
+            if target and target.ir and target.ir.http_first and target.ir.listing == listing:
+                status = 200
+            if status is None:
+                access = "Direct HTTP check pending"
+            elif status == 0:
+                access = "Direct HTTP got no response"
+            else:
+                access = f"Direct HTTP returned {status}"
+            embed.add_field(
+                name="IR page access",
+                value=f"[Press release listing](<{listing}>) · {access}",
+                inline=False,
+            )
 
         rejected = [
             f"**{check.source}**: {check.why}"

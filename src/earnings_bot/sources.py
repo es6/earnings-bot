@@ -66,10 +66,22 @@ _NOTICE = re.compile(
     re.IGNORECASE,
 )
 _RESULTS_WORD = re.compile(r"\b(?:earnings|results)\b", re.IGNORECASE)
+_QUARTER_WORD = re.compile(
+    r"\b(?:q[1-4]|[1-4]q\d{2}|(?:first|second|third|fourth|[1-4](?:st|nd|rd|th))"
+    r"[-\s]+quarter|full[-\s]+year)\b",
+    re.IGNORECASE,
+)
+_CALL_WORD = re.compile(r"\b(?:conference call|webcast)\b", re.IGNORECASE)
 
 
 def is_date_notice(headline: str) -> bool:
-    return bool(_NOTICE.search(headline) and _RESULTS_WORD.search(headline))
+    return bool(
+        _NOTICE.search(headline)
+        and (
+            _RESULTS_WORD.search(headline)
+            or (_QUARTER_WORD.search(headline) and _CALL_WORD.search(headline))
+        )
+    )
 
 
 def looks_like_earnings(headline: str) -> bool:

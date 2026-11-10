@@ -35,6 +35,7 @@ INVESTIGATED = LUCID.model_copy(
         "investigation": INVESTIGATION,
         "wire": "PR Newswire",
         "ir_listing": LISTING,
+        "ir_http_status": 403,
         "platform": "own-site",
         "checks": [
             SourceCheck(source="SEC 8-K filings", watch=True, why="Filed here"),
@@ -343,8 +344,11 @@ async def test_without_a_date_the_card_says_what_it_would_watch(tmp_path: Path) 
     )
     assert f"⚠️ {phase}" in fields["Progress"]
     assert fields["👀 Will watch once a date is set"][-1] == (
-        "• IR press release page, read in Chrome *(once the date's quarter is known)*"
+        "• IR press release page *(verified after the date is set)*"
     )
+    assert fields["IR page access"] == [
+        f"[Press release listing](<{LISTING}>) · Direct HTTP returned 403"
+    ]
 
 
 def test_a_scheduled_card_waits_for_ir_verification_to_finish(tmp_path: Path) -> None:

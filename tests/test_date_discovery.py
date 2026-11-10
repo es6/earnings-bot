@@ -139,6 +139,33 @@ async def test_an_rss_notice_sets_the_date_and_off_site_links_arent_followed() -
     assert OFF_SITE not in [url for _, url, _ in fetcher.requests]
 
 
+@pytest.mark.parametrize(
+    "now", [datetime(2026, 9, 25, tzinfo=ET), datetime(2026, 11, 10, tzinfo=ET)]
+)
+async def test_a_quarterly_webcast_notice_can_give_an_earlier_release_date(now: datetime) -> None:
+    url = "https://investors.azenta.com/notice"
+    feed_url = "https://investors.azenta.com/news-releases?pagetemplate=rss"
+    title = "Azenta Announces Fiscal 2026 Fourth Quarter and Full Year Conference Call and Webcast"
+    body = (
+        "<aside>Third quarter 2025 financial results</aside>"
+        "<p>Azenta will announce fiscal fourth quarter and full year 2026 earnings which "
+        "ended on September 30, 2026, on Tuesday, November 10, 2026, after the market closes.</p>"
+        "<p>Azenta will host a conference call on November 11, 2026, at 8:30 a.m. ET.</p>"
+    )
+    rss = f"<rss><channel><item><title>{title}</title><link>{url}</link></item></channel></rss>"
+    company = AMAT.model_copy(update={"release_time": "16:30", "rss": [feed_url]})
+    fetcher = RoutedFetcher({feed_url: (200, rss.encode()), url: (200, body.encode())})
+
+    result = await find_date(fetcher, "AZTA", now, company)
+
+    assert result is not None
+    target, evidence = result
+    assert target.expected == datetime(2026, 11, 10, 16, 30, tzinfo=ET)
+    assert target.period == "FY2026Q4"
+    assert evidence == f"Issuer date confirmed, after market close <{url}>"
+    assert parse_notice("AZTA", company, title, body.split("</p>")[1], now) is None
+
+
 async def test_discovery_waits_out_an_open_window_then_saves_the_issuers_date(
     tmp_path: Path,
 ) -> None:

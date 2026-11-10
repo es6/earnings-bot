@@ -60,8 +60,9 @@ class KnownCompany(BaseModel):
     checked: date
     # SEC's MMDD, kept for companies added from SEC data so a calendar date gets its quarter
     fiscal_year_end: str | None = None
-    # The IR site's press release listing, read through desktop Chrome
+    # The IR site's press release listing and the direct request's status (0 for no response).
     ir_listing: str | None = None
+    ir_http_status: int | None = None
     # The latest results on it, and when the IR site says they were posted
     ir_release: str | None = None
     ir_posted: datetime | None = None

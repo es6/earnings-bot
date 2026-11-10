@@ -40,8 +40,8 @@ REINVESTIGATE = timedelta(days=30)
 # 1 kept what it checked, 2 reads the wire from any release, skips date notices, looks a few
 # pages back for the latest results and keeps when the IR site says they were posted,
 # 3 follows corporate navigation and embedded listings, 4 reads newsroom cards and archives,
-# 5 finds results exhibits even when ordinary filings crowd the recent SEC list
-INVESTIGATION = 5
+# 5 finds results behind ordinary filings, 6 reads named RSS indexes and checks listing HTTP
+INVESTIGATION = 6
 _HOST = re.compile(r"\b((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,})\b", re.IGNORECASE)
 _WEB_HOST = re.compile(r"\b(?:https?://|(?=www\.))" + _HOST.pattern, re.IGNORECASE)
 _IR_HOST = re.compile(r"^(?:ir|investors?|investor-?relations)\.", re.IGNORECASE)
@@ -50,6 +50,11 @@ _IR_LINK = re.compile(
     r"(?:investor-relations|events-news|news-events|press-releases|reports-filings)(?:[/\s]|$)",
     re.IGNORECASE,
 )
+_RSS_INDEX = re.compile(
+    r"https://[a-z0-9.-]+/(?:[a-z0-9_-]+/)*(?:rss-feeds?|rss)(?:\.html?)?(?=[\s<>,.)]|$)",
+    re.IGNORECASE,
+)
+_RSS_LINK = re.compile(r"(?:\.xml|\.rss|\.atom|rss(?:-?feed)?(?:\.json)?)$", re.IGNORECASE)
 # The dateline that opens a wire release: "NEWARK, Calif., Oct. 5, 2026 /PRNewswire/ --"
 _WIRES = (
     ("PR Newswire", re.compile(r"/\s*PRNewswire(?:-[A-Z]+)?\s*/", re.IGNORECASE)),
@@ -230,6 +235,7 @@ class Findings:
     q4: bool = False
     feeds: list[str] = field(default_factory=list)
     listing: str | None = None  # read through Chrome
+    ir_http_status: int | None = None
     blocked: bool = False
     wire: str | None = None
     posted: datetime | None = None  # when the IR site says the latest results were posted
@@ -237,12 +243,12 @@ class Findings:
 
     def describe(self, today: date) -> str:
         chrome = f"Chrome reads <{self.listing}>." if self.listing else ""
-        if self.site is None:
-            found = "No issuer press release site could be verified."
-        elif self.q4:
+        if self.q4:
             found = f"Q4 press feed on {self.site}."
         elif self.feeds:
             found = f"Press release feed <{self.feeds[0]}>."
+        elif self.site is None:
+            found = "No issuer press release site could be verified."
         elif self.listing:
             why = "blocks the bot" if self.blocked else "has no feed"
             found, chrome = f"{self.site} {why}, so Chrome reads <{self.listing}>.", ""
@@ -270,9 +276,9 @@ async def _last_release(fetcher: Fetcher, cik: int) -> str | None:
     return None
 
 
-async def _get(fetcher: Fetcher, url: str) -> Response | None:
+async def _get(fetcher: Fetcher, url: str, *, allow_redirects: bool = True) -> Response | None:
     try:
-        return await fetcher.request("GET", url, give_up_after=6)
+        return await fetcher.request("GET", url, give_up_after=6, allow_redirects=allow_redirects)
     except (aiohttp.ClientError, TimeoutError):
         return None
 
@@ -324,6 +330,41 @@ async def _feed(fetcher: Fetcher, candidates: list[str]) -> tuple[str | None, st
                 found = wire(html_to_text(page.body.decode(errors="replace")))
         return url, found, ""
     return None, None, ", ".join(tried)
+
+
+async def _named_feed(fetcher: Fetcher, text: str, report: Report) -> tuple[str | None, str | None]:
+    """Check public feed indexes explicitly named in a verified SEC release."""
+    for index in list(dict.fromkeys(_RSS_INDEX.findall(text)))[:2]:
+        url = index
+        try:
+            host = browser_host(url)
+        except ValueError:
+            continue
+        report.doing(f"Reading the RSS index named by the issuer on {host}")
+        page = await _get(fetcher, url, allow_redirects=False)
+        if page and 300 <= page.status < 400 and (location := page.headers.get("location")):
+            try:
+                canonical = urljoin(url, location)
+                if browser_host(canonical) != host:
+                    continue
+            except ValueError:
+                continue
+            url = canonical
+            page = await _get(fetcher, url, allow_redirects=False)
+        if not page or page.status != 200:
+            report.reject(f"RSS index <{url}>", _answer(page))
+            continue
+        candidates = [
+            (link, title)
+            for link, title in issuer_links(url, page.body)
+            if _RSS_LINK.search(urlsplit(link).path)
+        ]
+        candidates.sort(key=lambda item: "press" not in " ".join(item).casefold())
+        feed, found_wire, tried = await _feed(fetcher, [link for link, _ in candidates[:4]])
+        if feed:
+            return feed, found_wire
+        report.reject(f"RSS index <{url}>", tried or "No same-site feed links found")
+    return None, None
 
 
 @dataclass
@@ -557,7 +598,7 @@ async def investigate(
     )
     findings.wire = wire(text)
     hosts = ir_hosts(text, ticker, company.name)[:3]
-    if not hosts:
+    if not hosts and not _RSS_INDEX.search(text):
         report.reject(
             "IR site",
             "No IR site or issuer website identified in its last results release"
@@ -620,6 +661,16 @@ async def investigate(
             findings.listing = next(iter(_release_pages(home, page.body)), None)
         if findings.listing or findings.q4 or findings.feeds:
             break
+    if not findings.q4 and not findings.feeds:
+        feed, found_wire = await _named_feed(fetcher, text, report)
+        if feed:
+            findings.feeds = [feed]
+            findings.wire = findings.wire or found_wire
+            report.watch(f"Press release feed <{feed}>", "Verified from the issuer's RSS index")
+    if findings.listing:
+        report.doing("Checking direct HTTP access to the press release listing")
+        response = await _get(fetcher, findings.listing, allow_redirects=False)
+        findings.ir_http_status = response.status if response else 0
     report.doing("Choosing its sources")
     _wire_checks(report, findings.wire)
     found_wire = findings.wire or "unknown"
@@ -629,11 +680,16 @@ async def investigate(
         trial = trial.model_copy(update={"globenewswire": company.names})
     return company.model_copy(
         update={
-            "platform": "q4" if findings.q4 else "own-site" if findings.site else "unknown",
+            "platform": "q4"
+            if findings.q4
+            else "own-site"
+            if (findings.site or findings.feeds)
+            else "unknown",
             "q4_host": findings.site if findings.q4 else None,
             "reachable": findings.q4 or bool(findings.feeds),
             "rss": findings.feeds,
             "ir_listing": findings.listing,
+            "ir_http_status": findings.ir_http_status,
             "ir_posted": findings.posted,
             "ir_release": findings.release_url,
             "wire": found_wire,
