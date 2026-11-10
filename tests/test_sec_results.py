@@ -93,6 +93,10 @@ def test_financial_boilerplate_cannot_turn_a_6k_into_results(description: str) -
         "The company reported earnings for the last quarter.\n" + text
     )
     assert not is_results_release(notice, description)
+    assert not is_results_release(
+        "Company previously reported second quarter 2026 results. Revenue was $1 billion.\n" + text,
+        description,
+    )
 
 
 async def test_both_sec_watchers_verify_once_and_alert_only_on_results() -> None:
@@ -180,6 +184,86 @@ async def test_source_audit_anchors_on_verified_6k(tmp_path: Path) -> None:
     speed = await audit_sources(fetcher, tmp_path, "BN", company, NOW, None, SixKResults(fetcher))
     assert speed.day == date(2026, 8, 13) and speed.confident and speed.form == "6-K"
     assert [timing.source for timing in speed.archive] == ["SEC 6-K acceptance"]
+
+
+async def test_klarna_style_results_exhibit_leads_to_issuer_q4_notice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("earnings_bot.date_discovery.chrome_available", lambda: False)
+    cik = 2003292
+    accession = "0001628280-26-057573"
+    path = f"/Archives/edgar/data/{cik}/{accession.replace('-', '')}"
+    host = "investors.klarna.com"
+    release = (
+        "<h1>Klarna Reports Second Quarter 2026 Results</h1>"
+        "<p>Klarna Group plc today reported second quarter 2026 results. "
+        "Revenue reached $1 billion.</p>"
+        + "<p>Revenues and net income. </p>" * 100
+        + f"<p>See https://{host}/financials/quarterly-results/.</p>"
+    )
+    notice = "/News--Events/news/news-details/2026/earnings-notice/default.aspx"
+    data = {
+        "fiscalYearEnd": "1231",
+        "filings": {
+            "recent": {
+                "accessionNumber": [accession],
+                "form": ["6-K"],
+                "items": [""],
+                "acceptanceDateTime": ["2026-08-18T14:37:37Z"],
+                "primaryDocument": ["cover.htm"],
+            }
+        },
+    }
+    q4 = {
+        "GetPressReleaseListResult": [
+            {
+                "Headline": "Klarna to Publish Q3 2026 Earnings on November 17, 2026",
+                "Body": (
+                    "<p>Klarna will publish its Q3 2026 earnings on Tuesday, "
+                    "November 17, 2026, before market open.</p>"
+                ),
+                "LinkToDetailPage": notice,
+            },
+            {
+                "Headline": "Klarna Reports Second Quarter 2026 Results",
+                "Body": "<p>NEW YORK--(BUSINESS WIRE)-- Klarna reported its results.</p>",
+            },
+        ]
+    }
+    fetcher = RoutedFetcher(
+        {
+            f"CIK{cik:010d}.json": (200, json.dumps(data).encode()),
+            f"{path}/{accession}-index.htm": (
+                200,
+                sec_filing_detail(f"{path}/cover.htm", "results.htm"),
+            ),
+            f"{path}/results.htm": (200, release.encode()),
+            "pageSize=20": (200, json.dumps(q4).encode()),
+            "pageSize=10": (
+                200,
+                json.dumps(
+                    {"GetPressReleaseListResult": q4["GetPressReleaseListResult"][:1]}
+                ).encode(),
+            ),
+            f"https://{host}/": (200, b"Investor relations"),
+        }
+    )
+    saved = profile("KLAR", cik, "Klarna Group plc", data, NOW.date()).model_copy(
+        update={"investigated": NOW.date(), "investigation": 8}
+    )
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        calendar = Calendar(store)
+        row, _ = calendar.add("KLAR", saved)
+        dates = DateDiscovery(calendar, fetcher, lambda: NOW, lambda: False, lambda _: None)
+        await dates.run_once(row)
+        [found] = calendar.entries()
+
+    assert found.company.sixk == ["10:37"]
+    assert found.company.wire == "Business Wire"
+    assert found.target and found.target.period == "FY2026Q3"
+    assert found.target.expected == datetime(2026, 11, 17, 7, tzinfo=ET)
+    assert found.target.q4_host == host and found.target.sec_form == "6-K"
+    assert found.evidence and f"https://{host}{notice}" in found.evidence
 
 
 async def test_an_issuer_notice_filed_on_6k_can_schedule_but_never_alert(tmp_path: Path) -> None:

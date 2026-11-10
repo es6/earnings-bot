@@ -20,11 +20,16 @@ _PERIOD = re.compile(
 )
 _ANNOUNCES_RESULTS = re.compile(
     r"\b(?:report(?:s|ed)?|announc(?:es|ed)|releas(?:es|ed)|publish(?:es|ed)|post(?:s|ed))"
-    r"\b.{0,110}\b(?:financial results|quarterly results|results for|earnings|net sales)\b",
+    r"\b.{0,110}\b(?:financial results|quarterly results|results for|earnings|net sales)\b"
+    # Some releases use "today reported second quarter 2026 results". Require the
+    # announcement to be current so a mention of older results doesn't qualify.
+    r"|\btoday (?:reported|announced|released|published|posted) (?:its )?"
+    r"(?:q[1-4]|(?:first|second|third|fourth|[1-4](?:st|nd|rd|th))[- ]quarter|"
+    r"(?:full|half)[- ]year)(?: (?:fiscal )?20\d{2})? results\b",
     re.IGNORECASE,
 )
 _NOTICE = re.compile(
-    r"\b(?:to (?:host|report|announce|release)|will (?:report|announce|release)|"
+    r"\b(?:to (?:host|report|announce|release|publish)|will (?:report|announce|release|publish)|"
     r"(?:announces?|sets?) (?:the )?date|results conference call|earnings webcast)\b",
     re.IGNORECASE,
 )
