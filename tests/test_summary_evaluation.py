@@ -31,6 +31,36 @@ def test_total_revenue_alias_and_explicit_growth_engine_can_match() -> None:
     assert metric_match("Cloud revenue", "Cloud revenue growth")
 
 
+@pytest.mark.parametrize(
+    ("alias", "metric"),
+    [
+        ("revenue", "Revenue, Q3 2026"),
+        ("revenue", "Revenue guidance, Q4 2026"),
+        ("revenue", "Total revenue (Q3 2026)"),
+        ("revenue", "FY 2026 revenue guidance"),
+        ("adjusted operating earnings", "Adjusted (non-GAAP) Operating Earnings per share"),
+        ("non-GAAP EPS", "Adjusted EPS"),
+        ("Adjusted (non-GAAP) EPS", "Adjusted EPS"),
+        ("adjusted EBITDA", "Adj. EBITDA"),
+    ],
+)
+def test_equivalent_measure_labels_are_not_marked_missing(alias: str, metric: str) -> None:
+    assert metric_match(alias, metric)
+
+
+@pytest.mark.parametrize(
+    ("alias", "metric"),
+    [
+        ("adjusted EBITDA", "Adj. EBITDA margin"),
+        ("EPS", "Non-GAAP EPS"),
+        ("revenue", "Cloud revenue (Q3 2026)"),
+        ("revenue", "Revenue less transaction costs (Q3 2026)"),
+    ],
+)
+def test_label_normalization_preserves_meaningful_differences(alias: str, metric: str) -> None:
+    assert not metric_match(alias, metric)
+
+
 def test_actuals_do_not_cover_guidance_and_one_line_cannot_fill_two_items() -> None:
     gold = [["Outlook", ["revenue"], "guide"], ["Sales", ["revenue"], "actual"]]
     result = coverage([{"metric": "Revenue", "kind": "actual"}], gold)
@@ -108,6 +138,7 @@ def test_offline_cli_uses_default_pair_and_code_baseline_and_writes_blind_key(
     ]
     subprocess.run(command, check=True, capture_output=True, env={**os.environ, "PYTHONUTF8": "1"})
     report = json.loads(out.read_text(encoding="utf-8"))
+    assert report["evaluator_version"]
     assert set(report["settings"]) == {"Sonnet low", "Muse Ember low", "Code only"}
     assert len(report["documents"]["NEW"]) == 64
     assert "Sonnet" not in blind.read_text(encoding="utf-8")

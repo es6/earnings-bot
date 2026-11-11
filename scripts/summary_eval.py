@@ -9,7 +9,12 @@ import json
 import random
 from pathlib import Path
 
-from earnings_bot.summary_evaluation import common_cases, display_lines, replay_row
+from earnings_bot.summary_evaluation import (
+    EVALUATOR_VERSION,
+    common_cases,
+    display_lines,
+    replay_row,
+)
 from earnings_bot.summary_policy import DEFAULT_COMPARISON, POLICY_VERSION, SELECTION_RULES
 
 
@@ -42,6 +47,7 @@ def main() -> None:
     if not cases:
         parser.error("No shared issuer/run cases to compare")
     report = {
+        "evaluator_version": EVALUATOR_VERSION,
         "policy_version": POLICY_VERSION,
         "policy_sha256": hashlib.sha256(SELECTION_RULES.encode()).hexdigest(),
         "note": (

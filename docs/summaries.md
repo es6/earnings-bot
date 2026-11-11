@@ -94,7 +94,10 @@ caches outside git; do not copy a scratchpad wholesale because it may contain AP
 ### November 11 offline audit
 
 Replaying the saved `experiment7_all.json` against its latest annotations found 11 common
-issuer/run cases. Approximate editorial coverage was Sonnet 85%, Ember 73%, code-only 53%.
+issuer/run cases. After fixing punctuation and equivalent accounting-label matching,
+approximate editorial coverage was Sonnet 85%, Ember 82%, Haiku 76%, code-only 59%.
+The first replay undercounted measures such as `Revenue, Q3 2026` and `Adjusted (non-GAAP)
+Operating Earnings per share`; its Ember 73% and code-only 53% figures are superseded.
 This conservative matcher distinguishes amount/margin, adjusted/reported, actual/guidance,
 consolidated/segment revenue and word boundaries. It can undercount legitimate synonyms;
 it does not check values or whether all requested growth rates were supplied. These numbers

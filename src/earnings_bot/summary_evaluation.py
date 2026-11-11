@@ -6,6 +6,8 @@ from typing import Any
 
 from earnings_bot.summary_policy import SummaryFact, evidence_issues, normalized
 
+EVALUATOR_VERSION = "2026-11-11.2"
+
 _ADJUSTED = re.compile(r"\badj(?:usted)?\b|non[- ]gaap", re.IGNORECASE)
 _RATIO = re.compile(r"\bmargin\b|\bratio\b", re.IGNORECASE)
 _TOTALS = {
@@ -21,13 +23,24 @@ _TOTALS = {
 }
 
 
+def metric_words(text: str) -> str:
+    """Ignore presentation punctuation and redundant accounting labels, not meaning.
+
+    For example, 'Adjusted (non-GAAP) operating earnings' and 'adjusted operating
+    earnings' identify the same measure. Keep margin, segment and exclusion words.
+    """
+    words = re.sub(r"[\W_]+", " ", normalized(text)).strip()
+    words = re.sub(r"\bnon gaap\b|\badj\b", "adjusted", words)
+    return re.sub(r"\badjusted(?:\s+adjusted)+\b", "adjusted", words)
+
+
 def metric_match(alias: str, metric: str) -> bool:
     """Conservative editorial matching, never a claim of numeric/factual correctness.
 
     Keep aliases explicit in gold annotations rather than fuzzy-token matching a profit
     amount to its margin or an adjusted measure to a reported one.
     """
-    alias, metric = normalized(alias), normalized(metric)
+    alias, metric = metric_words(alias), metric_words(metric)
     if not alias:
         return False
     if bool(_ADJUSTED.search(alias)) != bool(_ADJUSTED.search(metric)):
@@ -36,7 +49,12 @@ def metric_match(alias: str, metric: str) -> bool:
         return False
     if alias in _TOTALS:
         # A segment's revenue is not coverage of consolidated revenue.
-        clean = re.sub(r"\b(?:q[1-4]|fy\d{2,4}|20\d\d|outlook|guidance|guide)\b", "", metric)
+        clean = re.sub(
+            r"\b(?:q[1-4]|[1-4]q)(?:\s+\d{2,4})?\b|"
+            r"\b(?:fy\s*\d{2,4}|20\d\d|outlook|guidance|guide)\b",
+            "",
+            metric,
+        )
         return normalized(clean) in _TOTALS
     return bool(re.search(rf"(?<!\w){re.escape(alias)}(?!\w)", metric))
 
