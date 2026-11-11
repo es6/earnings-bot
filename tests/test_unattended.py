@@ -17,6 +17,7 @@ from earnings_bot.delivery import DeliveryStore
 from earnings_bot.fetch import Fetcher
 from earnings_bot.pipeline import DurableDiscordPoster, Release, Releases
 from earnings_bot.recorder import ET, Journal, OnNew, Polls, Target, Trial, Watch
+from earnings_bot.release_cards import release_content
 from earnings_bot.sources import EdgarFilings, EdgarLatest, RssFeed, Sighting
 from earnings_bot.track_progress import TrackProgress
 from tests.fakes import RoutedFetcher
@@ -37,11 +38,12 @@ class FakeMessage:
     author: SimpleNamespace = field(default_factory=lambda: SimpleNamespace(id=42))
     attachments: list[Any] = field(default_factory=list)
     embed: discord.Embed | None = None
+    extra_embeds: list[discord.Embed] = field(default_factory=list)
     deleted: bool = False
 
     @property
     def embeds(self) -> list[discord.Embed]:
-        return [self.embed] if self.embed else []
+        return self.extra_embeds or ([self.embed] if self.embed else [])
 
     async def edit(
         self,
@@ -49,11 +51,16 @@ class FakeMessage:
         content: str | None = None,
         attachments: list[Any] | None = None,
         embed: discord.Embed | None = None,
+        embeds: list[discord.Embed] | None = None,
     ) -> "FakeMessage":
         if self.deleted:
             raise unknown_message()
         if embed is not None:
             self.embed = embed
+            self.extra_embeds = []
+        if embeds is not None:
+            self.extra_embeds = embeds
+            self.embed = embeds[0] if embeds else None
         if content is not None:
             self.content = content
         if attachments is not None:
@@ -72,7 +79,12 @@ class FakeDiscord:
         self.lose_response = False
 
     async def send(
-        self, content: str = "", *, nonce: str, embed: discord.Embed | None = None
+        self,
+        content: str = "",
+        *,
+        nonce: str,
+        embed: discord.Embed | None = None,
+        embeds: list[discord.Embed] | None = None,
     ) -> FakeMessage:
         self.attempts += 1
         if self.fail_before_send:
@@ -80,7 +92,7 @@ class FakeDiscord:
             raise TimeoutError("request timed out before delivery")
         if nonce in self.nonces:
             return self.nonces[nonce]
-        message = FakeMessage(next(self.ids), content, embed=embed)
+        message = FakeMessage(next(self.ids), content, embed=embed, extra_embeds=embeds or [])
         self.messages[message.id] = self.nonces[nonce] = message
         if self.lose_response:
             self.lose_response = False
@@ -125,7 +137,7 @@ async def test_an_alert_retries_then_resumes_after_restart(tmp_path: Path) -> No
         assert release.posted and saved is not None and saved.message_id == 1
 
     assert channel.attempts == 2
-    first_alert_header = channel.messages[1].content.splitlines()[:2]
+    first_alert_header = release_content(channel.messages[1]).splitlines()[:2]
     with DeliveryStore(db, 7) as store:
         resumed = Release(
             target, channel.poster(store, target), RoutedFetcher({}), journal, None, None
@@ -135,7 +147,7 @@ async def test_an_alert_retries_then_resumes_after_restart(tmp_path: Path) -> No
 
     assert channel.attempts == 2
     assert list(channel.messages) == [1]
-    content = channel.messages[1].content
+    content = release_content(channel.messages[1])
     assert content.splitlines()[:2] == first_alert_header
     assert first.url in content and second.url in content
 
@@ -223,7 +235,8 @@ async def test_a_later_sighting_recreates_the_active_alert_and_keeps_links(tmp_p
         saved = store.get(target.release_key)
 
     assert list(channel.messages) == [2]
-    assert first in channel.messages[2].content and second in channel.messages[2].content
+    assert first in release_content(channel.messages[2])
+    assert second in release_content(channel.messages[2])
     assert saved is not None and saved.message_id == 2
 
 
@@ -560,7 +573,7 @@ async def test_a_twenty_release_burst_keeps_one_message_per_release_after_restar
             assert all((row := store.get(t.release_key)) and row.message_id for t in targets)
     assert len(channel.messages) == 20
     assert channel.attempts == 20
-    assert all("https://wire.example" in message.content for message in channel.messages.values())
+    assert all("https://wire.example" in release_content(m) for m in channel.messages.values())
 
 
 async def test_two_schedules_defining_one_release_use_the_first(
@@ -745,8 +758,8 @@ async def test_a_restart_resumes_later_links_without_a_second_alert(
         assert not runner.windows
 
     assert len(channel.messages) == 1
-    assert "https://example.com/results" in channel.messages[1].content
-    assert late in channel.messages[1].content
+    assert "https://example.com/results" in release_content(channel.messages[1])
+    assert late in release_content(channel.messages[1])
 
 
 async def test_changed_sources_rearm_an_active_followup(

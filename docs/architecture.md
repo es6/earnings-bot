@@ -775,6 +775,13 @@ multiple local instances, writes UTF-8 console logs under `recordings/`, and res
 See the [setup and recovery guide](unattended.md#run-and-recover).
 
 The optional status channel receives startup, schedule problem and window-close reports.
+Release alerts use an earnings card with the ticker and fiscal period, original first-seen
+time, and source/document links. A summary adds a highlights card above the details, within
+the same message. Links, attachments and summaries survive later updates and restart recovery;
+legacy plain alerts remain readable and gain the card layout on their next link update.
+The initial send formats the cards locally and performs the same single Discord request.
+Canonical text remains in the delivery store and can be reconstructed from the details card
+for nonce/crash recovery. Both embeds share Discord's 6,000-character text budget.
 Per-issuer scorecards are embeds edited as research runs. They show progress, the next date,
 which source was first last time, the sources to be watched, and each source the investigation
 rejected with its reason. In
