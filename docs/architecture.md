@@ -526,13 +526,20 @@ the HTML pages require Chrome, including canonical Q4 routes behind a homepage r
 Date discovery checks an RSS directory named in the last results release when the primary IR
 site has no verified feed. Quarterly call and webcast headlines qualify for a notice check.
 The notice still has to state when the results will be released.
+Research also checks feeds advertised on the actual IR listing, even when the corporate
+homepage is blocked or the listing uses another host. It avoids retrying feed URLs already
+checked on the homepage and verifies RSS items before adding a feed to the live watch.
 When a newsroom renders its cards in the browser, research can verify its observed public,
 same-origin GET API. A dated notice can supply the calendar date. The live poller checks the
 scheduled quarter and date and downloads the issuer-hosted results PDF once it is available.
 Outside release windows, date discovery compares two ordinary responses and two unique
 query URLs on up to three issuer endpoints. The scorecard shows whether the normal copy
-hit a cache, both query responses came back fresh with the same body, or the test was
+hit a cache, both query responses passed the reported caches for the same resource, or the test was
 inconclusive. It applies a verified query bypass to the issuer listing, API or Chrome feed.
+Changing page nonces are ignored when the page/feed title identifies the same resource;
+quarterly tables still have to identify the same verified PDF. Without cache telemetry,
+the preflight reports freshness as unverified. Changing markup alone cannot prove the
+release list is fresh, and live publication speed still needs a new-content observation.
 Direct issuer RSS keeps its default buster unless both query requests are rejected while
 the normal URL works. Q4 and shared newswires keep their source-specific polling strategies.
 Cache headers describe the responding cache, and a site can sit behind more than one. Every

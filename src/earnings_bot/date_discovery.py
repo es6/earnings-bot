@@ -500,9 +500,10 @@ async def _wire_date(
 
 def timed_by_publishers(company: KnownCompany, review: str | None) -> KnownCompany:
     """The company with its usual release time taken from when its IR site or wire had the
-    last release, when that was before SEC had it."""
+    last release, when that was before SEC had it. Before the audit, use the timestamp
+    investigation already verified on its results article."""
     speed = Speed.from_json(review)
-    first = published_first(speed) if speed else None
+    first = published_first(speed) if speed else company.ir_posted
     if first is None:
         return company
     local = first.astimezone(ET)

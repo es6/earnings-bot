@@ -50,8 +50,9 @@ REINVESTIGATE = timedelta(days=30)
 # keeps the IR home page for reading dates, 11 reads the IR site from the last three results
 # releases and keeps earlier research when none names one, 12 finds results pages behind
 # investor landing pages and feeds only Chrome can read, 13 learns how the company names
-# its fiscal years from its results releases.
-INVESTIGATION = 13
+# its fiscal years from its results releases, 14 checks feeds advertised on the actual IR
+# listing even when the homepage is blocked or names a separate corporate host.
+INVESTIGATION = 14
 _HOST = re.compile(r"\b((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,})\b", re.IGNORECASE)
 _WEB_HOST = re.compile(r"\b(?:https?://|(?=www\.))" + _HOST.pattern, re.IGNORECASE)
 _IR_HOST = re.compile(r"^(?:ir|investors?|investor-?relations)\.", re.IGNORECASE)
@@ -736,6 +737,7 @@ async def investigate(
     `report` follows along."""
     report = report or Report()
     findings = Findings()
+    tried_feeds: set[str] = set()
     form = company.sec_form
     filings = None
     report.doing("Reading its SEC filings")
@@ -818,9 +820,9 @@ async def investigate(
         findings.wire = findings.wire or q4_wire
         if not q4 and page is not None and page.status == 200:
             report.doing(f"Looking for a press release feed on {host}")
-            feed, feed_wire, tried = await _feed(
-                fetcher, feed_links(home, page.body.decode("utf-8", "replace"))
-            )
+            candidates = feed_links(home, page.body.decode("utf-8", "replace"))
+            tried_feeds.update(candidates)
+            feed, feed_wire, tried = await _feed(fetcher, candidates)
             findings.feeds = [feed] if feed else []
             findings.wire = findings.wire or feed_wire
             if feed:
@@ -876,6 +878,22 @@ async def investigate(
         report.doing("Checking direct HTTP access to the press release listing")
         response = await _get(fetcher, findings.listing, allow_redirects=False)
         findings.ir_http_status = response.status if response else 0
+        if not (findings.q4 or findings.feeds) and response and response.status == 200:
+            candidates = [
+                url
+                for url in feed_links(findings.listing, response.body.decode("utf-8", "replace"))
+                if url not in tried_feeds
+            ]
+            if candidates:
+                host = urlsplit(findings.listing).netloc
+                report.doing(f"Checking feeds advertised by the IR listing on {host}")
+                feed, feed_wire, tried = await _feed(fetcher, candidates)
+                if feed:
+                    findings.feeds = [feed]
+                    findings.wire = findings.wire or feed_wire
+                    report.watch(f"Press release feed <{feed}>", "Verified from the IR listing")
+                else:
+                    report.reject(f"Press release feed on {host}", f"None found: {tried}")
         if chrome is not None and not (findings.q4 or findings.feeds) and findings.blocked:
             feed = urljoin(findings.listing, "/rss/news-releases.xml")
             try:

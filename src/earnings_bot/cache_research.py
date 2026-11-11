@@ -200,9 +200,8 @@ async def probe_cache(
             f"({evidence}{_rebuilt(changed[-1])}). New releases show once the site refreshes it",
             stored_only=True,
         )
-    copies = [signature(r.body) if signature else r.body for r in samples]
-    if not copies[0] or any(copy != copies[0] for copy in copies[1:]):
-        # A query string could pick a different page, so only the same content counts
+    if any(not _same_resource(samples[0].body, r.body, signature) for r in samples[1:]):
+        # Ignore per-request markup, but reject a different page/feed or table signature.
         return CacheResult("Responses differed. Query bypass unverified")
     if plain[-1].hits and all(layers.passes for layers in busted):
         return CacheResult(

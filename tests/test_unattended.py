@@ -1,6 +1,7 @@
 import asyncio
 import io
 import itertools
+import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -17,6 +18,7 @@ from earnings_bot.fetch import Fetcher
 from earnings_bot.pipeline import DurableDiscordPoster, Release, Releases
 from earnings_bot.recorder import ET, Journal, OnNew, Polls, Target, Trial, Watch
 from earnings_bot.sources import EdgarFilings, EdgarLatest, RssFeed, Sighting
+from earnings_bot.track_progress import TrackProgress
 from tests.fakes import RoutedFetcher
 from tests.test_pipeline import FakePoster, uber
 
@@ -450,6 +452,81 @@ async def test_restart_reports_windows_that_closed_while_offline(tmp_path: Path)
     assert status == [
         "⌛ **GAP**: window ended while the bot was off, and no completed watch was recorded"
     ]
+
+
+async def test_calendar_updates_edit_one_card_and_keep_their_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def watch(*args: object) -> list[Watch]:
+        await asyncio.Event().wait()
+        return []
+
+    async def audit(*args: object) -> Any:
+        raise AssertionError("This test only publishes cards")
+
+    monkeypatch.setattr(unattended, "record_target", watch)
+    fetcher = RoutedFetcher({})
+    file = io.StringIO()
+    journal = Journal(file)
+    standalone: list[str] = []
+    channel = FakeDiscord()
+    when = datetime.now(UTC) + timedelta(days=1)
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        runner = unattended.DirectoryWatcher(
+            tmp_path,
+            fetcher,
+            journal,
+            Releases(FakePoster, fetcher, journal, None, None),
+            store,
+            standalone.append,
+        )
+        row, _ = runner.calendar.add("NVDA")
+        progress = TrackProgress(
+            runner.calendar,
+            store,
+            cast(discord.abc.Messageable, channel),
+            42,
+            lambda: runner.planned,
+            journal.now,
+            runner.busy,
+            audit,
+        )
+        runner.progress = progress
+        try:
+            for hour, evidence in [
+                (0, "First notice"),
+                (0, "Updated source link"),
+                (1, "New time"),
+            ]:
+                target = Target(ticker="NVDA", cik=row.cik, expected=when + timedelta(hours=hour))
+                runner.calendar.set_target(target, evidence)
+                runner.dates.status(f"📅 NVDA · {evidence}")
+                assert progress.changed.is_set()
+                progress.changed.clear()
+                await runner.scan()
+                [current] = runner.calendar.entries()
+                await progress.publish(row.cik, progress.render(current, None, False))
+                await asyncio.sleep(0)
+            assert standalone == []
+            [message] = channel.messages.values()
+            assert channel.attempts == 1 and message.edited_at is not None
+            assert message.embed and "New time" in (message.embed.description or "")
+            # Errors still get their own notification.
+            runner._problem("feed", "unavailable")
+            assert standalone == ["⚠️ **feed**: unavailable"]
+        finally:
+            for window in runner.windows.values():
+                window.task.cancel()
+            await asyncio.gather(*(w.task for w in runner.windows.values()), return_exceptions=True)
+
+    records = [json.loads(line) for line in file.getvalue().splitlines()]
+    inline = [r for r in records if r.get("inline")]
+    assert [r["message"] for r in inline if r["message"].startswith("📅")] == [
+        "📅 NVDA · First notice",
+        "📅 NVDA · Updated source link",
+        "📅 NVDA · New time",
+    ]
+    assert any("schedule changed" in r["message"] for r in inline)
 
 
 async def test_a_twenty_release_burst_keeps_one_message_per_release_after_restart(
