@@ -341,6 +341,55 @@ async def test_a_site_with_a_feed_is_polled_through_it(released: Callable[[str],
     ]
 
 
+@pytest.mark.parametrize("home_status", [200, 403], ids=["readable-home", "blocked-home"])
+@pytest.mark.parametrize("valid_feed", [True, False], ids=["rss", "html-error"])
+async def test_feeds_on_the_actual_ir_listing_are_checked(
+    released: Callable[[str], None], home_status: int, valid_feed: bool
+) -> None:
+    # The feed is advertised on the newsroom, outside the guessed root-level paths.
+    home = "https://ir.example.com/"
+    listing = home + "news/press-releases"
+    feed = listing + "/rss"
+    article = listing + "/detail/1/quarterly-results"
+    title = "Example Reports Third Quarter 2026 Results"
+    page = (
+        f'<link rel="alternate" type="application/rss+xml" href="{feed}">'
+        f'<a href="{article}">{title}</a>'
+    )
+    rss = (
+        f"<rss><channel><title>Issuer news</title><item><title>{title}</title>"
+        f"<link>{article}</link><guid>q3</guid></item></channel></rss>"
+    )
+    released("Webcast at ir.example.com.")
+    fetcher = RoutedFetcher(
+        {
+            feed: (200, (rss if valid_feed else "<html>Not a feed</html>").encode()),
+            article: (200, f"<h1>{title}</h1><p>{DATELINE}</p>{REPORT}".encode()),
+            listing: (200, page.encode()),
+            home: (home_status, b"<html>Investor home</html>"),
+        }
+    )
+    chrome = FakeChrome(
+        {
+            home: (200, f'<a href="{listing}">Press Releases</a>'),
+            listing: (200, page),
+            article: (200, f"<h1>{title}</h1>{REPORT}"),
+        }
+    )
+
+    found = await investigate.investigate(fetcher, LUCID, TODAY, chrome.open)
+
+    assert found.ir_listing == listing
+    assert found.rss == ([feed] if valid_feed else [])
+    assert any(url == feed for _, url, _ in fetcher.requests)
+    if valid_feed:
+        assert found.wire == "PR Newswire"
+        assert any(c.watch and feed in c.source for c in found.checks)
+        assert any(
+            s.name.startswith("rss:") for s in to_target("LCID", NOW, 2026, 4, found).sources()
+        )
+
+
 async def test_a_site_that_blocks_the_bot_is_read_through_chrome(
     released: Callable[[str], None],
 ) -> None:

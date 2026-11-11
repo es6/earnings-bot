@@ -119,3 +119,45 @@ async def test_a_feed_that_rejects_query_strings_keeps_its_readable_url(tmp_path
     assert saved.target and saved.target.rss_canonical == [URL]
     [feed] = [source for source in saved.target.sources() if source.name.startswith("rss:")]
     assert feed.url() == URL
+
+
+@pytest.mark.parametrize("reported", [False, True], ids=["no-telemetry", "cache-miss"])
+async def test_dynamic_html_doesnt_hide_the_actual_cache_finding(reported: bool) -> None:
+    calls = 0
+
+    async def get(url: str) -> Response:
+        nonlocal calls
+        calls += 1
+        # ROAD's listing includes changing page metadata, while its release list is stable.
+        body = (
+            f'<title>Issuer press releases</title><input name="csrf" value="{calls}">'
+            '<a href="/release/q3">Third Quarter 2026 Results</a>'
+        ).encode()
+        headers = {"x-cache": "HIT" if url == URL else "MISS"} if reported else {}
+        return Response(url, 200, headers, body, 0)
+
+    result = await probe_cache(get, URL)
+
+    assert result.query_bust is reported
+    assert not result.stored_only
+    assert "Responses differed" not in result.summary
+    assert ("Query bypass verified" if reported else "No cache reported a hit or a miss") in (
+        result.summary
+    )
+
+
+async def test_a_different_page_title_cannot_verify_a_query_bypass() -> None:
+    async def get(url: str) -> Response:
+        title = "Issuer press releases" if url == URL else "Sign in"
+        return Response(
+            url,
+            200,
+            {"x-cache": "HIT" if url == URL else "MISS"},
+            f"<title>{title}</title>".encode(),
+            0,
+        )
+
+    result = await probe_cache(get, URL)
+
+    assert not result.query_bust
+    assert "Responses differed" in result.summary

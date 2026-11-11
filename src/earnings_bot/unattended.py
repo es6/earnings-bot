@@ -101,7 +101,13 @@ class DirectoryWatcher:
         self.calendar = Calendar(store)
         self.planned: dict[str, Target] = {}
         self.dates = DateDiscovery(
-            self.calendar, fetcher, journal.now, self.busy, status, fmp_api_key, sixk=self.sixk
+            self.calendar,
+            fetcher,
+            journal.now,
+            self.busy,
+            self._inline_status,
+            fmp_api_key,
+            sixk=self.sixk,
         )
         self.issuers = Issuers(fetcher)
         self.status = status
@@ -118,6 +124,13 @@ class DirectoryWatcher:
         self.since = store.last_scan() or journal.now()
         self.closed: set[tuple[str, datetime]] = set()
         self.followed: set[tuple[str, datetime]] = set()
+
+    def _inline_status(self, message: str) -> None:
+        """Routine calendar changes belong on the existing scorecard; keep their log too."""
+        self.journal.write("status", message=message, inline=True)
+        self.journal.say(message)
+        if self.progress:
+            self.progress.changed.set()
 
     def open_windows(self) -> Iterator[tuple[datetime, datetime]]:
         """The windows of the targets being watched, for keep_warm."""
@@ -271,7 +284,9 @@ class DirectoryWatcher:
                     window.task.cancel()
                     await asyncio.gather(window.task, return_exceptions=True)
                     self.followed.discard((key, window.target.expected))
-                    self.status(f"🔁 **{window.target.ticker}**: schedule changed or removed")
+                    self._inline_status(
+                        f"🔁 **{window.target.ticker}**: schedule changed or removed"
+                    )
                 del self.windows[key]
 
         for key, target in targets.items():

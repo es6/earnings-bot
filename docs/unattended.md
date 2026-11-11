@@ -50,6 +50,8 @@ Manage Server member can supply `when` and `period`.
 
 1. **Add the issuer.** The bot saves the subscription by issuer CIK. It creates
    one scorecard and edits that message as the date and source findings change.
+   Routine date, source-link and schedule changes update that card and stay in
+   the journal. Startup, errors and window-close reports remain separate messages.
 2. **Find the next date.** The planner looks for an issuer results notice through
    supported feeds or public IR listings, or for a company outside the catalog,
    uses FMP's calendar date. An exact release time uses a 10-minute lead
