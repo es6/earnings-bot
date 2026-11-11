@@ -71,3 +71,39 @@ A fixed ranker can be a fast fallback on supported layouts, but cannot currently
 the same quality for arbitrary new issuers. A profile library needs research/maintenance;
 a learned ranker is still a model. Use a small LLM for selection and concise wording, with
 deterministic checks around it, until a frozen unseen-company evaluation proves otherwise.
+
+## Offline commands
+
+`scripts/summary_prepare.py NEW1 NEW2 --docs cached-docs --out requests.json` freezes full
+release inputs, a shared structured schema, the policy and the Sonnet/Ember low settings.
+It makes no API calls, loads no keys, and does not silently truncate long releases.
+Haiku requires `--include-haiku`. Keep expected facts out of these inputs. This prepares
+fact-selection experiments; it is not a paid batch runner or the final compact renderer.
+
+`scripts/summary_eval.py --results saved.json --gold gold.json --docs cached-docs
+--out replay.json --blind anonymous.md` replays saved output with the same literal
+formatter for every setting. The report records input hashes, editorial coverage, missing
+facts, traceability/period issues and excluded issuer/run pairs. Only common cases are
+compared. The anonymous briefs have a separate `.key.json`; record preferences before
+opening it. Haiku is opt-in; code-only is included as a baseline.
+
+Do not edit source artifacts during a batch or overwrite a previous round's annotations.
+Commit general rules and small synthetic regressions. Keep complete release/model-output
+caches outside git; do not copy a scratchpad wholesale because it may contain API keys.
+
+### November 11 offline audit
+
+Replaying the saved `experiment7_all.json` against its latest annotations found 11 common
+issuer/run cases. Approximate editorial coverage was Sonnet 85%, Ember 73%, code-only 53%.
+This conservative matcher distinguishes amount/margin, adjusted/reported, actual/guidance,
+consolidated/segment revenue and word boundaries. It can undercount legitimate synonyms;
+it does not check values or whether all requested growth rates were supplied. These numbers
+are neither factual-accuracy scores nor a benchmark of the new policy. The cases were
+already used for feedback and are not an unseen holdout.
+
+Both LLMs missed the annotated Airbnb nights/bookings metrics. Code-only found none of its
+three must-have measures, and it incorrectly selected expense rows as Snap revenue segments.
+The replay flagged eight unlabeled code-only guides, plus bare LLM business updates and a
+missing source passage. The original grading's numeric-occurrence check could not establish
+metric/value correctness. Review those facts against their tables before treating any
+model's reported coverage as acceptable quality.
