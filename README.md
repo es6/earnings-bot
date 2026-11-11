@@ -10,6 +10,9 @@ matter for each company.
 In directory mode, `/track` adds any company with a ticker on SEC's list to the
 earnings calendar. The bot finds the next release date, prepares the sources, and keeps an editable Discord
 scorecard. See the [calendar guide](docs/unattended.md) and [architecture](docs/architecture.md).
+The optional summary writer uses a compact, business-aware policy. See
+[summary research](docs/summaries.md) for the feedback rules, offline evaluation commands
+and the Sonnet/Ember comparison; these research tools make no API calls.
 
 ## Features
 
