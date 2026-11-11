@@ -70,9 +70,7 @@ def summarizer_answering(stop_reason: str, *texts: str) -> tuple[Summarizer, lis
         return FakeStream(message)
 
     summarizer = Summarizer("not-a-real-key")
-    summarizer.client = cast(
-        Any, SimpleNamespace(beta=SimpleNamespace(messages=SimpleNamespace(stream=stream)))
-    )
+    summarizer.client = cast(Any, SimpleNamespace(messages=SimpleNamespace(stream=stream)))
     return summarizer, asked
 
 
@@ -87,7 +85,8 @@ async def test_the_summary_is_claudes_text_with_its_numbers_checked() -> None:
     assert (summary.input_tokens, summary.output_tokens) == (9000, 700)
     [request] = asked
     assert request["model"] == MODEL
-    assert request["fallbacks"] == "default"
+    assert "fallbacks" not in request
+    assert request["output_config"] == {"effort": "low"}
     assert "Revenue: $14.05B" in request["messages"][0]["content"]
     assert RELEASE in request["messages"][0]["content"]
 

@@ -4,6 +4,9 @@ The overview, scheduling, tracking and unattended sections describe the current 
 The dated measurements and decision log record the research that led to it. See the
 [calendar guide](unattended.md) for commands and operator steps.
 
+See [summary research](summaries.md) for the shared selection rules, model comparison and
+limits of deterministic extraction.
+
 ## Goal
 
 Post a company's earnings to Discord as soon as a source makes them available. Follow up with its
