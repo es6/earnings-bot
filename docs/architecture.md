@@ -742,8 +742,8 @@ One Discord message per release, edited as more arrives:
 1. **Alert.** The first source to show the release triggers a post with its link and the time
    it was first seen. Later sources add their links.
 2. **Files.** Release PDFs (guessed URLs, the IR site's file list) are downloaded and attached.
-3. **Summary.** The first source that can supply the full text starts the summary, which is
-   edited in as an embed (up to 4,096 characters, against 2,000 for plain text).
+3. **Summary, when enabled.** The first source that supplies full text starts the optional
+   summary independently of the alert. Its highlights card is edited into the same message.
 
 Where the text comes from:
 
@@ -756,15 +756,21 @@ Where the text comes from:
 | Broadcom's newsroom | The `body` field of `/api/getmetadata` | An ID that isn't up yet answers 200 with a stub that has no body, so no text |
 | Business Wire, GlobeNewswire | None | The default HTTP client could not retrieve their articles |
 
-The summary comes from Claude (`claude-opus-5-5`, effort `medium`). It gets the release text,
-consensus EPS and revenue from Financial Modeling Prep's earnings calendar, and a style guide
-written for this project, with a made-up example rather than copies of anyone's posts. Claude
-picks the KPIs that matter for each company. The bot then checks every number in the summary
-against the release, allowing for rounding and for tables stated in thousands or millions, and
-lists any it can't find in the embed's footer.
+The optional live writer uses Sonnet (`claude-sonnet-5-5`, effort `low`) and the shared
+business-aware selection policy. It gets release text and, when configured, consensus EPS
+and revenue from Financial Modeling Prep. It targets a compact 4–7-line brief; EPS is
+optional, guidance periods are explicit, and the relevant segments, operating KPIs, margins
+and business updates depend on the issuer. No implicit model fallback changes this selection.
 
-**Open.** Estimates for KPIs beyond EPS and revenue, and how fast the summary can get without
-losing accuracy (effort `low`, or a smaller model).
+The live number checker flags numbers it cannot find, allowing rounding and monetary scale
+conversions. Finding a number is not proof that its metric, period or basis is correct.
+Structured evidence and comparable-arithmetic checks are currently offline research helpers,
+not a complete live validator. Without `ANTHROPIC_API_KEY`, no summary is generated.
+
+[Summary research](summaries.md) records the feedback rules and offline commands. Future
+experiments compare Sonnet low with Muse Ember low; Haiku is opt-in. Ember has no live bot
+adapter yet. Open work includes fresh unseen-company evaluation, factual validation,
+compact rendering of structured output, second-document context and KPI-specific estimates.
 
 ## Running unattended
 
