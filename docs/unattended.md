@@ -59,6 +59,8 @@ Manage Server member can supply `when` and `period`.
    follow-up. A confirmed day with an approximate time uses a wider window.
    Publisher timings from a prior quarter can move the window earlier. Pending
    issuers are rechecked roughly hourly outside release windows.
+   Before the speed audit finishes, a verified results-article timestamp can
+   already replace the SEC acceptance-time estimate for the first plan.
 3. **Audit the last release.** The scorecard separates measured report-text and
    headline timings from archive timestamp estimates. It includes the
    `@earnings_guy` comparison when X verifies a matching post. Audits run one at

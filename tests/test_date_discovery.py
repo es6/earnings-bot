@@ -712,6 +712,25 @@ def test_a_window_opens_by_when_the_ir_site_had_the_last_release_not_sec() -> No
     assert timed_by_publishers(company, None) == company
 
 
+def test_the_first_plan_uses_the_verified_article_time_before_the_audit() -> None:
+    # ROAD was placed by 09:10 SEC acceptances despite an already verified 08:30 IR release.
+    company = AMAT.model_copy(
+        update={
+            "release_time": "09:10",
+            "ir_posted": datetime(2026, 11, 5, 8, 30, tzinfo=ET),
+        }
+    )
+
+    timed = timed_by_publishers(company, None)
+
+    assert (timed.release_time, timed.release_published) == ("08:30", True)
+    assert company.release_time == "09:10"  # the saved SEC profile remains intact
+    # A completed audit that puts SEC first still takes precedence over the fallback.
+    sec = Timing("SEC 8-K acceptance", datetime(2026, 11, 5, 8, tzinfo=ET))
+    review = Speed(sec.at.date(), archive=[sec]).to_json()
+    assert timed_by_publishers(company, review) == company
+
+
 @pytest.mark.parametrize("delivered", [True, False])
 async def test_a_closed_window_needs_evidence_of_a_release(tmp_path: Path, delivered: bool) -> None:
     # TDG, Nov 10: its Q4 results were out, and its own notice for them isn't the next one
