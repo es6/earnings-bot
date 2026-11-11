@@ -69,6 +69,10 @@ Manage Server member can supply `when` and `period`.
    seconds. A matching TOML entry supplies its source settings and release key.
    The configured sources race in parallel. The first verified release sighting
    starts the Discord post, which is edited as links, files and any summary arrive.
+   Release posts have a green earnings card, separate from research scorecards.
+   The ticker and quarter stay in notification text; the card holds first-seen
+   timing and source/document links. When available, highlights appear above those
+   details in the same message. Green means the release is available, not a beat.
    For delivered alerts, late sources are checked until the follow-up cutoff, including
    after a restart.
 5. **Keep tracking.** After the window, the watcher reports source timing and

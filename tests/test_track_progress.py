@@ -171,9 +171,14 @@ class WatchedDiscord(FakeDiscord):
         self.sent = asyncio.Event()
 
     async def send(
-        self, content: str = "", *, nonce: str, embed: discord.Embed | None = None
+        self,
+        content: str = "",
+        *,
+        nonce: str,
+        embed: discord.Embed | None = None,
+        embeds: list[discord.Embed] | None = None,
     ) -> FakeMessage:
-        message = await super().send(content, nonce=nonce, embed=embed)
+        message = await super().send(content, nonce=nonce, embed=embed, embeds=embeds)
         self.sent.set()
         return message
 

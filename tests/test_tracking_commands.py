@@ -24,6 +24,7 @@ from earnings_bot.formatting import clock, stamp
 from earnings_bot.known import KnownCompany, known_companies, to_target
 from earnings_bot.pipeline import Releases
 from earnings_bot.recorder import ET, Journal
+from earnings_bot.release_cards import release_content
 from earnings_bot.source_audit import Speed
 from earnings_bot.sources import PR_NEWSWIRE_EARNINGS
 from earnings_bot.track_progress import TrackProgress
@@ -572,7 +573,7 @@ async def test_a_tracked_issuer_with_no_schedule_file_gets_one_alert(tmp_path: P
         [alert] = channel.messages.values()
         assert "**$PLTR Q4 FY26 earnings are out**" in alert.content
         assert "https://investors.palantir.com/news-details/2027/palantir-reports-q4-2026" in (
-            alert.content
+            release_content(alert)
         )
         [report] = [line for line in status if "PLTR Q4 FY26 window closed" in line]
         assert report.splitlines()[1].startswith(
@@ -694,7 +695,7 @@ async def test_a_ticker_outside_the_catalog_gets_its_alert_from_the_wire(
 
         [alert] = channel.messages.values()
         assert "**$LCID Q3 FY26 earnings are out**" in alert.content
-        assert LUCID_RELEASE in alert.content
+        assert LUCID_RELEASE in release_content(alert)
         [report] = [line for line in status if "LCID Q3 FY26 window closed" in line]
         # PR Newswire's own server had it while its CDN's copy didn't
         assert report.splitlines()[1].startswith("🥇 PR Newswire earnings feed at ")

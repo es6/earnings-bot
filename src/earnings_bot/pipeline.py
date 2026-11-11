@@ -34,6 +34,7 @@ from earnings_bot.estimates import Estimates, EstimatesError, fmp_estimates
 from earnings_bot.fetch import Fetcher, Response
 from earnings_bot.formatting import clock, period_label
 from earnings_bot.recorder import ET, Journal, Plan, Target, record
+from earnings_bot.release_cards import release_cards, release_content
 from earnings_bot.sources import (
     BroadcomNewsroom,
     EdgarFilings,
@@ -83,6 +84,7 @@ class Poster(ABC):
     the time the platform put on the change, when it gives one."""
 
     resumed = False
+    first_seen: datetime | None = None
 
     @abstractmethod
     async def send(self, content: str) -> datetime | None: ...
@@ -108,12 +110,21 @@ class DiscordPoster(Poster):
             raise RuntimeError("send() must come before any edit")
         return self.message
 
+    def _payload(self, content: str, summary: tuple[str, str] | None = None) -> dict[str, Any]:
+        cards = release_cards(
+            content, previous=self.message, first_seen=self.first_seen, summary=summary
+        )
+        if cards is None:
+            return {"content": content}
+        # Keep the ticker/quarter in push notifications, without duplicating all the links.
+        return {"content": content.splitlines()[0], "embeds": cards}
+
     async def send(self, content: str) -> datetime | None:
-        self.message = await self.channel.send(content, nonce=self.nonce)
+        self.message = await self.channel.send(**self._payload(content), nonce=self.nonce)
         return self.message.created_at
 
     async def edit(self, content: str) -> datetime | None:
-        self.message = await self._sent().edit(content=content)
+        self.message = await self._sent().edit(**self._payload(content))
         return self.message.edited_at
 
     async def attach(self, name: str, data: bytes) -> datetime | None:
@@ -123,6 +134,10 @@ class DiscordPoster(Poster):
         return self.message.edited_at
 
     async def set_summary(self, text: str, footer: str) -> datetime | None:
+        payload = self._payload(release_content(self._sent()), (text, footer))
+        if "embeds" in payload:
+            self.message = await self._sent().edit(**payload)
+            return self.message.edited_at
         # An embed fits 4,096 characters, twice a plain message
         embed = discord.Embed(description=text, color=discord.Color.dark_teal())
         embed.set_footer(text=footer)
@@ -154,7 +169,9 @@ class DurableDiscordPoster(DiscordPoster):
             return await self._deliver(content)
 
     async def _send_prepared(self, saved: Delivery) -> datetime:
-        self.message = await self.channel.send(saved.content, nonce=self._nonce(saved))
+        self.message = await self.channel.send(
+            **self._payload(saved.content), nonce=self._nonce(saved)
+        )
         self.store.delivered(self.key, self.message.id)
         return self.message.created_at
 
@@ -170,7 +187,9 @@ class DurableDiscordPoster(DiscordPoster):
                 # Keep the cached links when this poster watched the deleted alert.
                 cached = self.message
                 prior = (
-                    cached.content if cached and cached.id == saved.message_id else saved.content
+                    release_content(cached)
+                    if cached and cached.id == saved.message_id
+                    else saved.content
                 )
                 content = self._merge_content(prior, content)
                 self.store.forget(self.key)
@@ -182,7 +201,10 @@ class DurableDiscordPoster(DiscordPoster):
             # exact persisted initial message before sending again.
             after = saved.prepared - timedelta(seconds=5)
             async for candidate in self.channel.history(limit=None, after=after):
-                if candidate.author.id == self.author_id and candidate.content == saved.content:
+                if (
+                    candidate.author.id == self.author_id
+                    and release_content(candidate) == saved.content
+                ):
                     message = candidate
                     break
         self.resumed = message is not None
@@ -193,10 +215,11 @@ class DurableDiscordPoster(DiscordPoster):
             created = None
             self.message = message
             self.store.delivered(self.key, message.id)
-        if content == message.content:
+        existing = release_content(message)
+        if content == existing:
             return created
-        merged = self._merge_content(message.content, content)
-        if merged != message.content:
+        merged = self._merge_content(existing, content)
+        if merged != existing:
             try:
                 await super().edit(merged)
             except discord.NotFound as error:
@@ -236,8 +259,9 @@ class DurableDiscordPoster(DiscordPoster):
 
     async def edit(self, content: str) -> datetime | None:
         message = self._sent()
-        merged = self._merge_content(message.content, content)
-        if merged == message.content:
+        existing = release_content(message)
+        merged = self._merge_content(existing, content)
+        if merged == existing:
             return message.edited_at
         return await self._update(partial(super().edit, merged), merged)
 
@@ -246,13 +270,15 @@ class DurableDiscordPoster(DiscordPoster):
         if any(attachment.filename == name for attachment in message.attachments):
             return message.edited_at
         return await self._update(
-            partial(super().attach, name, data), message.content, retry_after_replacement=True
+            partial(super().attach, name, data),
+            release_content(message),
+            retry_after_replacement=True,
         )
 
     async def set_summary(self, text: str, footer: str) -> datetime | None:
         return await self._update(
             partial(super().set_summary, text, footer),
-            self._sent().content,
+            release_content(self._sent()),
             retry_after_replacement=True,
         )
 
@@ -488,6 +514,7 @@ class Release:
                     stamp = await retry_delivery(lambda: self.poster.edit(self._content()))
                     event = "linked"
                 else:
+                    self.poster.first_seen = self.first_seen
                     stamp = await retry_delivery(lambda: self.poster.send(self._content()))
                     self.posted = True
                     event = "resumed" if self.poster.resumed else "posted"
