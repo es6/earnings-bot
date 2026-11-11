@@ -91,13 +91,101 @@ def test_html_to_text_keeps_paragraphs_and_table_columns() -> None:
        results &amp; more.</p>
     <script>track()</script>
     <table><tr><td><p>Revenue</p></td><td></td><td><p>$ 12,651</p></td><td>$ 14,211</td></tr>
-    <tr><th>Trips</th><td>3,350</td><td>3,900</td></tr></table>
+    <tr><th>Trips</th><td></td><td>3,350</td><td>3,900</td></tr></table>
     </body></html>"""
 
     assert html_to_text(html).splitlines() == [
         "SAN FRANCISCO--(BUSINESS WIRE)--Uber Technologies, Inc. today announced results & more.",
         "Revenue | $ 12,651 | $ 14,211",
         "Trips | 3,350 | 3,900",
+    ]
+
+
+def costco_row(*texts: str) -> str:
+    # Costco's 8-K puts every cell in colspan=3 on a 24-column grid, with an empty cell
+    # between each pair of columns
+    cells = (
+        f'<td colspan="3"><font>{t}</font></td>' if t else '<td colspan="3"></td>' for t in texts
+    )
+    return "<tr>" + "".join(cells) + "</tr>"
+
+
+def test_blank_header_cells_keep_labels_over_their_columns() -> None:
+    # Costco's Q4 FY2026 8-K (EX-99.1, 2026-09-24). With the blank header cells collapsed,
+    # "Adjusted*" moved over the reported comps, and summaries called the 9.4% adjusted.
+    rows = [
+        "<tr>" + "<td></td>" * 24 + "</tr>",  # sets the column widths
+        costco_row("", "16 Weeks", "", "16 Weeks", "", "52 Weeks", "", "52 Weeks"),
+        costco_row("", "", "", "Adjusted*", "", "", "", "Adjusted*"),
+        costco_row("U.S.", "10.7%", "", "7.2%", "", "8.2%", "", "6.6%"),
+        costco_row("", "", "", "", "", "", "", ""),
+        costco_row("Total Company", "9.4%", "", "6.7%", "", "8.4%", "", "6.6%"),
+    ]
+    html = (
+        "<p>Comparable sales for the fourth quarter and fiscal year were as follows:</p>"
+        f"<table>{''.join(rows)}</table>"
+        "<p>*Excluding the impacts from changes in gasoline prices and foreign exchange.</p>"
+    )
+
+    lines = html_to_text(html).splitlines()
+
+    assert lines == [
+        "Comparable sales for the fourth quarter and fiscal year were as follows:",
+        "| 16 Weeks | 16 Weeks | 52 Weeks | 52 Weeks",
+        "| | Adjusted* | | Adjusted*",
+        "U.S. | 10.7% | 7.2% | 8.2% | 6.6%",
+        "Total Company | 9.4% | 6.7% | 8.4% | 6.6%",
+        "*Excluding the impacts from changes in gasoline prices and foreign exchange.",
+    ]
+    header, total = ([cell.strip() for cell in line.split("|")] for line in lines[2:5:2])
+    adjusted = [total[i] for i, label in enumerate(header) if label == "Adjusted*"]
+    assert adjusted == ["6.7%", "6.6%"]
+
+
+def test_edgar_spacer_and_dollar_columns_read_as_before() -> None:
+    # Workiva-style EDGAR exhibit: an empty spacer column after the label and between the
+    # periods, "$" only on the first and total rows, and ")" and "%" in columns of their own.
+    # Each line is what html_to_text gave before it lined up columns.
+    html = """<table>
+    <tr><td colspan="2"></td><td colspan="7">Three Months Ended September 30,</td></tr>
+    <tr><td colspan="2"></td><td colspan="3">2026</td><td></td><td colspan="3">2025</td></tr>
+    <tr><td>Net sales</td><td></td><td>$</td><td>93,856</td><td></td><td></td>
+        <td>$</td><td>84,433</td><td></td></tr>
+    <tr><td>Membership fees</td><td></td><td></td><td>1,724</td><td></td><td></td>
+        <td></td><td>1,512</td><td></td></tr>
+    <tr><td>Other income (expense), net</td><td></td><td></td><td>(42</td><td>)</td><td></td>
+        <td></td><td>118</td><td></td></tr>
+    <tr><td>Operating margin</td><td></td><td></td><td>3.9</td><td>%</td><td></td>
+        <td></td><td>3.7</td><td>%</td></tr>
+    <tr><td>Total revenue</td><td></td><td>$</td><td>95,580</td><td></td><td></td>
+        <td>$</td><td>85,945</td><td></td></tr>
+    </table>"""
+
+    assert html_to_text(html).splitlines() == [
+        "| Three Months Ended September 30,",
+        "| 2026 | 2025",
+        "Net sales | $ | 93,856 | $ | 84,433",
+        "Membership fees | 1,724 | 1,512",
+        "Other income (expense), net | (42 | ) | 118",
+        "Operating margin | 3.9 | % | 3.7 | %",
+        "Total revenue | $ | 95,580 | $ | 85,945",
+    ]
+
+
+def test_a_heading_that_spans_two_rows_keeps_the_row_below_in_place() -> None:
+    # Header cells with rowspan, as in Goldman Sachs's and Bank of America's exhibits
+    html = """<table>
+    <tr><td rowspan="2"></td><td colspan="2">Third Quarter</td><td rowspan="2">% Change</td></tr>
+    <tr><td>2026</td><td>2025</td></tr>
+    <tr><td>Revenue</td><td>15,180</td><td>12,698</td><td>20%</td></tr>
+    <tr><td>Return on equity</td><td>15.1%</td><td></td><td>n/m</td></tr>
+    </table>"""
+
+    assert html_to_text(html).splitlines() == [
+        "| Third Quarter | % Change",
+        "| 2026 | 2025",
+        "Revenue | 15,180 | 12,698 | 20%",
+        "Return on equity | 15.1% | | n/m",
     ]
 
 
