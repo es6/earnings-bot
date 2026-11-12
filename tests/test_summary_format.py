@@ -34,6 +34,10 @@ from earnings_bot.summary_policy import SummaryFact
         ("1,2", "USD millions", "USD", "1,2"),
         ("around 57", "percent", "", "around 57%"),
         ("~12.0", "billion", "USD", "~$12B"),
+        ("4,273 thousand", "thousand", "", "4.273M"),
+        ("269985", "USD thousands", "USD", "$269.985M"),
+        ("380000 to 410000", "USD thousands", "USD", "$380M–$410M"),
+        ("5 trillion", "USD trillions", "USD", "$5T"),
         ("993 million", "million orders", "USD", "993M"),
         ("19", "count", "USD", "19"),
         ("680", "customers", "USD", "680"),
@@ -171,3 +175,19 @@ def test_explicit_basis_can_label_a_change_without_guessing_from_the_current_qua
     assert format_fact(replace(fact, basis="YoY")).endswith("+13% YoY")
     assert "(YoY)" not in format_fact(replace(fact, basis="YoY"))
     assert format_fact(replace(fact, comparison="QoQ")).endswith("+13% QoQ")
+
+
+def test_identical_metric_names_keep_their_distinct_segment_and_country_identity() -> None:
+    fact = SummaryFact("Revenue", "$5B", "source", group="Northern region")
+    other = replace(fact, value="$4B", group="Southern region")
+    assert format_fact(fact) == "Northern region · Revenue: $5B"
+    assert format_fact(other) == "Southern region · Revenue: $4B"
+    assert format_fact(replace(fact, metric="View hours", value="24%", group="India")) == (
+        "India · View hours: 24%"
+    )
+
+
+def test_existing_scope_labels_and_neutral_consolidation_are_not_repeated() -> None:
+    fact = SummaryFact("Northern region revenue", "$5B", "source", group="Northern region")
+    assert format_fact(fact) == "Northern region revenue: $5B"
+    assert format_fact(replace(fact, metric="Revenue", group="Consolidated")) == "Revenue: $5B"

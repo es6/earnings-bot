@@ -31,7 +31,7 @@ def _suffix(text: str) -> str:
     if lowered in ("billion", "bn"):
         return "B"
     if lowered in ("million", "thousand", "trillion"):
-        return lowered[0].upper()
+        return {"million": "M", "thousand": "K", "trillion": "T"}[lowered]
     return text.upper()
 
 
@@ -183,6 +183,15 @@ def format_fact(fact: SummaryFact) -> str:
     label = format_label(fact.metric)
     if stamp:
         label = re.sub(rf"^{re.escape(stamp)}(?:\s+|:\s*)", "", label, flags=re.IGNORECASE)
+    scope = " ".join(fact.group.split())
+    scope_key = _basis_key(scope)
+    # A neutral consolidation label adds no identity; an actual region/segment does.
+    if (
+        scope_key
+        and scope_key not in {"consolidated", "total", "total company", "company"}
+        and f" {scope_key} " not in f" {_basis_key(label)} "
+    ):
+        label = f"{scope} · {label}"
     reference = change_reference(fact)
     known = f" {_basis_key(label)} {_basis_key(reference) if fact.change else ''} "
     basis = [
