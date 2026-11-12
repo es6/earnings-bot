@@ -18,7 +18,7 @@ from earnings_bot.known import SourceCheck
 from earnings_bot.recorder import ET, Journal, Polls, Target, Watch, follow_up
 from earnings_bot.sec_results import SixKResults, is_results_release, reported_period
 from earnings_bot.source_audit import Speed, Timing, audit_sources, site_local_time
-from earnings_bot.sources import EdgarFilings, EdgarLatest, Sighting
+from earnings_bot.sources import EdgarFilings, EdgarLatest, Sighting, _filing_type
 from earnings_bot.track_progress import TrackProgress
 from tests.fakes import RoutedFetcher, embed_text, sec_filing_detail
 from tests.results_data import (
@@ -602,3 +602,79 @@ def test_a_comparison_with_last_year_isnt_the_period_reported() -> None:
     # quarter it names is last year's, too far past the announcement to count.
     [dateline] = [line for line in LOW_RELEASES[0][1].splitlines() if "today reported" in line]
     assert reported_period(dateline) is None
+
+
+BAM = 1937926
+BAM_RESULT, BAM_DIVIDEND = "0001171843-26-007210", "0001171843-26-007300"
+BAM_RELEASE = (
+    "<h1>Brookfield Asset Management Reports Third Quarter 2026 Results</h1>"
+    "<p>NEW YORK, Nov. 6, 2026 (GLOBE NEWSWIRE) -- Brookfield Asset Management Ltd. today "
+    "announced financial results for the quarter ended September 30, 2026.</p>"
+    + "<p>Revenues of $1.2 billion. Fee-related earnings of $750 million and net income of "
+    "$600 million. </p>" * 35
+)
+BAM_DIVIDEND_NOTICE = (
+    "<h1>Brookfield Asset Management Declares Quarterly Dividend</h1>"
+    + "<p>The board declared a quarterly dividend of $0.4375 per share.</p>" * 40
+    + "<p>Revenues of $1 billion. Net income grew.</p>"
+)
+
+
+async def test_an_8k_under_other_events_alerts_only_when_its_exhibit_is_results() -> None:
+    """Brookfield Asset Management furnishes results, dividends and deals all as 8-K Item 8.01
+    exhibits; only the results one may alert."""
+    journal = Journal(io.StringIO())
+    now = journal.now()
+    accepted = now.isoformat()
+    data = {
+        "filings": {
+            "recent": {
+                "accessionNumber": [BAM_DIVIDEND, BAM_RESULT],
+                "form": ["8-K", "8-K"],
+                "items": ["8.01,9.01", "8.01,9.01"],
+                "acceptanceDateTime": [accepted, accepted],
+                "primaryDocument": ["f8k.htm", "f8k.htm"],
+            }
+        }
+    }
+    routes: dict[str, tuple[int, bytes]] = {f"CIK{BAM:010d}.json": (200, json.dumps(data).encode())}
+    entries = ""
+    for key, html in [(BAM_DIVIDEND, BAM_DIVIDEND_NOTICE), (BAM_RESULT, BAM_RELEASE)]:
+        base = f"/Archives/edgar/data/{BAM}/{key.replace('-', '')}"
+        routes[f"{base}/{key}-index.htm"] = (200, sec_filing_detail(f"{base}/f8k.htm", "ex991.htm"))
+        routes[f"{base}/ex991.htm"] = (200, html.encode())
+        entries += (
+            f"<entry><id>urn:accno:{key}</id><title>8-K - Brookfield Asset Management</title>"
+            f'<link href="https://www.sec.gov{base}/{key}-index.htm"/><updated>{accepted}</updated>'
+            "<summary>Item 8.01: Other Events Item 9.01: Financial Statements and Exhibits"
+            "</summary></entry>"
+        )
+    routes["type=8-K"] = (
+        200,
+        f'<feed xmlns="http://www.w3.org/2005/Atom">{entries}</feed>'.encode(),
+    )
+    fetcher = RoutedFetcher(routes)
+    target = Target(ticker="BAM", cik=BAM, expected=now)
+    submissions, latest = target.sources()
+    end = now + timedelta(seconds=0.35)
+    window = (now - timedelta(seconds=1), end)
+    polls = Polls(fetcher, journal)
+    seen: list[Sighting] = []
+    await asyncio.gather(
+        *(
+            polls.watch(Watch("BAM", source, window), end, lambda _, item: seen.append(item))
+            for source in (submissions, latest)
+        )
+    )
+
+    assert {(item.key, item.earnings, item.title) for item in seen} == {
+        (BAM_RESULT, True, "8-K financial results")
+    }
+    # The release text is the verified exhibit, not the 8-K cover
+    assert all(item.body and b"Fee-related earnings" in item.body for item in seen)
+
+
+def test_an_8k_under_results_of_operations_needs_no_exhibit_check() -> None:
+    assert _filing_type("8-K", "2.02,9.01") == (True, {})
+    assert _filing_type("8-K", "8.01") == (False, {})  # no exhibit: nothing to read
+    assert _filing_type("8-K", "5.02") == (False, {})

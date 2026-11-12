@@ -29,7 +29,7 @@ from earnings_bot.known import SourceCheck, known_companies, to_target
 from earnings_bot.recorder import ET
 from earnings_bot.sec_results import SixKResults
 from earnings_bot.sources import Sighting
-from tests.fakes import RoutedFetcher, rendered
+from tests.fakes import RoutedFetcher, rendered, sec_filing_detail
 from tests.results_data import (
     CRM_RELEASES,
     HD_RELEASES,
@@ -505,6 +505,41 @@ async def test_a_globenewswire_company_is_matched_there(
     assert (target.newswire, target.prnewswire) == ([], [])
     assert target.trial.globenewswire == LUCID.names
     assert "globenewswire" in [s.name for s in target.sources()]
+
+
+async def test_results_filed_under_other_events_are_found_by_their_exhibits() -> None:
+    """Brookfield Asset Management files results, dividends and deals all under Item 8.01."""
+    cik = 1937926
+    filings = [
+        ("0001171843-26-007300", "8-K", "8.01,9.01", "2026-11-10T21:00:00.000Z", "f8k.htm"),
+        ("0001171843-26-007210", "8-K", "8.01,9.01", "2026-11-06T11:00:00.000Z", "f8k.htm"),
+    ]
+    columns = ("accessionNumber", "form", "items", "acceptanceDateTime", "primaryDocument")
+    recent = {column: [row[i] for row in filings] for i, column in enumerate(columns)}
+    routes: dict[str, tuple[int, bytes]] = {
+        f"submissions/CIK{cik:010d}.json": (
+            200,
+            json.dumps({"filings": {"recent": recent}}).encode(),
+        )
+    }
+    bodies = {
+        "0001171843-26-007300": "<h1>Brookfield Asset Management Declares Quarterly Dividend</h1>"
+        + "<p>The board declared a quarterly dividend of $0.4375 per share.</p>" * 40,
+        "0001171843-26-007210": "<h1>Brookfield Asset Management Reports Q3 2026 Results</h1>"
+        "<p>Brookfield Asset Management today announced financial results for the quarter "
+        "ended September 30, 2026.</p>"
+        + "<p>Revenues of $1.2 billion and net income of $600 million. </p>"
+        * 35,
+    }
+    for key, body in bodies.items():
+        base = f"/Archives/edgar/data/{cik}/{key.replace('-', '')}"
+        routes[f"{base}/{key}-index.htm"] = (200, sec_filing_detail(f"{base}/f8k.htm", "ex.htm"))
+        routes[f"{base}/ex.htm"] = (200, body.encode())
+
+    releases = await investigate._last_releases(RoutedFetcher(routes), cik)
+
+    assert [filing.key for filing, _ in releases] == ["0001171843-26-007210"]
+    assert "Revenues of $1.2 billion" in releases[0][1]
 
 
 async def test_the_last_release_is_read_from_the_results_8k() -> None:
