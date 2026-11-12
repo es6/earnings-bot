@@ -111,3 +111,17 @@ def test_an_update_requires_status_or_detail_even_when_its_title_is_long() -> No
     fact = SummaryFact("New orbital travel agent for private clients", "", "Announced", "update")
     assert evidence_issues(fact, "Announced") == ["bare_update"]
     assert not evidence_issues(replace(fact, value="Launched for 12 customers"), "Announced")
+
+
+def test_unknown_change_reference_is_flagged_without_guessing_yoy() -> None:
+    fact = SummaryFact("Orbital volume", "113M", "quote", period="Q3 2026", change="13%")
+    assert evidence_issues(fact, "quote") == ["missing_change_comparison"]
+    assert evidence_issues(replace(fact, comparison="YoY"), "quote") == []
+    assert evidence_issues(replace(fact, basis="QoQ"), "quote") == []
+
+
+def test_quarter_and_full_year_in_one_fact_are_flagged_but_not_deleted() -> None:
+    fact = SummaryFact("Revenue outlook", "$5B; $20B", "quote", "guide", "Q4 and FY2026")
+    assert evidence_issues(fact, "quote") == ["mixed_fact_periods"]
+    assert evidence_issues(replace(fact, period="Q4 FY2026"), "quote") == []
+    assert evidence_issues(replace(fact, period="2027-2028", kind="update"), "quote") == []

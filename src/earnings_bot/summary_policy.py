@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Literal
 
-POLICY_VERSION = "2026-11-11.2"
+POLICY_VERSION = "2026-11-12.1"
 
 
 # These are the settings actually tested in the November prototype, not model aliases.
@@ -86,6 +86,17 @@ Evidence and arithmetic:
   verified; use (current/prior - 1)*100. With zero/negative prior, show the two values instead.
   Show margin change in bps when both levels share the same denominator and basis.
   Do not add YoY to an unlabeled growth rate or substitute sequential growth for YoY.
+- Label each change's comparison explicitly: YoY, QoQ or versus prior guidance. Use signed
+  changes (+13%, -2%, +40 bps); parentheses around a decrease are not a positive figure.
+- When acquisitions, FX or timing materially change the headline comparison, preserve the
+  reported and issuer-supplied comparable views and their exact exclusions. Do not call an
+  ex-acquisition figure organic unless the issuer does. Explain material cash timing effects.
+- For a material acquisition, consider earnings-power effects, synergy amount and timing,
+  reinvestment, funding and dilution together. A synergy target is not immediate accretion.
+- Business updates need a consequence for adoption, monetization, capacity, earnings or risk.
+  Do not fill an updates slot with routine launches or accounting disclosures. A usage milestone
+  can outrank a product announcement when it demonstrates business traction. Retain meaningful
+  constraints and next steps in a capacity/demand outlook, not just its headline.
 - Never invent consensus or call a figure a beat/miss without a supplied, matching estimate.
   Missing information is missing, not zero. Omit an ambiguous fact or flag it for review.
 """
@@ -175,6 +186,7 @@ class SummaryFact:
     prior: str = ""
     role: str = ""
     relevance: str = ""
+    comparison: str = ""
 
     @property
     def identity(self) -> tuple[str, ...]:
@@ -199,6 +211,22 @@ _PERIOD = re.compile(
 )
 
 
+def change_reference(fact: SummaryFact) -> str:
+    """Use explicit comparison metadata only; the current fiscal period proves nothing."""
+    if fact.comparison:
+        return fact.comparison
+    text = f"{fact.basis} {fact.change}"
+    labels = [
+        label
+        for label, pattern in (
+            ("YoY", r"\b(?:YoY|Y/Y|year[- ]over[- ]year)\b"),
+            ("QoQ", r"\b(?:QoQ|Q/Q|quarter[- ]over[- ]quarter)\b"),
+        )
+        if re.search(pattern, text, re.IGNORECASE)
+    ]
+    return labels[0] if len(labels) == 1 else ""
+
+
 def evidence_issues(fact: SummaryFact, document: str) -> list[str]:
     """Full-passage traceability and ambiguity checks, not a factual-accuracy grade.
 
@@ -211,6 +239,12 @@ def evidence_issues(fact: SummaryFact, document: str) -> list[str]:
         issues.append("missing_source_passage")
     if fact.kind == "guide" and not (fact.period.strip() or _PERIOD.search(fact.metric)):
         issues.append("missing_guidance_period")
+    if re.search(r"\bQ[1-4].*(?:\band\b|[;/+]).*\b(?:FY|full[- ]year)", fact.period, re.IGNORECASE):
+        issues.append("mixed_fact_periods")
+    if re.fullmatch(
+        r"\(?[+-]?\d+(?:\.\d+)?\)?\s*(?:%|bps|pp)\)?", fact.change.strip()
+    ) and not change_reference(fact):
+        issues.append("missing_change_comparison")
     if fact.kind == "update" and not fact.value.strip():
         issues.append("bare_update")
     return issues

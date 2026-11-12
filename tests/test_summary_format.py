@@ -1,10 +1,13 @@
 # En dashes are the intended rendered range separators.
 # ruff: noqa: RUF001
 
+from dataclasses import replace
+
 import pytest
 
 from earnings_bot.summary_evaluation import display_lines
 from earnings_bot.summary_format import (
+    format_change,
     format_fact,
     format_label,
     format_period,
@@ -35,6 +38,9 @@ from earnings_bot.summary_policy import SummaryFact
         ("19", "count", "USD", "19"),
         ("680", "customers", "USD", "680"),
         ("1.5", "million pages", "EUR", "1.5M"),
+        ("$1,338 million (32.5% margin)", "million", "USD", "$1.338B (32.5% margin)"),
+        ("$385 million (9.5% margin)", "million", "USD", "$385M (9.5% margin)"),
+        ("$900M to $1.1B (annual outlook)", "million", "USD", "$900M to $1.1B (annual outlook)"),
         ("$5M to €6M", "", "", "$5M to €6M"),
         ("€5M to €6M", "EUR million", "USD", "€5M to €6M"),
         ("164; 1.54", "EUR bn; ratio", "EUR", "164; 1.54"),
@@ -54,6 +60,7 @@ def test_units_and_ranges_keep_their_meaning(
         ("FYFY2026", "FY2026"),
         ("Q4 fiscal 2026 ended September 30, 2026", "Q4 FY2026"),
         ("Q3 2026", "Q3 2026"),
+        ("3Q2026 (quarter ended 2026-09-30)", "Q3 2026"),
         ("Q4 2026 and FY 2026", "Q4 2026 and FY 2026"),
         ("FY2030", "FY2030"),
         ("Quarter ended September 30, 2026", "Quarter ended September 30, 2026"),
@@ -135,3 +142,32 @@ def test_the_replay_uses_safe_formatting_and_preserves_late_kpis() -> None:
     assert "$2.963B–$2.964B" in text
     assert "FYFY" not in text
     assert "Leading volume: 345M" in text
+
+
+@pytest.mark.parametrize(
+    ("change", "reference", "expected"),
+    [
+        ("13%", "YoY", "+13% YoY"),
+        ("(2)%", "YoY", "-2% YoY"),
+        ("(2%)", "QoQ", "-2% QoQ"),
+        ("40 bps", "YoY", "+40 bps YoY"),
+        ("0%", "YoY", "0% YoY"),
+        ("13%", "", "+13%"),
+        ("13% year-over-year", "", "+13% YoY"),
+        ("-2% Y/Y; margin 25%", "", "-2% YoY; margin 25%"),
+        ("(2%", "YoY", "(2%"),
+        ("-0.02", "", "-0.02"),
+    ],
+)
+def test_change_notation_preserves_direction_and_known_comparison(
+    change: str, reference: str, expected: str
+) -> None:
+    assert format_change(change, reference) == expected
+
+
+def test_explicit_basis_can_label_a_change_without_guessing_from_the_current_quarter() -> None:
+    fact = SummaryFact("Refueling revenue", "$5B", "quote", period="Q3 2026", change="13%")
+    assert format_fact(fact).endswith("+13%")
+    assert format_fact(replace(fact, basis="YoY")).endswith("+13% YoY")
+    assert "(YoY)" not in format_fact(replace(fact, basis="YoY"))
+    assert format_fact(replace(fact, comparison="QoQ")).endswith("+13% QoQ")
