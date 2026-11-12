@@ -59,6 +59,13 @@ free-text writer shares the updated selection prompt but has not adopted structu
 
 ## Evaluation protocol
 
+The November 12 effort regression also exposed two shared renderer defects: `thousand`
+was incorrectly mapped to `T`, and structured group metadata could be lost when the model
+used a generic metric label such as `Revenue` or `View hours`. Thousands now use `K`, and
+region/segment identity is retained without repeating an identity already in the metric.
+These are renderer fixes, not improvements in a model's factual accuracy. The effort review
+kept those common defects separate from model errors and preserved the original responses.
+
 Round-nine feedback was split: Ember won four explicit preferences, Sonnet three, DUOL tied,
 and NOW had mixed feedback without an overall vote. These remain display preferences, not
 accuracy scores. Extra detail must be verified: Netflix's 2027 ad expansion, DoorDash's
