@@ -819,6 +819,8 @@ class DateDiscovery:
         # Why each tracked company's IR page is or isn't watched in its next window
         self.ir_notes: dict[int, str] = {}
         self.cache_notes: dict[int, list[str]] = {}
+        # The watched issuer routes the preflight couldn't verify fresh, by name
+        self.cache_caveats: dict[int, list[str]] = {}
         # What reading each company's IR site in Chrome found, and when it last ran
         self.ir_reads: dict[int, str] = {}
         self.ir_read_at: dict[int, float] = {}
@@ -988,8 +990,10 @@ class DateDiscovery:
         canonical = set(target.rss_canonical if target else ())
         spelled_feeds = set(target.rss_spelled if target else ())
         notes: list[str] = []
+        caveats: list[str] = []
         if ir and ir.table_rendered:
             notes.append("IR quarterly results page · Chrome navigation cache freshness unverified")
+            caveats.append("IR quarterly results page")
         prior_phase = self.phases.get(row.cik)
         try:
             for route in _cache_routes(row):
@@ -1012,6 +1016,8 @@ class DateDiscovery:
                         return target
                     self.cache_results[route] = time.monotonic() + CACHE_REFRESH, result
                 notes.append(f"{route.label} · {result.summary}")
+                if not result.fresh:
+                    caveats.append(route.label)
                 if ir and route.url in (ir.news_api, ir.listing, ir.rss, ir.results_table):
                     if result.spelled:
                         spelled.add(route.url)
@@ -1052,8 +1058,12 @@ class DateDiscovery:
                 if save and updated != target and self.calendar.find(row.ticker) == row:
                     self.calendar.set_target(updated, evidence)
             updated_notes = notes or ["No issuer endpoint available to test"]
-            if self.cache_notes.get(row.cik) != updated_notes:
+            if (
+                self.cache_notes.get(row.cik) != updated_notes
+                or self.cache_caveats.get(row.cik) != caveats
+            ):
                 self.cache_notes[row.cik] = updated_notes
+                self.cache_caveats[row.cik] = caveats
                 self.on_progress()
             return updated
         finally:

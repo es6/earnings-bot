@@ -36,7 +36,11 @@ investigates it outside release windows:
    the exchange and ticker that open every wire release, such as
    "(NASDAQ: LCID)".
 
-The scorecard is edited as each step runs. When the research finishes it shows
+The scorecard is edited as each step runs. It is green only when the research is complete
+and the cache preflight verified every watched issuer route fresh: a unique query or a new
+path spelling reaches the server, or nothing caches it. A route that serves a stored copy,
+or whose cache doesn't say what it did, keeps the card amber with a "Not verified fresh"
+line naming it; SEC filings and newswires are watched regardless. When the research finishes it shows
 which source had the last results first, every source it will watch for the next
 release, and each source it checked and rejected, with the reason. The investigation runs again a month later. The date comes
 from the issuer's own notice, including a date announcement furnished on 6-K or

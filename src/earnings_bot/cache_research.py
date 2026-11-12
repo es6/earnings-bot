@@ -42,6 +42,14 @@ class CacheResult:
     stored_only: bool = False  # every variant got the cache's stored copy
     # Query strings don't get past the cache, but a new spelling of the path does
     spelled: bool = False
+    uncached: bool = False  # every request reached the server: nothing caches this URL
+
+    @property
+    def fresh(self) -> bool:
+        """Whether a new release shows as soon as the issuer publishes it: a unique query or a
+        new spelling gets past the cache, or nothing caches the URL. A stored copy, a cache that
+        doesn't say what it did, or a failed check isn't proof."""
+        return self.query_bust or self.spelled or self.uncached
 
 
 @dataclass(frozen=True)
@@ -214,7 +222,8 @@ async def probe_cache(
     ):
         return CacheResult(
             f"Not cached: every request reached the server ({plain[-1].passes[0]}). "
-            "No query string needed"
+            "No query string needed",
+            uncached=True,
         )
     control = normal[-1].headers.get("cache-control", "")
     ttl = re.search(r"(?:^|,\s*)s-maxage\s*=\s*([1-9]\d*)", control, re.IGNORECASE)
