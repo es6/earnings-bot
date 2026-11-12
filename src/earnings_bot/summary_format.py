@@ -68,6 +68,18 @@ def format_value(value: str, unit: str = "", currency: str = "") -> str:
     if ";" in unit or re.search(r"\bratio\b", unit, re.IGNORECASE):
         return value
     marker = _MARKERS.get(currency, "")
+    # A provider can erroneously put USD on an order/customer count. Only a money
+    # dimension or a bare scale supports adding a currency symbol to a bare value.
+    dimension = re.sub(
+        rf"\b(?:{_SUFFIX}|USD|EUR|GBP|JPY|dollars?|euros?|pounds?|yen|money|currency|of)\b",
+        "",
+        unit,
+        flags=re.IGNORECASE,
+    )
+    if re.search(r"[a-z]", dimension, re.IGNORECASE) and not re.search(
+        r"per share|/share", unit, re.IGNORECASE
+    ):
+        marker = ""
     if match := _RANGE.fullmatch(value):
         left_marker, left, left_unit, right_marker, right, right_unit = match.groups()
         if left_marker and right_marker and left_marker != right_marker:
