@@ -46,6 +46,11 @@ estimates the time from recent results filings and uses a wider window. The
 scorecard explains when work is paused for release monitoring and when a
 Manage Server member can supply `when` and `period`.
 
+Scorecards share the channel's edit budget (Discord allows about five edits per five
+seconds) with release links and summaries. A card that still reads the same is never
+edited again, even after a restart, and card edits are spaced 2.5 seconds apart so they
+leave most of that budget to the release in progress.
+
 ## From ticker to alert
 
 1. **Add the issuer.** The bot saves the subscription by issuer CIK. It creates
