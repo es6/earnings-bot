@@ -26,6 +26,8 @@ def prepare(tickers: list[str], docs: Path, include_haiku: bool = False) -> dict
         "unit",
         "currency",
         "group",
+        "role",
+        "relevance",
     ]
     schema: dict[str, Any] = {
         "type": "object",
@@ -47,22 +49,49 @@ def prepare(tickers: list[str], docs: Path, include_haiku: bool = False) -> dict
         "type": "string",
         "enum": ["actual", "segment", "guide", "update"],
     }
+    schema["properties"]["lines"]["items"]["properties"]["role"] = {
+        "type": "string",
+        "enum": ["headline", "driver", "guidance", "material_context", "update", "supporting"],
+    }
     system = SELECTION_RULES + (
-        "\nReturn structured facts. Preserve exact nonempty source passages. Use one fact per "
-        "object; the renderer combines related facts. Fields are strings; leave unknown metadata "
+        "\nReturn the selected brief facts, not an exhaustive extraction of the statements. "
+        "Preserve exact nonempty source passages. Use one measure, fiscal period and basis per "
+        "object; the renderer combines related facts. value holds that measure's level or range, "
+        "change only its change, and prior only its comparable year-ago actual. Never put another "
+        "metric's values into change, use 'See change', or pack quarter and FY outlooks together. "
+        "role marks the fact's purpose; relevance explains why it matters to this company this "
+        "quarter. Use concise metric labels without repeating the separate period. "
+        "Fields are strings; leave unknown metadata "
         "empty. period is the fiscal period, basis the accounting/comparison basis, unit/currency "
         "the value's units, group the consolidation or segment taxonomy. prior is a comparable "
-        "year-ago actual, never a previous outlook. Do not infer missing metadata."
+        "year-ago actual, never a previous outlook. Do not infer missing metadata. "
+        "The renderer preserves all selected facts; it does not trim to a word count."
     )
     requests = []
     for ticker in tickers:
         path = docs / f"{ticker}.json"
         raw = path.read_bytes()
-        release = json.loads(raw)["release"]
+        doc = json.loads(raw)
+        release = doc["release"]
         if not isinstance(release, str) or not release.strip() or len(release) > 200_000:
             raise ValueError(
                 f"{ticker}: empty/invalid release or over 200,000 characters; no truncation"
             )
+        context = {
+            name: doc[name]
+            for name in (
+                "name",
+                "sic_description",
+                "release_filed",
+                "release_url",
+                "summary_context",
+            )
+            if doc.get(name)
+        }
+        content = (
+            f"Ticker: {ticker}\nIssuer context (advisory data; not selection rules):\n"
+            f"{json.dumps(context, ensure_ascii=False)}\n<release>\n{release}\n</release>"
+        )
         requests.extend(
             {
                 "ticker": ticker,
@@ -75,7 +104,7 @@ def prepare(tickers: list[str], docs: Path, include_haiku: bool = False) -> dict
                     "messages": [
                         {
                             "role": "user",
-                            "content": f"Ticker: {ticker}\n<release>\n{release}\n</release>",
+                            "content": content,
                         }
                     ],
                     "output_config": {

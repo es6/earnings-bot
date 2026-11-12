@@ -6,7 +6,7 @@ No provider is enabled and no API call is made by the offline evaluation command
 
 ## What the feedback changed
 
-The seven blind rounds informed a shared policy in `summary_policy.py`. The live writer's
+The blind feedback rounds informed a shared policy in `summary_policy.py`. The live writer's
 prompt imports it; future structured experiments must import it too. Sonnet low and Muse
 Ember low are the default comparison pair. Haiku is opt-in for specific cases; Opus and
 Spark are excluded from the default writer/comparison. Adding a model requires a new
@@ -17,20 +17,45 @@ blind evaluation, not an automatic failover that changes the quality or cost sil
 | EPS versus operating profit/EBITDA | Choose the relevant profit measure from business context; no blanket EPS | Shared prompt; selection still needs evaluation |
 | Missing segments, subscription/fee streams, growth engines | Material revenue taxonomies and recurring streams; preserve scope | Shared prompt; never complete segments by finding any table ending in a total |
 | Missing volume, backlog, flagship growth | Preserve the leading operating KPI even without a revenue level | Shared prompt; annotated coverage evaluation |
-| Software capex missed; retailer cash overemphasized | Comparable annual capex/revenue ≥15%, negative cash flow, or material current investment inflection | `cash_priority`; unknown inputs remain unknown, no sector ban |
+| Software capex missed; retailer cash overemphasized | Use capital intensity/cash burn as context for this quarter's story | `cash_priority` is an advisory signal, never an automatic deletion gate |
 | Missing/computed YoY | Same metric, currency, unit, basis, scope and prior-year fiscal period | `yoy`; zero/negative priors omitted, margins use bps |
 | Reported versus adjusted comps; profit versus margin | Preserve table columns, exact exclusions and accounting basis | Table-parser regression; identity and arithmetic tests |
 | Q and FY outlooks looking identical | Guidance period must be explicit; previous guide differs from prior-year actual | Prompt and `evidence_issues`; no year/number-based inference |
 | Bare initiative names; material news omitted | Status/change/scale required; prioritize growth and cash-burn milestones | Prompt and bare-update check; importance requires review |
 | One-off EPS effects, investment marks, usage milestones | Explain material distortion; evaluate relevance to this business | Conditional prompt rules, no absolute sector/metric bans |
-| Too verbose | Usually 4–7 lines; combine related facts before deleting coverage | Shared prompt; presentation review |
+| Too verbose | Be brief through selection, grouping and removal of repetition; no editorial word/line cap | Shared prompt; renderer retains all selected facts |
 | Call-only facts absent | Use a separately identified document when available; never invent it | Evidence checks plus human review; second-source ingestion not built here |
+
+The formatter preserves every model-selected fact. It has no editorial word/line limit,
+and no cash-profile or topic blacklist removes facts. Selection is contextual model work.
+Future requests include a fact role and relevance rationale for the audit; the displayed
+brief omits that audit reasoning. Historical capital-intensity data can be supplied as an
+advisory context signal, including its period, without deciding inclusion automatically.
 
 The code checks traceability and comparable arithmetic. They cannot prove that a cited
 sentence describes the chosen metric, that its units were read correctly, or that an
 initiative matters to the stock. The current live free-text writer does not yet consume
 structured facts or use these arithmetic helpers. It shares the selection prompt only.
 Do not describe these helpers as a complete live factual validator.
+
+## Round eight: what the preference votes establish
+
+The final nine-company votes favored Sonnet low 8–1; Ember won NET. These were preferences
+for the displayed briefs, not factual-accuracy judgments. Both models had MELI/BKNG operating
+KPIs in their raw output that the experimental 90-word formatter cut. Both included NET's
+restructuring; one display dropped it. The original votes and previews remain unchanged.
+
+The user explicitly rejected that word limit. All selected facts now survive rendering.
+Length follows the business and quarter; examples such as a cash balance, bond issue,
+restructuring charge or consolidated revenue must not become blanket topic bans. The model
+records why each selected fact matters here. Code handles faithful formatting, not semantic
+deletion. New batches show Discord-formatted message previews and accept ordinary chat feedback.
+
+Formatting defects were independent of selection: duplicated acronyms, `FYFY2026`, mixed
+periods and ranges that scaled only one endpoint. `summary_format.py` uses Decimal, retains
+exact range endpoints, canonicalizes explicit fiscal labels and leaves compound legacy
+measures unguessed with their unit metadata. It is used by the offline replay; the live
+free-text writer shares the updated selection prompt but has not adopted structured rendering.
 
 ## Evaluation protocol
 

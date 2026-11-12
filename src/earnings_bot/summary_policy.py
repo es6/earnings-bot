@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Literal
 
-POLICY_VERSION = "2026-11-11.1"
+POLICY_VERSION = "2026-11-11.2"
 
 
 # These are the settings actually tested in the November prototype, not model aliases.
@@ -26,15 +26,22 @@ HAIKU = ModelSetting("Haiku low", "claude-haiku-5-5")
 DEFAULT_COMPARISON = (SONNET, EMBER)  # Haiku is an explicit, occasional comparison only.
 
 SELECTION_RULES = """\
-Write a short earnings brief for traders, usually 4-7 compact lines. Fit several related
-facts on one line before dropping an important fact. Select for this business from the
-supplied documents, not a fixed EPS/revenue checklist or a ticker-specific template.
+Write a concise earnings brief for traders. Let the important information determine its
+length; there is no editorial word or line limit. Combine related facts and remove
+repetition. Select for this business and this quarter from the supplied documents.
+Each selected fact should explain performance, outlook, risk or a material development.
+A metric's name or sector alone does not establish
+its importance. Avoid both a fixed checklist and a blanket blacklist of financial topics.
 
 Coverage:
-- Revenue and comparable YoY growth. Choose the company's relevant profit measure:
+- Lead with the financial measures that explain this business's performance. Revenue with
+  comparable growth is often essential, but it is not a compulsory slot: a fee-driven
+  investment manager may be better explained by recurring fee earnings, distributable
+  earnings, fee-bearing capital and fundraising. Include revenue when it adds useful context.
+  Choose the company's relevant profit measure:
   adjusted EPS, operating profit, EBITDA or another measure emphasized in its results.
   EPS is optional. Do not silently substitute GAAP for adjusted or vice versa.
-- Material revenue segments, largest first, normally up to four on one compact line;
+- Material revenue segments, largest first, grouped compactly;
   include a small but important growth engine and recurring fee/subscription streams.
   Preserve the revenue taxonomy. Expense rows are not segments. Product and operating
   segment tables can overlap: do not add them together. Equal values do not mean duplicates.
@@ -46,21 +53,27 @@ Coverage:
   is not profit growth. Margin changes are percentage points or basis points, not percent.
 - For retail, distinguish total and digital comps and reported/adjusted bases. Preserve the
   exact exclusions (fuel, FX, calendar, etc.); never invent an exclusion from a sector label.
-- Prioritize cash generation and capex when comparable annual capex/revenue is at least 15%,
-  cash flow is negative, or the release identifies a material investment/cash inflection.
-  Unknown data is not a low-capex finding. There is no software or other sector exclusion.
+- Cash generation, capex and liquidity depend on the investment/funding story this quarter.
+  Comparable annual capex/revenue of 15% or more, cash burn and current investment inflections
+  are useful signals, not inclusion/exclusion gates. Unknown data remains unknown. A routine
+  cash balance needs a reason to occupy the brief, such as runway, funding pressure, regulatory
+  capital or transaction financing. There is no software or other sector exclusion.
   For cash burners, liquidity/runway and cost-plan progress may be essential. Do not invent
   runway from a cash balance and a single quarter's burn.
 - Guidance for each material guided headline measure, combining related facts. Every guide
   must name its fiscal period. Distinguish Q4 from FY and calendar from fiscal labels.
   If raised/cut/narrowed, give the previous outlook when supplied. The previous outlook is
   not a year-ago actual. Add implied YoY only from a verified comparable prior-year period.
-- One or two material business updates: growth initiatives, launches, partnerships,
+- Material business updates: growth initiatives, launches, partnerships,
   milestones or corporate actions, with what changed/status/scale. A bare initiative title
   says nothing. Usage milestones can matter to a usage-driven business; rank against other
   news rather than banning them. For distorted profit, explain material one-off effects
   (including a per-share effect if given). Deprioritize investment marks unless investing
   is the business or the mark is necessary to explain the headline profit distortion.
+- Judge funding, bond issues, restructuring and acquisition updates by their significance
+  here, not their topic label. Explain what changes in earnings power, risk, capacity or
+  financing. A routine amount without a consequence is often less useful than a business KPI;
+  a material capital raise, cost reset or acquisition can be a leading development.
 
 Evidence and arithmetic:
 - All statements must be supported by the supplied release, estimates or separately labeled
@@ -82,7 +95,7 @@ TEXT_SYSTEM = (
     + """
 Output only the brief. Start with COMPANY $TICKER and the issuer's reported fiscal period.
 Use short 🔹 fact lines and 🔸 business updates, without sections or executive quotes.
-Name guidance periods explicitly. Keep the complete brief under 3,000 characters.
+Name guidance periods explicitly. Keep the language brief while preserving important coverage.
 """
 )
 
@@ -158,6 +171,10 @@ class SummaryFact:
     unit: str = ""
     currency: str = ""
     group: str = ""
+    change: str = ""
+    prior: str = ""
+    role: str = ""
+    relevance: str = ""
 
     @property
     def identity(self) -> tuple[str, ...]:

@@ -4,9 +4,10 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from earnings_bot.summary_format import render_facts
 from earnings_bot.summary_policy import SummaryFact, evidence_issues, normalized
 
-EVALUATOR_VERSION = "2026-11-11.2"
+EVALUATOR_VERSION = "2026-11-11.3"
 
 _ADJUSTED = re.compile(r"\badj(?:usted)?\b|non[- ]gaap", re.IGNORECASE)
 _RATIO = re.compile(r"\bmargin\b|\bratio\b", re.IGNORECASE)
@@ -136,11 +137,14 @@ def common_cases(
 
 
 def display_lines(ticker: str, lines: list[dict[str, Any]]) -> str:
-    """Same literal formatter for every model: no model-specific enrichment or guesses."""
-    output = [f"${ticker}"]
-    for line in lines:
-        text = f"{line['metric']}: {line.get('value', '')}".rstrip(": ")
-        if change := line.get("change"):
-            text += f"; {change}"
-        output.append(text)
-    return "\n".join(output)
+    """Same formatter for every model; preserves all selected facts without a length cap."""
+    facts = [
+        SummaryFact(
+            **{
+                name: line.get(name, "actual" if name == "kind" else "")
+                for name in SummaryFact.__dataclass_fields__
+            }
+        )
+        for line in lines
+    ]
+    return render_facts(ticker, facts)

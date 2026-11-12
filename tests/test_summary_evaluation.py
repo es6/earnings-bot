@@ -149,7 +149,13 @@ def test_offline_cli_uses_default_pair_and_code_baseline_and_writes_blind_key(
 def test_future_requests_share_policy_schema_and_default_pair(tmp_path: Path) -> None:
     document = tmp_path / "NEW.json"
     document.write_text(
-        json.dumps({"release": "Unseen issuer revenue was $123M."}), encoding="utf-8"
+        json.dumps(
+            {
+                "release": "Unseen issuer revenue was $123M.",
+                "summary_context": {"annual_capex_share": 0.014},
+            }
+        ),
+        encoding="utf-8",
     )
     out = tmp_path / "requests.json"
     command = [
@@ -172,7 +178,12 @@ def test_future_requests_share_policy_schema_and_default_pair(tmp_path: Path) ->
         "period"
         in first["output_config"]["format"]["schema"]["properties"]["lines"]["items"]["required"]
     )
+    schema = first["output_config"]["format"]["schema"]["properties"]["lines"]["items"]
+    assert "role" in schema["required"] and "relevance" in schema["required"]
+    assert "driver" in schema["properties"]["role"]["enum"]
+    assert "does not trim to a word count" in first["system"]
     assert "Unseen issuer revenue" in first["messages"][0]["content"]
+    assert '"annual_capex_share": 0.014' in first["messages"][0]["content"]
     subprocess.run([*command, "--include-haiku"], check=True, capture_output=True)
     assert len(json.loads(out.read_text(encoding="utf-8"))["requests"]) == 3
 
