@@ -758,7 +758,8 @@ Where the text comes from:
 
 The optional live writer uses Sonnet (`claude-sonnet-5-5`, effort `low`) and the shared
 business-aware selection policy. It gets release text and, when configured, consensus EPS
-and revenue from Financial Modeling Prep. It targets a compact 4–7-line brief; EPS is
+and revenue from Financial Modeling Prep. It targets a concise brief without an editorial word
+or line cap; EPS is
 optional, guidance periods are explicit, and the relevant segments, operating KPIs, margins
 and business updates depend on the issuer. No implicit model fallback changes this selection.
 
