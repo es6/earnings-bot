@@ -1,4 +1,5 @@
 import asyncio
+import time
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import cast
@@ -100,6 +101,7 @@ def tracker(store: DeliveryStore, channel: FakeDiscord, **kwargs: object) -> Tra
         "now": lambda: NOW,
         "busy": lambda: False,
         "audit": never,
+        "card_spacing": 0.0,
     }
     defaults.update(kwargs)
     return TrackProgress(
@@ -161,6 +163,35 @@ async def test_an_unchanged_card_isnt_edited_again(tmp_path: Path) -> None:
         FakeMessage.edit = original  # type: ignore[method-assign]
     assert channel.attempts == 1
     assert edits == 1
+
+
+async def test_a_restart_leaves_a_card_alone_if_it_still_reads_the_same(tmp_path: Path) -> None:
+    channel = FakeDiscord()
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        await tracker(store, channel).publish(1045810, card("NVDA · NVIDIA", "Same"))
+        [message] = channel.messages.values()
+        edited = message.edited_at
+        # A new process has no memory of what it showed, only the message itself
+        await tracker(store, channel).publish(1045810, card("NVDA · NVIDIA", "Same"))
+        assert message.edited_at == edited
+        await tracker(store, channel).publish(1045810, card("NVDA · NVIDIA", "Changed"))
+        assert message.edited_at != edited
+        assert message.embed is not None and message.embed.description == "Changed"
+    assert channel.attempts == 1
+
+
+async def test_card_edits_are_spaced_to_leave_room_for_release_edits(tmp_path: Path) -> None:
+    channel = FakeDiscord()
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        progress = tracker(store, channel, card_spacing=0.2)
+        started = time.monotonic()
+        for n in range(3):
+            await progress.publish(1000 + n, card(f"T{n} · Company", "New"))
+        # Three sends: the first goes at once, then two waits
+        assert time.monotonic() - started >= 0.35
+        started = time.monotonic()
+        await progress.publish(1000, card("T0 · Company", "New"))  # unchanged: no wait
+        assert time.monotonic() - started < 0.1
 
 
 class WatchedDiscord(FakeDiscord):

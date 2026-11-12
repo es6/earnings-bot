@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from datetime import datetime, timedelta
@@ -38,18 +39,43 @@ from earnings_bot.version import release_version
 
 log = logging.getLogger(__name__)
 REFRESH = timedelta(days=1)
+# Scorecards share a channel's edit budget (Discord allows about 5 edits per 5 s) with release
+# links and summaries. Spacing card edits leaves most of it free: on Nov 11 the logs had 283
+# rate-limited edits, nearly all scorecards re-sent together after a restart or a window opening.
+CARD_EDIT_SPACING = 2.5  # seconds
 
 DONE, WORKING, WAITING, FAILED, TODO = "✅", "⏳", "⏸️", "⚠️", "▫️"
 
 
+def _same_card(shown: discord.Embed, embed: discord.Embed) -> bool:
+    """The message already shows this card; only its update time can differ."""
+
+    def body(card: discord.Embed) -> dict[str, object]:
+        data = dict(card.to_dict())
+        data.pop("timestamp", None)
+        return data
+
+    return body(shown) == body(embed)
+
+
+async def _no_pause() -> None:
+    pass
+
+
 class CardPoster:
     """One message holding an embed, sent once and then edited. Its ID is kept in the delivery
-    store, so a restart edits the same message."""
+    store, so a restart edits the same message, and only if it shows something else."""
 
     def __init__(
-        self, channel: discord.abc.Messageable, store: DeliveryStore, key: str, author_id: int
+        self,
+        channel: discord.abc.Messageable,
+        store: DeliveryStore,
+        key: str,
+        author_id: int,
+        pace: Callable[[], Awaitable[None]] = _no_pause,
     ) -> None:
         self.channel, self.store, self.key, self.author_id = channel, store, key, author_id
+        self.pace = pace
 
     async def show(self, embed: discord.Embed) -> None:
         title = embed.title or ""
@@ -77,8 +103,16 @@ class CardPoster:
         if message is None:
             intent = f"{self.store.channel_id}:{self.key}:{saved.prepared.isoformat()}"
             nonce = hashlib.blake2s(intent.encode(), digest_size=12).hexdigest()
+            await self.pace()
             message = await self.channel.send(embed=embed, nonce=nonce)
+        elif (
+            not message.content
+            and len(message.embeds) == 1
+            and _same_card(message.embeds[0], embed)
+        ):
+            pass  # A restart re-renders every card; one that still reads the same is left alone
         else:
+            await self.pace()
             await message.edit(content=None, embed=embed)
         self.store.delivered(self.key, message.id)
 
@@ -140,8 +174,11 @@ class TrackProgress:
         research: Callable[[int], Report | None] | None = None,
         ir_note: Callable[[int], str | None] | None = None,
         cache_notes: Callable[[int], list[str] | None] | None = None,
+        card_spacing: float = CARD_EDIT_SPACING,
     ) -> None:
         self.calendar, self.store, self.channel = calendar, store, channel
+        self.card_spacing = card_spacing
+        self._last_card_edit = -card_spacing
         self.author_id, self.planned, self.now, self.busy = author_id, planned, now, busy
         self.audit = audit
         self.date_phase = date_phase or (lambda _: None)
@@ -157,6 +194,13 @@ class TrackProgress:
 
     def _key(self, cik: int) -> str:
         return f"track:{self.calendar.channel}:{cik}"
+
+    async def _pace(self) -> None:
+        """Wait until the last card edit is CARD_EDIT_SPACING old."""
+        wait = self._last_card_edit + self.card_spacing - time.monotonic()
+        if wait > 0:
+            await asyncio.sleep(wait)
+        self._last_card_edit = time.monotonic()
 
     def follow_calendar(self) -> None:
         """After the calendar moved to a new channel, its scorecards keep their messages, so
@@ -184,7 +228,9 @@ class TrackProgress:
         if self.last_sent.get(cik) == shown:
             return
         embed.timestamp = self.now()
-        poster = CardPoster(self.channel, self.store, self._key(cik), self.author_id)
+        poster = CardPoster(
+            self.channel, self.store, self._key(cik), self.author_id, pace=self._pace
+        )
         try:
             await poster.show(embed)
         except (discord.HTTPException, aiohttp.ClientError, TimeoutError) as error:
