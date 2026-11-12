@@ -64,6 +64,21 @@ async def _no_pause() -> None:
     pass
 
 
+def _same_card(shown: discord.Embed, embed: discord.Embed) -> bool:
+    """The message already shows this card; only its update time can differ."""
+
+    def body(card: discord.Embed) -> dict[str, object]:
+        data = dict(card.to_dict())
+        data.pop("timestamp", None)
+        return data
+
+    return body(shown) == body(embed)
+
+
+async def _no_pause() -> None:
+    pass
+
+
 class CardPoster:
     """One message holding an embed, sent once and then edited. Its ID is kept in the delivery
     store, so a restart edits the same message, and only if it shows something else."""
