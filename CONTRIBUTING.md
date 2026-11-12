@@ -12,6 +12,10 @@ larger changes before you start on them.
 
 ## Making a change
 
+For IR discovery, blocked sites, or stale `/track` sources, read the
+[IR access experiment playbook](docs/ir-access-playbook.md) before investigating.
+Record evidence and unresolved freshness questions using its case template.
+
 1. Create a branch off `main`.
 2. Make your change and add or update tests in `tests/`. Check that each new test fails
    without your change (undo the fix, run the test, put the fix back): a test that passes
