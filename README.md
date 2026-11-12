@@ -22,58 +22,6 @@ and the Sonnet/Ember comparison; these research tools make no API calls.
 - Edits in a summary of results, guidance and the KPIs that matter for that company
 - Tracks the latest release timing by source and compares Discord alerts with @earnings_guy
 
-## Run your own copy
-
-Every copy of the bot runs under its own Discord application. You'll need
-[uv](https://docs.astral.sh/uv/getting-started/installation/), which installs the right Python
-version for you.
-
-1. **Create the Discord application.** Go to the
-   [Developer Portal](https://discord.com/developers/applications) and click **New Application**.
-   On the **Bot** tab, click **Reset Token** and copy the token. Leave the privileged intents off.
-2. **Invite the bot to your server.** Under **OAuth2 → URL Generator**, pick the scopes `bot` and
-   `applications.commands` and the permissions *View Channels*, *Send Messages*, *Embed Links* and
-   *Attach Files*. Open the generated URL.
-3. **Configure it.**
-
-   ```bash
-   git clone https://github.com/es6/earnings-bot.git
-   cd earnings-bot
-   cp .env.example .env
-   ```
-
-   Put your token in `.env`. Setting `DISCORD_GUILD_ID` to your test server's ID makes slash
-   commands show up there instantly.
-4. **Run it.**
-
-   ```bash
-   uv run earnings-bot
-   ```
-
-   Or with Docker:
-
-   ```bash
-   docker build -t earnings-bot .
-   docker run --env-file .env earnings-bot
-   ```
-5. **Watch a day's releases.** Fill in `DISCORD_CHANNEL_ID`, `SEC_USER_AGENT`,
-   `ANTHROPIC_API_KEY` and `FMP_API_KEY` in `.env` (see `.env.example`), then give the bot a
-   schedule file:
-
-   ```bash
-   uv run earnings-bot schedules/2026-11-04.toml
-   ```
-
-   It waits for each release's window and posts to the channel. Without the Anthropic key, posts
-   have no summary. Every step is logged to
-   `schedules/*.jsonl`, the same log the latency recorder writes.
-
-   To test the whole flow on a past release, replay it:
-
-   ```bash
-   uv run earnings-bot-replay schedules/2026-11-04.toml UBER --date 2026-08-05 --q4-release 1585 --edgar 0001543151-26-000027
-   ```
-
 ### Earnings calendar commands
 
 Use `/track ticker:NVDA` in directory mode. `/upcoming` is a compact calendar of the next
@@ -176,6 +124,58 @@ Run one version bump for each PR that changes what gets deployed. `uv version` u
 
 CI checks the bump against the PR's base. If another release lands first, update from `main` and
 pick the next version. Docs and tests can change on their own without a version bump.
+
+## Run your own copy
+
+Every copy of the bot runs under its own Discord application. You'll need
+[uv](https://docs.astral.sh/uv/getting-started/installation/), which installs the right Python
+version for you.
+
+1. **Create the Discord application.** Go to the
+   [Developer Portal](https://discord.com/developers/applications) and click **New Application**.
+   On the **Bot** tab, click **Reset Token** and copy the token. Leave the privileged intents off.
+2. **Invite the bot to your server.** Under **OAuth2 → URL Generator**, pick the scopes `bot` and
+   `applications.commands` and the permissions *View Channels*, *Send Messages*, *Embed Links* and
+   *Attach Files*. Open the generated URL.
+3. **Configure it.**
+
+   ```bash
+   git clone https://github.com/es6/earnings-bot.git
+   cd earnings-bot
+   cp .env.example .env
+   ```
+
+   Put your token in `.env`. Setting `DISCORD_GUILD_ID` to your test server's ID makes slash
+   commands show up there instantly.
+4. **Run it.**
+
+   ```bash
+   uv run earnings-bot
+   ```
+
+   Or with Docker:
+
+   ```bash
+   docker build -t earnings-bot .
+   docker run --env-file .env earnings-bot
+   ```
+5. **Watch a day's releases.** Fill in `DISCORD_CHANNEL_ID`, `SEC_USER_AGENT`,
+   `ANTHROPIC_API_KEY` and `FMP_API_KEY` in `.env` (see `.env.example`), then give the bot a
+   schedule file:
+
+   ```bash
+   uv run earnings-bot schedules/2026-11-04.toml
+   ```
+
+   It waits for each release's window and posts to the channel. Without the Anthropic key, posts
+   have no summary. Every step is logged to
+   `schedules/*.jsonl`, the same log the latency recorder writes.
+
+   To test the whole flow on a past release, replay it:
+
+   ```bash
+   uv run earnings-bot-replay schedules/2026-11-04.toml UBER --date 2026-08-05 --q4-release 1585 --edgar 0001543151-26-000027
+   ```
 
 ## License
 
