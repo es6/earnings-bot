@@ -129,7 +129,7 @@ async def test_release_posts_links_files_and_summary(release_texts: dict[str, st
     assert f"[Uber-Q3-26-Earnings-Press-Release.pdf](<{PDF}>)" in last_edit
     summary = next(text for kind, text in poster.calls if kind == "summary")
     assert "from the IR site text" in summary
-    assert "12%" in summary
+    assert "Summary by Muse Ember" in summary and "1 figure held back" in summary
     assert summarizer.calls == [(release_texts[IR_PAGE], Estimates(eps=0.86, revenue=None))]
     # Each step logs when Discord stamped it, counted from the first sighting
     events = {e["event"]: e for e in map(json.loads, log.getvalue().splitlines())}

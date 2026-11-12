@@ -12,7 +12,7 @@ from earnings_bot.commands import ALL_COMMANDS
 from earnings_bot.config import Settings
 from earnings_bot.pipeline import watch_schedule
 from earnings_bot.recorder import load_plan
-from earnings_bot.summary import Summarizer
+from earnings_bot.summary import summarizer_from
 from earnings_bot.tracking_commands import TrackingCommands
 from earnings_bot.unattended import DirectoryWatcher, watch_directory
 from earnings_bot.version import build_revision, release_version
@@ -72,9 +72,8 @@ class EarningsBot(discord.Client):
         channel = await self.fetch_channel(settings.discord_channel_id)
         if not isinstance(channel, discord.abc.Messageable):
             raise RuntimeError(f"Channel {settings.discord_channel_id} can't take messages")
-        key = settings.anthropic_api_key
         fmp_key = settings.fmp_api_key
-        summarizer = Summarizer(key.get_secret_value()) if key else None
+        summarizer = summarizer_from(settings)
         api_key = fmp_key.get_secret_value() if fmp_key else None
         # Reading the channel is about the cheapest request there is, and goes over the same
         # connection the alert will use

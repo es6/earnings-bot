@@ -139,7 +139,7 @@ def test_offline_cli_uses_default_pair_and_code_baseline_and_writes_blind_key(
     subprocess.run(command, check=True, capture_output=True, env={**os.environ, "PYTHONUTF8": "1"})
     report = json.loads(out.read_text(encoding="utf-8"))
     assert report["evaluator_version"]
-    assert set(report["settings"]) == {"Sonnet low", "Muse Ember low", "Code only"}
+    assert set(report["settings"]) == {"Muse Ember low", "Code only"}
     assert len(report["documents"]["NEW"]) == 64
     assert "Sonnet" not in blind.read_text(encoding="utf-8")
     key = json.loads(blind.with_suffix(".key.json").read_text(encoding="utf-8"))
@@ -169,11 +169,9 @@ def test_future_requests_share_policy_schema_and_default_pair(tmp_path: Path) ->
     ]
     subprocess.run(command, check=True, capture_output=True)
     plan = json.loads(out.read_text(encoding="utf-8"))
-    assert [r["setting"] for r in plan["requests"]] == ["Sonnet low", "Muse Ember low"]
-    first, second = (r["request"] for r in plan["requests"])
-    assert first["system"] == second["system"]
+    assert [r["setting"] for r in plan["requests"]] == ["Muse Ember low"]
+    [first] = (r["request"] for r in plan["requests"])
     assert "EPS is optional" in first["system"]
-    assert first["output_config"] == second["output_config"]
     assert (
         "period"
         in first["output_config"]["format"]["schema"]["properties"]["lines"]["items"]["required"]
@@ -185,7 +183,7 @@ def test_future_requests_share_policy_schema_and_default_pair(tmp_path: Path) ->
     assert "Unseen issuer revenue" in first["messages"][0]["content"]
     assert '"annual_capex_share": 0.014' in first["messages"][0]["content"]
     subprocess.run([*command, "--include-haiku"], check=True, capture_output=True)
-    assert len(json.loads(out.read_text(encoding="utf-8"))["requests"]) == 3
+    assert len(json.loads(out.read_text(encoding="utf-8"))["requests"]) == 2
 
 
 def test_future_requests_never_silently_truncate_a_release(tmp_path: Path) -> None:

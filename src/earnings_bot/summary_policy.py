@@ -23,7 +23,7 @@ class ModelSetting:
 SONNET = ModelSetting("Sonnet low", "claude-sonnet-5-5")
 EMBER = ModelSetting("Muse Ember low", "muse-ember-1.0")
 HAIKU = ModelSetting("Haiku low", "claude-haiku-5-5")
-DEFAULT_COMPARISON = (SONNET, EMBER)  # Haiku is an explicit, occasional comparison only.
+DEFAULT_COMPARISON = (EMBER,)  # Other providers require an explicit experiment opt-in.
 
 SELECTION_RULES = """\
 Write a concise earnings brief for traders. Let the important information determine its

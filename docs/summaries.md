@@ -1,15 +1,38 @@
-# Summary research and shared rules
+# Summaries and shared rules
 
-The November 11 prototype is research, not a deployed automatic summary system. The bot
-still posts the release immediately; summary generation is a separate optional follow-up.
-No provider is enabled and no API call is made by the offline evaluation commands.
+## Live summaries (v0.13.0)
+
+The bot posts the release immediately; the summary is a separate follow-up that never delays
+the alert. When the release text arrives, `summary.py` sends Muse Ember low (Meta's Model API,
+which speaks the Anthropic Messages format) the same structured request the experiments used
+(`summary_request.py`). `summary_validation.py` keeps only facts whose numbers it can bind to
+their own quoted passage, with matching units, period and duration; a fact whose optional
+change or prior fails keeps its sourced value. `summary_format.discord_brief` lays out the
+confirmed facts by period and kind, as in the reviewed Discord previews, and the card's footer
+counts the facts held back. A failed or fully unconfirmed summary posts nothing, and the next
+source's text can try again.
+
+Summaries cost money per release, so they run only with both `LIVE_SUMMARIES=true` and
+`META_MODEL_API_KEY` in `.env`; a key alone never starts paid calls. Estimates aren't sent, so
+the brief never calls a beat or miss. The checks establish traceability, not that the model
+chose the right facts or that a cited sentence describes the chosen metric.
+
+Replaying the 36 saved Ember-low outputs from the November 12 effort tests, the checker keeps
+78% of selected facts. It accepts quotes that differ only in table-cell breaks or spacing, or
+that join several exact passages; a scale written once covers both ends of a range; per-share
+figures ignore a table's "in millions"; and a missing YoY label is filled only when the quoted
+passage itself says year-over-year (and not quarter-over-quarter).
+
+## Offline research
+
+No API call is made by the offline evaluation commands.
 
 ## What the feedback changed
 
 The blind feedback rounds informed a shared policy in `summary_policy.py`. The live writer's
-prompt imports it; future structured experiments must import it too. Sonnet low and Muse
-Ember low are the default comparison pair. Haiku is opt-in for specific cases; Opus and
-Spark are excluded from the default writer/comparison. Adding a model requires a new
+prompt imports it; future structured experiments must import it too. Muse Ember low is
+the preparation/evaluation default. Other providers require explicit experiment opt-in;
+routine Sonnet, Spark, Haiku and Opus calls are excluded. Adding a model requires a new
 blind evaluation, not an automatic failover that changes the quality or cost silently.
 
 | Feedback family | General rule | Enforcement |
@@ -75,6 +98,10 @@ relevance rationale; important selected facts must also reach the displayed fiel
 
 Changes use explicit comparison metadata (YoY/QoQ/prior guidance), with signed notation.
 Missing comparison periods are flagged, never inferred from the current quarter alone.
+Duration labels (nine months, YTD, half year, trailing twelve months) survive quarter/year
+canonicalization. Otherwise a correctly extracted YTD cash-flow amount can look like a
+single-quarter amount. Two SNPS low-effort regression previews exposed this shared renderer
+bug; the original raw facts already named nine months, so this is not a model-error fix.
 The formatter canonicalizes `3Q2026`, compacts a monetary scalar followed by a margin note,
 and preserves every selected fact. Mixed quarter/full-year objects are flagged for review;
 that flag does not itself split or repair an old model response. Future requests require
@@ -129,7 +156,7 @@ deterministic checks around it, until a frozen unseen-company evaluation proves 
 ## Offline commands
 
 `scripts/summary_prepare.py NEW1 NEW2 --docs cached-docs --out requests.json` freezes full
-release inputs, a shared structured schema, the policy and the Sonnet/Ember low settings.
+release inputs, the shared structured schema/policy and the Ember low setting.
 It makes no API calls, loads no keys, and does not silently truncate long releases.
 Haiku requires `--include-haiku`. Keep expected facts out of these inputs. This prepares
 fact-selection experiments; it is not a paid batch runner or the final compact renderer.

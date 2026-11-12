@@ -45,7 +45,7 @@ from earnings_bot.sources import (
     Sighting,
     Source,
 )
-from earnings_bot.summary import Summarizer, SummaryError
+from earnings_bot.summary import MODEL, WRITER, Summarizer, SummaryError
 from earnings_bot.text import release_text, verified_report
 
 FILE_TYPES = (".pdf", ".xlsx", ".xls")
@@ -747,10 +747,11 @@ class Release:
             self.journal.say(f"{self.target.ticker}: summary failed: {error}")
             return
         took = time.monotonic() - started
-        footer = f"Summary written by Claude in {took:.0f}s from the {label} text"
+        footer = f"Summary by {WRITER} in {took:.0f}s from the {label} text"
         if summary.unverified:
-            shown = ", ".join(summary.unverified[:8])
-            footer += f" · Check these, they aren't in the release as written: {shown}"
+            held = len(summary.unverified)
+            figures = "figure" if held == 1 else "figures"
+            footer += f" · {held} {figures} held back: the release didn't confirm them"
         async with self.lock:
             stamp = await self.poster.set_summary(summary.text, footer[:2048])
         self.journal.write(
@@ -759,10 +760,11 @@ class Release:
             seconds=self._since_first_seen(),
             live_seconds=self._live_after(stamp),
             visible=stamp,
-            claude_seconds=round(took, 1),
+            model=MODEL,
+            model_seconds=round(took, 1),
             source=label,
             text=summary.text,
-            unverified=summary.unverified,
+            held_back=summary.unverified,
             input_tokens=summary.input_tokens,
             output_tokens=summary.output_tokens,
         )
