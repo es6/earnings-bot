@@ -432,6 +432,38 @@ def test_the_card_shows_cache_preflight_before_research_completes(tmp_path: Path
     ]
 
 
+def test_a_complete_card_is_green_only_when_its_routes_are_verified_fresh(
+    tmp_path: Path,
+) -> None:
+    target = lucid_target(ir=True)
+    caveats: dict[int, list[str]] = {}
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        calendar = Calendar(store)
+        row, _ = calendar.add("LCID", INVESTIGATED)
+        calendar.set_target(target, "Issuer confirmed release time <https://ir.example/notice>")
+        [row] = calendar.entries()
+        progress = tracker(
+            store,
+            FakeDiscord(),
+            planned=lambda: {target.release_key: target},
+            cache_notes=lambda _: ["IR press release listing · Query bypass verified"],
+            cache_caveats=caveats.get,
+        )
+        calendar.save_review(row.cik, NOW, SPEED.to_json())
+        verified = progress.render(row, SPEED.to_json(), False)
+        caveats[row.cik] = ["IR press release listing"]
+        unverified = progress.render(row, SPEED.to_json(), False)
+        dot = progress.readiness(row.cik)
+
+    assert verified.color is not None and verified.color.value == GREEN
+    assert unverified.color is not None and unverified.color.value != GREEN
+    assert unverified.description is not None
+    assert "Research complete · watch scheduled" in unverified.description
+    assert "**Not verified fresh:** IR press release listing." in unverified.description
+    assert "SEC filings and newswires are watched too" in unverified.description
+    assert dot == "🟡"
+
+
 async def test_a_check_saved_in_the_old_format_is_redone(tmp_path: Path) -> None:
     channel = WatchedDiscord()
     asked = asyncio.Event()

@@ -21,7 +21,8 @@ from earnings_bot.unattended import DirectoryWatcher
 OFFLINE = "⚠️ The earnings calendar is available when the directory watcher is running."
 SCHEDULED = "📄"  # from a schedule file, not tracked with a scorecard
 LEGEND = (
-    "🟢 ready · 🔵 researching · 🟡 not ready yet · 🔴 problem · 📄 schedule file · "
+    "🟢 ready · 🔵 researching · 🟡 not ready or not verified fresh · 🔴 problem · "
+    "📄 schedule file · "
     "times in your time zone"
 )
 EMBED_LIMIT = 6000  # Discord's limit for one embed's text
