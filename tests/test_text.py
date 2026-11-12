@@ -10,8 +10,8 @@ from earnings_bot.sources import (
     RssFeed,
     Sighting,
 )
-from earnings_bot.text import html_to_text, pick_exhibit, release_text
-from tests.fakes import RoutedFetcher
+from earnings_bot.text import html_to_text, pdf_text, pick_exhibit, release_text
+from tests.fakes import RoutedFetcher, simple_pdf
 
 RELEASE = "<p>" + "Net revenue was $16.0 billion, up 22% from a year ago. " * 50 + "</p>"
 BROADCOM_PATH = "/company/news/financial-releases/64900"
@@ -269,3 +269,17 @@ async def test_a_page_too_short_to_be_a_release_has_no_text() -> None:
     teaser = Sighting(url, "Airbnb", url, earnings=True, body=b"<p>Coming soon</p>")
 
     assert await release_text(RoutedFetcher({}), GuessedPage(url), teaser) is None
+
+
+def test_a_release_pdf_is_read_as_text_and_a_broken_one_as_nothing() -> None:
+    lines = ["Brookfield Corporation Reports Third Quarter 2026 Results"]
+    lines += ["Revenues of $20,691 million and net income of $1,914 million over the prior-"]
+    lines += ["year quarter."]
+
+    text = pdf_text(simple_pdf(lines))
+
+    assert "Brookfield Corporation Reports Third Quarter 2026 Results" in text
+    # A line wrapped at a hyphen reads as the HTML release does
+    assert "over the prior-year quarter." in text
+    assert pdf_text(b"%PDF-1.4 not really") == ""
+    assert pdf_text(b"<html>Missing</html>") == ""

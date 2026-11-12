@@ -57,7 +57,14 @@ def structured_request(
     }
     system = SELECTION_RULES + (
         "\nReturn the selected brief facts, not an exhaustive extraction of the statements. "
-        "Preserve exact nonempty source passages. Use one measure, fiscal period and basis per "
+        "Preserve exact nonempty source passages. "
+        # The checker binds each number to its quote. Brookfield's Q3 2026 per-share earnings
+        # were quoted from a sentence that gave only the growth rate, and were held back.
+        "The source must itself contain every number shown in value, prior and change, copied "
+        "exactly. When one passage states the level and another the change, quote both, each in "
+        'double quotes: "Revenue | 980.8 | 146.1" "revenue grew 571%". Leave out a number no '
+        "passage states. "
+        "Use one measure, fiscal period and basis per "
         "object; the renderer combines related facts. value holds that measure's level or range, "
         "change only its change, and prior only its comparable year-ago actual. Never put another "
         "metric's values into change, use 'See change', or pack quarter and FY outlooks together. "

@@ -25,6 +25,7 @@ from earnings_bot.browser_sources import (
     BrowserPDF,
     BrowserRelease,
     BrowserRss,
+    QuarterlyTable,
     TeslaDeck,
     article_matches,
     issuer_pdf_url,
@@ -33,7 +34,7 @@ from earnings_bot.delivery import Delivery, DeliveryStore, retry_delivery
 from earnings_bot.estimates import Estimates, EstimatesError, fmp_estimates
 from earnings_bot.fetch import Fetcher, Response
 from earnings_bot.formatting import clock, period_label
-from earnings_bot.recorder import ET, Journal, Plan, Target, record
+from earnings_bot.recorder import ET, Journal, Plan, PollError, Target, poll, record
 from earnings_bot.release_cards import release_cards, release_content
 from earnings_bot.sources import (
     BroadcomNewsroom,
@@ -49,6 +50,12 @@ from earnings_bot.summary import MODEL, WRITER, Summarizer, SummaryError
 from earnings_bot.text import release_text, verified_report
 
 FILE_TYPES = (".pdf", ".xlsx", ".xls")
+# How long a release PDF waits for a page to deliver the text before it is read itself. A page
+# reads better (its tables keep their cells) and usually arrives with the PDF.
+PDF_TEXT_GRACE = 10.0
+# After a wire alert whose article we can't read, how long and how often the issuer's newsroom
+# is asked for the same release
+ISSUER_TEXT_SECONDS, ISSUER_TEXT_EVERY = 180.0, 5.0
 # Discord's upload limit for bots in servers without boosts. Earnings PDFs are well under 1 MB.
 MAX_FILE_BYTES = 10 * 1024 * 1024
 UNKNOWN_MESSAGE = 10008  # Discord's error code for a missing message
@@ -403,6 +410,11 @@ class Release:
         self.files: set[str] = set()
         self._downloading: set[str] = set()
         self.attach_retry = ATTACH_RETRY_SECONDS
+        self.pdf_grace = PDF_TEXT_GRACE
+        self.issuer_text_seconds, self.issuer_text_every = ISSUER_TEXT_SECONDS, ISSUER_TEXT_EVERY
+        self._pdfs: dict[str, bytes] = {}  # attached PDFs by name, for reading their text
+        self._pdf_read: set[str] = set()
+        self._asked_issuer = False
         self.first_seen: datetime | None = None
         self.first_seen_at = 0.0  # time.monotonic(), for timing the steps
         # The first sighting was already out when the bot started watching (Sighting.caught_up)
@@ -432,6 +444,10 @@ class Release:
         self._spawn(self._link(label, sighting.url))
         if is_file:
             self._spawn(self._attach(sighting.url, sighting.body))
+            if urlsplit(sighting.url).path.lower().endswith(".pdf") and not isinstance(
+                source, TeslaDeck
+            ):
+                self._spawn(self._read_pdf(source, sighting, label))
         elif isinstance(source, BrowserRss):
             self._spawn(self._read_browser_feed(source, sighting, label, measure))
         else:
@@ -653,6 +669,8 @@ class Release:
                 status, body = response.status, response.body
             finally:
                 self._downloading.discard(name)
+        if status == 200 and body.startswith(b"%PDF-"):
+            self._pdfs.setdefault(name, body)
         if status != 200 or len(body) > MAX_FILE_BYTES:
             self.journal.say(
                 f"{self.target.ticker}: couldn't attach {name} (HTTP {status}, {len(body):,} bytes)"
@@ -708,6 +726,8 @@ class Release:
         starts the summary from it. Several sources can deliver the text; the first one wins."""
         text = await self._text.read(source, sighting)
         if text is None:
+            if isinstance(source, RssFeed) and sighting.earnings:
+                self._ask_issuer()
             return
         if measure and not sighting.caught_up and verified_report(text):
             self.journal.write(
@@ -734,6 +754,61 @@ class Release:
             )
         if self.summarizer and not self.summarizing:
             await self._summarize(self.summarizer, text, label)
+
+    async def _read_pdf(self, source: Source, sighting: Sighting, label: str) -> None:
+        """Reads the release from its PDF when no page has delivered the text shortly after.
+        Brookfield's Q3 2026 summary waited 4 minutes for the 6-K with the PDF already posted."""
+        name = self._attachment_name(sighting.url)
+        if name in self._pdf_read:
+            return
+        self._pdf_read.add(name)
+        await asyncio.sleep(self.pdf_grace)
+        while name in self._downloading:  # noqa: ASYNC110
+            await asyncio.sleep(0.2)
+        body = sighting.body or self._pdfs.get(name)
+        done = self.has_text and (self.summarizer is None or self.summarizing)
+        if done or body is None or not body.startswith(b"%PDF-"):
+            return
+        await self._read(source, replace(sighting, body=body), label)
+
+    def _ask_issuer(self) -> None:
+        ir = self.target.ir
+        if self._asked_issuer or self.has_text or ir is None or not (ir.listing and ir.headline):
+            return
+        self._asked_issuer = True
+        self._spawn(self._issuer_article())
+
+    async def _issuer_article(self) -> None:
+        """A wire's own article page can be closed to us, as Business Wire's is. The issuer's
+        newsroom carries the same release, so it is read from there, whatever that route's own
+        watcher is doing: Nebius's Q3 2026 summary waited 2h 7m for the 6-K."""
+        assert self.target.ir is not None
+        day = self.target.expected.astimezone(ET).date()
+        source = next(
+            (
+                found
+                for found in self.target.ir.sources(day, self.target.period)
+                if isinstance(found, BrowserRelease) and not isinstance(found, QuarterlyTable)
+            ),
+            None,
+        )
+        if source is None:
+            return
+        self.journal.write("issuer_text_search", ticker=self.target.ticker, listing=source.listing)
+        deadline = time.monotonic() + self.issuer_text_seconds
+        while not self.has_text and time.monotonic() < deadline:
+            try:
+                _, items = await poll(source, self.fetcher)
+            except PollError:
+                items = []
+            if items:
+                self.journal.say(
+                    f"{self.target.ticker}: the wire's article can't be read, so reading the "
+                    f"release from {source.listing}"
+                )
+                self.add(source, items[0])
+                return
+            await asyncio.sleep(self.issuer_text_every)
 
     async def _summarize(self, summarizer: Summarizer, text: str, label: str) -> None:
         self.summarizing = True
