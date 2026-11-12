@@ -2,14 +2,16 @@ import asyncio
 import io
 import json
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import aiohttp
 import pytest
 
 from earnings_bot import pipeline
-from earnings_bot.browser_sources import BrowserPDF
+from earnings_bot.browser_sources import BrowserPDF, IRSource
 from earnings_bot.estimates import Estimates
 from earnings_bot.fetch import Response
+from earnings_bot.ir_research import quarter_headline
 from earnings_bot.pipeline import Poster, Release, Releases, describe_source
 from earnings_bot.recorder import ET, Journal, Target, Trial
 from earnings_bot.sources import (
@@ -28,9 +30,11 @@ from earnings_bot.sources import (
     Source,
 )
 from earnings_bot.summary import Summarizer, Summary, SummaryError
-from tests.fakes import RoutedFetcher, sec_filing_detail
+from tests.fakes import RoutedFetcher, sec_filing_detail, simple_pdf
 
 PDF = "https://s23.q4cdn.com/1/files/Uber-Q3-26-Earnings-Press-Release.pdf"
+MC = "https://corporate.mcdonalds.com/"
+PDF_ONLY = MC + "release.pdf"
 IR_PAGE = "https://investor.uber.com/news/uber-announces-results/default.aspx"
 FILING = "https://www.sec.gov/Archives/edgar/data/1543151/000154315126000040/uber-20261104.htm"
 
@@ -533,3 +537,113 @@ async def test_an_alert_names_the_quarter_and_masks_each_link(
         # Markdown in a file's name is escaped, so it shows as written
         f"📄 [Q3\\_2026\\_Results.pdf](<{deck}>)",
     ]
+
+
+RELEASE_LINES = [
+    "Uber Announces Results for Third Quarter 2026",
+    *["Revenue grew 20% and net income was $1.2 billion, or $0.56 per share." for _ in range(40)],
+]
+
+
+async def test_a_release_pdf_is_summarized_when_no_page_has_the_text() -> None:
+    """Brookfield's Q3 2026 PDF was attached at 7:06:36 and the summary waited for the 6-K,
+    4 minutes later."""
+    source = BrowserPDF(PDF_ONLY, MC)
+    sighting = source.parse(Response(PDF_ONLY, 200, {}, simple_pdf(RELEASE_LINES), 0.04))[0]
+    poster, summarizer, log = FakePoster(), FakeSummarizer(), io.StringIO()
+    release = Release(uber(), poster, RoutedFetcher({}), Journal(log), summarizer, None)
+
+    release.add(source, sighting)
+    await release.finish()
+
+    assert [kind for kind, _ in poster.calls] == ["send", "attach", "summary"]
+    assert "Uber Announces Results for Third Quarter 2026" in summarizer.calls[0][0]
+    assert "from the release.pdf text" in poster.calls[-1][1]
+
+
+async def test_a_page_with_the_text_is_preferred_to_the_pdf(
+    release_texts: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(pipeline, "PDF_TEXT_GRACE", 0.05)
+    release_texts[IR_PAGE] = "the release"
+    source = BrowserPDF(PDF_ONLY, MC)
+    sighting = source.parse(Response(PDF_ONLY, 200, {}, simple_pdf(RELEASE_LINES), 0.04))[0]
+    poster, summarizer = FakePoster(), FakeSummarizer()
+    release = Release(uber(), poster, RoutedFetcher({}), Journal(io.StringIO()), summarizer, None)
+
+    release.add(source, sighting)
+    release.add(Q4PressReleases("investor.uber.com"), Sighting("1700", "Results", IR_PAGE))
+    await release.finish()
+
+    assert [text for text, _ in summarizer.calls] == ["the release"]
+
+
+async def test_a_deck_or_unreadable_pdf_is_not_summarized() -> None:
+    source = BrowserPDF(PDF_ONLY, MC)
+    deck = simple_pdf(["Q3 2026 Investor Presentation", "Safe harbor statement"] * 100)
+    sighting = source.parse(Response(PDF_ONLY, 200, {}, deck, 0.04))[0]
+    poster, summarizer = FakePoster(), FakeSummarizer()
+    release = Release(uber(), poster, RoutedFetcher({}), Journal(io.StringIO()), summarizer, None)
+
+    release.add(source, sighting)
+    await release.finish()
+
+    assert summarizer.calls == []
+    assert [kind for kind, _ in poster.calls] == ["send", "attach"]
+
+
+async def test_a_wire_alert_without_text_reads_the_release_from_the_issuers_newsroom(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Business Wire's article pages are closed to us. Nebius's Q3 2026 alert came from its feed
+    while the newsroom watcher was stopped, so the summary waited 2h 7m for the 6-K."""
+    monkeypatch.setattr(pipeline, "ISSUER_TEXT_EVERY", 0.01)
+    listing = "https://nebius.com/newsroom"
+    article = listing + "/nebius-reports-third-quarter-2026-financial-results"
+    title = "Nebius reports third quarter 2026 financial results"
+    target = Target(
+        ticker="NBIS",
+        cik=1513845,
+        period="FY2026Q3",
+        expected=datetime(2026, 11, 12, 8, 0, tzinfo=ET),
+        ir=IRSource(
+            listing=listing, headline=quarter_headline(2026, 3), verify_text=True, http_first=True
+        ),
+    )
+    page = f"<h1>{title}</h1><p>{'Revenues and net income per share grew. ' * 120}</p>".encode()
+    # The newsroom lists the release only from the second look
+    listings = iter([b"<a href='/newsroom/other'>Nebius opens a data center</a>"])
+    link = f'<a href="{article}">{title}</a>'.encode()
+
+    class Newsroom(RoutedFetcher):
+        async def request(self, method: str, url: str, *args: Any, **kwargs: Any) -> Response:
+            self.requests.append((method, url, None))
+            if url.lower() == listing:
+                return Response(url, 200, {}, next(listings, link), 0.01)
+            if url == article:
+                return Response(url, 200, {}, page, 0.01)
+            return Response(url, 404, {}, b"", 0.01)
+
+    fetcher = Newsroom({})
+    poster, summarizer, log = FakePoster(), FakeSummarizer(), io.StringIO()
+    release = Release(target, poster, fetcher, Journal(log), summarizer, None)
+    wire = RssFeed("businesswire_busted", "https://feed.businesswire.com/rss/home/?rss=x")
+    alert = Sighting(
+        "20261112208769en",
+        title,
+        "http://www.businesswire.com/news/home/20261112208769/en/Nebius",
+        earnings=True,
+    )
+
+    release.add(wire, alert)
+    release.add(wire, alert)  # a second copy of the feed starts no second search
+    await release.finish()
+
+    assert len(summarizer.calls) == 1
+    assert "Revenues and net income per share grew." in summarizer.calls[0][0]
+    assert [url for _, url, _ in fetcher.requests if url == article] == [article]
+    assert f"](<{article}>)" in next(
+        text for kind, text in reversed(poster.calls) if kind == "edit"
+    )
+    events = [json.loads(line)["event"] for line in log.getvalue().splitlines()]
+    assert events.count("issuer_text_search") == 1

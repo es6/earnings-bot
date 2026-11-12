@@ -23,6 +23,25 @@ that join several exact passages; a scale written once covers both ends of a ran
 figures ignore a table's "in millions"; and a missing YoY label is filled only when the quoted
 passage itself says year-over-year (and not quarter-over-quarter).
 
+## Where the text comes from
+
+The summary is written from the first source that delivers the release's text:
+
+- A page: the IR article, a Q4 release, a GlobeNewswire or PR Newswire article, or the SEC
+  exhibit.
+- The release PDF, when no page has delivered the text 10 seconds after the PDF turned up. It
+  takes about 0.3 s to read. A page is preferred because its tables keep their cells: on
+  Brookfield's Q3 2026 release the checker kept 13 of 21 figures from the PDF and 20 of 25 from
+  the 6-K, but the 6-K came 4 minutes later.
+- The issuer's newsroom, after a wire alert whose article we can't read (Business Wire's pages
+  are closed to us). The bot asks the newsroom listing for the same release every 5 seconds for
+  3 minutes, whatever that route's own watcher is doing. On November 12, 2026 Nebius's summary
+  waited 2h 7m for the 6-K because nothing did this.
+
+The model is told that each quoted source passage must contain every number it reports. On 8
+releases, two runs each, that raised the figures the checker keeps from 61% to 84%, and
+headline figures from 45% to 84%.
+
 ## Offline research
 
 No API call is made by the offline evaluation commands.

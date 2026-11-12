@@ -1,6 +1,7 @@
 """Getting the full text of a release, wherever it was first seen, for the summary."""
 
 import asyncio
+import io
 import json
 import re
 from bisect import bisect_left
@@ -9,6 +10,7 @@ from typing import NamedTuple
 from urllib.parse import urlsplit
 
 import aiohttp
+from pypdf import PdfReader
 
 from earnings_bot.fetch import Fetcher
 from earnings_bot.sources import (
@@ -267,6 +269,26 @@ def verified_report(text: str | None) -> bool:
     )
 
 
+# A results release runs 10 to 30 pages. More than this is a filing or a deck, not a release.
+MAX_PDF_PAGES = 60
+
+
+def pdf_text(data: bytes) -> str:
+    """A release PDF's text, or "" when it can't be read. Takes about 0.3 s for a 20-page
+    release, so call it in a thread."""
+    try:
+        reader = PdfReader(io.BytesIO(data))
+        if len(reader.pages) > MAX_PDF_PAGES:
+            return ""
+        text = "\n".join(page.extract_text() or "" for page in reader.pages)
+    except Exception:
+        # pypdf raises its own errors and plain ones (KeyError, ValueError, RecursionError) on a
+        # damaged or unusual file. No text is the answer to all of them.
+        return ""
+    # A line wrapped at a hyphen ("prior-" / "year quarter") reads "prior-year", as the HTML does
+    return re.sub(r"(?<=\w)-[ \t]*\n[ \t]*(?=\w)", "-", text)
+
+
 def html_to_text(html: str) -> str:
     """Plain text with one line per paragraph and table row. Cells are joined with " | " so
     financial tables keep their columns."""
@@ -428,10 +450,12 @@ async def release_text(fetcher: Fetcher, source: Source, sighting: Sighting) -> 
     provide it."""
     try:
         if sighting.body is not None:
-            # The poll already downloaded the page. A PDF needs no reading, because a
-            # release's HTML version always comes too.
+            # The poll already downloaded the page. A PDF is read too: the pipeline asks for
+            # one only when no page has delivered the text. Brookfield's HTML came 4 minutes
+            # after its PDF.
             if sighting.body.startswith(b"%PDF-"):
-                return None
+                text = await asyncio.to_thread(pdf_text, sighting.body)
+                return text if verified_report(text) else None
             html = sighting.body.decode(errors="replace")
             if sighting.details.get("verified_exhibit") == "true":
                 return html  # The classifier already parsed and verified this exhibit.

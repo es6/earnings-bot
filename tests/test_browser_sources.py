@@ -8,6 +8,7 @@ from datetime import datetime
 import pytest
 from pydantic import ValidationError
 
+from earnings_bot import pipeline
 from earnings_bot.browser import BrowserUnavailable, browser_host
 from earnings_bot.browser_sources import (
     BrowserPDF,
@@ -386,7 +387,11 @@ async def test_amat_results_are_read_when_the_date_notice_is_listed_first() -> N
 
 
 @pytest.mark.parametrize("wire_first", [False, True])
-async def test_live_chrome_posts_or_edits_one_alert_with_the_issuer_pdf(wire_first: bool) -> None:
+async def test_live_chrome_posts_or_edits_one_alert_with_the_issuer_pdf(
+    wire_first: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The watcher's own polls are what this test plays, not the search a wire alert starts
+    monkeypatch.setattr(pipeline, "ISSUER_TEXT_SECONDS", 0.0)
     article_url = "https://ir.lucidmotors.com/news-releases/news-release-details/q3"
     pdf_path = "/node/11211/pdf"
     pdf_url = "https://ir.lucidmotors.com" + pdf_path
