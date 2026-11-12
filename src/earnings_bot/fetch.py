@@ -38,6 +38,42 @@ _SHARED_QUEUES: tuple[str, ...] = ("sec.gov",)
 MAX_HEADER_BYTES = 64 * 1024
 
 
+# A site that answers 403 is tried again after 30 s, then 60 s, up to every 5 minutes. Nebius
+# refused one poll 12 minutes before its Q3 2026 release and answered normally afterwards, but
+# the route had been stopped for the rest of the window.
+BLOCK_PAUSE, BLOCK_PAUSE_MAX = 30.0, 300.0
+
+
+@dataclass
+class RoutePause:
+    """When one route may be asked again after it refused us or asked us to wait. Every loop
+    that polls the route shares one (see Fetcher.route_pause): Nebius's newsroom refused us after
+    an hour of one request a second from one address, and a release's recovery read of the same
+    newsroom mustn't add to that while the route's own watcher waits."""
+
+    blocks: int = 0  # refusals (HTTP 403) in a row, which lengthen the pause
+    until: float = 0.0  # time.monotonic() before which the route isn't asked again
+
+    def refused(self) -> float:
+        """Records a 403 and returns the pause it starts."""
+        self.blocks += 1
+        pause = min(BLOCK_PAUSE * 2 ** (self.blocks - 1), BLOCK_PAUSE_MAX)
+        self.hold(pause)
+        return pause
+
+    def hold(self, seconds: float) -> None:
+        """Leaves the route alone for `seconds`, such as a Retry-After."""
+        self.until = max(self.until, time.monotonic() + seconds)
+
+    def answered(self) -> None:
+        self.blocks = 0
+        self.until = 0.0
+
+    def left(self) -> float:
+        """Seconds until the route may be asked again."""
+        return max(0.0, self.until - time.monotonic())
+
+
 def _on_domain(host: str, domain: str) -> bool:
     host = host.rstrip(".")
     return host == domain or host.endswith("." + domain)
@@ -96,6 +132,11 @@ class Fetcher:
         self._arrivals = itertools.count()
         self._browser: DesktopChrome | None = None
         self._research_lock = asyncio.Lock()
+        self._route_pauses: dict[str, RoutePause] = {}
+
+    def route_pause(self, route: str) -> RoutePause:
+        """The pause shared by every loop that polls `route`, such as an IR listing's URL."""
+        return self._route_pauses.setdefault(route, RoutePause())
 
     async def __aenter__(self) -> Self:
         self._session = aiohttp.ClientSession(

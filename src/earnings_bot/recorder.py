@@ -31,7 +31,7 @@ from earnings_bot.browser import BrowserError, BrowserUnavailable
 from earnings_bot.browser_sources import BrowserRelease, BrowserRss, IRSource
 from earnings_bot.clock import TrustedClock
 from earnings_bot.config import RecorderSettings
-from earnings_bot.fetch import Fetcher, Response
+from earnings_bot.fetch import Fetcher, Response, RoutePause
 from earnings_bot.periods import agrees_with_period
 from earnings_bot.sec_results import SixKResults, SixKUnavailable, is_results_release
 from earnings_bot.sources import (
@@ -337,7 +337,9 @@ class Watch:
     caught_up: str = ""
     previous: datetime | None = None  # when the last answered poll went out
     problem: str | None = None  # the current error, so a failing source reports it only once
-    blocks: int = 0  # 403s in a row, which lengthen the pause before the next try
+    # When the route may be asked again after a 403 or a Retry-After. watch() swaps in the one
+    # the fetcher shares among loops reading the same route (Source.pause_route).
+    pause: RoutePause = field(default_factory=RoutePause)
     blocked: int = 0  # polls the site refused in all
     stopped: str | None = None
     period: str | None = None
@@ -346,11 +348,10 @@ class Watch:
     def done(self) -> bool:
         return self.stopped is not None or bool(self.source.stop_when_found and self.known)
 
-
-# A site that answers 403 is tried again after 30 s, then 60 s, up to every 5 minutes. Nebius
-# refused one poll 12 minutes before its Q3 2026 release and answered normally afterwards, but
-# the route had been stopped for the rest of the window.
-BLOCK_PAUSE, BLOCK_PAUSE_MAX = 30.0, 300.0
+    @property
+    def blocks(self) -> int:
+        """403s in a row, which lengthen the pause before the next try."""
+        return self.pause.blocks
 
 
 class PollError(Exception):
@@ -567,10 +568,11 @@ def _failed(w: Watch, error: PollError, journal: Journal) -> float:
     extra: dict[str, Any] = {"timeout": True} if error.timeout else {}
     pause = error.pause
     if error.blocked:
-        w.blocks += 1
         w.blocked += 1
-        pause = min(BLOCK_PAUSE * 2 ** (w.blocks - 1), BLOCK_PAUSE_MAX)
+        pause = w.pause.refused()
         extra["retry_in"] = pause
+    elif pause:
+        w.pause.hold(pause)
     if http_failure := getattr(w.source, "http_failure", None):
         extra["http_failure"] = http_failure  # why the direct request gave way to Chrome
     journal.write("error", ticker=w.ticker, source=w.source.name, message=str(error), **extra)
@@ -641,7 +643,7 @@ def take(
     if w.problem:
         journal.say(f"{w.ticker} {w.source.name}: working again")
         w.problem = None
-    w.blocks = 0
+    w.pause.answered()
     w.elapsed.append(outcome.elapsed)
     w.queued.append(outcome.queued)
     record_items(w, items, outcome, journal, sent, on_new)
@@ -692,7 +694,13 @@ async def watch(
 ) -> None:
     """Polls one watch's source on its own until `end`, or until the watch is done, every
     `interval` seconds instead of the source's own when given."""
+    if (route := w.source.pause_route) is not None:
+        w.pause = fetcher.route_pause(route)
     while (sent := journal.now()) < end:
+        if (wait := w.pause.left()) > 0:
+            # Another loop reading this route was refused or asked to wait
+            await asyncio.sleep(min(wait, (end - sent).total_seconds()))
+            continue
         next_poll = time.monotonic() + (interval or w.source.interval)
         outcome = await _poll_once(w.source, fetcher)
         items = None

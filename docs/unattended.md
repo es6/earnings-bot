@@ -51,9 +51,21 @@ scorecard explains when work is paused for release monitoring and when a
 Manage Server member can supply `when` and `period`.
 
 Scorecards share the channel's edit budget (Discord allows about five edits per five
-seconds) with release links and summaries. A card that still reads the same is never
-edited again, even after a restart, and card edits are spaced 2.5 seconds apart so they
-leave most of that budget to the release in progress.
+seconds) with release links and summaries, and Discord caps edits to messages more than an
+hour old (error 30046) much harder. Release alerts go first:
+
+- While a window is open, cards aren't edited; a new card for a fresh `/track` is still
+  posted. While an alert's post, link, attachment or summary is on its way, no card request
+  goes out, and one already waiting on Discord is cancelled and tried again later.
+- Each card keeps one pending change, the latest. A card posted within the last hour is edited
+  as research runs, 2.5 seconds apart. An older card is edited only to show a finished result:
+  not while its research is running, and after a restart not until research has checked that
+  company again. Old cards are edited one at a time, 30 seconds apart.
+- A card that still reads the same is never edited, even after a restart or a new version
+  (the footer's version doesn't count).
+- When Discord refuses an old card's edit, old cards wait Discord's retry time or a minute,
+  whichever is longer, doubling with each refusal in a row up to 15 minutes. After three
+  refusals in a row the card is posted as a new message and the old one is deleted.
 
 ## From ticker to alert
 

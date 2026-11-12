@@ -16,6 +16,7 @@ from earnings_bot.benchmark import BenchmarkResult, EarningsBenchmark
 from earnings_bot.calendar import Calendar
 from earnings_bot.date_discovery import DateDiscovery
 from earnings_bot.delivery import DeliveryStore, retry_delivery
+from earnings_bot.edit_priority import EditPriority
 from earnings_bot.fetch import Fetcher
 from earnings_bot.formatting import (
     AMBER,
@@ -549,11 +550,15 @@ async def watch_directory(
                 except (aiohttp.ClientError, discord.HTTPException, TimeoutError) as error:
                     journal.say(f"Status post failed: {error!r}")
 
+        # Alerts' posts and edits go before scorecard edits, which share the channel's limits
+        priority = EditPriority()
+
         async def recover_pending() -> None:
             for pending in store.pending():
                 poster = DurableDiscordPoster(channel, store, pending.key, author_id)
                 try:
-                    await retry_delivery(partial(poster.send, pending.content))
+                    async with priority.release():
+                        await retry_delivery(partial(poster.send, pending.content))
                 except (aiohttp.ClientError, discord.HTTPException, TimeoutError) as error:
                     status(f"⚠️ Pending alert {pending.key} needs attention: {error!r}")
                 else:
@@ -567,6 +572,7 @@ async def watch_directory(
                 summarizer,
                 fmp_api_key,
                 lambda target: DurableDiscordPoster(channel, store, target.release_key, author_id),
+                priority=priority,
             )
             benchmark = EarningsBenchmark(fetcher, journal.now)
             watcher = DirectoryWatcher(
@@ -590,6 +596,8 @@ async def watch_directory(
                 ir_note=watcher.dates.ir_notes.get,
                 cache_notes=watcher.dates.cache_notes.get,
                 cache_caveats=watcher.dates.cache_caveats.get,
+                priority=priority,
+                settled=watcher.dates.settled,
             )
             watcher.dates.on_progress = watcher.progress.changed.set
             watcher.progress.follow_calendar()

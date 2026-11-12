@@ -990,3 +990,34 @@ async def test_fmps_date_gets_the_quarter_as_the_company_names_it(offset: int, p
     result = await calendar_date(fetcher, "secret", "LCID", company, NOW)
 
     assert result is not None and result[0].period == period
+
+
+async def test_a_company_is_settled_once_its_check_finishes_outside_a_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A restart forgets the phases and notes a scorecard shows. Its card waits for this, so a
+    researched company isn't shown as queued and then edited back."""
+    window_open = False
+    during: list[bool] = []
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        calendar = Calendar(store)
+        row, _ = calendar.add("LCID", LUCID)
+        dates = DateDiscovery(calendar, RoutedFetcher({}), lambda: NOW, lambda: window_open, print)
+
+        async def check(checked: Tracked, **kwargs: object) -> None:
+            during.append(dates.settled(checked.cik))
+
+        async def preflight(checked: Tracked, **kwargs: object) -> None:
+            return None
+
+        monkeypatch.setattr(dates, "_check", check)
+        monkeypatch.setattr(dates, "_prepare_cache", preflight)
+        assert not dates.settled(row.cik)
+        await dates.run_once(row)
+        assert dates.settled(row.cik)
+        await dates.run_once(row)  # the hourly check
+        assert during == [False, False]
+        # A window opened while it checked, so the check runs again after the window
+        window_open = True
+        await dates.run_once(row)
+        assert not dates.settled(row.cik)

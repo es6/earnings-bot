@@ -6,6 +6,7 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 import aiohttp
@@ -14,6 +15,7 @@ import discord
 from earnings_bot.calendar import Calendar, Tracked, evidence_text
 from earnings_bot.date_discovery import CHECKING_CACHE, READING_IR, RECHECKING, VERIFYING_IR
 from earnings_bot.delivery import DeliveryStore
+from earnings_bot.edit_priority import CardDeferred, EditPriority
 from earnings_bot.formatting import (
     AMBER,
     BLUE,
@@ -43,25 +45,63 @@ REFRESH = timedelta(days=1)
 # links and summaries. Spacing card edits leaves most of it free: on Nov 11 the logs had 283
 # rate-limited edits, nearly all scorecards re-sent together after a restart or a window opening.
 CARD_EDIT_SPACING = 2.5  # seconds
+# Discord caps edits to messages more than an hour old (error 30046), across the channel, and a
+# resumed alert's links and summary count against the same cap. A card older than this is edited
+# only to show a settled result, one card at a time, OLD_CARD_SPACING apart. After the Nov 12
+# restart, old cards edited 2.5 s apart got 429 with a retry time of about 5.5 s for minutes.
+# The spacing is about five times that; Discord doesn't publish the cap, so it isn't measured.
+OLD_MESSAGE = timedelta(minutes=55)
+OLD_CARD_SPACING = 30.0  # seconds
+# After an old card's edit is refused or times out, old cards wait this long, doubling with each
+# refusal in a row, or Discord's own retry time if that's longer
+CARD_BACKOFF, CARD_BACKOFF_MAX = 60.0, 900.0  # seconds
+# discord.py retries a 429 itself, up to five times. Past this, a card request gives up.
+CARD_REQUEST_SECONDS = 15.0
+REPLACE_AFTER = 3  # refused edits of one old card in a row before it's posted as a new message
 
 DONE, WORKING, WAITING, FAILED, TODO = "✅", "⏳", "⏸️", "⚠️", "▫️"
 # A scorecard's state as one dot, for lists such as /upcoming
 READY, RESEARCHING, NOT_READY, PROBLEM = "🟢", "🔵", "🟡", "🔴"
 
 
+def _card_body(card: discord.Embed) -> dict[str, object]:
+    """What a card says. Not its update time, or its footer, which names the bot's version: a
+    deploy alone doesn't edit every card."""
+    data = dict(card.to_dict())
+    data.pop("timestamp", None)
+    data.pop("footer", None)
+    return data
+
+
 def _same_card(shown: discord.Embed, embed: discord.Embed) -> bool:
-    """The message already shows this card; only its update time can differ."""
+    """The message already shows this card; only its update time or version can differ."""
+    return _card_body(shown) == _card_body(embed)
 
-    def body(card: discord.Embed) -> dict[str, object]:
-        data = dict(card.to_dict())
-        data.pop("timestamp", None)
-        return data
 
-    return body(shown) == body(embed)
+def _retry_after(error: Exception) -> float | None:
+    """Seconds Discord asked us to wait, for a refused edit (429, including error 30046) or one
+    that ran out of time; None for any other failure."""
+    if isinstance(error, TimeoutError):
+        return 0.0
+    if not isinstance(error, discord.HTTPException) or error.status != 429:
+        return None
+    headers = getattr(error.response, "headers", None) or {}
+    try:
+        return float(headers.get("Retry-After", 0))
+    except (TypeError, ValueError):
+        return 0.0
 
 
 async def _no_pause() -> None:
     pass
+
+
+@dataclass(eq=False)
+class _Pending:
+    """The latest content of a card that differs from what Discord shows."""
+
+    embed: discord.Embed
+    research: bool  # the card shows research, so an old card waits for it to settle
 
 
 class CardPoster:
@@ -79,7 +119,9 @@ class CardPoster:
         self.channel, self.store, self.key, self.author_id = channel, store, key, author_id
         self.pace = pace
 
-    async def show(self, embed: discord.Embed) -> None:
+    async def show(self, embed: discord.Embed) -> str:
+        """Sends or edits the card. Returns "sent", "edited", or "unchanged" when the message
+        already showed it."""
         title = embed.title or ""
         saved = self.store.get(self.key)
         message = None
@@ -107,16 +149,33 @@ class CardPoster:
             nonce = hashlib.blake2s(intent.encode(), digest_size=12).hexdigest()
             await self.pace()
             message = await self.channel.send(embed=embed, nonce=nonce)
+            outcome = "sent"
         elif (
             not message.content
             and len(message.embeds) == 1
             and _same_card(message.embeds[0], embed)
         ):
-            pass  # A restart re-renders every card; one that still reads the same is left alone
+            # A restart re-renders every card; one that still reads the same is left alone
+            outcome = "unchanged"
         else:
             await self.pace()
             await message.edit(content=None, embed=embed)
+            outcome = "edited"
         self.store.delivered(self.key, message.id)
+        return outcome
+
+    async def replace(self, embed: discord.Embed) -> None:
+        """Posts the card as a new message, then deletes the old one, for a card whose edits
+        Discord keeps refusing. A new message's edits are free of the cap on old ones."""
+        saved = self.store.get(self.key)
+        old = saved.message_id if saved else None
+        self.store.forget(self.key)
+        await self.show(embed)
+        if old is not None:
+            try:
+                await (await self.channel.fetch_message(old)).delete()
+            except (discord.HTTPException, aiohttp.ClientError, TimeoutError) as error:
+                log.warning("Couldn't delete the replaced scorecard %s: %s", old, error)
 
 
 def _last_release_field(speed: Speed) -> tuple[str, str]:
@@ -178,10 +237,22 @@ class TrackProgress:
         cache_notes: Callable[[int], list[str] | None] | None = None,
         cache_caveats: Callable[[int], list[str] | None] | None = None,
         card_spacing: float = CARD_EDIT_SPACING,
+        priority: EditPriority | None = None,
+        settled: Callable[[int], bool] | None = None,
+        old_card_spacing: float = OLD_CARD_SPACING,
     ) -> None:
         self.calendar, self.store, self.channel = calendar, store, channel
         self.card_spacing = card_spacing
         self._last_card_edit = -card_spacing
+        # Release posts and edits go first (see edit_priority)
+        self.priority = priority
+        # Whether research has re-checked an issuer since the bot started and isn't checking it
+        # now (DateDiscovery.settled). An old card shows results, not research in progress.
+        self.settled = settled or (lambda _: True)
+        self.old_card_spacing = old_card_spacing
+        self._next_old_edit = 0.0  # time.monotonic() from which an old card may be edited
+        self.pending: dict[int, _Pending] = {}  # one per card: the latest content wins
+        self.refusals: dict[int, int] = {}  # refused edits of each old card in a row
         self.author_id, self.planned, self.now, self.busy = author_id, planned, now, busy
         self.audit = audit
         self.date_phase = date_phase or (lambda _: None)
@@ -227,20 +298,71 @@ class TrackProgress:
                         (current + cik, self.store.channel_id, key),
                     )
 
-    async def publish(self, cik: int, embed: discord.Embed) -> None:
-        shown = embed.to_dict()
+    async def publish(self, cik: int, embed: discord.Embed, *, old: bool = False) -> bool:
+        """Shows the card now. True once Discord shows it; False when the request failed or a
+        release step cut in, and the card is tried again later. `old` is for a message over an
+        hour old: a refused edit holds back every old card's edits, and a card refused
+        REPLACE_AFTER times in a row is posted again."""
+        shown = _card_body(embed)
         if self.last_sent.get(cik) == shown:
-            return
+            return True
         embed.timestamp = self.now()
         poster = CardPoster(
             self.channel, self.store, self._key(cik), self.author_id, pace=self._pace
         )
+        replacing = old and self.refusals.get(cik, 0) >= REPLACE_AFTER
+        request = poster.replace(embed) if replacing else poster.show(embed)
         try:
-            await poster.show(embed)
+            async with asyncio.timeout(CARD_REQUEST_SECONDS):
+                outcome = await (self.priority.card(request) if self.priority else request)
+        except CardDeferred:
+            return False
         except (discord.HTTPException, aiohttp.ClientError, TimeoutError) as error:
             log.warning("Couldn't update the scorecard for %s: %s", cik, error)
+            retry_after = _retry_after(error)
+            if old and retry_after is not None:
+                refused = self.refusals[cik] = self.refusals.get(cik, 0) + 1
+                backoff = min(CARD_BACKOFF * 2 ** (refused - 1), CARD_BACKOFF_MAX)
+                self._next_old_edit = time.monotonic() + max(retry_after, backoff)
+            return False
+        self.refusals.pop(cik, None)
+        if old and outcome != "unchanged":
+            self._next_old_edit = time.monotonic() + self.old_card_spacing
+        self.last_sent[cik] = shown
+        return True
+
+    def offer(self, cik: int, embed: discord.Embed, *, research: bool = True) -> None:
+        """Queues the card's latest content, replacing any not yet shown."""
+        if self.last_sent.get(cik) == _card_body(embed):
+            self.pending.pop(cik, None)
         else:
-            self.last_sent[cik] = shown
+            self.pending[cik] = _Pending(embed, research)
+
+    def _researched(self, cik: int) -> bool:
+        return self.settled(cik) and not (self.active and self.active[0] == cik)
+
+    async def flush(self) -> None:
+        """Shows queued cards, in an order that leaves Discord's edit limits to the alerts:
+        nothing while a release step waits; no edits, only new cards, while a window is open;
+        and an old card only once its research has settled, OLD_CARD_SPACING after the last."""
+        busy = self.busy()
+        for cik, item in list(self.pending.items()):
+            if self.priority and self.priority.release_waiting:
+                return
+            saved = self.store.get(self._key(cik))
+            posted = saved.message_id if saved else None
+            old = False
+            if posted is not None:
+                if busy:
+                    continue
+                old = self.now() - discord.utils.snowflake_time(posted) >= OLD_MESSAGE
+                if old and (
+                    time.monotonic() < self._next_old_edit
+                    or (item.research and not self._researched(cik))
+                ):
+                    continue
+            if await self.publish(cik, item.embed, old=old) and self.pending.get(cik) is item:
+                del self.pending[cik]
 
     def _target(self, row: Tracked) -> Target | None:
         now = self.now()
@@ -496,18 +618,20 @@ class TrackProgress:
                     ):
                         self.active = row.cik, asyncio.create_task(self._check(row))
                     checking = bool(self.active and self.active[0] == row.cik)
-                    await self.publish(row.cik, self.render(row, review, checking))
+                    self.offer(row.cik, self.render(row, review, checking))
                 for cik, ticker in tuple(self.removed.items()):
                     if self.store.get(self._key(cik)) and not any(row.cik == cik for row in rows):
-                        await self.publish(
+                        self.offer(
                             cik,
                             discord.Embed(
                                 title=f"{ticker} · removed",
                                 description="No longer on the earnings calendar.",
                                 color=GREY,
                             ),
+                            research=False,
                         )
                     self.removed.pop(cik, None)
+                await self.flush()
                 with suppress(TimeoutError):
                     await asyncio.wait_for(self.changed.wait(), timeout=5)
         finally:

@@ -1,19 +1,20 @@
 import asyncio
 import io
 import json
+import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import aiohttp
 import pytest
 
-from earnings_bot import pipeline
+from earnings_bot import fetch, pipeline
 from earnings_bot.browser_sources import BrowserPDF, IRSource
 from earnings_bot.estimates import Estimates
 from earnings_bot.fetch import Response
 from earnings_bot.ir_research import quarter_headline
 from earnings_bot.pipeline import Poster, Release, Releases, describe_source
-from earnings_bot.recorder import ET, Journal, Target, Trial
+from earnings_bot.recorder import ET, Journal, Target, Trial, Watch, watch
 from earnings_bot.sources import (
     GLOBENEWSWIRE_EARNINGS,
     PR_NEWSWIRE_EARNINGS,
@@ -647,3 +648,121 @@ async def test_a_wire_alert_without_text_reads_the_release_from_the_issuers_news
     )
     events = [json.loads(line)["event"] for line in log.getvalue().splitlines()]
     assert events.count("issuer_text_search") == 1
+
+
+NBIS_LISTING = "https://nebius.com/newsroom"
+NBIS_TITLE = "Nebius reports third quarter 2026 financial results"
+NBIS_ARTICLE = NBIS_LISTING + "/nebius-reports-third-quarter-2026-financial-results"
+NBIS_WIRE = RssFeed("businesswire_busted", "https://feed.businesswire.com/rss/home/?rss=x")
+NBIS_ALERT = Sighting(
+    "20261112208769en",
+    NBIS_TITLE,
+    "http://www.businesswire.com/news/home/20261112208769/en/Nebius",
+    earnings=True,
+)
+
+
+def nebius() -> Target:
+    return Target(
+        ticker="NBIS",
+        cik=1513845,
+        period="FY2026Q3",
+        expected=datetime(2026, 11, 12, 8, 0, tzinfo=ET),
+        ir=IRSource(
+            listing=NBIS_LISTING,
+            headline=quarter_headline(2026, 3),
+            verify_text=True,
+            http_first=True,
+        ),
+    )
+
+
+class NebiusNewsroom(RoutedFetcher):
+    """Refuses the listing for `refuse_for` seconds, over HTTP and in Chrome alike, then lists
+    the release."""
+
+    def __init__(self, refuse_for: float = 0.0) -> None:
+        super().__init__({})
+        self.refused_until = time.monotonic() + refuse_for
+        # When each request for the listing went out, and the status it got
+        self.listing_asked: list[tuple[float, int]] = []
+
+    def _answer(self, url: str) -> Response:
+        if url.lower() == NBIS_LISTING:
+            status = 403 if time.monotonic() < self.refused_until else 200
+            self.listing_asked.append((time.monotonic(), status))
+            link = f'<a href="{NBIS_ARTICLE}">{NBIS_TITLE}</a>'.encode()
+            return Response(url, status, {}, link if status == 200 else b"", 0.01)
+        if url == NBIS_ARTICLE:
+            body = f"<h1>{NBIS_TITLE}</h1><p>{'Revenues and net income grew. ' * 120}</p>"
+            return Response(url, 200, {}, body.encode(), 0.01)
+        return Response(url, 404, {}, b"", 0.01)
+
+    async def request(self, method: str, url: str, *args: Any, **kwargs: Any) -> Response:
+        self.requests.append((method, url, None))
+        return self._answer(url)
+
+    async def browser_request(
+        self, url: str, warmup: str, give_up_after: float, *, urgent: bool = False
+    ) -> Response:
+        return self._answer(url)
+
+
+async def test_the_newsroom_read_waits_out_a_refusal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The read that stands in for a closed wire article asked again 5 s after a 403, though
+    Nebius's newsroom had refused us for polling it too often."""
+    monkeypatch.setattr(fetch, "BLOCK_PAUSE", 0.3)
+    monkeypatch.setattr(pipeline, "ISSUER_TEXT_EVERY", 0.01)
+    fetcher, log = NebiusNewsroom(refuse_for=0.1), io.StringIO()
+    summarizer = FakeSummarizer()
+    release = Release(nebius(), FakePoster(), fetcher, Journal(log), summarizer, None)
+
+    release.add(NBIS_WIRE, NBIS_ALERT)
+    await release.finish()
+
+    refused = [at for at, status in fetcher.listing_asked if status == 403]
+    answered = [at for at, status in fetcher.listing_asked if status == 200]
+    assert refused and answered
+    assert answered[0] - refused[-1] >= 0.3
+    assert len(summarizer.calls) == 1
+    errors = [
+        record
+        for line in log.getvalue().splitlines()
+        if (record := json.loads(line))["event"] == "issuer_text_error"
+    ]
+    assert [(error["message"][:8], error["retry_in"]) for error in errors] == [("HTTP 403", 0.3)]
+
+
+async def test_the_newsroom_read_waits_while_the_newsrooms_watcher_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(fetch, "BLOCK_PAUSE", 0.3)
+    fetcher = NebiusNewsroom()
+    # The window's own watcher of the newsroom was just refused
+    fetcher.route_pause(NBIS_LISTING).refused()
+    started = time.monotonic()
+    release = Release(nebius(), FakePoster(), fetcher, Journal(io.StringIO()), None, None)
+
+    release.add(NBIS_WIRE, NBIS_ALERT)
+    await release.finish()
+
+    assert fetcher.listing_asked and fetcher.listing_asked[0][0] - started >= 0.29
+
+
+async def test_the_newsroom_watcher_waits_while_a_read_of_the_newsroom_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(fetch, "BLOCK_PAUSE", 0.3)
+    target = nebius()
+    assert target.ir is not None
+    day = target.expected.astimezone(ET).date()
+    source = next(s for s in target.ir.sources(day, target.period) if s.pause_route)
+    fetcher = NebiusNewsroom()
+    # A release's read of the newsroom was just refused
+    fetcher.route_pause(NBIS_LISTING).refused()
+    journal = Journal(io.StringIO())
+    started = time.monotonic()
+
+    await watch(Watch("NBIS", source), fetcher, journal, journal.now() + timedelta(seconds=1))
+
+    assert fetcher.listing_asked and fetcher.listing_asked[0][0] - started >= 0.29
