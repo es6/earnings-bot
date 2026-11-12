@@ -125,7 +125,6 @@ class EarningsBot(discord.Client):
             channel,
             settings.sec_user_agent,
             summarizer,
-            api_key,
             ping,
         )
         log.info("Every window in %s has closed", schedule)

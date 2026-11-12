@@ -776,7 +776,6 @@ async def test_a_release_edit_cancels_a_card_edit_already_waiting_on_discord(
             RoutedFetcher({}),
             Journal(io.StringIO()),
             None,
-            None,
             priority=priority,
         )
         release.add(feed, Sighting("1", "Results", "https://issuer.example/q3", earnings=True))

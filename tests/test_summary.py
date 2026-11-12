@@ -6,7 +6,6 @@ import pytest
 from pydantic import SecretStr
 
 from earnings_bot.config import Settings
-from earnings_bot.estimates import Estimates
 from earnings_bot.summary import (
     META_API,
     MODEL,
@@ -108,7 +107,7 @@ def answer(*facts: dict[str, str]) -> str:
 async def test_confirmed_facts_are_laid_out_and_unconfirmed_ones_held_back() -> None:
     summarizer, asked = summarizer_answering("end_turn", answer(BOOKINGS, INVENTED, AUTONOMY))
 
-    summary = await summarizer.write("UBER", RELEASE, Estimates(eps=0.83, revenue=14.05e9))
+    summary = await summarizer.write("UBER", RELEASE)
 
     assert summary.text == (
         "**Q3 2026 · Results**\n"
@@ -124,7 +123,6 @@ async def test_confirmed_facts_are_laid_out_and_unconfirmed_ones_held_back() -> 
     assert request["output_config"]["effort"] == "low"
     assert request["output_config"]["format"]["type"] == "json_schema"
     assert RELEASE in request["messages"][0]["content"]
-    assert "14.05" not in request["messages"][0]["content"]  # no estimates: never a beat/miss
 
 
 @pytest.mark.parametrize(
@@ -142,7 +140,7 @@ async def test_a_refusal_a_cut_off_or_an_unconfirmed_answer_is_an_error(
     summarizer, _ = summarizer_answering(stop_reason, *texts)
 
     with pytest.raises(SummaryError):
-        await summarizer.write("UBER", RELEASE, None)
+        await summarizer.write("UBER", RELEASE)
 
 
 def test_summaries_need_the_switch_and_the_key() -> None:

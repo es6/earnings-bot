@@ -57,13 +57,12 @@ async def replay(args: argparse.Namespace, settings: Settings) -> None:
         sys.exit(f"{args.schedule} has no {args.ticker}")
     target = targets[0]
     if args.date:
-        # Estimates are looked up for the release's own day
+        # The past release, as scheduled on its own day
         day = date.fromisoformat(args.date)
         expected = datetime.combine(day, target.expected.timetz()).replace(tzinfo=ET)
         target = target.model_copy(update={"expected": expected})
     if settings.discord_channel_id is None or settings.sec_user_agent is None:
         sys.exit("Set DISCORD_CHANNEL_ID and SEC_USER_AGENT in .env")
-    fmp_key = settings.fmp_api_key
 
     client = discord.Client(intents=discord.Intents.none())
     # REST only: sending and editing messages doesn't need the Gateway connection
@@ -84,7 +83,6 @@ async def replay(args: argparse.Namespace, settings: Settings) -> None:
                     fetcher,
                     journal,
                     summarizer_from(settings),
-                    fmp_key.get_secret_value() if fmp_key else None,
                     note=" (replay of a past release)",
                 )
                 for source, sighting in sightings:
@@ -103,7 +101,7 @@ def main() -> None:
     )
     parser.add_argument("schedule", type=Path, help="schedule file that lists the company")
     parser.add_argument("ticker")
-    parser.add_argument("--date", help="the past release's date, for estimates (YYYY-MM-DD)")
+    parser.add_argument("--date", help="the past release's date (YYYY-MM-DD)")
     parser.add_argument("--q4-release", help="PressReleaseId in the company's Q4 feed")
     parser.add_argument("--edgar", help="accession number of the earnings 8-K")
     parser.add_argument("--file", action="append", default=[], help="release file URL")

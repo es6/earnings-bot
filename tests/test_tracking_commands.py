@@ -114,7 +114,7 @@ def watcher(tmp_path: Path) -> Iterator[DirectoryWatcher]:
             tmp_path,
             fetcher,
             journal,
-            Releases(FakePoster, fetcher, journal, None, None),
+            Releases(FakePoster, fetcher, journal, None),
             store,
             lambda message: None,
         )
@@ -567,7 +567,7 @@ async def test_a_tracked_issuer_with_no_schedule_file_gets_one_alert(tmp_path: P
 
         def watcher() -> DirectoryWatcher:
             releases = Releases(
-                FakePoster, fetcher, journal, None, None, lambda t: channel.poster(store, t)
+                FakePoster, fetcher, journal, None, lambda t: channel.poster(store, t)
             )
             built = DirectoryWatcher(tmp_path, fetcher, journal, releases, store, status.append)
             built.guild_id = GUILD
@@ -693,9 +693,7 @@ async def test_a_ticker_outside_the_catalog_gets_its_alert_from_the_wire(
     channel = FakeDiscord()
     status: list[str] = []
     with DeliveryStore(tmp_path / "state.db", 7) as store:
-        releases = Releases(
-            FakePoster, fetcher, journal, None, None, lambda t: channel.poster(store, t)
-        )
+        releases = Releases(FakePoster, fetcher, journal, None, lambda t: channel.poster(store, t))
         bot = DirectoryWatcher(tmp_path, fetcher, journal, releases, store, status.append)
         bot.guild_id = GUILD
         # Soon enough that the window, which opens 10 minutes early, is already open

@@ -153,7 +153,7 @@ async def test_issuer_pdf_wrapper_alerts_and_attaches_without_using_boilerplate_
     assert fake.browser_calls == [(NEWSROOM, NEWSROOM, False), (url, NEWSROOM, True)]
 
     poster, output = FakePoster(), io.StringIO()
-    releases = Releases(lambda: poster, fake, Journal(output), None, None)
+    releases = Releases(lambda: poster, fake, Journal(output), None)
     releases.on_new(target, source, items[0], measure=True)
     await releases.finish()
 

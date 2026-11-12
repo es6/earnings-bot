@@ -10,7 +10,6 @@ import pytest
 
 from earnings_bot import fetch, pipeline
 from earnings_bot.browser_sources import BrowserPDF, IRSource
-from earnings_bot.estimates import Estimates
 from earnings_bot.fetch import Response
 from earnings_bot.ir_research import quarter_headline
 from earnings_bot.pipeline import Poster, Release, Releases, describe_source
@@ -65,12 +64,10 @@ class FakePoster(Poster):
 
 class FakeSummarizer(Summarizer):
     def __init__(self) -> None:
-        self.calls: list[tuple[str, Estimates | None]] = []
+        self.calls: list[str] = []  # the release text of each request
 
-    async def write(
-        self, ticker: str, release: str, estimates: Estimates | None, seconds: float = 0.0
-    ) -> Summary:
-        self.calls.append((release, estimates))
+    async def write(self, ticker: str, release: str, seconds: float = 0.0) -> Summary:
+        self.calls.append(release)
         return Summary("UBER $UBER Q3'26 EARNINGS HIGHLIGHTS", ["12%"], 0.0, 1000, 200)
 
 
@@ -79,10 +76,7 @@ def uber() -> Target:
 
 
 def fetcher() -> RoutedFetcher:
-    calendar = [{"symbol": "UBER", "date": "2026-11-04", "epsEstimated": 0.86}]
-    return RoutedFetcher(
-        {".pdf": (200, b"%PDF-1.7"), "earnings-calendar": (200, json.dumps(calendar).encode())}
-    )
+    return RoutedFetcher({".pdf": (200, b"%PDF-1.7")})
 
 
 @pytest.fixture
@@ -114,7 +108,7 @@ def test_newswires_are_named_in_the_alert() -> None:
 async def test_release_posts_links_files_and_summary(release_texts: dict[str, str]) -> None:
     release_texts[IR_PAGE] = "Uber Announces Results for Third Quarter 2026 ..."
     poster, summarizer, log = FakePoster(), FakeSummarizer(), io.StringIO()
-    release = Release(uber(), poster, fetcher(), Journal(log), summarizer, "key")
+    release = Release(uber(), poster, fetcher(), Journal(log), summarizer)
     press = Sighting("1700", "Uber Announces Results", IR_PAGE, earnings=True)
     filing = Sighting("0001543151-26-000040", "8-K 2.02,9.01", FILING, earnings=True)
 
@@ -135,7 +129,7 @@ async def test_release_posts_links_files_and_summary(release_texts: dict[str, st
     summary = next(text for kind, text in poster.calls if kind == "summary")
     assert "from the IR site text" in summary
     assert "Summary by Muse Ember" in summary and "1 figure held back" in summary
-    assert summarizer.calls == [(release_texts[IR_PAGE], Estimates(eps=0.86, revenue=None))]
+    assert summarizer.calls == [release_texts[IR_PAGE]]
     # Each step logs when Discord stamped it, counted from the first sighting
     events = {e["event"]: e for e in map(json.loads, log.getvalue().splitlines())}
     for step in ("posted", "linked", "attached", "summary"):
@@ -151,7 +145,7 @@ async def test_release_posts_links_files_and_summary(release_texts: dict[str, st
 
 async def test_both_sec_sources_give_the_filing_one_link() -> None:
     poster = FakePoster()
-    release = Release(uber(), poster, fetcher(), Journal(io.StringIO()), None, None)
+    release = Release(uber(), poster, fetcher(), Journal(io.StringIO()), None)
     index = FILING.rsplit("/", 1)[0] + "/0001543151-26-000040-index.htm"
 
     release.add(
@@ -199,13 +193,13 @@ def both_sec_sightings(release: Release) -> None:
 @pytest.mark.parametrize("exhibit", ["ex99-1.htm", "report.htm"])
 async def test_both_sec_sources_download_the_filings_exhibit_once(exhibit: str) -> None:
     sec, summarizer, log = RoutedFetcher(filing_routes(exhibit)), FakeSummarizer(), io.StringIO()
-    release = Release(uber(), FakePoster(), sec, Journal(log), summarizer, None)
+    release = Release(uber(), FakePoster(), sec, Journal(log), summarizer)
 
     both_sec_sightings(release)  # before any text has arrived
     await release.finish()
 
     assert sec.urgent == [f"{FOLDER}/{FILING_INDEX}", f"{FOLDER}/{exhibit}"]
-    [(text, _)] = summarizer.calls
+    [text] = summarizer.calls
     assert "Gross bookings grew 21%" in text
     events = [e for e in map(json.loads, log.getvalue().splitlines()) if e["event"] == "body"]
     assert [e["source"] for e in events] == ["SEC 8-K"]
@@ -241,7 +235,7 @@ class ListedLate(RoutedFetcher):
 
 async def test_the_other_sec_source_tries_again_when_the_first_read_gets_nothing() -> None:
     sec, log = ListedLate(filing_routes()), io.StringIO()
-    release = Release(uber(), FakePoster(), sec, Journal(log), None, None)
+    release = Release(uber(), FakePoster(), sec, Journal(log), None)
 
     both_sec_sightings(release)
     await release.finish()
@@ -260,14 +254,13 @@ async def test_only_one_summary_when_several_sources_have_the_text(
 ) -> None:
     release_texts[IR_PAGE] = release_texts[FILING] = "the release"
     poster, summarizer, log = FakePoster(), FakeSummarizer(), io.StringIO()
-    release = Release(uber(), poster, fetcher(), Journal(log), summarizer, None)
+    release = Release(uber(), poster, fetcher(), Journal(log), summarizer)
 
     release.add(Q4PressReleases("investor.uber.com"), Sighting("1700", "Results", IR_PAGE))
     release.add(EdgarFilings(1543151), Sighting("acc", "8-K 2.02", FILING, earnings=True))
     await release.finish()
 
     assert len(summarizer.calls) == 1
-    assert summarizer.calls[0][1] is None  # no FMP key, no estimates
     # The text's arrival is logged once, for whichever source delivered it first
     assert [e["event"] for e in map(json.loads, log.getvalue().splitlines())].count("body") == 1
 
@@ -288,7 +281,7 @@ async def test_a_newly_added_source_posts_like_any_other() -> None:
         posters.append(FakePoster())
         return posters[-1]
 
-    releases = Releases(new_poster, fetcher(), Journal(io.StringIO()), None, None)
+    releases = Releases(new_poster, fetcher(), Journal(io.StringIO()), None)
     newsroom, results = broadcom_release()
     expected = datetime(2026, 12, 10, 16, 15, tzinfo=ET)
     added = Target(ticker="AVGO", expected=expected, cik=1730168, trial=Trial())
@@ -306,7 +299,7 @@ async def test_the_same_release_from_both_copies_of_a_feed_posts_and_downloads_o
     fetch = RoutedFetcher({article: (200, b"<p>Revenue and earnings per share. </p>" * 100)})
     poster, log = FakePoster(), io.StringIO()
     nvda = Target(ticker="NVDA", expected=datetime(2026, 11, 18, 16, 20, tzinfo=ET), cik=1045810)
-    release = Release(nvda, poster, fetch, Journal(log), None, None)
+    release = Release(nvda, poster, fetch, Journal(log), None)
     results = Sighting(url, "NVIDIA Announces Financial Results", url, earnings=True)
 
     release.add(RssFeed("globenewswire", GLOBENEWSWIRE_EARNINGS, ["NVIDIA"]), results)
@@ -323,7 +316,7 @@ async def test_the_same_release_from_both_copies_of_a_feed_posts_and_downloads_o
 
 async def test_an_alert_for_a_release_already_out_says_so() -> None:
     poster = FakePoster()
-    release = Release(uber(), poster, fetcher(), Journal(io.StringIO()), None, None)
+    release = Release(uber(), poster, fetcher(), Journal(io.StringIO()), None)
     index = FILING.rsplit("/", 1)[0] + "/0001543151-26-000040-index.htm"
 
     release.add(
@@ -369,7 +362,7 @@ def listed_pdf() -> Sighting:
 async def test_a_file_listed_before_its_upload_is_attached_once_it_goes_up() -> None:
     poster, files = FakePoster(), UploadedLater()
     tonight = Target(ticker="UBER", expected=datetime.now(ET), cik=1543151)
-    release = Release(tonight, poster, files, Journal(io.StringIO()), None, None)
+    release = Release(tonight, poster, files, Journal(io.StringIO()), None)
     release.attach_retry = 0.01
 
     release.add(Q4FinancialReports("investor.uber.com"), listed_pdf())
@@ -381,7 +374,7 @@ async def test_a_file_listed_before_its_upload_is_attached_once_it_goes_up() -> 
 
 async def test_a_missing_file_isnt_retried_after_the_window_closes() -> None:
     poster, files = FakePoster(), UploadedLater()
-    release = Release(uber(), poster, files, Journal(io.StringIO()), None, None)  # Nov 4
+    release = Release(uber(), poster, files, Journal(io.StringIO()), None)  # Nov 4
     release.attach_retry = 0.01
 
     release.add(Q4FinancialReports("investor.uber.com"), listed_pdf())
@@ -399,7 +392,7 @@ async def test_browser_pdf_attaches_already_verified_bytes_without_another_get()
     sighting = source.parse(payload)[0]
     raw = RoutedFetcher({})
     poster = FakePoster()
-    release = Release(uber(), poster, raw, Journal(io.StringIO()), None, None)
+    release = Release(uber(), poster, raw, Journal(io.StringIO()), None)
 
     release.add(source, sighting)
     release.add(source, sighting)
@@ -437,21 +430,42 @@ async def test_keep_warm_pings_discord_only_while_a_window_is_open(
         warm.cancel()
 
 
-async def test_no_estimates_are_fetched_without_a_summarizer() -> None:
-    fetch = fetcher()
-    release = Release(uber(), FakePoster(), fetch, Journal(io.StringIO()), None, "key")
-    release.add(GuessedFile(PDF), Sighting(PDF, "Uber-Q3-26-Earnings-Press-Release.pdf", PDF))
-    await release.finish()
-    await release.estimates
+async def test_the_summary_starts_as_soon_as_the_text_arrives(
+    release_texts: dict[str, str],
+) -> None:
+    """Each release looked up FMP's consensus estimates, and the summary waited for the answer,
+    though the writer never sent estimates to the model."""
+    release_texts[IR_PAGE] = "the release"
+    started: list[float] = []
 
-    assert not [url for _, url, _ in fetch.requests if "earnings-calendar" in url]
+    class TimedSummarizer(FakeSummarizer):
+        async def write(self, ticker: str, release: str, seconds: float = 0.0) -> Summary:
+            started.append(time.monotonic())
+            return await super().write(ticker, release, seconds)
+
+    class SlowCalendar(RoutedFetcher):
+        async def request(self, method: str, url: str, *args: Any, **kwargs: Any) -> Response:
+            if "financialmodelingprep.com" in url:
+                await asyncio.sleep(1)
+            return await super().request(method, url, *args, **kwargs)
+
+    fetch = SlowCalendar({})
+    releases = Releases(FakePoster, fetch, Journal(io.StringIO()), TimedSummarizer())
+    added = time.monotonic()
+
+    press = Sighting("1700", "Uber Announces Results", IR_PAGE, earnings=True)
+    releases.on_new(uber(), Q4PressReleases("investor.uber.com"), press)
+    await releases.finish()
+
+    assert started and started[0] - added < 0.5
+    assert not [url for _, url, _ in fetch.requests if "financialmodelingprep.com" in url]
 
 
 async def test_a_file_too_big_for_discord_stays_a_link(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(pipeline, "MAX_FILE_BYTES", 1000)
     poster = FakePoster()
     big = RoutedFetcher({".pdf": (200, b"%PDF-1.7" + bytes(1000))})
-    release = Release(uber(), poster, big, Journal(io.StringIO()), None, None)
+    release = Release(uber(), poster, big, Journal(io.StringIO()), None)
 
     release.add(GuessedFile(PDF), Sighting(PDF, "Uber-Q3-26-Earnings-Press-Release.pdf", PDF))
     await release.finish()
@@ -461,13 +475,11 @@ async def test_a_file_too_big_for_discord_stays_a_link(monkeypatch: pytest.Monke
 
 
 class FailsOnceSummarizer(FakeSummarizer):
-    async def write(
-        self, ticker: str, release: str, estimates: Estimates | None, seconds: float = 0.0
-    ) -> Summary:
+    async def write(self, ticker: str, release: str, seconds: float = 0.0) -> Summary:
         if not self.calls:
-            self.calls.append((release, estimates))
+            self.calls.append(release)
             raise SummaryError("Claude API error 529: Overloaded")
-        return await super().write(ticker, release, estimates, seconds)
+        return await super().write(ticker, release, seconds)
 
 
 async def test_a_failed_summary_is_tried_again_from_the_next_source(
@@ -475,20 +487,20 @@ async def test_a_failed_summary_is_tried_again_from_the_next_source(
 ) -> None:
     release_texts[IR_PAGE], release_texts[FILING] = "from the IR site", "from the 8-K"
     poster, summarizer = FakePoster(), FailsOnceSummarizer()
-    release = Release(uber(), poster, fetcher(), Journal(io.StringIO()), summarizer, None)
+    release = Release(uber(), poster, fetcher(), Journal(io.StringIO()), summarizer)
 
     release.add(Q4PressReleases("investor.uber.com"), Sighting("1700", "Results", IR_PAGE))
     await release.finish()
     release.add(EdgarFilings(1543151), Sighting("acc", "8-K 2.02", FILING, earnings=True))
     await release.finish()
 
-    assert [text for text, _ in summarizer.calls] == ["from the IR site", "from the 8-K"]
+    assert summarizer.calls == ["from the IR site", "from the 8-K"]
     assert [kind for kind, _ in poster.calls].count("summary") == 1
 
 
 async def test_an_alert_with_too_many_links_is_cut_to_discords_limit() -> None:
     poster = FakePoster()
-    release = Release(uber(), poster, fetcher(), Journal(io.StringIO()), None, None)
+    release = Release(uber(), poster, fetcher(), Journal(io.StringIO()), None)
     feed = RssFeed("issuer", "https://issuer.example/rss")
 
     for n in range(40):
@@ -513,7 +525,7 @@ async def test_an_alert_names_the_quarter_and_masks_each_link(
     poster = FakePoster()
     journal = Journal(io.StringIO())
     monkeypatch.setattr(journal, "now", lambda: target.expected)
-    release = Release(target, poster, RoutedFetcher({}), journal, None, None)
+    release = Release(target, poster, RoutedFetcher({}), journal, None)
     wire = RssFeed("prnewswire_busted", "https://www.prnewswire.com/rss/x.rss", ["Lucid Group"])
     article = "https://www.prnewswire.com/news-releases/lucid-q3.html"
     filing = "https://www.sec.gov/Archives/edgar/data/1811210/000162828026072158/index.htm"
@@ -552,13 +564,13 @@ async def test_a_release_pdf_is_summarized_when_no_page_has_the_text() -> None:
     source = BrowserPDF(PDF_ONLY, MC)
     sighting = source.parse(Response(PDF_ONLY, 200, {}, simple_pdf(RELEASE_LINES), 0.04))[0]
     poster, summarizer, log = FakePoster(), FakeSummarizer(), io.StringIO()
-    release = Release(uber(), poster, RoutedFetcher({}), Journal(log), summarizer, None)
+    release = Release(uber(), poster, RoutedFetcher({}), Journal(log), summarizer)
 
     release.add(source, sighting)
     await release.finish()
 
     assert [kind for kind, _ in poster.calls] == ["send", "attach", "summary"]
-    assert "Uber Announces Results for Third Quarter 2026" in summarizer.calls[0][0]
+    assert "Uber Announces Results for Third Quarter 2026" in summarizer.calls[0]
     assert "from the release.pdf text" in poster.calls[-1][1]
 
 
@@ -570,13 +582,13 @@ async def test_a_page_with_the_text_is_preferred_to_the_pdf(
     source = BrowserPDF(PDF_ONLY, MC)
     sighting = source.parse(Response(PDF_ONLY, 200, {}, simple_pdf(RELEASE_LINES), 0.04))[0]
     poster, summarizer = FakePoster(), FakeSummarizer()
-    release = Release(uber(), poster, RoutedFetcher({}), Journal(io.StringIO()), summarizer, None)
+    release = Release(uber(), poster, RoutedFetcher({}), Journal(io.StringIO()), summarizer)
 
     release.add(source, sighting)
     release.add(Q4PressReleases("investor.uber.com"), Sighting("1700", "Results", IR_PAGE))
     await release.finish()
 
-    assert [text for text, _ in summarizer.calls] == ["the release"]
+    assert summarizer.calls == ["the release"]
 
 
 async def test_a_deck_or_unreadable_pdf_is_not_summarized() -> None:
@@ -584,7 +596,7 @@ async def test_a_deck_or_unreadable_pdf_is_not_summarized() -> None:
     deck = simple_pdf(["Q3 2026 Investor Presentation", "Safe harbor statement"] * 100)
     sighting = source.parse(Response(PDF_ONLY, 200, {}, deck, 0.04))[0]
     poster, summarizer = FakePoster(), FakeSummarizer()
-    release = Release(uber(), poster, RoutedFetcher({}), Journal(io.StringIO()), summarizer, None)
+    release = Release(uber(), poster, RoutedFetcher({}), Journal(io.StringIO()), summarizer)
 
     release.add(source, sighting)
     await release.finish()
@@ -627,7 +639,7 @@ async def test_a_wire_alert_without_text_reads_the_release_from_the_issuers_news
 
     fetcher = Newsroom({})
     poster, summarizer, log = FakePoster(), FakeSummarizer(), io.StringIO()
-    release = Release(target, poster, fetcher, Journal(log), summarizer, None)
+    release = Release(target, poster, fetcher, Journal(log), summarizer)
     wire = RssFeed("businesswire_busted", "https://feed.businesswire.com/rss/home/?rss=x")
     alert = Sighting(
         "20261112208769en",
@@ -641,7 +653,7 @@ async def test_a_wire_alert_without_text_reads_the_release_from_the_issuers_news
     await release.finish()
 
     assert len(summarizer.calls) == 1
-    assert "Revenues and net income per share grew." in summarizer.calls[0][0]
+    assert "Revenues and net income per share grew." in summarizer.calls[0]
     assert [url for _, url, _ in fetcher.requests if url == article] == [article]
     assert f"](<{article}>)" in next(
         text for kind, text in reversed(poster.calls) if kind == "edit"
@@ -715,7 +727,7 @@ async def test_the_newsroom_read_waits_out_a_refusal(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(pipeline, "ISSUER_TEXT_EVERY", 0.01)
     fetcher, log = NebiusNewsroom(refuse_for=0.1), io.StringIO()
     summarizer = FakeSummarizer()
-    release = Release(nebius(), FakePoster(), fetcher, Journal(log), summarizer, None)
+    release = Release(nebius(), FakePoster(), fetcher, Journal(log), summarizer)
 
     release.add(NBIS_WIRE, NBIS_ALERT)
     await release.finish()
@@ -741,7 +753,7 @@ async def test_the_newsroom_read_waits_while_the_newsrooms_watcher_is_refused(
     # The window's own watcher of the newsroom was just refused
     fetcher.route_pause(NBIS_LISTING).refused()
     started = time.monotonic()
-    release = Release(nebius(), FakePoster(), fetcher, Journal(io.StringIO()), None, None)
+    release = Release(nebius(), FakePoster(), fetcher, Journal(io.StringIO()), None)
 
     release.add(NBIS_WIRE, NBIS_ALERT)
     await release.finish()
