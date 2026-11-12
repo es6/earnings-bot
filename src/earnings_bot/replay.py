@@ -21,7 +21,7 @@ from earnings_bot.fetch import Fetcher
 from earnings_bot.pipeline import DiscordPoster, Release
 from earnings_bot.recorder import ET, Journal, Target, configure_console, load_plan, sync_clock
 from earnings_bot.sources import EdgarFilings, GuessedFile, Q4PressReleases, Sighting, Source
-from earnings_bot.summary import Summarizer
+from earnings_bot.summary import summarizer_from
 
 
 async def past_sightings(
@@ -63,7 +63,7 @@ async def replay(args: argparse.Namespace, settings: Settings) -> None:
         target = target.model_copy(update={"expected": expected})
     if settings.discord_channel_id is None or settings.sec_user_agent is None:
         sys.exit("Set DISCORD_CHANNEL_ID and SEC_USER_AGENT in .env")
-    key, fmp_key = settings.anthropic_api_key, settings.fmp_api_key
+    fmp_key = settings.fmp_api_key
 
     client = discord.Client(intents=discord.Intents.none())
     # REST only: sending and editing messages doesn't need the Gateway connection
@@ -83,7 +83,7 @@ async def replay(args: argparse.Namespace, settings: Settings) -> None:
                     DiscordPoster(channel),
                     fetcher,
                     journal,
-                    Summarizer(key.get_secret_value()) if key else None,
+                    summarizer_from(settings),
                     fmp_key.get_secret_value() if fmp_key else None,
                     note=" (replay of a past release)",
                 )

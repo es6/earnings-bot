@@ -19,7 +19,7 @@ WIRE = "📰 [PR Newswire](<https://wire.example/results>)"
 IR = "🌐 [IR site](<https://issuer.example/results>)"
 CONTENT = f"{HEADER}\n{WHEN}\n{WIRE}"
 SUMMARY = "🔹 Revenue: $200M\n\nGuidance:\n🔹 Deliveries: 20,000"
-FOOTER = "Summary written by Claude in 1s from the IR site text"
+FOOTER = "Summary written by Claude in 1s from the IR site text"  # a pre-0.10 card
 
 
 def poster(channel: FakeDiscord, store: DeliveryStore) -> DurableDiscordPoster:

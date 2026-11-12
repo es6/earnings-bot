@@ -7,6 +7,7 @@ import pytest
 
 from earnings_bot.summary_evaluation import display_lines
 from earnings_bot.summary_format import (
+    discord_brief,
     format_change,
     format_fact,
     format_label,
@@ -68,6 +69,16 @@ def test_units_and_ranges_keep_their_meaning(
         ("Q4 2026 and FY 2026", "Q4 2026 and FY 2026"),
         ("FY2030", "FY2030"),
         ("Quarter ended September 30, 2026", "Quarter ended September 30, 2026"),
+        ("Nine months ended Q3 FY2026", "Nine months ended Q3 FY2026"),
+        ("nine-month period ended Q3 FY2026", "nine-month period ended Q3 FY2026"),
+        ("6 months ended Q2 2026", "6 months ended Q2 2026"),
+        ("Q3 FY2026 YTD", "Q3 FY2026 YTD"),
+        ("Year-to-date Q3 FY2026", "Year-to-date Q3 FY2026"),
+        ("9M FY2026", "9M FY2026"),
+        ("H1 FY2026", "H1 FY2026"),
+        ("First half FY2026", "First half FY2026"),
+        ("Trailing twelve months ended Q3 2026", "Trailing twelve months ended Q3 2026"),
+        ("TTM Q3 2026", "TTM Q3 2026"),
     ],
 )
 def test_fiscal_periods_are_explicit_without_duplicate_prefixes(value: str, expected: str) -> None:
@@ -97,6 +108,15 @@ def test_model_audit_reason_is_separate_from_the_display() -> None:
     )
     assert format_fact(fact) == "FY2027 · Revenue: $500M"
     assert "drives" not in format_fact(fact)
+
+
+def test_cash_flow_duration_survives_the_live_and_replay_formatters() -> None:
+    fact = SummaryFact(
+        "Operating cash flow", "$2,298.6 million", "quote", period="Nine months ended Q3 FY2026"
+    )
+    expected = "Nine months ended Q3 FY2026 · Operating cash flow: $2.2986B"
+    assert format_fact(fact) == expected
+    assert expected in display_lines("UNSEEN", [vars(fact)])
 
 
 @pytest.mark.parametrize(
@@ -191,3 +211,40 @@ def test_existing_scope_labels_and_neutral_consolidation_are_not_repeated() -> N
     fact = SummaryFact("Northern region revenue", "$5B", "source", group="Northern region")
     assert format_fact(fact) == "Northern region revenue: $5B"
     assert format_fact(replace(fact, metric="Revenue", group="Consolidated")) == "Revenue: $5B"
+
+
+def test_a_growth_rate_without_a_level_reads_as_the_rate() -> None:
+    fact = SummaryFact("Gross profit rate", "", "source", change="+96 bps", comparison="YoY")
+    assert format_fact(fact) == "Gross profit rate: +96 bps YoY"
+
+
+def test_long_or_repeated_basis_notes_stay_out_of_the_label() -> None:
+    defined = SummaryFact(
+        "Total contract value", "$2.9B", "s", basis="TCV as defined by the issuer"
+    )
+    assert format_fact(defined) == "Total contract value: $2.9B"
+    repeated = SummaryFact("Adjusted revenue", "$13B", "s", basis="Adjusted (Non-GAAP)")
+    assert format_fact(repeated) == "Adjusted revenue: $13B"
+    assert format_fact(replace(repeated, metric="GAAP EPS", basis="non-GAAP")).startswith(
+        "GAAP EPS (non-GAAP)"
+    )
+
+
+def test_the_card_groups_facts_by_period_and_kind() -> None:
+    facts = [
+        SummaryFact("Revenue", "$5B", "s", period="Q3 2026", change="+10%", comparison="YoY"),
+        SummaryFact("Revenue outlook", "$21B", "s", kind="guide", period="FY2026"),
+        SummaryFact(
+            "Robotaxi program", "All Q3 milestones met", "s", kind="update", period="Q3 2026"
+        ),
+        SummaryFact("Operating income", "$1B", "s", period="Q3 2026"),
+    ]
+    assert discord_brief(facts) == (
+        "**Q3 2026 · Results**\n"
+        "🔹 **Revenue**: $5B; +10% YoY\n"
+        "🔹 **Operating income**: $1B\n\n"
+        "**FY2026 · Outlook**\n"
+        "🔹 **Revenue outlook**: $21B\n\n"
+        "**Q3 2026 · Business updates**\n"
+        "🔸 **Robotaxi program**: All Q3 milestones met"
+    )

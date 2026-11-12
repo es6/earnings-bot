@@ -48,10 +48,10 @@ def main() -> None:
                 load_plan(args.schedule)  # validate single files before starting
         except (OSError, tomllib.TOMLDecodeError, ValidationError) as error:
             sys.exit(f"Can't read {args.schedule}: {error}")
-        if settings.anthropic_api_key is None:
-            log.warning("ANTHROPIC_API_KEY isn't set, so posts won't get a summary")
-        if settings.fmp_api_key is None:
-            log.warning("FMP_API_KEY isn't set, so summaries won't have estimates")
+        if not settings.live_summaries or settings.meta_model_api_key is None:
+            log.info(
+                "Live summaries are off: LIVE_SUMMARIES=true and META_MODEL_API_KEY turn them on"
+            )
 
     bot = EarningsBot(settings, args.schedule)
     # log_handler=None because logging is already set up above

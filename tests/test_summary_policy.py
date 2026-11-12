@@ -3,10 +3,10 @@ from decimal import Decimal
 
 import pytest
 
-from earnings_bot.summary import EFFORT, MODEL, SYSTEM
+from earnings_bot.summary import EFFORT, MODEL
 from earnings_bot.summary_policy import (
     DEFAULT_COMPARISON,
-    SONNET,
+    EMBER,
     MetricKey,
     Observation,
     SummaryFact,
@@ -14,6 +14,7 @@ from earnings_bot.summary_policy import (
     evidence_issues,
     yoy,
 )
+from earnings_bot.summary_request import structured_request
 
 # Fictional/unseen metrics and businesses: these cases must not need ticker switches.
 KEY = MetricKey("Orbital freight revenue", "reported", "money", "USD")
@@ -22,9 +23,9 @@ THEN = Observation(KEY, Decimal(100), 2025, 3)
 
 
 def test_default_writer_and_comparison_follow_the_selected_models() -> None:
-    assert [s.name for s in DEFAULT_COMPARISON] == ["Sonnet low", "Muse Ember low"]
-    assert (SONNET.model, "low") == (MODEL, EFFORT)
-    assert "EPS is optional" in SYSTEM
+    assert [s.name for s in DEFAULT_COMPARISON] == ["Muse Ember low"]
+    assert (EMBER.model, "low") == (MODEL, EFFORT)
+    assert "EPS is optional" in structured_request("T", "release")["system"]
 
 
 def test_yoy_only_uses_the_same_fiscal_period_and_metric_identity() -> None:

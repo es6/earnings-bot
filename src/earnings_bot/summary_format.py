@@ -4,6 +4,7 @@
 # ruff: noqa: RUF001, RUF002
 
 import re
+from dataclasses import replace
 from decimal import Decimal
 
 from earnings_bot.summary_policy import SummaryFact, change_reference
@@ -128,6 +129,14 @@ def format_value(value: str, unit: str = "", currency: str = "") -> str:
 def format_period(value: str) -> str:
     text = " ".join(value.split())
     text = re.sub(r"\b([1-4])Q\s*(20\d{2})\b", r"Q\1 \2", text, flags=re.IGNORECASE)
+    if re.search(
+        r"\b(?:YTD|year[- ]to[- ]date|TTM|LTM|trailing|[1-4]H|H[12]|"
+        r"first half|second half|[369]M|12M|"
+        r"(?:three|six|nine|twelve|3|6|9|12)[ -]*months?)\b",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        return text  # A quarter/year label must never erase the observation's duration.
     if re.search(r"\band\b|;|/", text, re.IGNORECASE):
         return text  # A legacy object can contain multiple periods; never collapse them to one.
     quarter = re.search(r"\b(Q[1-4])\s*(FY|fiscal(?: year)?)?\s*(20\d{2})\b", text, re.IGNORECASE)
@@ -177,6 +186,18 @@ def format_change(value: str, comparison: str = "") -> str:
     return f"{sign}{_digits(amount)}{gap}{unit}" + (f" {reference}" if reference else "")
 
 
+_ADJUSTED_BASIS = re.compile(r"adjust|non.?gaap", re.IGNORECASE)
+
+
+def _repeats_label(part: str, label: str) -> bool:
+    """A basis tag the label already states. GAAP and non-GAAP differ: "GAAP EPS (non-GAAP)"
+    keeps its tag, "Adjusted revenue (Adjusted (Non-GAAP))" doesn't need it."""
+    if re.search(r"gaap|adjust", part, re.IGNORECASE):
+        return bool(_ADJUSTED_BASIS.search(part)) and bool(_ADJUSTED_BASIS.search(label))
+    words = set(re.findall(r"[a-z]{4,}", part.lower()))
+    return bool(words & set(re.findall(r"[a-z]{4,}", label.lower())))
+
+
 def format_fact(fact: SummaryFact) -> str:
     stamp = format_period(fact.period)
     prefix = f"{stamp} · " if stamp else ""
@@ -197,16 +218,40 @@ def format_fact(fact: SummaryFact) -> str:
     basis = [
         part.strip()
         for part in re.split(r"[,;]", fact.basis)
-        if part.strip() and f" {_basis_key(part)} " not in known
+        if part.strip()
+        and f" {_basis_key(part)} " not in known
+        # A short tag ("GAAP", "constant currency"), not a definition, and not one the label
+        # already says ("Adjusted revenue (Adjusted (Non-GAAP))")
+        and len(part.split()) <= 4
+        and not _repeats_label(part, label)
     ]
     if basis:
         label += f" ({', '.join(basis)})"
     value = format_value(fact.value, fact.unit, fact.currency)
     if value == fact.value and fact.unit and re.search(r"\d", value) and ";" in value:
         value += f" [{fact.unit}]"
-    text = f"{prefix}{label}: {value}"
     change = format_change(fact.change, reference)
+    if not value.strip():  # a growth rate given without a level
+        return f"{prefix}{label}: {change}" if change.strip() else f"{prefix}{label}"
+    text = f"{prefix}{label}: {value}"
     return f"{text}; {change}" if change.strip() else text
+
+
+def discord_brief(facts: list[SummaryFact]) -> str:
+    """The card's highlights: facts grouped under their period and kind, in the layout the
+    user reviewed ("**Q3 2026 · Results**", 🔹 figures, 🔸 business updates)."""
+    groups: dict[tuple[str, str], list[str]] = {}
+    for fact in facts:
+        kind = {"guide": "Outlook", "update": "Business updates"}.get(fact.kind, "Results")
+        text = format_fact(replace(fact, period=""))
+        metric, _, value = text.partition(": ")
+        marker = "🔸" if kind == "Business updates" else "🔹"
+        line = f"{marker} **{metric}**: {value}" if value else f"{marker} **{metric}**"
+        groups.setdefault((kind, format_period(fact.period)), []).append(line)
+    return "\n\n".join(
+        f"**{f'{stamp} · {kind}'.strip(' ·')}**\n" + "\n".join(lines)
+        for (kind, stamp), lines in groups.items()
+    )
 
 
 def render_facts(ticker: str, facts: list[SummaryFact]) -> str:
