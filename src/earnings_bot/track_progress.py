@@ -45,6 +45,8 @@ REFRESH = timedelta(days=1)
 CARD_EDIT_SPACING = 2.5  # seconds
 
 DONE, WORKING, WAITING, FAILED, TODO = "✅", "⏳", "⏸️", "⚠️", "▫️"
+# A scorecard's state as one dot, for lists such as /upcoming
+READY, RESEARCHING, NOT_READY, PROBLEM = "🟢", "🔵", "🟡", "🔴"
 
 
 def _same_card(shown: discord.Embed, embed: discord.Embed) -> bool:
@@ -256,6 +258,18 @@ class TrackProgress:
 
     def _investigating(self, row: Tracked) -> bool:
         return due(row.ticker, row.company, self.now().astimezone(ET).date())
+
+    def readiness(self, cik: int) -> str | None:
+        """The scorecard's color as one dot, so a list and the card never disagree. None for
+        an issuer nobody tracked."""
+        row = next((item for item in self.calendar.entries() if item.cik == cik), None)
+        if row is None:
+            return None
+        _, review = self.calendar.review(cik)
+        checking = bool(self.active and self.active[0] == cik)
+        color = self.render(row, review, checking).color
+        value = color.value if color is not None else None
+        return {GREEN: READY, BLUE: RESEARCHING, RED: PROBLEM}.get(value or 0, NOT_READY)
 
     def render(self, row: Tracked, review: str | None, checking: bool) -> discord.Embed:
         target = self._target(row)

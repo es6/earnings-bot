@@ -6,34 +6,60 @@ import discord
 from discord import app_commands
 
 from earnings_bot.calendar import (
+    calendar_line,
     describe,
     manual_target,
-    release_lines,
+    session,
     upcoming_releases,
 )
 from earnings_bot.formatting import BLUE, bullets
 from earnings_bot.issuers import symbol
 from earnings_bot.recorder import ET
+from earnings_bot.track_progress import PROBLEM
 from earnings_bot.unattended import DirectoryWatcher
 
 OFFLINE = "⚠️ The earnings calendar is available when the directory watcher is running."
+SCHEDULED = "📄"  # from a schedule file, not tracked with a scorecard
+LEGEND = (
+    "🟢 ready · 🔵 researching · 🟡 not ready yet · 🔴 problem · 📄 schedule file · "
+    "times in your time zone"
+)
+EMBED_LIMIT = 6000  # Discord's limit for one embed's text
 
 
 def upcoming_embed(watcher: DirectoryWatcher) -> discord.Embed:
-    """The week's releases, grouped by day, each with its expected time and its watch."""
+    """The week's releases as a compact calendar: one line each, grouped by day and market
+    session, with the scorecard's readiness. What needs attention comes first; details stay on
+    each ticker's scorecard."""
     now = watcher.journal.now()
     releases, pending = upcoming_releases(watcher.calendar.entries(), watcher.planned, now)
     embed = discord.Embed(title="📅 Earnings in the next 7 days", color=BLUE)
-    days: dict[str, list[str]] = {}
+    groups: dict[str, list[str]] = {}
+    problems = []
     for target, evidence in releases:
+        dot = watcher.progress.readiness(target.cik) if watcher.progress else None
+        if dot == PROBLEM:
+            problems.append(f"**{target.ticker}**: see its scorecard")
         local = target.expected.astimezone(ET)
-        days.setdefault(f"{local:%A, %B} {local.day}", []).append(release_lines(target, evidence))
-    for name, lines in list(days.items())[:24]:
+        heading = f"{local:%a, %b} {local.day} · {session(target.expected)}"
+        groups.setdefault(heading, []).append(calendar_line(target, evidence, dot or SCHEDULED))
+    attention = problems + ([f"No date yet: {', '.join(pending)}"] if pending else [])
+    if attention:
+        embed.add_field(name="⚠️ Needs attention", value=bullets(attention, bullet=""), inline=False)
+    for name, lines in groups.items():
+        if len(embed.fields) == 25:  # Discord's field limit
+            break
         embed.add_field(name=name, value=bullets(lines, bullet=""), inline=False)
     if not releases:
         embed.description = "No releases expected in the next 7 days."
-    if pending:
-        embed.set_footer(text=f"Still looking for dates: {', '.join(pending)}")
+    embed.set_footer(text=LEGEND)
+    # A very full week keeps its first days whole rather than cutting lines mid-way
+    dropped = 0
+    while len(embed) > EMBED_LIMIT and len(embed.fields) > 1:
+        embed.remove_field(len(embed.fields) - 1)
+        dropped += 1
+    if dropped:
+        embed.set_footer(text=f"{dropped} later day(s) didn't fit · {LEGEND}")
     return embed
 
 

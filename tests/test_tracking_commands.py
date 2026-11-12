@@ -20,7 +20,7 @@ from earnings_bot.calendar import describe
 from earnings_bot.clock import TrustedClock
 from earnings_bot.delivery import DeliveryStore
 from earnings_bot.fetch import Response
-from earnings_bot.formatting import clock, stamp
+from earnings_bot.formatting import clock, day, stamp
 from earnings_bot.known import KnownCompany, known_companies, to_target
 from earnings_bot.pipeline import Releases
 from earnings_bot.recorder import ET, Journal
@@ -447,20 +447,19 @@ async def test_upcoming_lists_the_weeks_windows_and_issuers_awaiting_dates(
 
     reply = await call(commands.upcoming)
 
-    # One heading per day, and each release's expected time beside the window watched
+    # What needs attention first, then one line per release under its day and market session,
+    # with the scorecard's readiness and whether the time is confirmed
     assert reply.splitlines() == [
         "📅 Earnings in the next 7 days",
         "",
-        "Tuesday, November 17",
-        f"**HD** Q3 FY26 · results 6:00 AM ET ({stamp(found.expected, 'R')})",
-        (
-            "-# Watching 5:50 to 6:30 AM ET · Issuer confirmed release time · "
-            "[source](<https://ir.homedepot.com/news-releases/q3>)"
-        ),
-        f"**NVDA** Q3 FY27 · results about 4:20 PM ET ({stamp(nvda.expected, 'R')})",
-        "-# Watching 4:10 to 4:50 PM ET · Schedule file",
+        "⚠️ Needs attention",
+        "No date yet: CRWD",
+        "Tue, Nov 17 · before the open",
+        f"🟡 **HD** · Q3 FY26 · {stamp(found.expected, 't')} · confirmed",
+        "Tue, Nov 17 · after the close",
+        f"🟡 **NVDA** · Q3 FY27 · {stamp(nvda.expected, 't')} · estimated",
     ]
-    assert upcoming_embed(watcher).footer.text == "Still looking for dates: CRWD"
+    assert (upcoming_embed(watcher).footer.text or "").startswith("🟢 ready · 🔵 researching")
 
 
 async def test_a_long_upcoming_list_stops_at_a_whole_line(
@@ -476,8 +475,34 @@ async def test_a_long_upcoming_list_stops_at_a_whole_line(
 
     assert len(embed) <= 6000  # Discord's limit for an embed
     assert all(len(field.value or "") <= 1024 for field in embed.fields)
-    # The day's list says how many more didn't fit
-    assert (embed.fields[0].value or "").endswith("more")
+    # Whole lines only: a full field says how many more there are, and dropped days are counted
+    shown = sum(
+        line.startswith("📄") for field in embed.fields for line in (field.value or "").splitlines()
+    )
+    more = sum(
+        int(line.split()[2])
+        for field in embed.fields
+        for line in (field.value or "").splitlines()
+        if line.startswith("-# …and")
+    )
+    footer = embed.footer.text or ""
+    assert shown + more == len(targets) or "didn't fit" in footer
+
+
+async def test_upcoming_shows_each_scorecards_readiness(
+    watcher: DirectoryWatcher, commands: TrackingCommands
+) -> None:
+    await call(commands.track, "HD")
+    assert watcher.progress
+    [row] = watcher.calendar.entries()
+    hd = to_target("HD", NOW + timedelta(days=1), 2026, 3)
+    watcher.planned = {hd.release_key: hd}
+    watcher.progress.audit_failed.add(row.cik)  # its card turns red
+
+    reply = await call(commands.upcoming)
+
+    assert "⚠️ Needs attention\n**HD**: see its scorecard" in reply
+    assert "🔴 **HD**" in reply
 
 
 PLTR_FEED = "investors.palantir.com/feed/PressRelease.svc/GetPressReleaseList"
@@ -715,8 +740,10 @@ async def test_watch_status_shows_each_releases_time_beside_when_its_watch_opens
     finally:
         task.cancel()
 
+    # /status is health: the next watch's start, not a second calendar (that's /upcoming)
     text = embed_text(embed)
-    assert embed.title == "Earnings Bot v0.8.0"
-    assert f"results about {clock(onon.expected)}" in text
-    assert f"Watch opens {clock(onon.window[0])}" in text
+    assert embed.title == "Earnings Bot v0.8.0 · status"
+    assert f"⏭️ Next watch: **HD** from {day(onon.window[0])}, {clock(onon.window[0])}" in text
+    assert "results about" not in text
+    assert "📝 Live summaries off" in text
     assert embed.footer.text == "Build abc1234"

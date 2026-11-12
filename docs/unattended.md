@@ -10,9 +10,9 @@ Replies to the commands are private to the person who ran them.
 |---|---|---|
 | `/track ticker:NVDA` | Server members | Adds any company on SEC's ticker list and starts date discovery and the source audit. Repeating it returns the existing subscription. |
 | `/track ticker:NVDA when:2026-11-17T16:20 period:FY2027Q3` | Manage Server | Sets a future release time for a fiscal period. Supply both fields. An ISO time without an offset uses US Eastern. |
-| `/upcoming` | Server members | Shows scheduled releases in the next seven days and issuers awaiting dates. |
+| `/upcoming` | Server members | A compact calendar of the next seven days: each release under its day and market session, with its scorecard's readiness (🟢 ready, 🔵 researching, 🟡 not ready yet, 🔴 problem, 📄 schedule file) and whether its time is confirmed. Problems and issuers awaiting dates come first. |
 | `/untrack ticker:NVDA` | Manage Server | Removes the calendar subscription. Any matching TOML schedule remains active. |
-| `/watch_status` | Server members | Shows watcher health, including the next window, last scan and most recent benchmark result in directory mode. |
+| `/status` | Server members | Shows watcher health: what's live, the next watch start, the last scan, scorecard readiness counts, whether live summaries are on, problems and the latest benchmark. `/watch_status` is its old name. |
 | `/ping` | Server members | Checks the bot's Discord connection and reports Gateway latency. |
 
 The calendar holds up to 50 subscriptions per earnings channel.

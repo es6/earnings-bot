@@ -34,7 +34,15 @@ class EarningsBot(discord.Client):
         self.directory_watcher: DirectoryWatcher | None = None
         self.tree.add_command(
             app_commands.Command(
-                name="watch_status", description="Check earnings monitoring", callback=self._status
+                name="status",
+                description="Check that earnings monitoring is healthy",
+                callback=self._status,
+            )
+        )
+        # The old name, while people get used to /status
+        self.tree.add_command(
+            app_commands.Command(
+                name="watch_status", description="Old name for /status", callback=self._status
             )
         )
 
