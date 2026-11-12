@@ -363,6 +363,23 @@ def upcoming(tracked: list[Tracked], planned: dict[str, Target], now: datetime) 
     return rows
 
 
+def session(moment: datetime) -> str:
+    """The US market session a release falls in."""
+    local = moment.astimezone(ET)
+    minutes = local.hour * 60 + local.minute
+    if minutes < 9 * 60 + 30:
+        return "before the open"
+    return "after the close" if minutes >= 16 * 60 else "during market hours"
+
+
+def calendar_line(target: Target, evidence: str, dot: str) -> str:
+    """One compact /upcoming line: readiness, ticker, fiscal period, the expected time in
+    each reader's own time zone, and whether that time is confirmed."""
+    period = f" · {period_label(target.period)}" if target.period else ""
+    confidence = "confirmed" if exact_time(evidence) else "estimated"
+    return f"{dot} **{target.ticker}**{period} · {stamp(target.expected, 't')} · {confidence}"
+
+
 def exact_time(evidence: str) -> bool:
     """Whether the evidence gives the release's time, not just its day."""
     return evidence.startswith(("Issuer confirmed release time", "Manual override"))

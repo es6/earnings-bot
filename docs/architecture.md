@@ -796,8 +796,8 @@ Per-issuer scorecards are embeds edited as research runs. They show progress, th
 which source was first last time, the sources to be watched, and each source the investigation
 rejected with its reason. In
 the absence of a status channel the scorecards go to the earnings channel, and status events
-stay in the journal. `/watch_status` shows active tickers, the next window, the last scan and
-the latest benchmark comparison.
+stay in the journal. `/status` (formerly `/watch_status`) shows active tickers, the next watch start, the last
+scan, scorecard readiness, live summaries and the latest benchmark comparison.
 
 If the bot starts after publication while the window is still open, supported sources can
 catch up using the release's own timestamp or a verified exact-period issuer report. A window that

@@ -116,6 +116,7 @@ class DirectoryWatcher:
         self.follow_up = timedelta(0)
         self.latest_benchmark: str | None = None
         self.progress: TrackProgress | None = None
+        self.summaries = False  # whether release cards get live summaries
         self.guild_id: int | None = None
         self.schedules: dict[Path, _Schedule] = {}
         self.windows: dict[str, _Window] = {}
@@ -167,16 +168,30 @@ class DirectoryWatcher:
         return "\n".join(lines)
 
     def health_embed(self, version: str, revision: str | None) -> discord.Embed:
-        """/watch_status: what's live, what's next with its expected time and its watch, and
-        anything wrong."""
+        """/status: whether monitoring is healthy. What's live, when the next watch starts, the
+        scorecards' readiness, summaries and problems. The calendar itself is /upcoming."""
         now = self.journal.now()
         running = [w.target for w in self.windows.values() if not w.task.done()]
         live = sorted((t for t in running if t.window[0] <= now < t.window[1]), key=_expected)
         coming = sorted((t for t in running if t.window[0] > now), key=lambda t: t.window[0])
         color = AMBER if self.problems else GREEN
-        embed = discord.Embed(title=f"Earnings Bot {version}", color=color)
+        embed = discord.Embed(title=f"Earnings Bot {version} · status", color=color)
         scan = f" · last scan {clock(self.last_scan, seconds=True)}" if self.last_scan else ""
-        embed.description = f"🟢 Watching `{self.directory.name}/`{scan}"
+        lines = [f"🟢 Watching `{self.directory.name}/`{scan}"]
+        if coming:
+            start = coming[0].window[0]
+            lines.append(
+                f"⏭️ Next watch: **{coming[0].ticker}** from {day(start)}, {clock(start)} "
+                f"({stamp(start, 'R')})"
+            )
+        else:
+            lines.append("⏭️ No watch scheduled")
+        if self.progress:
+            dots = [self.progress.readiness(row.cik) for row in self.calendar.entries()]
+            counts = " · ".join(f"{dot} {dots.count(dot)}" for dot in dict.fromkeys(dots) if dot)
+            lines.append(f"📋 {len(dots)} tracked: {counts}" if dots else "📋 Nothing tracked")
+        lines.append(f"📝 Live summaries {'on' if self.summaries else 'off'}")
+        embed.description = "\n".join(lines)
         if live:
             lines = [
                 f"**{t.ticker}**{_period(t)} · results expected {clock(t.expected)} · "
@@ -184,16 +199,6 @@ class DirectoryWatcher:
                 for t in live
             ]
             embed.add_field(name="🔴 Live now", value=truncate("\n".join(lines)), inline=False)
-        lines = [
-            f"**{t.ticker}**{_period(t)} · {day(t.expected)}, results about {clock(t.expected)}\n"
-            f"-# Watch opens {clock(t.window[0])} ({stamp(t.window[0], 'R')})"
-            for t in coming[:5]
-        ]
-        embed.add_field(
-            name="⏭️ Next windows",
-            value=truncate("\n".join(lines)) if lines else "None scheduled",
-            inline=False,
-        )
         if self.problems:
             problems = [f"**{name}**: {message}" for name, message in self.problems.items()]
             embed.add_field(name="⚠️ Problems", value=truncate("\n".join(problems)), inline=False)
@@ -564,6 +569,7 @@ async def watch_directory(
                 directory, fetcher, journal, releases, store, status, benchmark, fmp_api_key
             )
             watcher.follow_up = FOLLOW_UP
+            watcher.summaries = summarizer is not None
             if isinstance(channel, discord.abc.GuildChannel | discord.Thread):
                 watcher.guild_id = channel.guild.id
             watcher.progress = TrackProgress(

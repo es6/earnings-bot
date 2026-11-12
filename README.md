@@ -77,8 +77,9 @@ version for you.
 
 ### Earnings calendar commands
 
-Use `/track ticker:NVDA` in directory mode. `/upcoming` shows the next seven days and issuers
-awaiting a date. Members with Manage Server can set a release time or remove a subscription
+Use `/track ticker:NVDA` in directory mode. `/upcoming` is a compact calendar of the next
+seven days: one line per release by day and market session, with its scorecard's readiness,
+and what needs attention (problems, issuers awaiting a date) first. Members with Manage Server can set a release time or remove a subscription
 with `/untrack`. See the [command reference](docs/unattended.md#commands) for exact syntax.
 The `/track` scorecard updates in place and marks research complete once source checks and
 date discovery finish. It shows whether a watch is scheduled or still awaiting a date.
@@ -87,15 +88,16 @@ date discovery finish. It shows whether a watch is scheduled or still awaiting a
 
 Run `uv run earnings-bot schedules` to watch every TOML in the directory. Edits and new files
 are picked up within a few seconds. A malformed edit keeps the last valid version active.
-Use `/watch_status` for the running release version, Git build, next watch window, and last
-successful schedule scan. The release version also appears on scorecards, at startup, and in
+Use `/status` (formerly `/watch_status`, which still works) for health: the running release
+version and Git build, the last schedule scan, the next watch start, how many scorecards are
+ready, whether live summaries are on, and problems. The release version also appears on scorecards, at startup, and in
 `uv run earnings-bot --version`. Set `DISCORD_STATUS_CHANNEL_ID` to receive window reports in
 a channel, which can be the alerts' own. Reports are also written to `schedules/watch.jsonl`.
 
 Window reports use **@earnings_guy** as the main external speed benchmark. The runner
 checks a shared public RSS timeline during release windows and verifies candidate results
 posts through X's public embed service. It compares the X post's creation time with the
-actual Discord alert time. The most recent comparison is in `/watch_status`. The journal
+actual Discord alert time. The most recent comparison is in `/status`. The journal
 records the X link, first sighting and when usable release text arrived. The status distinguishes
 an unmatched post from an unavailable lookup or an unverified candidate. Benchmark requests
 run alongside the release watchers.
