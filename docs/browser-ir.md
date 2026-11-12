@@ -1,5 +1,9 @@
 # Investor relations in desktop Chrome
 
+For difficult `/track` cases, blocked routes, stale responses, and release recovery,
+follow the [IR access experiment playbook](ir-access-playbook.md). It includes diagnostic
+steps, advanced route/cache experiments, promotion gates, and the agent handoff record.
+
 The bot uses headful Chrome on a separate inactive Windows desktop with
 a temporary profile. During a watch window, Chrome and ordinary HTTP
 requests share per-host pacing. The first browser poll warms the issuer tab.
