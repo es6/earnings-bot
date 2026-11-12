@@ -98,6 +98,8 @@ async def test_cache_comparison(
     result = await probe_cache(get, URL)
 
     assert (result.query_bust, result.canonical_only, result.stored_only) == outcome
+    # Fresh only when proven: a bypass reaches the server, or nothing caches the URL
+    assert result.fresh == (result.query_bust or label == "Not cached")
     assert label in result.summary
     assert urls[:2] == [URL, URL]
     assert len(set(urls[2:])) == 2

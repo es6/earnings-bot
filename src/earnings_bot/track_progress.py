@@ -176,6 +176,7 @@ class TrackProgress:
         research: Callable[[int], Report | None] | None = None,
         ir_note: Callable[[int], str | None] | None = None,
         cache_notes: Callable[[int], list[str] | None] | None = None,
+        cache_caveats: Callable[[int], list[str] | None] | None = None,
         card_spacing: float = CARD_EDIT_SPACING,
     ) -> None:
         self.calendar, self.store, self.channel = calendar, store, channel
@@ -187,6 +188,7 @@ class TrackProgress:
         self.research = research or (lambda _: None)
         self.ir_note = ir_note or (lambda _: None)
         self.cache_notes = cache_notes
+        self.cache_caveats = cache_caveats or (lambda _: None)
         self.changed = asyncio.Event()
         self.last_sent: dict[int, object] = {}
         self.removed: dict[int, str] = {}
@@ -348,11 +350,13 @@ class TrackProgress:
             and row.cik not in self.audit_failed
             and (no_date or (target and phase is None))
         )
+        # Research can be complete while a watched issuer route still isn't proven fresh
+        caveats = self.cache_caveats(row.cik) or []
         if any(step.startswith(FAILED) for step in steps):
             color = RED if row.cik in self.audit_failed else AMBER
         elif working:
             color = BLUE
-        elif target and complete:
+        elif target and complete and not caveats:
             color = GREEN
         else:
             color = AMBER
@@ -373,7 +377,17 @@ class TrackProgress:
             description = "No release date yet."
         if complete:
             outcome = "watch scheduled" if target else "awaiting a confirmed date"
-            description = f"**✅ Research complete · {outcome}**\n{description}"
+            headline = f"**✅ Research complete · {outcome}**"
+            if caveats:
+                named = ", ".join(caveats[:4])
+                if len(caveats) > 4:
+                    named += f" and {len(caveats) - 4} more"
+                headline += (
+                    f"\n⚠️ **Not verified fresh:** {named}. These may show the release late; "
+                    "SEC filings and newswires are watched too. Checked again daily and before "
+                    "the window."
+                )
+            description = f"{headline}\n{description}"
         embed = discord.Embed(
             title=f"{row.ticker} · {row.company.name}", description=description, color=color
         )

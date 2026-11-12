@@ -82,7 +82,9 @@ seven days: one line per release by day and market session, with its scorecard's
 and what needs attention (problems, issuers awaiting a date) first. Members with Manage Server can set a release time or remove a subscription
 with `/untrack`. See the [command reference](docs/unattended.md#commands) for exact syntax.
 The `/track` scorecard updates in place and marks research complete once source checks and
-date discovery finish. It shows whether a watch is scheduled or still awaiting a date.
+date discovery finish. It shows whether a watch is scheduled or still awaiting a date. It
+turns green only when every watched issuer route was also verified fresh by the cache
+preflight; otherwise it stays amber and names the routes that may show the release late.
 
 ### Run continuously on Windows
 
