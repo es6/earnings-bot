@@ -7,7 +7,7 @@ from typing import Any
 from earnings_bot.summary_format import render_facts
 from earnings_bot.summary_policy import SummaryFact, evidence_issues, normalized
 
-EVALUATOR_VERSION = "2026-11-11.3"
+EVALUATOR_VERSION = "2026-11-12.1"
 
 _ADJUSTED = re.compile(r"\badj(?:usted)?\b|non[- ]gaap", re.IGNORECASE)
 _RATIO = re.compile(r"\bmargin\b|\bratio\b", re.IGNORECASE)

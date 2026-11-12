@@ -59,6 +59,28 @@ free-text writer shares the updated selection prompt but has not adopted structu
 
 ## Evaluation protocol
 
+Round-nine feedback was split: Ember won four explicit preferences, Sonnet three, DUOL tied,
+and NOW had mixed feedback without an overall vote. These remain display preferences, not
+accuracy scores. Extra detail must be verified: Netflix's 2027 ad expansion, DoorDash's
+synergies/payment timing and ServiceNow's AI consumption were supported by the source reports.
+Sonnet had DoorDash's synergy figure and ASML's additional capacity detail only in its hidden
+relevance rationale; important selected facts must also reach the displayed fields.
+
+Changes use explicit comparison metadata (YoY/QoQ/prior guidance), with signed notation.
+Missing comparison periods are flagged, never inferred from the current quarter alone.
+The formatter canonicalizes `3Q2026`, compacts a monetary scalar followed by a margin note,
+and preserves every selected fact. Mixed quarter/full-year objects are flagged for review;
+that flag does not itself split or repair an old model response. Future requests require
+separate periods and concise adjustment causes/per-share effects. Related capital returns
+can be grouped when their original units and periods remain explicit.
+
+The next selection policy preserves material reported/comparable acquisition and FX views,
+cash timing and deal economics. Routine accounting disclosures and product updates need a
+reason to displace a business driver; usage milestones can be material evidence of adoption.
+These are contextual rules, not a DUOL/social-charges/sector blacklist. The known source errors
+(NOW margin mistaken for growth; SNPS nine-month actual labeled FY) still require verified
+table-column/duration bindings before live structured summaries. Formatting does not fix them.
+
 1. Freeze release documents, expected facts, prompt/policy version and model settings.
    Record content hashes and source URLs. Never include credentials or `.env` in artifacts.
 2. Reserve entirely unseen companies and later quarters before tuning. Repeatedly reviewed

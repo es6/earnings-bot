@@ -6,7 +6,7 @@
 import re
 from decimal import Decimal
 
-from earnings_bot.summary_policy import SummaryFact
+from earnings_bot.summary_policy import SummaryFact, change_reference
 
 _SCALES = {
     "": Decimal(1),
@@ -53,7 +53,7 @@ def _digits(value: Decimal) -> str:
 
 
 def format_value(value: str, unit: str = "", currency: str = "") -> str:
-    """Parse complete scalars/ranges only. Mixed measures retain their original text.
+    """Parse complete scalars/ranges and scalar margin notes; preserve other mixed text.
 
     A trailing unit applies to both bounds: $2,963 to $2,964 million becomes
     $2.963B–$2.964B, never $2,963 to $2.96B. No rounding can erase a narrow range.
@@ -67,6 +67,12 @@ def format_value(value: str, unit: str = "", currency: str = "") -> str:
     hint = _unit_scale(unit)
     if ";" in unit or re.search(r"\bratio\b", unit, re.IGNORECASE):
         return value
+    # A complete leading scalar followed by a margin note has its own boundary.
+    # Never scale numbers inside the note or run a money regex across a mixed range.
+    if annotated := re.fullmatch(r"([^();]+)(\s*\([^()]+\))", value):
+        head = annotated[1].rstrip()
+        if _AMOUNT.fullmatch(head):
+            return format_value(head, unit, currency) + " " + annotated[2].lstrip()
     marker = _MARKERS.get(currency, "")
     # A provider can erroneously put USD on an order/customer count. Only a money
     # dimension or a bare scale supports adding a currency symbol to a bare value.
@@ -121,6 +127,7 @@ def format_value(value: str, unit: str = "", currency: str = "") -> str:
 
 def format_period(value: str) -> str:
     text = " ".join(value.split())
+    text = re.sub(r"\b([1-4])Q\s*(20\d{2})\b", r"Q\1 \2", text, flags=re.IGNORECASE)
     if re.search(r"\band\b|;|/", text, re.IGNORECASE):
         return text  # A legacy object can contain multiple periods; never collapse them to one.
     quarter = re.search(r"\b(Q[1-4])\s*(FY|fiscal(?: year)?)?\s*(20\d{2})\b", text, re.IGNORECASE)
@@ -146,13 +153,38 @@ def _basis_key(text: str) -> str:
     return " ".join(re.findall(r"\w+", text.casefold()))
 
 
+def format_change(value: str, comparison: str = "") -> str:
+    """Normalize notation, never invent a comparison period from the current quarter."""
+    text = re.sub(r"year[- ]over[- ]year|Y/Y", "YoY", value, flags=re.IGNORECASE)
+    text = re.sub(r"quarter[- ]over[- ]quarter|Q/Q", "QoQ", text, flags=re.IGNORECASE)
+    match = re.fullmatch(
+        r"\s*(\()?([+-]?\d+(?:\.\d+)?)\)?\s*(%|bps|pp)\)?"
+        r"\s*(YoY|QoQ|versus prior guidance)?\s*",
+        text,
+        re.IGNORECASE,
+    )
+    if not match:
+        return text
+    if text.count("(") != text.count(")"):
+        return text
+    parenthesis, number, unit, explicit = match.groups()
+    amount = Decimal(number)
+    if parenthesis:
+        amount = -abs(amount)
+    sign = "+" if amount > 0 else ""
+    reference = explicit or comparison
+    gap = "" if unit == "%" else " "
+    return f"{sign}{_digits(amount)}{gap}{unit}" + (f" {reference}" if reference else "")
+
+
 def format_fact(fact: SummaryFact) -> str:
     stamp = format_period(fact.period)
     prefix = f"{stamp} · " if stamp else ""
     label = format_label(fact.metric)
     if stamp:
         label = re.sub(rf"^{re.escape(stamp)}(?:\s+|:\s*)", "", label, flags=re.IGNORECASE)
-    known = f" {_basis_key(label)} "
+    reference = change_reference(fact)
+    known = f" {_basis_key(label)} {_basis_key(reference) if fact.change else ''} "
     basis = [
         part.strip()
         for part in re.split(r"[,;]", fact.basis)
@@ -164,7 +196,8 @@ def format_fact(fact: SummaryFact) -> str:
     if value == fact.value and fact.unit and re.search(r"\d", value) and ";" in value:
         value += f" [{fact.unit}]"
     text = f"{prefix}{label}: {value}"
-    return f"{text}; {fact.change}" if fact.change.strip() else text
+    change = format_change(fact.change, reference)
+    return f"{text}; {change}" if change.strip() else text
 
 
 def render_facts(ticker: str, facts: list[SummaryFact]) -> str:
