@@ -1,13 +1,17 @@
 import asyncio
+import io
+import itertools
 import time
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import cast
+from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import AsyncMock, Mock
 
 import discord
 import pytest
 
+from earnings_bot import track_progress
 from earnings_bot.bot import EarningsBot
 from earnings_bot.browser_sources import IRSource
 from earnings_bot.cache_research import CHECKING_CACHE
@@ -15,16 +19,21 @@ from earnings_bot.calendar import Calendar
 from earnings_bot.config import Settings
 from earnings_bot.date_discovery import VERIFYING_IR
 from earnings_bot.delivery import DeliveryStore
+from earnings_bot.edit_priority import EditPriority
 from earnings_bot.formatting import GREEN
 from earnings_bot.investigate import INVESTIGATION, Report
 from earnings_bot.issuers import profile
 from earnings_bot.known import KnownCompany, SourceCheck, to_target
-from earnings_bot.recorder import ET, Target
+from earnings_bot.pipeline import Release
+from earnings_bot.recorder import ET, Journal, Target
+from earnings_bot.release_cards import release_content
 from earnings_bot.source_audit import Speed, Timing
-from earnings_bot.track_progress import CardPoster, TrackProgress
+from earnings_bot.sources import RssFeed, Sighting
+from earnings_bot.track_progress import REPLACE_AFTER, CardPoster, TrackProgress
 from earnings_bot.version import release_version
-from tests.fakes import embed_text
+from tests.fakes import RoutedFetcher, embed_text
 from tests.sec_data import LCID_CIK, LCID_SUBMISSIONS
+from tests.test_pipeline import uber
 from tests.test_unattended import FakeDiscord, FakeMessage
 
 NOW = datetime(2026, 11, 9, 15, tzinfo=UTC)
@@ -614,3 +623,256 @@ async def test_a_moved_calendars_cards_are_edited_not_posted_again(tmp_path: Pat
 
     [message] = channel.messages.values()
     assert "Finished" in embed_text(message.embeds[0])
+
+
+# Scorecards leave Discord's edit limits to release alerts
+
+
+class OldEditCap:
+    """Discord's cap on edits to messages over an hour old, which a channel shares: `tokens`
+    edits, then one more each `refill` seconds, in turn."""
+
+    def __init__(self, tokens: int, refill: float) -> None:
+        self.tokens, self.refill = tokens, refill
+        self.turn = asyncio.Lock()
+
+    async def take(self) -> None:
+        async with self.turn:
+            if self.tokens == 0:
+                await asyncio.sleep(self.refill)
+                self.tokens = 1
+            self.tokens -= 1
+
+
+def refused_edit(retry_after: str) -> discord.HTTPException:
+    response = SimpleNamespace(
+        status=429, reason="Too Many Requests", headers={"Retry-After": retry_after}
+    )
+    return discord.HTTPException(
+        cast(Any, response),
+        {
+            "message": "Maximum number of edits to messages older than 1 hour reached.",
+            "code": 30046,
+        },
+    )
+
+
+async def test_a_new_version_alone_doesnt_edit_a_card(tmp_path: Path) -> None:
+    channel = FakeDiscord()
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        shown = card("NVDA · NVIDIA", "Same")
+        shown.set_footer(text="Earnings Bot v0.14.2 · Updated")
+        await tracker(store, channel).publish(1045810, shown)
+        deployed = card("NVDA · NVIDIA", "Same")
+        deployed.set_footer(text="Earnings Bot v0.15.0 · Updated")
+        await tracker(store, channel).publish(1045810, deployed)
+
+    [message] = channel.messages.values()
+    assert message.edited_at is None
+
+
+async def test_a_restart_edits_no_card_whose_content_is_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """After the v0.15.0 restart on Nov 12, scorecards were edited three or four times each
+    though none had changed: the footer named the new version, and until research ran again
+    each card showed its cache preflight as queued, then being checked, then done."""
+    channel = FakeDiscord()
+    notes = {LCID_CIK: ["IR press release page · a new spelling reaches the server"]}
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        row, _ = Calendar(store).add("LCID", INVESTIGATED)
+        monkeypatch.setattr(track_progress, "release_version", lambda: "v0.14.2")
+        before = tracker(store, channel, cache_notes=notes.get)
+        before.offer(LCID_CIK, before.render(row, SPEED.to_json(), False))
+        await before.flush()
+        [message] = channel.messages.values()
+        shown = embed_text(message.embed)
+
+        # A new process, under a new version, whose research hasn't run yet
+        monkeypatch.setattr(track_progress, "release_version", lambda: "v0.15.0")
+        found: dict[int, list[str]] = {}
+        looked: set[int] = set()
+        after = tracker(store, channel, cache_notes=found.get, settled=looked.__contains__)
+        queued = after.render(row, SPEED.to_json(), False)
+        assert "Cache preflight (queued)" in embed_text(queued)
+        after.offer(LCID_CIK, queued)
+        await after.flush()
+        # Research runs again and finds what it found before
+        found.update(notes)
+        looked.add(LCID_CIK)
+        after.offer(LCID_CIK, after.render(row, SPEED.to_json(), False))
+        await after.flush()
+
+    assert message.edited_at is None
+    assert embed_text(message.embed) == shown
+    assert channel.attempts == 1
+
+
+async def test_cards_wait_out_an_open_window_so_an_alert_edit_isnt_queued_behind_them(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """NBIS's summary edit on its resumed alert failed with error 30046 on Nov 12 and landed
+    72 s late, while scorecard edits spent the channel's cap on edits to old messages."""
+    cap = OldEditCap(tokens=1, refill=0.5)
+    edited: list[int] = []
+    original = FakeMessage.edit
+
+    async def capped(self: FakeMessage, **kwargs: Any) -> FakeMessage:
+        await cap.take()
+        edited.append(self.id)
+        return await original(self, **kwargs)
+
+    channel = FakeDiscord()
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        Calendar(store).add("LCID", LUCID)
+        await tracker(store, channel).publish(LCID_CIK, card("LCID · Lucid Group, Inc.", "Old"))
+        alert = await channel.send("🚨 **$NBIS Q3 FY26 earnings are out**", nonce="alert")
+        monkeypatch.setattr(FakeMessage, "edit", capped)
+        # The card's content changed, while a window is open
+        progress = tracker(store, channel, busy=lambda: True)
+        task = asyncio.create_task(progress.run())
+        try:
+            await asyncio.sleep(0.2)
+            started = time.monotonic()
+            await alert.edit(content="🚨 **$NBIS Q3 FY26 earnings are out**\nWith its summary")
+            took = time.monotonic() - started
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    assert edited == [alert.id]
+    assert took < 0.25
+
+
+async def test_a_release_edit_cancels_a_card_edit_already_waiting_on_discord(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """discord.py waits out a 429 and sends the same edit again. An alert edit that comes up
+    meanwhile goes first, and the card is edited after it."""
+    channel = FakeDiscord()
+    priority = EditPriority()
+    target = uber()
+    feed = RssFeed("issuer", "https://issuer.example/rss")
+    one_at_a_time = asyncio.Lock()  # the channel's turn, which a request keeps while it waits
+    original = FakeMessage.edit
+    stall: int | None = None
+
+    async def edit(self: FakeMessage, **kwargs: Any) -> FakeMessage:
+        nonlocal stall
+        async with one_at_a_time:
+            if self.id == stall:
+                stall = None
+                await asyncio.sleep(30)  # Discord answered 429
+            return await original(self, **kwargs)
+
+    monkeypatch.setattr(FakeMessage, "edit", edit)
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        progress = tracker(store, channel, priority=priority)
+        await progress.publish(1045810, card("NVDA · NVIDIA", "Old"))
+        [scorecard] = channel.messages.values()
+        release = Release(
+            target,
+            channel.poster(store, target),
+            RoutedFetcher({}),
+            Journal(io.StringIO()),
+            None,
+            None,
+            priority=priority,
+        )
+        release.add(feed, Sighting("1", "Results", "https://issuer.example/q3", earnings=True))
+        await release.finish()
+        alert = channel.messages[2]
+
+        stall = scorecard.id
+        progress.offer(1045810, card("NVDA · NVIDIA", "New"))
+        flushing = asyncio.create_task(progress.flush())
+        await asyncio.sleep(0.05)
+        release.add(feed, Sighting("2", "Results", "https://wire.example/q3", earnings=True))
+        await asyncio.wait_for(release.finish(), 1)
+        await asyncio.wait_for(flushing, 1)
+
+        assert "https://wire.example/q3" in release_content(alert)
+        assert scorecard.embed is not None and scorecard.embed.description == "Old"
+        await progress.flush()
+
+    assert scorecard.embed is not None and scorecard.embed.description == "New"
+
+
+async def test_old_cards_show_settled_results_one_at_a_time(tmp_path: Path) -> None:
+    """Each hourly date check turned every card amber and back: two edits an hour on messages
+    days old, which count against Discord's cap on edits to old messages."""
+    channel = FakeDiscord()
+    settled = {1000: False, 1001: True}
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        for cik in settled:
+            await tracker(store, channel).publish(cik, card(f"T{cik} · Co", "Done"))
+        progress = tracker(store, channel, settled=settled.__getitem__, old_card_spacing=0.3)
+
+        def shown() -> list[str | None]:
+            return [m.embed.description if m.embed else None for m in channel.messages.values()]
+
+        progress.offer(1000, card("T1000 · Co", "Checking"))
+        progress.offer(1001, card("T1001 · Co", "New date"))
+        await progress.flush()
+        assert shown() == ["Done", "New date"]
+
+        settled[1000] = True
+        progress.offer(1000, card("T1000 · Co", "Checked"))  # the latest content wins
+        await progress.flush()
+        assert shown() == ["Done", "New date"]  # within 0.3 s of the last old card's edit
+        await asyncio.sleep(0.35)
+        await progress.flush()
+        assert shown() == ["Checked", "New date"]
+        assert progress.pending == {}
+
+
+async def test_a_fresh_card_shows_research_as_it_goes(tmp_path: Path) -> None:
+    channel = FakeDiscord()
+    channel.ids = itertools.count(discord.utils.time_snowflake(NOW - timedelta(minutes=10)))
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        progress = tracker(store, channel, settled=lambda _: False)
+        await progress.publish(1000, card("T1000 · Co", "Queued"))
+        progress.offer(1000, card("T1000 · Co", "Investigating"))
+        await progress.flush()
+
+    [message] = channel.messages.values()
+    assert message.embed is not None and message.embed.description == "Investigating"
+
+
+async def test_an_old_card_discord_keeps_refusing_is_posted_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    channel = FakeDiscord()
+    tries = 0
+    original = FakeMessage.edit
+
+    async def refuse(self: FakeMessage, **kwargs: Any) -> FakeMessage:
+        nonlocal tries
+        tries += 1
+        raise refused_edit("120")
+
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        progress = tracker(store, channel)
+        await progress.publish(1045810, card("NVDA · NVIDIA", "Old"))
+        [old] = channel.messages.values()
+        monkeypatch.setattr(FakeMessage, "edit", refuse)
+
+        progress.offer(1045810, card("NVDA · NVIDIA", "New"))
+        await progress.flush()
+        await progress.flush()  # Discord asked for two minutes
+        assert tries == 1
+        for _ in range(REPLACE_AFTER - 1):
+            assert not await progress.publish(1045810, card("NVDA · NVIDIA", "New"), old=True)
+        assert tries == REPLACE_AFTER
+        assert list(channel.messages) == [old.id]
+
+        # The next try posts the card as a new message and deletes the old one
+        assert await progress.publish(1045810, card("NVDA · NVIDIA", "New"), old=True)
+        new = channel.messages[2]
+        assert old.deleted
+        assert new.embed is not None and new.embed.description == "New"
+        monkeypatch.setattr(FakeMessage, "edit", original)
+        await progress.publish(1045810, card("NVDA · NVIDIA", "Newer"))
+
+    assert new.embed is not None and new.embed.description == "Newer"
+    assert tries == REPLACE_AFTER

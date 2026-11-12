@@ -12,7 +12,7 @@ from typing import Any, cast
 
 import pytest
 
-from earnings_bot import clock, fetch, recorder
+from earnings_bot import clock, fetch
 from earnings_bot.clock import Sample
 from earnings_bot.fetch import Fetcher, Response
 from earnings_bot.recorder import (
@@ -200,7 +200,7 @@ async def test_a_refused_poll_is_retried_after_a_growing_pause(
 ) -> None:
     """Nebius refused one poll 12 minutes before its Q3 2026 release, then answered normally.
     The route had been stopped for the rest of the window."""
-    monkeypatch.setattr(recorder, "BLOCK_PAUSE", 0.05)
+    monkeypatch.setattr(fetch, "BLOCK_PAUSE", 0.05)
     log = io.StringIO()
     journal = Journal(log)
     w = Watch("NBIS", ListSource())

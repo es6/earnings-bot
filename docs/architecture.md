@@ -509,8 +509,12 @@ HTTP requests share host queues and handle timeouts and backoff per source. A so
 403 pauses on its own and tries again after 30 seconds, then 60, up to every 5 minutes, while the
 other watchers continue. It used to stop for the rest of the window: on November 12, 2026 the
 Nebius newsroom refused one poll at 6:59 AM, 12 minutes before its Q3 release, and answered
-normally afterwards. The window report names a route that was refused at times, and the journal
-records why a direct request gave way to Chrome (`http_failure`). The
+normally afterwards. The pause belongs to the route, not the loop: an IR listing's watcher and a
+release's read of the same newsroom (when the wire's own article is closed to us) share it, so
+neither asks while the site refuses us, and that read also waits out a 429 or 503's
+Retry-After (`issuer_text_error` in the journal). The window report names a route that was
+refused at times, and the journal records why a direct request gave way to Chrome
+(`http_failure`). The
 [Chrome worker](browser-ir.md) runs on a separate Windows desktop with a dedicated temporary
 profile. A Chrome request that is too slow is given up on inside the page, so its warm tab stays
 open for the next poll.
@@ -803,7 +807,9 @@ Canonical text remains in the delivery store and can be reconstructed from the d
 for nonce/crash recovery. Both embeds share Discord's 6,000-character text budget.
 Per-issuer scorecards are embeds edited as research runs. They show progress, the next date,
 which source was first last time, the sources to be watched, and each source the investigation
-rejected with its reason. In
+rejected with its reason. Card edits give way to release alerts, which share the channel's
+edit limits (see [unattended.md](unattended.md)): none during a window or while an alert step
+is pending, and a card over an hour old is edited only to show settled research. In
 the absence of a status channel the scorecards go to the earnings channel, and status events
 stay in the journal. `/status` (formerly `/watch_status`) shows active tickers, the next watch start, the last
 scan, scorecard readiness, live summaries and the latest benchmark comparison.

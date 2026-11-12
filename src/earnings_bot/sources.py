@@ -261,6 +261,12 @@ class Source(ABC):
         """Watches whose sources have the same key share one poll; None never shares."""
         return None
 
+    @property
+    def pause_route(self) -> str | None:
+        """The route whose refusals and Retry-After pauses this source shares with any other loop
+        that reads it (Fetcher.route_pause). None keeps the pause to this watch."""
+        return None
+
     @abstractmethod
     def url(self) -> str: ...
 

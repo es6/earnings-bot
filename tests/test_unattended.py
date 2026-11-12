@@ -68,6 +68,11 @@ class FakeMessage:
         self.edited_at = datetime.now(UTC)
         return self
 
+    async def delete(self) -> None:
+        if self.deleted:
+            raise unknown_message()
+        self.deleted = True
+
 
 class FakeDiscord:
     def __init__(self) -> None:

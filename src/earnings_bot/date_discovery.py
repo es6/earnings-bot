@@ -829,6 +829,10 @@ class DateDiscovery:
         self.on_progress: Callable[[], None] = lambda: None
         self.changed = asyncio.Event()
         self.checked: dict[int, float] = {}
+        # Companies being checked now, and those whose last check in this process finished
+        # without waiting for a window. Until then the notes above are missing or stale.
+        self.working: set[int] = set()
+        self.looked: set[int] = set()
         # Each company's FMP answer and when to ask again, as time.monotonic()
         self.calendar_dates: dict[int, tuple[float, tuple[Target, str] | None]] = {}
 
@@ -845,8 +849,15 @@ class DateDiscovery:
             with suppress(TimeoutError):
                 await asyncio.wait_for(self.changed.wait(), timeout=60)
 
+    def settled(self, cik: int) -> bool:
+        """Whether this process has finished checking a company and isn't checking it now. A
+        restart forgets the phases and notes a scorecard shows, so until then the card would
+        show the company as not yet researched."""
+        return cik in self.looked and cik not in self.working
+
     async def run_once(self, row: Tracked) -> None:
         """One hourly check of a company, which never raises."""
+        self.working.add(row.cik)
         try:
             # Room for a first investigation and a read of the IR site, both through Chrome
             async with asyncio.timeout(RESEARCH_SECONDS) as research:
@@ -859,8 +870,14 @@ class DateDiscovery:
             log.exception("Date discovery failed for %s", row.ticker)
             self._phase(row.cik, "Research failed. Retrying in an hour.")
         finally:
-            if self.reports.pop(row.cik, None):
-                self.on_progress()
+            self.working.discard(row.cik)
+            # A window that opened meanwhile cut the check short, and it runs again after
+            if self.busy():
+                self.looked.discard(row.cik)
+            else:
+                self.looked.add(row.cik)
+            self.reports.pop(row.cik, None)
+            self.on_progress()
 
     async def _calendar_date(self, row: Tracked, now: datetime) -> tuple[Target, str] | None:
         if self.fmp_api_key is None:

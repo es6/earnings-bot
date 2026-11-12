@@ -31,6 +31,7 @@ from earnings_bot.browser_sources import (
     issuer_pdf_url,
 )
 from earnings_bot.delivery import Delivery, DeliveryStore, retry_delivery
+from earnings_bot.edit_priority import EditPriority, release_step
 from earnings_bot.estimates import Estimates, EstimatesError, fmp_estimates
 from earnings_bot.fetch import Fetcher, Response
 from earnings_bot.formatting import clock, period_label
@@ -399,6 +400,7 @@ class Release:
         summarizer: Summarizer | None,
         fmp_api_key: str | None,
         note: str = "",
+        priority: EditPriority | None = None,
     ) -> None:
         self.target = target
         self.poster = poster
@@ -406,6 +408,8 @@ class Release:
         self.journal = journal
         self.summarizer = summarizer
         self.note = note
+        # Scorecard edits wait while this release has a post, edit or summary on the way
+        self.priority = priority
         self.links: dict[str, str] = {}  # url -> label, in the order they turned up
         self.files: set[str] = set()
         self._downloading: set[str] = set()
@@ -521,7 +525,7 @@ class Release:
         return estimates
 
     async def _link(self, label: str, url: str) -> None:
-        async with self.lock:
+        async with release_step(self.priority), self.lock:
             if url in self.links or any(_same_release_link(url, known) for known in self.links):
                 return
             self.links[url] = label
@@ -676,7 +680,7 @@ class Release:
                 f"{self.target.ticker}: couldn't attach {name} (HTTP {status}, {len(body):,} bytes)"
             )
             return
-        async with self.lock:
+        async with release_step(self.priority), self.lock:
             if name in self.files:
                 return
             stamp = await self.poster.attach(name, body)
@@ -796,11 +800,27 @@ class Release:
             return
         self.journal.write("issuer_text_search", ticker=self.target.ticker, listing=source.listing)
         deadline = time.monotonic() + self.issuer_text_seconds
-        while not self.has_text and time.monotonic() < deadline:
+        # Shared with the route's own watcher, so neither asks while the newsroom refuses us
+        pause = self.fetcher.route_pause(source.pause_route)
+        while not self.has_text and (left := deadline - time.monotonic()) > 0:
+            if (wait := pause.left()) > 0:
+                await asyncio.sleep(min(wait, left))
+                continue
             try:
                 _, items = await poll(source, self.fetcher)
-            except PollError:
+            except PollError as error:
+                # A 403 doubles the shared pause; a 429 or 503 waits out its Retry-After
+                retry_in = pause.refused() if error.blocked else error.pause
+                pause.hold(retry_in)
+                self.journal.write(
+                    "issuer_text_error",
+                    ticker=self.target.ticker,
+                    message=str(error),
+                    retry_in=retry_in,
+                )
                 items = []
+            else:
+                pause.answered()
             if items:
                 self.journal.say(
                     f"{self.target.ticker}: the wire's article can't be read, so reading the "
@@ -812,6 +832,11 @@ class Release:
 
     async def _summarize(self, summarizer: Summarizer, text: str, label: str) -> None:
         self.summarizing = True
+        # The alert waits on this edit from the moment its text arrives
+        async with release_step(self.priority):
+            await self._write_summary(summarizer, text, label)
+
+    async def _write_summary(self, summarizer: Summarizer, text: str, label: str) -> None:
         estimates = await self.estimates
         started = time.monotonic()
         try:
@@ -884,9 +909,11 @@ class Releases:
         summarizer: Summarizer | None,
         fmp_api_key: str | None,
         durable_poster: Callable[[Target], Poster] | None = None,
+        priority: EditPriority | None = None,
     ) -> None:
         self.new_poster = new_poster
         self.durable_poster = durable_poster
+        self.priority = priority
         self.fetcher = fetcher
         self.journal = journal
         self.summarizer = summarizer
@@ -909,6 +936,7 @@ class Releases:
                 self.journal,
                 self.summarizer,
                 self.fmp_api_key,
+                priority=self.priority,
             )
         release.add(source, sighting, measure=measure)
 

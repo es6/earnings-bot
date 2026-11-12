@@ -294,6 +294,11 @@ class BrowserRelease(Source):
     def url(self) -> str:
         return self.listing
 
+    @property
+    def pause_route(self) -> str:
+        # The window's watcher and a release's recovery read poll the same listing
+        return self.listing
+
     async def request_page(self, fetcher: Fetcher, url: str, *, urgent: bool = False) -> Response:
         self.transport = "chrome"
         return await fetcher.browser_request(url, self.listing, self.timeout, urgent=urgent)
