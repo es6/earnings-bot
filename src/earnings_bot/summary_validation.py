@@ -151,6 +151,16 @@ def _table_duration(fact: SummaryFact, context: str, source_unit: str) -> int | 
     return None  # Ambiguous columns are not repaired by guessing.
 
 
+# A table's caption gives its scale: "(in millions)", "Dollars in thousands", and also
+# "In USD $ millions" (Nebius), "(US$ millions, except per share amounts)" (Brookfield) and
+# "(Millions of dollars)". Read from loosened text, where "$ millions" is "$millions".
+_TABLE_SCALE = re.compile(
+    r"(?:\bin\s+|\b(?:usd|us|eur|gbp|cad|rmb)\s*|[$€£¥]\s*)"
+    r"(?:(?:u\.?s\.?|usd|us|eur|gbp|cad|rmb)\s*)?[$€£¥]?\s*(thousands|millions|billions)\b"
+    r"|\((thousands|millions|billions) of\b"
+)
+
+
 def validate_fact(fact: SummaryFact, release: str) -> list[str]:
     """Return reasons to omit an uncertain fact; bind numbers to its quote, not the whole file."""
     issues = []
@@ -195,10 +205,10 @@ def validate_fact(fact: SummaryFact, release: str) -> list[str]:
         r"yoy|year.over.year", fact.change, re.IGNORECASE
     ):
         issues.append("growth reference conflicts with prior-guidance comparison")
-    unit_match = list(re.finditer(r"(?:in|dollars in) (thousands|millions|billions)", context))
+    unit_match = [match[1] or match[2] for match in _TABLE_SCALE.finditer(context)]
     # A per-share figure keeps its own units in a table "in millions, except per-share data"
     per_share = re.search(r"per.share|\beps\b", f"{fact.metric} {fact.unit}", re.IGNORECASE)
-    source_unit = unit_match[-1][1] if unit_match and table and not per_share else ""
+    source_unit = unit_match[-1] if unit_match and table and not per_share else ""
     evidence = _numbers(quote, source_unit)
     current, prior = _numbers(fact.value, fact.unit), _numbers(fact.prior, fact.unit)
     changes = _numbers(fact.change)

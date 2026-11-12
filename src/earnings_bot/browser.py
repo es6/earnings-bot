@@ -97,6 +97,10 @@ async def _skip_browser_cache(ws: aiohttp.ClientWebSocketResponse, **network: An
     await _command(ws, "Network.setCacheDisabled", cacheDisabled=True)
 
 
+class _SlowAnswer(Exception):
+    """The page gave up on a slow answer itself. Its tab is still good."""
+
+
 async def _evaluate(ws: aiohttp.ClientWebSocketResponse, expression: str) -> Any:
     result = await _command(
         ws, "Runtime.evaluate", expression=expression, awaitPromise=True, returnByValue=True
@@ -109,9 +113,13 @@ async def _evaluate(ws: aiohttp.ClientWebSocketResponse, expression: str) -> Any
 # Read at most the configured size, including for a response with no Content-Length.
 # The browser stays in the tab's origin and the bot drives the polling timer.
 _FETCH = """
-(async (url, limit) => {
+(async (url, limit, patience) => {
+  try {
     // An unpublished file can redirect to a generic page. Keep the tab warm and never follow it.
-    const response = await fetch(url, {cache: 'no-store', redirect: 'manual'});
+    // A slow answer is given up on in the page, so the tab itself stays usable.
+    const response = await fetch(
+        url, {cache: 'no-store', redirect: 'manual', signal: AbortSignal.timeout(patience)}
+    );
     const headers = Object.fromEntries(response.headers);
     if (response.status !== 200) {
         await response.body?.cancel();
@@ -137,6 +145,10 @@ _FETCH = """
         }
     }
     return {status: response.status, headers, body: btoa(bytes)};
+  } catch (error) {
+    if (error.name === 'TimeoutError' || error.name === 'AbortError') return {slow: true};
+    throw error;
+  }
 })
 """
 
@@ -404,10 +416,17 @@ class DesktopChrome:
                 asked = time.monotonic()
                 await wait_turn(host)
                 started = time.monotonic()
-                async with asyncio.timeout(give_up_after):
+                # The page gives up first and keeps its tab. Dropping the tab on every slow
+                # answer cost a fresh navigation each time: Brookfield's page timed out twice as
+                # its Q3 2026 release went up, and each retry took 5 s instead of 3.
+                async with asyncio.timeout(give_up_after + 1):
                     result = await _evaluate(
-                        tab.socket, f"{_FETCH}({json.dumps(url)}, {MAX_BROWSER_BYTES})"
+                        tab.socket,
+                        f"{_FETCH}({json.dumps(url)}, {MAX_BROWSER_BYTES}, "
+                        f"{round(give_up_after * 1000)})",
                     )
+                if result.get("slow"):
+                    raise _SlowAnswer
                 if result.get("oversized"):
                     raise BrowserError("Browser response exceeded the size limit")
                 return Response(
@@ -418,6 +437,8 @@ class DesktopChrome:
                     time.monotonic() - started,
                     queued=started - asked,
                 )
+            except _SlowAnswer:
+                raise TimeoutError from None
             except (aiohttp.ClientError, ValueError, KeyError, TypeError) as error:
                 await self._drop(host)
                 raise BrowserError(str(error)) from error

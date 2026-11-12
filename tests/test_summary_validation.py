@@ -2,6 +2,8 @@
 
 from dataclasses import replace
 
+import pytest
+
 from earnings_bot.summary_policy import SummaryFact
 from earnings_bot.summary_validation import validate_fact, validate_facts
 
@@ -220,3 +222,40 @@ def test_a_yoy_label_comes_only_from_the_quoted_wording() -> None:
     unclear = SummaryFact("Revenue", "$2.3 billion", both, period="Q3 2026", change="+96%")
     [kept], _ = validate_facts([unclear], both)
     assert (kept.change, kept.comparison) == ("", "")  # left unlabeled, so the change is dropped
+
+
+@pytest.mark.parametrize(
+    "caption",
+    [
+        "In USD $ millions | Three months ended September 30",  # Nebius Q3 2026
+        "(US$ millions, except per share amounts)",  # Brookfield Q3 2026
+        "In USD millions | Three months ended September 30,",
+        "(Millions of dollars, except per share amounts)",
+        "(Dollars in millions)",
+        "(in millions of U.S. dollars)",
+    ],
+)
+def test_a_table_caption_sets_the_scale_however_it_names_the_currency(caption: str) -> None:
+    source = "Revenues | 146.1 | 980.8 | 571 | %"
+    release = f"Consolidated results\n{caption}\n| 2025 | 2026 | Change\n{source}"
+    revenue = SummaryFact(
+        "Revenue",
+        "980.8",
+        source,
+        period="Q3 2026",
+        unit="$ millions",
+        currency="USD",
+        prior="146.1",
+        change="+571%",
+        comparison="YoY",
+    )
+    assert validate_fact(revenue, release) == []
+    # The scale comes from the caption, never from the fact's own claim
+    assert validate_fact(replace(revenue, unit="$ billions"), release) != []
+
+
+def test_prose_about_millions_is_not_a_table_caption() -> None:
+    source = "Units shipped | 146.1 | 980.8"
+    release = "We serve millions of customers in 40 markets.\n| 2025 | 2026\n" + source
+    units = SummaryFact("Units shipped", "980.8", source, period="Q3 2026", unit="thousand units")
+    assert validate_fact(replace(units, unit="$ millions", currency="USD"), release) != []
