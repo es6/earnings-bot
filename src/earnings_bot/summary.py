@@ -8,7 +8,6 @@ from typing import Any
 import anthropic
 
 from earnings_bot.config import Settings
-from earnings_bot.estimates import Estimates
 from earnings_bot.summary_format import discord_brief
 from earnings_bot.summary_policy import EMBER, SummaryFact
 from earnings_bot.summary_request import structured_request
@@ -59,11 +58,9 @@ class Summarizer:
             api_key=api_key, base_url=base_url, max_retries=1, timeout=TIMEOUT_SECONDS
         )
 
-    async def write(
-        self, ticker: str, release: str, estimates: Estimates | None, seconds: float = 0.0
-    ) -> Summary:
-        # Estimates aren't sent: the tested setting had none, and the brief never calls a
-        # beat or miss without a matching estimate
+    async def write(self, ticker: str, release: str, seconds: float = 0.0) -> Summary:
+        # No consensus estimates: the tested setting had none, and the brief never calls a beat
+        # or miss without a matching estimate
         try:
             request = structured_request(ticker, release)
         except ValueError as error:

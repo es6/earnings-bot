@@ -109,7 +109,7 @@ async def test_window_report_uses_discord_message_creation_time(
     url, body = _embed(UBER, UBER_TITLE)
     fetcher = RoutedFetcher({TIMELINES[0]: (200, _feed((UBER, UBER_TITLE))), url: (200, body)})
     benchmark = EarningsBenchmark(fetcher, lambda: target.window[1])
-    releases = Releases(FakePoster, fetcher, journal, None, None)
+    releases = Releases(FakePoster, fetcher, journal, None)
 
     async def record(
         t: Target, f: Fetcher, j: Journal, on_new: OnNew | None, polls: Polls | None

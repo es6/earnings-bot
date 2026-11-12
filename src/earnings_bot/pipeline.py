@@ -32,7 +32,6 @@ from earnings_bot.browser_sources import (
 )
 from earnings_bot.delivery import Delivery, DeliveryStore, retry_delivery
 from earnings_bot.edit_priority import EditPriority, release_step
-from earnings_bot.estimates import Estimates, EstimatesError, fmp_estimates
 from earnings_bot.fetch import Fetcher, Response
 from earnings_bot.formatting import clock, period_label
 from earnings_bot.recorder import ET, Journal, Plan, PollError, Target, poll, record
@@ -398,7 +397,6 @@ class Release:
         fetcher: Fetcher,
         journal: Journal,
         summarizer: Summarizer | None,
-        fmp_api_key: str | None,
         note: str = "",
         priority: EditPriority | None = None,
     ) -> None:
@@ -430,8 +428,6 @@ class Release:
         self.summarizing = False
         self.lock = asyncio.Lock()  # one Discord edit at a time, in order
         self.tasks: set[asyncio.Task[None]] = set()
-        # Only the summary uses estimates
-        self.estimates = asyncio.create_task(self._estimates(fmp_api_key if summarizer else None))
 
     def add(self, source: Source, sighting: Sighting, *, measure: bool = False) -> None:
         """Called by the poller for each new item that looks like the release. Returns at once;
@@ -507,22 +503,6 @@ class Release:
         except Exception as error:
             self.journal.write("post_error", ticker=self.target.ticker, message=repr(error))
             self.journal.say(f"{self.target.ticker}: posting step failed: {error!r}")
-
-    async def _estimates(self, api_key: str | None) -> Estimates | None:
-        if not api_key:
-            return None
-        try:
-            estimates = await fmp_estimates(
-                self.fetcher, api_key, self.target.ticker, self.target.expected.date()
-            )
-        except (EstimatesError, aiohttp.ClientError, TimeoutError, ValueError, KeyError) as error:
-            self.journal.write("estimates_error", ticker=self.target.ticker, message=str(error))
-            self.journal.say(f"{self.target.ticker}: no estimates: {error}")
-            return None
-        self.journal.write(
-            "estimates", ticker=self.target.ticker, eps=estimates.eps, revenue=estimates.revenue
-        )
-        return estimates
 
     async def _link(self, label: str, url: str) -> None:
         async with release_step(self.priority), self.lock:
@@ -837,10 +817,9 @@ class Release:
             await self._write_summary(summarizer, text, label)
 
     async def _write_summary(self, summarizer: Summarizer, text: str, label: str) -> None:
-        estimates = await self.estimates
         started = time.monotonic()
         try:
-            summary = await summarizer.write(self.target.ticker, text, estimates)
+            summary = await summarizer.write(self.target.ticker, text)
         except SummaryError as error:
             self.summarizing = False  # let a later source try
             self.journal.write("summary_error", ticker=self.target.ticker, message=str(error))
@@ -877,7 +856,6 @@ async def watch_schedule(
     channel: discord.abc.Messageable,
     sec_user_agent: str,
     summarizer: Summarizer | None,
-    fmp_api_key: str | None,
     ping: Callable[[], Awaitable[object]] | None = None,
 ) -> None:
     """Runs the schedule and posts each release to the channel. `ping`, a cheap Discord request,
@@ -885,9 +863,7 @@ async def watch_schedule(
     with log_path.open("a", encoding="utf-8") as file:
         journal = Journal(file)
         async with Fetcher(sec_user_agent) as fetcher:
-            releases = Releases(
-                lambda: DiscordPoster(channel), fetcher, journal, summarizer, fmp_api_key
-            )
+            releases = Releases(lambda: DiscordPoster(channel), fetcher, journal, summarizer)
             windows = [target.window for target in plan.target]
             warm = asyncio.create_task(keep_warm(ping, lambda: windows, journal)) if ping else None
             try:
@@ -907,7 +883,6 @@ class Releases:
         fetcher: Fetcher,
         journal: Journal,
         summarizer: Summarizer | None,
-        fmp_api_key: str | None,
         durable_poster: Callable[[Target], Poster] | None = None,
         priority: EditPriority | None = None,
     ) -> None:
@@ -917,7 +892,6 @@ class Releases:
         self.fetcher = fetcher
         self.journal = journal
         self.summarizer = summarizer
-        self.fmp_api_key = fmp_api_key
         self.active: dict[str, Release] = {}
 
     def on_new(
@@ -935,7 +909,6 @@ class Releases:
                 self.fetcher,
                 self.journal,
                 self.summarizer,
-                self.fmp_api_key,
                 priority=self.priority,
             )
         release.add(source, sighting, measure=measure)

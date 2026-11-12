@@ -314,7 +314,7 @@ async def test_browser_rss_alert_is_visible_before_the_article_is_ready(
     poster, log = FakePoster(), io.StringIO()
     journal = Journal(log)
     monkeypatch.setattr(journal, "now", lambda: target.expected)
-    releases = Releases(lambda: poster, fetcher, journal, None, None)
+    releases = Releases(lambda: poster, fetcher, journal, None)
     watch = Watch(target.ticker, source, target.window)
     for _ in range(2):
         sent = journal.now()
@@ -413,7 +413,7 @@ async def test_live_chrome_posts_or_edits_one_alert_with_the_issuer_pdf(
     fetcher = BrowserFake([(200, b""), (200, listing), (200, body), (200, b"%PDF-1.7")])
     poster, log = FakePoster(), io.StringIO()
     journal = Journal(log)
-    releases = Releases(lambda: poster, fetcher, journal, None, None)
+    releases = Releases(lambda: poster, fetcher, journal, None)
     if wire_first:
         wire = RssFeed("prnewswire", "https://example.org/feed")
         releases.on_new(

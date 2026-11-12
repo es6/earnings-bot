@@ -570,7 +570,6 @@ async def watch_directory(
                 fetcher,
                 journal,
                 summarizer,
-                fmp_api_key,
                 lambda target: DurableDiscordPoster(channel, store, target.release_key, author_id),
                 priority=priority,
             )

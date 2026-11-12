@@ -19,8 +19,7 @@ and the Sonnet/Ember comparison; these research tools make no API calls.
 - Races configured IR, newswire and SEC sources in parallel and alerts on the first eligible
   release. Trial sources can record separate timing.
 - Attaches the release files (press release, supplemental data) as they appear
-- Edits in a summary of results, guidance and the KPIs that matter for that company, with
-  consensus estimates from [Financial Modeling Prep](https://site.financialmodelingprep.com/)
+- Edits in a summary of results, guidance and the KPIs that matter for that company
 - Tracks the latest release timing by source and compares Discord alerts with @earnings_guy
 
 ### Earnings calendar commands
@@ -169,7 +168,7 @@ version for you.
    ```
 
    It waits for each release's window and posts to the channel. Without the Anthropic key, posts
-   have no summary; without the FMP key, summaries have no estimates. Every step is logged to
+   have no summary. Every step is logged to
    `schedules/*.jsonl`, the same log the latency recorder writes.
 
    To test the whole flow on a past release, replay it:

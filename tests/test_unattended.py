@@ -133,9 +133,7 @@ async def test_an_alert_retries_then_resumes_after_restart(tmp_path: Path) -> No
     second = Sighting("two", "Quarterly results", "https://wire.example/earnings", earnings=True)
     journal = Journal(io.StringIO())
     with DeliveryStore(db, 7) as store:
-        release = Release(
-            target, channel.poster(store, target), RoutedFetcher({}), journal, None, None
-        )
+        release = Release(target, channel.poster(store, target), RoutedFetcher({}), journal, None)
         release.add(ir, first)
         await release.finish()
         saved = store.get(target.release_key)
@@ -144,9 +142,7 @@ async def test_an_alert_retries_then_resumes_after_restart(tmp_path: Path) -> No
     assert channel.attempts == 2
     first_alert_header = release_content(channel.messages[1]).splitlines()[:2]
     with DeliveryStore(db, 7) as store:
-        resumed = Release(
-            target, channel.poster(store, target), RoutedFetcher({}), journal, None, None
-        )
+        resumed = Release(target, channel.poster(store, target), RoutedFetcher({}), journal, None)
         resumed.add(ir, second)
         await resumed.finish()
 
@@ -184,15 +180,13 @@ async def test_an_alert_someone_deleted_is_posted_again(tmp_path: Path, reuse_po
     sighting = Sighting("one", "Quarterly results", "https://issuer.example/q3", earnings=True)
     journal = Journal(io.StringIO())
     with DeliveryStore(tmp_path / "state.db", 7) as store:
-        first = Release(
-            target, channel.poster(store, target), RoutedFetcher({}), journal, None, None
-        )
+        first = Release(target, channel.poster(store, target), RoutedFetcher({}), journal, None)
         first.add(feed, sighting)
         await first.finish()
         channel.delete(1)
 
         poster = first.poster if reuse_poster else channel.poster(store, target)
-        again = Release(target, poster, RoutedFetcher({}), journal, None, None)
+        again = Release(target, poster, RoutedFetcher({}), journal, None)
         again.add(feed, sighting)
         await again.finish()
         saved = store.get(target.release_key)
@@ -229,9 +223,7 @@ async def test_a_later_sighting_recreates_the_active_alert_and_keeps_links(tmp_p
     second = "https://wire.example/results"
     journal = Journal(io.StringIO())
     with DeliveryStore(tmp_path / "state.db", 7) as store:
-        release = Release(
-            target, channel.poster(store, target), RoutedFetcher({}), journal, None, None
-        )
+        release = Release(target, channel.poster(store, target), RoutedFetcher({}), journal, None)
         release.add(feed, Sighting("one", "Results", first, earnings=True))
         await release.finish()
         channel.delete(1)
@@ -290,7 +282,7 @@ async def test_a_window_that_keeps_failing_is_reported_once(
             tmp_path,
             fetcher,
             journal,
-            Releases(FakePoster, fetcher, journal, None, None),
+            Releases(FakePoster, fetcher, journal, None),
             store,
             status.append,
         )
@@ -326,7 +318,7 @@ async def test_both_globenewswire_copies_post_one_alert_from_one_article_read(
             tmp_path,
             fetcher,
             journal,
-            Releases(lambda: poster, fetcher, journal, None, None),
+            Releases(lambda: poster, fetcher, journal, None),
             store,
             lambda _: None,
         )
@@ -413,7 +405,7 @@ async def test_schedule_reload_preserves_running_windows_and_shares_polls(
     monkeypatch.setattr(unattended, "record_target", watch)
     fetcher = RoutedFetcher({})
     journal = Journal(io.StringIO())
-    releases = Releases(FakePoster, fetcher, journal, None, None)
+    releases = Releases(FakePoster, fetcher, journal, None)
     status: list[str] = []
     when = datetime.now(UTC) + timedelta(hours=1)
     a = tmp_path / "a.toml"
@@ -457,7 +449,7 @@ async def test_restart_reports_windows_that_closed_while_offline(tmp_path: Path)
     )
     fetcher = RoutedFetcher({})
     journal = Journal(io.StringIO())
-    releases = Releases(FakePoster, fetcher, journal, None, None)
+    releases = Releases(FakePoster, fetcher, journal, None)
     status: list[str] = []
     with DeliveryStore(tmp_path / "state.db", 7) as store:
         store.scanned(now - timedelta(hours=3))
@@ -494,7 +486,7 @@ async def test_calendar_updates_edit_one_card_and_keep_their_log(
             tmp_path,
             fetcher,
             journal,
-            Releases(FakePoster, fetcher, journal, None, None),
+            Releases(FakePoster, fetcher, journal, None),
             store,
             standalone.append,
         )
@@ -566,7 +558,6 @@ async def test_a_twenty_release_burst_keeps_one_message_per_release_after_restar
                 RoutedFetcher({}),
                 journal,
                 None,
-                None,
                 lambda target: channel.poster(store, target),
             )
             for target in targets:
@@ -604,7 +595,7 @@ async def test_two_schedules_defining_one_release_use_the_first(
             tmp_path,
             fetcher,
             journal,
-            Releases(FakePoster, fetcher, journal, None, None),
+            Releases(FakePoster, fetcher, journal, None),
             store,
             status.append,
         )
@@ -642,7 +633,7 @@ async def test_a_finished_window_isnt_watched_again_after_a_restart(
                 tmp_path,
                 fetcher,
                 journal,
-                Releases(FakePoster, fetcher, journal, None, None),
+                Releases(FakePoster, fetcher, journal, None),
                 store,
                 lambda message: None,
             )
@@ -756,7 +747,6 @@ async def test_a_restart_resumes_later_links_without_a_second_alert(
                 fetcher,
                 journal,
                 None,
-                None,
                 lambda current: channel.poster(store, current),
             ),
             store,
@@ -796,7 +786,7 @@ async def test_changed_sources_rearm_an_active_followup(
             tmp_path,
             fetcher,
             journal,
-            Releases(FakePoster, fetcher, journal, None, None),
+            Releases(FakePoster, fetcher, journal, None),
             store,
             lambda _: None,
         )

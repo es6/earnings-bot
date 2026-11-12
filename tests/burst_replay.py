@@ -641,7 +641,7 @@ async def _replay(settings: Settings) -> dict[str, Any]:
     lag_task = asyncio.create_task(loop_lag(lag))
     with contextlib.redirect_stdout(console):
         async with ReplayFetcher(world) as fetcher:
-            releases = Releases(new_poster, fetcher, journal, None, None)
+            releases = Releases(new_poster, fetcher, journal, None)
             await record(plan, fetcher, journal, releases.on_new)
             await releases.finish()
     lag_task.cancel()
