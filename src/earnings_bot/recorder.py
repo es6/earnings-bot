@@ -51,6 +51,7 @@ from earnings_bot.sources import (
     SecForm,
     Sighting,
     Source,
+    needs_exhibit_check,
     published_time,
     results_headline,
 )
@@ -634,7 +635,7 @@ async def _verify_sixks(
         result = item
         accepted = published_time(item.published)
         if (
-            item.details.get("form") == "6-K"
+            needs_exhibit_check(item.details)
             and w.window
             and accepted is not None
             and _caught_up(w, replace(item, earnings=True))
@@ -777,9 +778,8 @@ class Polls:
     ) -> None:
         key = w.source.share_key
         if key is None:
-            sixk = (
-                self.sixk if isinstance(w.source, EdgarFilings) and w.source.form == "6-K" else None
-            )
+            # 6-Ks and 8-Ks under Other Events are results only if their exhibit is
+            sixk = self.sixk if isinstance(w.source, EdgarFilings) else None
             await watch(w, self.fetcher, self.journal, end, on_new, sixk=sixk)
             return
         if key not in self.shared:
@@ -976,7 +976,7 @@ async def follow_up(
                 # A full report at this configured URL can enrich an already delivered alert.
                 # A HEAD-only guess still needs a baseline.
                 w.known = set()
-            filings = isinstance(w.source, EdgarFilings) and w.source.form == "6-K"
+            filings = isinstance(w.source, EdgarFilings)
             group.create_task(
                 watch(
                     w,

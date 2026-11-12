@@ -1,4 +1,5 @@
-"""Verify a 6-K's results exhibit before it can become an earnings sighting."""
+"""Verify a 6-K's results exhibit before it can become an earnings sighting. An 8-K filed under
+Other Events (Item 8.01) gets the same check."""
 
 import asyncio
 import re
@@ -11,7 +12,7 @@ import aiohttp
 
 from earnings_bot.fetch import Fetcher, Response
 from earnings_bot.periods import title_period
-from earnings_bot.sources import EdgarFilings, Sighting, published_time
+from earnings_bot.sources import EdgarFilings, Sighting, needs_exhibit_check, published_time
 from earnings_bot.text import filing_exhibits, html_to_text, verified_report
 
 _PERIOD = re.compile(
@@ -138,7 +139,7 @@ class SixKResults:
         self._locks = [asyncio.Lock() for _ in range(64)]
 
     async def verify(self, filing: Sighting) -> Sighting | None:
-        if filing.details.get("form") != "6-K":
+        if not needs_exhibit_check(filing.details):
             return None
         if body := (await self._verdict(filing)).body:
             title = next(
@@ -149,11 +150,16 @@ class SixKResults:
                 ),
                 None,
             )
-            details = {**filing.details, "verified_6k": "true"}
+            details = {**filing.details, "verified_exhibit": "true"}
             if title:
                 details["results_headline"] = title
+            form = filing.details.get("form", "6-K")
             return replace(
-                filing, title="6-K financial results", earnings=True, details=details, body=body
+                filing,
+                title=f"{form} financial results",
+                earnings=True,
+                details=details,
+                body=body,
             )
         return None
 
@@ -184,6 +190,8 @@ class SixKResults:
             raise SixKUnavailable(f"filing index unavailable (HTTP {reply.status})")
         exhibits = filing_exhibits(reply.body.decode(errors="replace"))
         if not exhibits:
+            if filing.details.get("form") != "6-K":
+                return _Verdict()  # An 8-K's own document is the cover, not the release
             # Some issuers, such as Nu Holdings, put the release in the 6-K document itself
             exhibits = [{"name": filing.url.rsplit("/", 1)[1], "description": "6-K"}]
         # A press release is usually EX-99.1. Check other HTML exhibits when it is elsewhere.

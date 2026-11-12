@@ -79,7 +79,10 @@ What this tells us:
    Feed timestamps use each site's local time zone, and that isn't consistent even within one
    site. We use our own clock.
 2. **SEC EDGAR.** The fallback for every company, and the main source for S&P Global, whose IR
-   site trails its 8-K. We poll two lists of the company's filings for new 8-Ks with item 2.02:
+   site trails its 8-K. We poll two lists of the company's filings for new 8-Ks with item 2.02.
+   An 8-K under item 8.01 with an exhibit (item 9.01) counts only once its exhibit reads as a
+   results release, the same check a 6-K gets: Brookfield Asset Management files results,
+   dividends and deals all under 8.01. The two lists:
    - EDGAR's latest-filings feed, narrowed to the company
      (`/cgi-bin/browse-edgar?action=getcurrent&CIK=...&type=8-K&output=atom`). It lists a
      filing the moment it goes public, together with its folder, and is never cached.

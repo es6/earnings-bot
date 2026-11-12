@@ -383,7 +383,20 @@ SecForm = Literal["8-K", "6-K"]
 def _filing_type(form: str, items: str) -> tuple[bool, dict[str, str]]:
     if form == "6-K":
         return False, {"form": "6-K"}
-    return form.startswith("8-K") and "2.02" in items.split(","), {}
+    listed = items.split(",")
+    if form.startswith("8-K") and "2.02" in listed:
+        return True, {}
+    if form.startswith("8-K") and "8.01" in listed and "9.01" in listed:
+        # Some issuers, such as Brookfield Asset Management, furnish every release, results
+        # included, under Other Events with the release as an exhibit. Like a 6-K, only the
+        # exhibit can say whether this one is results.
+        return False, {"form": "8-K", "exhibit_check": "true"}
+    return False, {}
+
+
+def needs_exhibit_check(details: dict[str, str]) -> bool:
+    """A filing that is results only if its exhibit is: a 6-K, or an 8-K under Other Events."""
+    return details.get("form") == "6-K" or details.get("exhibit_check") == "true"
 
 
 class EdgarFilings(Source):

@@ -433,7 +433,7 @@ async def release_text(fetcher: Fetcher, source: Source, sighting: Sighting) -> 
             if sighting.body.startswith(b"%PDF-"):
                 return None
             html = sighting.body.decode(errors="replace")
-            if sighting.details.get("verified_6k") == "true":
+            if sighting.details.get("verified_exhibit") == "true":
                 return html  # The classifier already parsed and verified this exhibit.
         elif isinstance(source, Q4PressReleases):
             return await _q4_text(fetcher, source, sighting.key)

@@ -33,6 +33,7 @@ from earnings_bot.sources import (
     Sighting,
     is_date_notice,
     looks_like_earnings,
+    needs_exhibit_check,
     published_time,
 )
 from earnings_bot.text import html_to_text, release_text, verified_report
@@ -95,6 +96,7 @@ _IR_NAV = re.compile(r"investors?(?: relations| hub| center| centre| information
 _LISTINGS = ("/press-releases", "/news-releases")
 _BLOCKED = frozenset({401, 403, 429})
 RELEASES_READ = 3  # recent results releases read for the IR site and wire
+OTHER_EVENTS_READ = 12  # newest Item 8.01 exhibits read when no 8-K is filed as results
 # When an IR page says it was posted: "Aug 13, 2026 at 4:01 PM EDT"
 _POSTED = re.compile(
     r"\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+(\d{1,2}),\s+(20\d{2})"
@@ -310,6 +312,21 @@ async def _last_releases(
     except PollError:
         return []
     results = [filing for filing in filings if filing.earnings and filing.title.startswith("8-K ")]
+    if not results:
+        # An issuer that files its results under Other Events, as Brookfield Asset Management
+        # does: read its newest such exhibits and keep the ones that are results
+        checker = SixKResults(fetcher)
+        for filing in [item for item in filings if needs_exhibit_check(item.details)][
+            :OTHER_EVENTS_READ
+        ]:
+            try:
+                verified = await checker.verify(filing)
+            except SixKUnavailable:
+                continue
+            if verified:
+                results.append(verified)
+                if len(results) > count:
+                    break
     texts = []
     for filing in results[: count + 1]:
         if text := await release_text(fetcher, sec, filing):
