@@ -699,6 +699,12 @@ def test_a_window_report_names_the_winner_then_how_far_behind_the_rest_were() ->
         "⚠️ Stopped early: SEC 8-K filings",
         "-# @earnings_guy: no post found",
     ]
+    # A route the site refused at times kept retrying, and is named unless it found the release
+    watches[3] = Watch("LCID", EdgarFilings(1811210), window, blocked=3)
+    watches[1].blocked = 1
+    assert unattended._window_report(target, watches).splitlines()[-1] == (
+        "⚠️ Refused at times (HTTP 403), retried: SEC 8-K filings"
+    )
     caught = [Watch("LCID", fresh, window, caught_up="lucid-q3")]
     assert unattended._window_report(target, caught).splitlines()[1] == (
         "Already out when the window opened: PR Newswire earnings feed"

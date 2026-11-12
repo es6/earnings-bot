@@ -139,6 +139,31 @@ async def test_issuer_http_watch_uses_one_transport_and_keeps_chrome_as_fallback
         assert fetcher.browser_calls == []
 
 
+async def test_a_refused_chrome_fallback_says_why_http_gave_way_and_http_is_tried_again() -> None:
+    listing = b'<a href="/other">FICO Names a Director</a>'
+    fetcher = BrowserFake([(403, b"")])
+    fetcher.routes = {FICO: (503, b"")}
+    source = HttpRelease(FICO, PATTERN, chrome_fallback=True)
+    journal = Journal(io.StringIO())
+    w = Watch("FICO", source)
+
+    with pytest.raises(PollError) as refused:
+        await poll(source, fetcher)
+    pause = take(w, journal.now(), refused.value, journal)
+
+    assert refused.value.blocked and not refused.value.fatal
+    assert pause == 30.0 and w.stopped is None
+    assert source.http_failure == "HTTP 503"
+    records = [json.loads(line) for line in journal.file.getvalue().splitlines()]  # type: ignore[attr-defined]
+    assert [record.get("http_failure") for record in records] == ["HTTP 503", "HTTP 503"]
+
+    fetcher.routes = {FICO: (200, listing)}
+    await poll(source, fetcher)
+
+    assert source.listing_transport == "http" and source.http_failure is None
+    assert len(fetcher.browser_calls) == 1
+
+
 async def test_pdf_ignores_missing_files_and_html_and_reuses_valid_bytes() -> None:
     valid = b"%PDF-1.7\n"
     fetcher = BrowserFake([(0, b""), (404, b""), (200, b"<html>Missing</html>"), (200, valid)])

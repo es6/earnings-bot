@@ -337,6 +337,8 @@ class Watch:
     caught_up: str = ""
     previous: datetime | None = None  # when the last answered poll went out
     problem: str | None = None  # the current error, so a failing source reports it only once
+    blocks: int = 0  # 403s in a row, which lengthen the pause before the next try
+    blocked: int = 0  # polls the site refused in all
     stopped: str | None = None
     period: str | None = None
 
@@ -345,14 +347,27 @@ class Watch:
         return self.stopped is not None or bool(self.source.stop_when_found and self.known)
 
 
+# A site that answers 403 is tried again after 30 s, then 60 s, up to every 5 minutes. Nebius
+# refused one poll 12 minutes before its Q3 2026 release and answered normally afterwards, but
+# the route had been stopped for the rest of the window.
+BLOCK_PAUSE, BLOCK_PAUSE_MAX = 30.0, 300.0
+
+
 class PollError(Exception):
     def __init__(
-        self, message: str, *, pause: float = 0.0, fatal: bool = False, timeout: bool = False
+        self,
+        message: str,
+        *,
+        pause: float = 0.0,
+        fatal: bool = False,
+        timeout: bool = False,
+        blocked: bool = False,
     ) -> None:
         super().__init__(message)
         self.pause = pause
         self.fatal = fatal
         self.timeout = timeout
+        self.blocked = blocked
 
 
 async def fetch(source: Source, fetcher: Fetcher) -> Response:
@@ -368,7 +383,7 @@ async def fetch(source: Source, fetcher: Fetcher) -> Response:
     except aiohttp.ClientError as error:
         raise PollError(f"{type(error).__name__} {error}".strip()) from error
     if response.status == 403:
-        raise PollError("HTTP 403, so the site doesn't want us here. Stopped.", fatal=True)
+        raise PollError("HTTP 403: the site refused us. Trying again after a pause", blocked=True)
     if response.status in (429, 503):
         retry_after = response.headers.get("retry-after", "")
         pause = float(retry_after) if retry_after.isdigit() else 30.0
@@ -549,14 +564,22 @@ def _failed(w: Watch, error: PollError, journal: Journal) -> float:
         w.timeouts += 1
     else:
         w.errors += 1
-    timeout = {"timeout": True} if error.timeout else {}
-    journal.write("error", ticker=w.ticker, source=w.source.name, message=str(error), **timeout)
+    extra: dict[str, Any] = {"timeout": True} if error.timeout else {}
+    pause = error.pause
+    if error.blocked:
+        w.blocks += 1
+        w.blocked += 1
+        pause = min(BLOCK_PAUSE * 2 ** (w.blocks - 1), BLOCK_PAUSE_MAX)
+        extra["retry_in"] = pause
+    if http_failure := getattr(w.source, "http_failure", None):
+        extra["http_failure"] = http_failure  # why the direct request gave way to Chrome
+    journal.write("error", ticker=w.ticker, source=w.source.name, message=str(error), **extra)
     if str(error) != w.problem:
         journal.say(f"{w.ticker} {w.source.name}: {error}")
     w.problem = str(error)
     if error.fatal:
         w.stopped = str(error)
-    return error.pause
+    return pause
 
 
 def take(
@@ -589,6 +612,11 @@ def take(
             response_ms=round(listing.elapsed * 1000),
             queued_ms=round(listing.queued * 1000),
             headers=_cache_headers(listing),
+            **(
+                {"http_failure": failure}
+                if (failure := getattr(w.source, "http_failure", None))
+                else {}
+            ),
         )
     if isinstance(outcome, PollError):
         return _failed(w, outcome, journal)
@@ -613,6 +641,7 @@ def take(
     if w.problem:
         journal.say(f"{w.ticker} {w.source.name}: working again")
         w.problem = None
+    w.blocks = 0
     w.elapsed.append(outcome.elapsed)
     w.queued.append(outcome.queued)
     record_items(w, items, outcome, journal, sent, on_new)
@@ -836,6 +865,7 @@ def summarize(target: Target, watches: list[Watch], journal: Journal) -> None:
                 "errors": w.errors,
                 "timeouts": w.timeouts,
                 "stopped": w.stopped,
+                "blocked": w.blocked,
                 "median_ms": _median_ms(w.elapsed),
                 "queued_median_ms": _median_ms(w.queued),
                 "queued_max_ms": round(max(w.queued) * 1000) if w.queued else None,
@@ -898,7 +928,10 @@ async def record_target(
         journal.say(f"{target.ticker}: its window closed at {_clock(end)} ET, skipping")
         return []
     if journal.now() < start:
-        journal.say(f"{target.ticker}: waiting until {_clock(start)} ET")
+        # Name the day unless it's today: "waiting until 05:30" once read as this morning's
+        opens = start.astimezone(ET)
+        day = "" if opens.date() == journal.now().astimezone(ET).date() else f"{opens:%a %b %d} "
+        journal.say(f"{target.ticker}: waiting until {day}{_clock(start)} ET")
     # Wait on the system clock, which catches up after the computer sleeps, in short naps so a
     # sleep doesn't make us miss the window. The clock is synced again once the window opens.
     while (remaining := (start - datetime.now(UTC)).total_seconds()) > 0:  # noqa: ASYNC110

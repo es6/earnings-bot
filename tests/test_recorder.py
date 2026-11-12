@@ -12,7 +12,7 @@ from typing import Any, cast
 
 import pytest
 
-from earnings_bot import clock, fetch
+from earnings_bot import clock, fetch, recorder
 from earnings_bot.clock import Sample
 from earnings_bot.fetch import Fetcher, Response
 from earnings_bot.recorder import (
@@ -195,16 +195,28 @@ async def test_fetcher_doesnt_send_cookies_back() -> None:
     assert b"cookie" not in requests[1].lower()
 
 
-async def test_watch_stops_when_blocked() -> None:
+async def test_a_refused_poll_is_retried_after_a_growing_pause(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Nebius refused one poll 12 minutes before its Q3 2026 release, then answered normally.
+    The route had been stopped for the rest of the window."""
+    monkeypatch.setattr(recorder, "BLOCK_PAUSE", 0.05)
     log = io.StringIO()
     journal = Journal(log)
-    w = Watch("FICO", ListSource())
+    w = Watch("NBIS", ListSource())
+    fetcher = FakeFetcher((200, "old"), (403, ""), (403, ""), (200, "old results"))
 
-    await watch(w, FakeFetcher((403, "")), journal, end=journal.now() + timedelta(seconds=5))
+    await watch(w, fetcher, journal, end=journal.now() + timedelta(seconds=0.6))
 
-    assert w.polls == 1
-    assert w.stopped is not None
-    assert w.first is None
+    assert w.stopped is None
+    assert (w.blocked, w.blocks) == (2, 0)
+    assert w.first is not None and w.first_title == "Item results"
+    refused = [
+        record
+        for line in log.getvalue().splitlines()
+        if (record := json.loads(line))["event"] == "error"
+    ]
+    assert [record["retry_in"] for record in refused] == [0.05, 0.1]
 
 
 async def test_clock_sync_is_logged(monkeypatch: pytest.MonkeyPatch) -> None:

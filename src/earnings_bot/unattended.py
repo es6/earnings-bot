@@ -502,6 +502,10 @@ def _window_report(target: Target, watches: list[Watch], comparison: str = "") -
         )
     if stopped := list(dict.fromkeys(label(w) for w in watches if w.stopped)):
         lines.append(f"⚠️ Stopped early: {', '.join(stopped)}")
+    if refused := list(
+        dict.fromkeys(label(w) for w in watches if w.blocked and not w.stopped and not w.first)
+    ):
+        lines.append(f"⚠️ Refused at times (HTTP 403), retried: {', '.join(refused)}")
     if comparison:
         lines.append(f"-# {comparison}")
     return "\n".join(lines)

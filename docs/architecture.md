@@ -506,8 +506,14 @@ What it tells us:
 ### HTTP and Chrome workers
 
 HTTP requests share host queues and handle timeouts and backoff per source. A source that returns
-403 can stop independently while the other watchers continue. The [Chrome worker](browser-ir.md)
-runs on a separate Windows desktop with a dedicated temporary profile.
+403 pauses on its own and tries again after 30 seconds, then 60, up to every 5 minutes, while the
+other watchers continue. It used to stop for the rest of the window: on November 12, 2026 the
+Nebius newsroom refused one poll at 6:59 AM, 12 minutes before its Q3 release, and answered
+normally afterwards. The window report names a route that was refused at times, and the journal
+records why a direct request gave way to Chrome (`http_failure`). The
+[Chrome worker](browser-ir.md) runs on a separate Windows desktop with a dedicated temporary
+profile. A Chrome request that is too slow is given up on inside the page, so its warm tab stays
+open for the next poll.
 
 ## Tracking companies
 

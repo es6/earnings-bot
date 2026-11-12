@@ -1,5 +1,7 @@
 from typing import Any
 
+import pytest
+
 from earnings_bot.browser import _SETTLED, DesktopChrome, _Tab
 
 
@@ -9,6 +11,7 @@ class FakeTabSocket:
     def __init__(self) -> None:
         self.sent: list[dict[str, Any]] = []
         self.replies: list[dict[str, Any]] = []
+        self.value: Any = None  # what the next in-page fetch answers, when set
 
     async def send_json(self, message: dict[str, Any]) -> None:
         self.sent.append(message)
@@ -16,6 +19,8 @@ class FakeTabSocket:
         if message["method"] == "Runtime.evaluate":
             if message["params"]["expression"] == _SETTLED:
                 value: Any = ["complete", 1, 10]
+            elif self.value is not None:
+                value = self.value
             else:
                 value = {
                     "url": "https://ir.example.com/results",
@@ -69,3 +74,34 @@ async def test_a_render_turns_off_chromes_own_cache_before_it_navigates() -> Non
     assert methods[:3] == ["Network.enable", "Network.setCacheDisabled", "Page.navigate"]
     assert socket.sent[1]["params"] == {"cacheDisabled": True}
     assert page.links == [("https://ir.example.com/q3.pdf", "Earnings Release")]
+
+
+async def test_a_slow_answer_times_out_without_losing_the_warm_tab() -> None:
+    """Brookfield's page timed out twice as its Q3 2026 release went up. Each timeout dropped
+    the tab, so the retry had to navigate again first."""
+    chrome = DesktopChrome()
+    socket = FakeTabSocket()
+    socket.value = {"slow": True}
+    chrome._tabs["ir.example.com"] = _Tab("tab", socket)  # type: ignore[arg-type]
+    dropped: list[str] = []
+
+    async def started() -> None:
+        return None
+
+    async def drop(host: str) -> None:
+        dropped.append(host)
+
+    async def wait_turn(host: str) -> None:
+        return None
+
+    chrome._start = started  # type: ignore[method-assign]
+    chrome._drop = drop  # type: ignore[method-assign]
+    url = "https://ir.example.com/results"
+
+    with pytest.raises(TimeoutError):
+        await chrome.request(url, url, 3, wait_turn)
+
+    assert dropped == []
+    assert "ir.example.com" in chrome._tabs
+    # The page is told how long to wait, so it gives up before the bot does
+    assert socket.sent[-1]["params"]["expression"].endswith(", 3000)")

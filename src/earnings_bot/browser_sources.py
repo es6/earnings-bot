@@ -367,9 +367,12 @@ class HttpRelease(BrowserRelease):
         )
         self.chrome_fallback = os.name == "nt" if chrome_fallback is None else chrome_fallback
         self._chrome_until = 0.0
+        # Why the last direct request gave way to Chrome, for the journal
+        self.http_failure: str | None = None
 
     async def request_page(self, fetcher: Fetcher, url: str, *, urgent: bool = False) -> Response:
         try_http = time.monotonic() >= self._chrome_until
+        self.http_failure = None
         if try_http:
             try:
                 response = await fetcher.request(
@@ -380,9 +383,10 @@ class HttpRelease(BrowserRelease):
                     urgent=urgent,
                     allow_redirects=False,
                 )
-            except (aiohttp.ClientError, TimeoutError):
+            except (aiohttp.ClientError, TimeoutError) as error:
                 if not self.chrome_fallback:
                     raise
+                self.http_failure = f"{type(error).__name__} {error}".strip()
             else:
                 if (
                     not self.chrome_fallback
@@ -391,6 +395,7 @@ class HttpRelease(BrowserRelease):
                 ):
                     self.transport = "http"
                     return response
+                self.http_failure = f"HTTP {response.status}"
         try:
             response = await super().request_page(fetcher, url, urgent=urgent)
         except (aiohttp.ClientError, BrowserError, TimeoutError):
