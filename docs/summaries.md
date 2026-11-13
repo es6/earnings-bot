@@ -12,6 +12,50 @@ confirmed facts by period and kind, as in the reviewed Discord previews, and the
 counts the facts held back. A failed or fully unconfirmed summary posts nothing, and the next
 source's text can try again.
 
+The brief puts the most important facts first, using the role the model gives each fact:
+
+1. The quarter's headline results.
+2. The outlook.
+3. The quarter's other results, under "More results" when an outlook comes between them and
+   the headline. They include balances at the quarter's end date, with each measure's
+   segments on one line, largest first. A segment's level and its growth make one entry.
+4. Results for other periods, such as year to date.
+5. Business updates, under one heading, with their own period when it differs from the
+   quarter.
+
+Formatting rules, all in code and applied the same way for every company:
+- A level whose release gives the year-ago figure shows its change: growth in percent, and
+  a margin's change in basis points. When the year-ago figure is a loss or zero, the line
+  shows that figure instead of a growth rate.
+- Negatives read `-$37.5M`, whatever form the release used ("(37.5)", "$(37.5)").
+- A single scaled amount keeps at most four significant digits and two decimals, so
+  `$7.9637B` reads `$7.96B`. Ranges, per-share figures and percentages keep every digit.
+- A count keeps its unit (`5.3M square feet`). A margin over anything but revenue names its
+  base (`3.6% of Gross Bookings`).
+- Some labels are dropped:
+  - a reporting standard, such as GAAP, IFRS or "reported", which is the default reading;
+  - statement names and generic tags, such as "Operating KPI";
+  - a consolidated scope;
+  - the company's own name, when it is the segment named on most lines.
+
+  Adjusted and non-GAAP labels stay, and so does a GAAP tag on an adjusted label, where it
+  shows a conflict.
+
+Replaying the 63 saved Ember-low outputs from November 13 (measured offline; the model calls
+cost $0.18):
+
+| Measure | Before | After |
+|---|---|---|
+| Briefs with every headline fact at the top | 42% | 90% |
+| Where the outlook starts, as a share of the brief | 60% | 18% |
+| Levels showing a change | 37% | 53% |
+| Over-precise scaled values | 183 | 18 (all guidance ranges, kept exact) |
+| Reporting-standard tags on labels | 246 | 33 |
+| Unformatted negatives | 17 | 0 |
+| Average characters | 1,174 | 1,091 |
+
+These measure layout and formatting, not whether the model chose the right facts.
+
 A brief longer than one embed's 4,096 characters continues in "Highlights, continued" embeds,
 split at line breaks. Anything past Discord's 6,000-character limit for a whole message is
 counted in a visible note at the end, not cut silently. A later link edit rebuilds the brief
