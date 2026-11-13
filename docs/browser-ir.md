@@ -39,6 +39,12 @@ Chrome and checks the link's fiscal period before downloading the PDF.
 A working Chrome route can still return a cached copy. The journal records
 listing timings separately from PDF downloads.
 
+An issuer's JSON newsroom and quarterly results API can also be watched together.
+`news_api` and `results_api` keep their own verified route and cache policy; both
+share the issuer host's request budget. A results API must retrieve the prior
+quarter's issuer-hosted PDF before it is prepared for the next quarter. This
+matters when a newsroom omits a release that the quarterly results page publishes.
+
 ## Configure a source for one schedule
 
 Add a `[target.ir]` section after the matching `[[target]]` entry. The

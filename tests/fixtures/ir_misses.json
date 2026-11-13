@@ -1,0 +1,120 @@
+{
+  "provenance": "Public responses saved by the November 12 investigation; fields reduced offline.",
+  "onon": {
+    "GetPressReleaseListResult": [
+      {
+        "PressReleaseId": 1791,
+        "Headline": "On Reports Results for the Third Quarter and Nine-Month Period Ended September 30, 2026",
+        "PressReleaseDate": "11/10/2026 05:00:00",
+        "LinkToDetailPage": "/news/news-details/2026/On-Reports-Results-for-the-Third-Quarter-and-Nine-Month-Period-Ended-September-30-2026/default.aspx"
+      },
+      {
+        "PressReleaseId": 1788,
+        "Headline": "On to Release Third Quarter 2026 Results on Tuesday, November 10, 2026",
+        "PressReleaseDate": "10/27/2026 16:30:00",
+        "LinkToDetailPage": "/news/news-details/2026/On-to-Release-Third-Quarter-2026-Results-on-Tuesday-November-10-2026/default.aspx"
+      },
+      {
+        "PressReleaseId": 1787,
+        "Headline": "On Enters Next Chapter: Unveils Strategy to Redefine What a Sportswear Brand Can Be Alongside 2029 Financial Targets",
+        "PressReleaseDate": "09/22/2026 00:00:00",
+        "LinkToDetailPage": "/news/news-details/2026/On-Enters-Next-Chapter-Unveils-Strategy-to-Redefine-What-a-Sportswear-Brand-Can-Be-Alongside-2029-Financial-Targets/default.aspx"
+      },
+      {
+        "PressReleaseId": 1786,
+        "Headline": "On to Host Investor Day on Tuesday, September 22, 2026",
+        "PressReleaseDate": "09/08/2026 16:30:00",
+        "LinkToDetailPage": "/news/news-details/2026/On-to-Host-Investor-Day-on-Tuesday-September-22-2026/default.aspx"
+      },
+      {
+        "PressReleaseId": 1785,
+        "Headline": "On Reports Results for the Second Quarter and Six-Month Period Ended June 30, 2026",
+        "PressReleaseDate": "08/11/2026 05:00:00",
+        "LinkToDetailPage": "/news/news-details/2026/On-Reports-Results-for-the-Second-Quarter-and-Six-Month-Period-Ended-June-30-2026/default.aspx"
+      }
+    ]
+  },
+  "sea_results": [
+    {
+      "year": 2026,
+      "data": [
+        {
+          "quarter": "Q3",
+          "press_release": "https://cdn.sea.com/investor/3Q2026/VZJl6wXWX76O8otphvf6/2026.11.10%20Sea%20Third%20Quarter%202026%20Results.pdf"
+        },
+        {
+          "quarter": "Q2",
+          "press_release": "https://cdn.sea.com/investor/2Q2026/wFBC39MbqnfLb3MGY6LP/2026.08.11%20Sea%20Second%20Quarter%202026%20Results.pdf"
+        },
+        {
+          "quarter": "Q1",
+          "press_release": "https://cdn.sea.com/investor/1Q2026/HEEdeRDe0NyiZ1PrWIvH/2026.05.12%20Sea%20First%20Quarter%202026%20Results.pdf\r\n"
+        }
+      ]
+    }
+  ],
+  "sea_news": {
+    "news": [
+      {
+        "title": "Sea Limited to Report Third Quarter 2026 Results",
+        "publish_date": "2026/10/27",
+        "document_url": "https://cdn.sea.com/investor/3Q2026/2QG80dSzQmjmCuV0gQmp/2026.10.27%20Sea%20Limited%20to%20Report%20Third%20Quarter%202026%20Results.pdf"
+      },
+      {
+        "title": "Sea Limited to Hold Annual General Meeting on September 16, 2026",
+        "publish_date": "2026/08/25",
+        "document_url": "https://cdn.sea.com/investor/AR2026/BQ0KuiWzna/2026.08.25%20Sea%20Limited%20to%20Hold%20Annual%20General%20Meeting%20on%20September%2016%2C%202026.pdf"
+      },
+      {
+        "title": "Sea Limited Reports Second Quarter 2026 Results",
+        "publish_date": "2026/08/11",
+        "document_url": "https://cdn.sea.com/investor/2Q2026/wFBC39MbqnfLb3MGY6LP/2026.08.11%20Sea%20Second%20Quarter%202026%20Results.pdf"
+      },
+      {
+        "title": "Sea Limited to Report Second Quarter 2026 Results",
+        "publish_date": "2026/07/28",
+        "document_url": "https://cdn.sea.com/investor/2Q2026/FBWWpVy43Auf1EnpVt6o/2026.07.28%20Sea%20Limited%20to%20Report%20Second%20Quarter%202026%20Results.pdf"
+      },
+      {
+        "title": "Sea Limited Reports First Quarter 2026 Results",
+        "publish_date": "2026/05/12",
+        "document_url": "https://cdn.sea.com/investor/1Q2026/HEEdeRDe0NyiZ1PrWIvH/2026.05.12%20Sea%20First%20Quarter%202026%20Results.pdf\r\n"
+      },
+      {
+        "title": "Sea Limited to Report First Quarter 2026 Results",
+        "publish_date": "2026/04/28",
+        "document_url": "https://cdn.sea.com/investor/1Q2026/DpQXsm6JO7M8u8NysfCh/2026.04.28%20Sea%20Limited%20to%20Report%20First%20Quarter%202026%20Results.pdf"
+      },
+      {
+        "title": "Sea Limited Files Annual Report on Form 20-F for Year Ended December 31, 2025",
+        "publish_date": "2026/04/18",
+        "document_url": "https://cdn.sea.com/investor/AR2025/Mwc2O4a367X8yYMIb1VG/2026.04.18%20Sea%20Limited%20Files%20Annual%20Report%20on%20Form%2020-F.pdf"
+      },
+      {
+        "title": "Sea Limited Reports Fourth Quarter and Full Year 2025 Results",
+        "publish_date": "2026/03/03",
+        "document_url": "https://cdn.sea.com/investor/4Q2025/JcKns4LaJC8bxcQdJwXz/2026.03.03%20Sea%20Fourth%20Quarter%20and%20Full%20Year%202025%20Results.pdf"
+      },
+      {
+        "title": "Sea Limited to Report Fourth Quarter and Full Year 2025 Results",
+        "publish_date": "2026/02/17",
+        "document_url": "https://cdn.sea.com/investor/4Q2025/t6ZH50m5rH4eBjpSdqgo/2026.02.17%20Sea%20Limited%20to%20Report%20Fourth%20Quarter%20and%20Full%20Year%202025%20Results.pdf"
+      },
+      {
+        "title": "Sea Limited Announces Share Repurchase Program",
+        "publish_date": "2025/11/17",
+        "document_url": "https://cdn.sea.com/investor/Announcements/G9R6AQNhsjr4f1e8Y6W2/2025.11.17%20Sea%20Limited%20Announces%20Share%20Repurchase%20Program.pdf"
+      },
+      {
+        "title": "Sea Limited Reports Third Quarter 2025 Results",
+        "publish_date": "2025/11/11",
+        "document_url": "https://cdn.sea.com/investor/3Q2025/VCQyb53nURvpodOR3CpG/2025.11.11%20Sea%20Third%20Quarter%202025%20Results.pdf"
+      },
+      {
+        "title": "Sea Limited to Report Third Quarter 2025 Results",
+        "publish_date": "2025/10/28",
+        "document_url": "https://cdn.sea.com/investor/3Q2025/oArwQZksyTSmwqZdJWD4/2025.10.28%20Sea%20Limited%20to%20Report%20Third%20Quarter%202025%20Results.pdf"
+      }
+    ]
+  }
+}

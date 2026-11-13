@@ -753,10 +753,17 @@ def ir_starts(ticker: str, company: KnownCompany) -> list[str]:
 def _cache_routes(row: Tracked) -> list[CacheRoute]:
     target, company = row.target, row.company
     ir = target.ir if target else None
-    api = (ir.news_api if ir else None) or company.ir_results_api or company.ir_news_api
     q4_host = target.q4_host if target else company.q4_host
     routes: list[CacheRoute] = []
-    if api:
+    apis = dict.fromkeys(
+        (
+            ir.results_api if ir else None,
+            ir.news_api if ir else None,
+            company.ir_results_api,
+            company.ir_news_api,
+        )
+    )
+    for api in filter(None, apis):
         label = "IR results API" if api == company.ir_results_api else "IR newsroom API"
         routes.append(CacheRoute(label, api))
     if ir and ir.results_table and not ir.table_rendered and target and target.period:
@@ -829,6 +836,8 @@ class DateDiscovery:
         self.on_progress: Callable[[], None] = lambda: None
         self.changed = asyncio.Event()
         self.checked: dict[int, float] = {}
+        # A newly completed source audit can move the window earlier than SEC history.
+        self.reviewed: dict[int, str | None] = {}
         # Companies being checked now, and those whose last check in this process finished
         # without waiting for a window. Until then the notes above are missing or stale.
         self.working: set[int] = set()
@@ -842,7 +851,10 @@ class DateDiscovery:
             for row in self.calendar.entries():
                 if self.busy():
                     break
-                if time.monotonic() < self.checked.get(row.cik, 0):
+                review = self.calendar.review(row.cik)[1]
+                if time.monotonic() < self.checked.get(row.cik, 0) and review == self.reviewed.get(
+                    row.cik
+                ):
                     continue
                 self.checked[row.cik] = time.monotonic() + 3600
                 await self.run_once(row)
@@ -1035,7 +1047,13 @@ class DateDiscovery:
                 notes.append(f"{route.label} · {result.summary}")
                 if not result.fresh:
                     caveats.append(route.label)
-                if ir and route.url in (ir.news_api, ir.listing, ir.rss, ir.results_table):
+                if ir and route.url in (
+                    ir.news_api,
+                    ir.results_api,
+                    ir.listing,
+                    ir.rss,
+                    ir.results_table,
+                ):
                     if result.spelled:
                         spelled.add(route.url)
                         bust.discard(route.url)
@@ -1119,6 +1137,7 @@ class DateDiscovery:
             return
         # Place windows by when the release came out last time, not when SEC had it
         review = self.calendar.review(row.cik)[1]
+        self.reviewed[row.cik] = review
         timed = replace(row, company=timed_by_publishers(row.company, review))
         self._phase(row.cik, "Looking for the next release date")
         now = self.now()
@@ -1241,7 +1260,14 @@ class DateDiscovery:
         results_api = row.company.ir_results_api
         table = row.company.ir_results_page
         browser_feed = row.company.ir_browser_rss
-        newer = bool(results_api and existing_ir and existing_ir.news_api != results_api)
+        news_api = row.company.ir_news_api
+        newer = bool(
+            existing_ir
+            and (
+                (results_api and existing_ir.results_api != results_api)
+                or (news_api and news_api != results_api and existing_ir.news_api != news_api)
+            )
+        )
         extras_due = (table and (not existing_ir or existing_ir.results_table != table)) or (
             browser_feed and (not existing_ir or existing_ir.rss != browser_feed)
         )
@@ -1252,6 +1278,7 @@ class DateDiscovery:
             and (
                 evidence == MANUAL
                 or existing_ir.news_api
+                or existing_ir.results_api
                 or existing_ir.http_first
                 or existing_ir.rss
                 or existing_ir.pdfs
@@ -1271,9 +1298,28 @@ class DateDiscovery:
             self._phase(row.cik, VERIFYING_IR)
         ir = await verified_news_source(self.fetcher, results_api, target.period)
         if ir:
-            why = "Read last quarter's press release PDF from the issuer's results API"
-        elif ir := await verified_news_source(self.fetcher, row.company.ir_news_api, target.period):
-            why = "Read last quarter's report PDF from the issuer newsroom API"
+            ir = ir.model_copy(update={"results_api": ir.news_api, "news_api": None})
+        news = (
+            await verified_news_source(self.fetcher, news_api, target.period)
+            if news_api != results_api
+            else None
+        )
+        if news:
+            ir = IRSource.model_validate(
+                {
+                    **(ir.model_dump() if ir else {}),
+                    "news_api": news.news_api,
+                    "headline": news.headline,
+                }
+            )
+        if ir:
+            why = "Read last quarter's press release PDF from the issuer's " + (
+                "results and newsroom APIs"
+                if ir.results_api and ir.news_api
+                else "results API"
+                if ir.results_api
+                else "newsroom API"
+            )
         else:
             ir = (
                 None
@@ -1294,7 +1340,13 @@ class DateDiscovery:
                 **existing_ir.model_dump(exclude_defaults=True, exclude=cache),
                 **ir.model_dump(exclude_defaults=True, exclude=cache),
             }
-            urls = {routes.get(field) for field in ("listing", "news_api", "rss", "results_table")}
+            # Older plans stored a results API in news_api. Migrate that alias once.
+            if routes.get("results_api") and routes.get("news_api") == routes.get("results_api"):
+                routes.pop("news_api")
+            urls = {
+                routes.get(field)
+                for field in ("listing", "news_api", "results_api", "rss", "results_table")
+            }
             ir = IRSource.model_validate(
                 {
                     **routes,

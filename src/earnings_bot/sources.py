@@ -376,7 +376,7 @@ class Q4FinancialReports(Source):
                 # A quarter's webcast link ("Online", not "File") can be listed before its
                 # release, so only a file counts as the release
                 earnings=looks_like_earnings(report["ReportTitle"])
-                and document.get("DocumentType") != "Online",
+                and str(document.get("DocumentType", "")).strip().casefold() != "online",
             )
             for report in json.loads(response.body)["GetFinancialReportListResult"]
             for document in report["Documents"]
