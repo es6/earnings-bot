@@ -40,7 +40,12 @@ async def test_html_cell_references_reach_the_writer_and_survive_a_store_restart
         document: SourceDocument
 
         async def write_document(
-            self, ticker: str, document: SourceDocument, seconds: float = 0.0
+            self,
+            ticker: str,
+            document: SourceDocument,
+            seconds: float = 0.0,
+            *,
+            context: dict | None = None,
         ) -> Summary:
             self.document = document
             return await super().write_document(ticker, document, seconds)

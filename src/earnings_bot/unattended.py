@@ -18,6 +18,7 @@ from earnings_bot.browser_sources import BrowserRelease, BrowserRss
 from earnings_bot.calendar import Calendar
 from earnings_bot.date_discovery import DateDiscovery
 from earnings_bot.delivery import DeliveryStore, retry_delivery
+from earnings_bot.driver_profiles import DriverProfiles, ProfileWriter
 from earnings_bot.edit_priority import EditPriority
 from earnings_bot.fetch import Fetcher
 from earnings_bot.formatting import (
@@ -633,6 +634,8 @@ async def watch_directory(
     status_channel: discord.abc.Messageable | None,
     ready: Callable[[DirectoryWatcher], None],
     ping: Callable[[], Awaitable[object]] | None = None,
+    *,
+    driver_profiles: bool = False,
 ) -> None:
     progress_channel = status_channel or channel
     progress_id = getattr(progress_channel, "id", channel_id)
@@ -692,6 +695,20 @@ async def watch_directory(
                 directory, fetcher, journal, releases, store, status, benchmark, fmp_api_key
             )
             watcher.follow_up = FOLLOW_UP
+            profiles = (
+                DriverProfiles(
+                    store,
+                    fetcher,
+                    watcher.sixk,
+                    ProfileWriter(summarizer.client),
+                    lambda cik: watcher.research_paused() or watcher.in_window(cik),
+                )
+                if driver_profiles and summarizer is not None
+                else None
+            )
+            watcher.dates.profiles = profiles
+            if profiles:
+                releases.issuer_context = lambda target: profiles.context(target.cik, journal.now())
             watcher.summaries = summarizer is not None
             if isinstance(channel, discord.abc.GuildChannel | discord.Thread):
                 watcher.guild_id = channel.guild.id
@@ -715,6 +732,7 @@ async def watch_directory(
                 in_window=watcher.in_window,
                 research_mode=watcher.research_mode,
                 research_deferred=fetcher.research_deferred,
+                profile_note=profiles.notes.get if profiles else None,
             )
             watcher.dates.on_progress = watcher.progress.changed.set
             watcher.progress.follow_calendar()

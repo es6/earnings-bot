@@ -33,6 +33,8 @@ class Settings(BaseSettings):
     # Summaries by Muse Ember through Meta's Model API. They cost money per release, so they
     # run only when switched on: LIVE_SUMMARIES=true and META_MODEL_API_KEY
     live_summaries: bool = False
+    # Separately opt in to paid /track driver profiles after reviewing their evaluation.
+    live_driver_profiles: bool = False
     meta_model_api_key: SecretStr | None = None
     fmp_api_key: SecretStr | None = None  # earnings-calendar lookups
     # Where the watchdog (python -m earnings_bot.watchdog) posts its alarms

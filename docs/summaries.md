@@ -290,6 +290,35 @@ a speed gain isn't established. It also changed selection: more facts, and more 
 Whether that makes better briefs is a quality judgment for the owner, so the request is
 unchanged.
 
+## Prior-release driver profiles (opt-in)
+
+`LIVE_DRIVER_PROFILES=true`, together with live summaries, lets `/track` research prepare
+advisory context from the issuer's latest verified SEC results release. It covers the
+business model, reported segments, recurring KPIs, guidance and material themes. Labels
+and self-contained evidence excerpts must occur in that release; unsupported entries
+are omitted. Code supplies its source URL, document hash, fiscal period, publication date
+and review date. These checks establish traceability, not the importance of every label
+or the semantic correctness of a category assigned by the model.
+
+Profiles live in the existing delivery SQLite database, keyed by CIK. Old or future-dated
+evidence is excluded after 120 days, even if it was fetched recently. Research checks for
+a changed release at most daily, and yields before paid work when the issuer's window or
+the release priority interval begins. Context lookup performs no network or model work on
+the detection path. New material developments outrank a profile, and summary verification
+uses only the current release; a prior profile cannot validate an old value.
+
+Preparation uses Ember low, one background call at a time, with SDK retries disabled,
+at most five calls and $0.50 of reserved cost per day. The reservation uses a conservative
+UTF-8 byte bound, output ceiling and higher-tier prices. It is committed before the call;
+an interrupted/unknown result retains its reservation and cannot trigger another paid
+call for the same document. Successful and rejected results record cost. A rejected new
+profile preserves the previous valid one. The scorecard shows profile preparation status
+separately from monitoring readiness.
+
+The switch defaults to false. No existing setting or running bot is changed. Its effect
+on selection, retention, latency and cost still requires the unseen-issuer comparison;
+implementation tests do not establish summary quality.
+
 ## Offline research
 
 No API call is made by the offline evaluation commands.

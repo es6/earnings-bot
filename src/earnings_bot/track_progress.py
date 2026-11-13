@@ -245,6 +245,7 @@ class TrackProgress:
         in_window: Callable[[int], bool] | None = None,
         research_mode: Callable[[], contextlib.AbstractContextManager[None]] | None = None,
         research_deferred: Callable[[], bool] = lambda: False,
+        profile_note: Callable[[int], str | None] | None = None,
     ) -> None:
         self.calendar, self.store, self.channel = calendar, store, channel
         # Source audits stop while research is paused (by default, while any window is open);
@@ -253,6 +254,7 @@ class TrackProgress:
         self.in_window = in_window or (lambda _: False)
         self.research_mode = research_mode or contextlib.nullcontext
         self.research_deferred = research_deferred
+        self.profile_note = profile_note or (lambda cik: None)
         self.card_spacing = card_spacing
         self._last_card_edit = -card_spacing
         # Release posts and edits go first (see edit_priority)
@@ -548,6 +550,8 @@ class TrackProgress:
         embed.add_field(name=heading, value=bullets(watching) or "Nothing yet", inline=False)
         if cache:
             embed.add_field(name="Cache preflight", value=bullets(cache), inline=False)
+        if profile_note := self.profile_note(row.cik):
+            embed.add_field(name="Summary context", value=profile_note, inline=False)
 
         if listing := row.company.ir_listing:
             status = row.company.ir_http_status
