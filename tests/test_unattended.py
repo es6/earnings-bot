@@ -272,7 +272,7 @@ async def test_an_update_recreates_a_deleted_alert_and_is_applied(
 async def test_a_window_that_keeps_failing_is_reported_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    async def broken(*args: object) -> list[Watch]:
+    async def broken(*args: object, **kwargs: object) -> list[Watch]:
         raise RuntimeError("feed parser bug")
 
     monkeypatch.setattr(unattended, "record_target", broken)
@@ -308,7 +308,12 @@ async def test_both_globenewswire_copies_post_one_alert_from_one_article_read(
     sighting = Sighting(url, "NVIDIA Reports Third Quarter Results", url, earnings=True)
 
     async def record(
-        target: Target, fetcher: Fetcher, journal: Journal, on_new: OnNew, polls: Polls
+        target: Target,
+        fetcher: Fetcher,
+        journal: Journal,
+        on_new: OnNew,
+        polls: Polls,
+        **kwargs: object,
     ) -> list[Watch]:
         for source in target.trial.sources():
             on_new(target, source, sighting)
@@ -402,6 +407,7 @@ async def test_schedule_reload_preserves_running_windows_and_shares_polls(
         journal: Journal,
         on_new: OnNew | None = None,
         polls: Polls | None = None,
+        **kwargs: object,
     ) -> list[Watch]:
         started.append((target, polls))
         await asyncio.Event().wait()
@@ -472,7 +478,7 @@ async def test_restart_reports_windows_that_closed_while_offline(tmp_path: Path)
 async def test_calendar_updates_edit_one_card_and_keep_their_log(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    async def watch(*args: object) -> list[Watch]:
+    async def watch(*args: object, **kwargs: object) -> list[Watch]:
         await asyncio.Event().wait()
         return []
 
@@ -582,7 +588,7 @@ async def test_two_schedules_defining_one_release_use_the_first(
 ) -> None:
     started: list[str] = []
 
-    async def watch(target: Target, *args: object) -> list[Watch]:
+    async def watch(target: Target, *args: object, **kwargs: object) -> list[Watch]:
         started.append(target.ticker)
         await asyncio.Event().wait()
         return []
@@ -623,7 +629,7 @@ async def test_a_finished_window_isnt_watched_again_after_a_restart(
 ) -> None:
     started: list[str] = []
 
-    async def watch(target: Target, *args: object) -> list[Watch]:
+    async def watch(target: Target, *args: object, **kwargs: object) -> list[Watch]:
         started.append(target.ticker)
         return []
 
@@ -694,7 +700,7 @@ def test_a_window_report_names_the_winner_then_how_far_behind_the_rest_were() ->
     report = unattended._window_report(target, watches, "@earnings_guy: no post found")
 
     assert report.splitlines() == [
-        "🏁 **LCID Q3 FY26 window closed**",
+        "🏁 **LCID Q3 FY26 window closed** · ⚠️ degraded",
         "🥇 PR Newswire earnings feed at 4:06:02.708 PM ET",
         "Then SEC 8-K filings +2m 51s",
         "⚠️ Stopped early: SEC 8-K filings",

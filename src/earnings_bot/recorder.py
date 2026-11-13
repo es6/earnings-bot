@@ -343,6 +343,7 @@ class Watch:
     pause: RoutePause = field(default_factory=RoutePause)
     blocked: int = 0  # polls the site refused in all
     reported: float | None = None  # time.monotonic() of the last progress event
+    longest_quiet: float = 0.0  # the longest stretch in seconds between answered polls
     # Polled every SLOW_INTERVAL before this, at its own speed after (release_band)
     slow_until: datetime | None = None
     stopped: str | None = None
@@ -691,8 +692,30 @@ def _take(
     w.elapsed.append(outcome.elapsed)
     w.queued.append(outcome.queued)
     record_items(w, items, outcome, journal, sent, on_new)
+    since = w.previous or (w.window[0] if w.window else None)
+    if since is not None:
+        w.longest_quiet = max(w.longest_quiet, (sent - since).total_seconds())
     w.previous = sent
     return 0.0
+
+
+# A route with no answer for this long during a window counts as degraded, in /status and the
+# window report, as the watchdog's alarm does (watchdog.QUIET)
+DEGRADED_AFTER = timedelta(seconds=90)
+
+
+def route_trouble(w: Watch, now: datetime) -> str | None:
+    """Why a watch's route is degraded right now, or None while it's polling normally."""
+    if w.stopped:
+        return f"stopped: {w.stopped}"
+    if w.done or w.window is None or now < w.window[0]:
+        return None
+    since = w.previous or w.window[0]
+    quiet = now - since
+    if quiet <= max(DEGRADED_AFTER, timedelta(seconds=5 * w.source.interval)):
+        return None
+    why = f": {w.problem}" if w.problem else ""
+    return f"no answer for {round(quiet.total_seconds())}s{why}"
 
 
 async def _poll_once(source: Source, fetcher: Fetcher) -> Response | PollError:
@@ -1008,7 +1031,11 @@ async def record_target(
     journal: Journal,
     on_new: OnNew | None = None,
     polls: Polls | None = None,
+    *,
+    on_watches: Callable[[list[Watch]], None] | None = None,
 ) -> list[Watch]:
+    """Watches one release's window. `on_watches` gets its watches as they start, for /status
+    to show a degraded route while the window is open."""
     start, end = target.window
     if journal.now() >= end:
         journal.say(f"{target.ticker}: its window closed at {_clock(end)} ET, skipping")
@@ -1029,6 +1056,8 @@ async def record_target(
         Watch(target.ticker, source, (start, end), period=target.period)
         for source in target.sources()
     ]
+    if on_watches:
+        on_watches(watches)
     notify = (lambda source, item: on_new(target, source, item)) if on_new else None
     journal.write(
         "window",
