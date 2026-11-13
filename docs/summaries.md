@@ -1,19 +1,31 @@
 # Summaries and shared rules
 
-## Source references: item 6 extraction groundwork
+## Source references: extraction and durable runtime handoff
 
-`source_document.py` adds a version-scoped evidence representation, ready for the next
-request/schema and verifier changes. It is not yet used by the live writer. The existing
-quote checker remains in place, and summaries remain beta: a number appearing in a quote
-still does not prove that the model chose the correct metric or period.
+`source_document.py` adds a version-scoped evidence representation. Retrieval now carries
+that document through the first-text/PDF-replacement path to `Summarizer.write_document`.
+The writer delegates to the existing text request and quote checker; the reference-aware
+schema and semantic verifier remain future work. Summaries remain beta: a number appearing
+in a quote still does not prove that the model chose the correct metric or period.
 
 `document_from_html` uses the live HTML reader and retains its plain text. It gives each
-text block and table a stable local ID, scoped to a SHA-256 of the source and format. Cells
+text block and table a stable local ID, scoped to a SHA-256 of the extraction version,
+source and format. Cells
 retain their original row/column, blank/decorative cells, declared spans, and explicit HTML
 header/scope tags. No period, currency, scale, or metric labels are invented. Nested outer
 layout tables are marked as such; their text is not independent table-cell evidence.
 `document_from_text` supplies block references for already extracted text, including PDF
-text, without inferring table cells from spacing. It does not preserve PDF table geometry.
+text, without inferring table cells from spacing. It preserves the original text, including
+spacing, for the existing request. It does not preserve PDF table geometry. A previously
+classified SEC exhibit is treated as text rather than parsed as HTML a second time.
+
+Before a model call, the summary job transaction saves versioned extraction JSON in
+`summary_documents`, keyed by channel, release and document hash, and records that hash
+on the job. Earlier versions stay addressable through `DeliveryStore.summary_document`
+after a PDF/HTML replacement; retrying the same version cannot overwrite its evidence.
+`SourceDocument.from_json` restores immutable blocks and cells and rejects unknown codec
+versions. Legacy jobs have no saved document; their delivered/written states and results
+continue to prevent repeat paid calls. A new extraction version changes the source hash.
 
 Resolve a reference using both the document hash and local ID. A missing ID or a different
 document version fails explicitly. The upcoming verifier must additionally check cell

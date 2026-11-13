@@ -5,10 +5,16 @@ Plain text never gains invented table geometry. The current live writer is uncha
 """
 
 import hashlib
-from dataclasses import dataclass
+import json
+from dataclasses import asdict, dataclass
+from functools import cache
 from typing import Literal
 
+from pydantic import TypeAdapter
+
 from earnings_bot.text import _clean, _Table, _table_lines, _TextParser
+
+DOCUMENT_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -59,10 +65,29 @@ class SourceDocument:
     format: Literal["html", "text"]
     blocks: tuple[SourceBlock, ...]
     tables: tuple[SourceTable, ...] = ()
+    raw_text: str | None = None
 
     @property
     def text(self) -> str:
-        return "\n".join(block.text for block in self.blocks)
+        return (
+            self.raw_text if self.raw_text is not None else "\n".join(b.text for b in self.blocks)
+        )
+
+    def to_json(self) -> str:
+        return json.dumps(
+            {"version": DOCUMENT_VERSION, "document": asdict(self)}, ensure_ascii=False
+        )
+
+    @classmethod
+    def from_json(cls, text: str) -> "SourceDocument":
+        data = json.loads(text)
+        if (
+            not isinstance(data, dict)
+            or data.get("version") != DOCUMENT_VERSION
+            or "document" not in data
+        ):
+            raise ValueError("Unsupported source document representation")
+        return _document_adapter().validate_python(data["document"])
 
     def resolve(self, sha256: str, reference: str) -> SourceBlock | SourceTable | SourceCell:
         """Reject a reference to another document version or a nonexistent source location."""
@@ -80,8 +105,15 @@ class SourceDocument:
         raise ValueError(f"Unknown source reference: {reference}")
 
 
+@cache
+def _document_adapter() -> TypeAdapter[SourceDocument]:
+    return TypeAdapter(SourceDocument)
+
+
 def _digest(source: str, kind: str) -> str:
-    return hashlib.sha256((kind + "\0" + source).encode("utf-8")).hexdigest()
+    return hashlib.sha256(
+        f"source-document/{DOCUMENT_VERSION}\0{kind}\0{source}".encode()
+    ).hexdigest()
 
 
 def document_from_text(text: str) -> SourceDocument:
@@ -93,6 +125,7 @@ def document_from_text(text: str) -> SourceDocument:
         _digest(text, "text"),
         "text",
         tuple(SourceBlock(f"p{i + 1}", "paragraph", line) for i, line in enumerate(lines)),
+        raw_text=text,
     )
 
 

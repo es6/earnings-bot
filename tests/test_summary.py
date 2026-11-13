@@ -6,6 +6,7 @@ import pytest
 from pydantic import SecretStr
 
 from earnings_bot.config import Settings
+from earnings_bot.source_document import document_from_text
 from earnings_bot.summary import (
     META_API,
     MODEL,
@@ -123,6 +124,14 @@ async def test_confirmed_facts_are_laid_out_and_unconfirmed_ones_held_back() -> 
     assert request["output_config"]["effort"] == "low"
     assert request["output_config"]["format"]["type"] == "json_schema"
     assert RELEASE in request["messages"][0]["content"]
+
+
+async def test_document_entry_point_preserves_the_current_model_request_and_validation() -> None:
+    summarizer, asked = summarizer_answering("end_turn", answer(BOOKINGS, INVENTED))
+    from_text = await summarizer.write("UBER", RELEASE, 1.5)
+    from_document = await summarizer.write_document("UBER", document_from_text(RELEASE), 1.5)
+    assert asked[0] == asked[1]
+    assert from_document == from_text and len(from_document.unverified) == 1
 
 
 @pytest.mark.parametrize(
