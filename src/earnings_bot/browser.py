@@ -13,7 +13,7 @@ from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urldefrag, urlsplit
 
 import aiohttp
@@ -31,6 +31,7 @@ MAX_BROWSER_BYTES = 12 * 1024 * 1024
 # The tab key of a host's second warm tab, for urgent reads (DesktopChrome.request)
 URGENT_LANE = "#urgent"
 MAX_JSON_BYTES = 1024 * 1024
+CacheMode = Literal["default", "no-store", "reload"]
 
 
 @dataclass(frozen=True)
@@ -119,12 +120,12 @@ async def _evaluate(ws: aiohttp.ClientWebSocketResponse, expression: str) -> Any
 # Read at most the configured size, including for a response with no Content-Length.
 # The browser stays in the tab's origin and the bot drives the polling timer.
 _FETCH = """
-(async (url, limit, patience) => {
+(async (url, limit, patience, cacheMode = 'no-store') => {
   try {
     // An unpublished file can redirect to a generic page. Keep the tab warm and never follow it.
     // A slow answer is given up on in the page, so the tab itself stays usable.
     const response = await fetch(
-        url, {cache: 'no-store', redirect: 'manual', signal: AbortSignal.timeout(patience)}
+        url, {cache: cacheMode, redirect: 'manual', signal: AbortSignal.timeout(patience)}
     );
     const headers = Object.fromEntries(response.headers);
     if (response.status !== 200) {
@@ -433,18 +434,24 @@ class DesktopChrome:
         wait_turn: Callable[[str], Awaitable[None]],
         *,
         urgent: bool = False,
+        cache_mode: CacheMode = "no-store",
+        bypass_service_worker: bool | None = None,
+        observational: bool = False,
+        max_bytes: int = MAX_BROWSER_BYTES,
     ) -> Response:
         """An urgent request (a release's article, just found) uses the host's second warm tab,
         so it can proceed while a listing poll is slow. Both take turns in the host's one
         queue (wait_turn); a cold urgent tab still needs a navigation."""
         from earnings_bot.fetch import Response
 
+        if not 0 < max_bytes <= MAX_BROWSER_BYTES:
+            raise ValueError("Invalid browser response byte limit")
         host = browser_host(url)
         if browser_host(warmup) != host:
             raise ValueError("A browser request must stay on the warm tab's own origin")
         self._check_allowed()
         await self._start()
-        key = host + URGENT_LANE if urgent else host
+        key = host + "#trial" if observational else (host + URGENT_LANE if urgent else host)
         # Speculative navigation must not keep the urgent read behind normal-priority
         # pacing. Cancellation releases its lock and closes any partly warmed tab first.
         if urgent and (warming := self._prewarming.pop(key, None)):
@@ -460,20 +467,28 @@ class DesktopChrome:
                     await wait_turn(host)
                 warming_started = time.monotonic()
                 tab = await self._warm(key, warmup, host)
-                if cold and not urgent:
+                if cold and not urgent and not observational:
                     self._prewarm(host, warmup, wait_turn)
                 asked = time.monotonic()
                 await wait_turn(host)
                 self._check_allowed()
+                paced = time.monotonic()
+                if bypass_service_worker is not None:
+                    await _command(tab.socket, "Network.enable")
+                    await _command(
+                        tab.socket, "Network.setBypassServiceWorker", bypass=bypass_service_worker
+                    )
+                self._check_allowed()
                 started = time.monotonic()
+                cache_arg = "" if cache_mode == "no-store" else f", {json.dumps(cache_mode)}"
                 # The page gives up first and keeps its tab. Dropping the tab on every slow
                 # answer cost a fresh navigation each time: Brookfield's page timed out twice as
                 # its Q3 2026 release went up, and each retry took 5 s instead of 3.
                 async with asyncio.timeout(give_up_after + 1):
                     result = await _evaluate(
                         tab.socket,
-                        f"{_FETCH}({json.dumps(url)}, {MAX_BROWSER_BYTES}, "
-                        f"{round(give_up_after * 1000)})",
+                        f"{_FETCH}({json.dumps(url)}, {max_bytes}, "
+                        f"{round(give_up_after * 1000)}{cache_arg})",
                     )
                 if result.get("slow"):
                     raise _SlowAnswer
@@ -485,11 +500,12 @@ class DesktopChrome:
                     {name.lower(): value for name, value in result["headers"].items()},
                     base64.b64decode(result["body"], validate=True),
                     time.monotonic() - started,
-                    queued=warming_started - pacing + started - asked,
+                    queued=warming_started - pacing + paced - asked,
                     waits={
                         "tab_lock_ms": round((locked - lock_wait) * 1000),
                         "warmup_ms": round((asked - warming_started) * 1000) if cold else 0,
-                        "pacing_ms": round((warming_started - pacing + started - asked) * 1000),
+                        "pacing_ms": round((warming_started - pacing + paced - asked) * 1000),
+                        "browser_setup_ms": round((started - paced) * 1000),
                     },
                 )
             except BrowserDeferred:
@@ -528,6 +544,12 @@ class DesktopChrome:
                 done.exception()
 
         task.add_done_callback(finished)
+
+    async def close_observations(self) -> None:
+        for key in tuple(self._tabs):
+            if key.endswith("#trial"):
+                async with self._locks.setdefault(key, asyncio.Lock()):
+                    await self._drop(key)
 
     async def close(self) -> None:
         warming = tuple(self._prewarming.values())

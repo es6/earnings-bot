@@ -16,7 +16,13 @@ from urllib.parse import urlsplit
 import aiohttp
 from yarl import URL
 
-from earnings_bot.browser import BrowserError, DesktopChrome, RenderedPage
+from earnings_bot.browser import (
+    MAX_BROWSER_BYTES,
+    BrowserError,
+    CacheMode,
+    DesktopChrome,
+    RenderedPage,
+)
 
 # Research during an open release window runs in the background (see Fetcher.background): it
 # waits behind every poll, never asks a host a window is polling, and asks SEC, which every
@@ -55,9 +61,25 @@ def _background() -> _Background | None:
 _BACKGROUND: ContextVar[_Background | None] = ContextVar("background_research", default=None)
 
 
+@dataclass(frozen=True)
+class _Observation:
+    admit: Callable[[str], None]
+    check: Callable[[], None]
+    max_bytes: int = MAX_BROWSER_BYTES  # each response's cap
+    cache_mode: CacheMode = "no-store"  # a Chrome route's fetch cache mode
+    bypass_service_worker: bool | None = None
+
+
+_OBSERVATION: ContextVar[_Observation | None] = ContextVar("record_only_observation", default=None)
+
+
 class HostBusy(TimeoutError):
     """Background research asked a host that an open window is polling. It gives way at once,
     as a timeout does, and the research tries again later."""
+
+
+class ResponseTooLarge(ValueError):
+    """A bounded trial exceeded its response-byte allowance; it is not usable content."""
 
 
 # Says who we are, in the same form search engine crawlers use
@@ -155,6 +177,7 @@ class _HostQueue:
     waiting: list[tuple[int, int, asyncio.Future[None]]] = field(default_factory=list)
     dispatcher: asyncio.Task[None] | None = None
     policies: dict[asyncio.Future[None], _Background] = field(default_factory=dict)
+    observations: dict[asyncio.Future[None], _Observation] = field(default_factory=dict)
 
 
 # An already-encoded URL: allowed characters, and % only as the start of an escape
@@ -209,6 +232,30 @@ class Fetcher:
                 await self._session.close()
 
     @contextmanager
+    def observing(
+        self,
+        admit: Callable[[str], None],
+        check: Callable[[], None],
+        *,
+        max_bytes: int = MAX_BROWSER_BYTES,
+        cache_mode: CacheMode = "no-store",
+        bypass_service_worker: bool | None = None,
+    ) -> Iterator[None]:
+        """A record-only trial reserves every transport turn and waits behind live polling.
+        Callbacks enforce its own budget/deadline, including queued turns and redirects. The
+        options apply to the requests made inside: a byte cap, and for Chrome routes the
+        fetch cache mode and service-worker bypass."""
+        if not 0 < max_bytes <= MAX_BROWSER_BYTES:
+            raise ValueError("Invalid response byte limit")
+        token = _OBSERVATION.set(
+            _Observation(admit, check, max_bytes, cache_mode, bypass_service_worker)
+        )
+        try:
+            yield
+        finally:
+            _OBSERVATION.reset(token)
+
+    @contextmanager
     def background(
         self,
         *,
@@ -242,6 +289,8 @@ class Fetcher:
             mode.deferred.set()
 
     def _browser_allowed(self) -> bool:
+        if observation := _OBSERVATION.get():
+            observation.check()
         allowed = self.chrome_allowed()
         if not allowed:
             self.defer_research()
@@ -268,8 +317,17 @@ class Fetcher:
             browser, self._browser = self._browser, None
             await browser.close()
 
+    async def close_observations(self) -> None:
+        if self._browser is not None:
+            await self._browser.close_observations()
+
     async def browser_request(
-        self, url: str, warmup: str, give_up_after: float, *, urgent: bool = False
+        self,
+        url: str,
+        warmup: str,
+        give_up_after: float,
+        *,
+        urgent: bool = False,
     ) -> Response:
         self._check_chrome()
         if self._session is None:
@@ -277,8 +335,18 @@ class Fetcher:
         if self._browser is None:
             self._browser = DesktopChrome()
             self._browser.allowed = self._browser_allowed
+        observation = _OBSERVATION.get()
         return await self._browser.request(
-            url, warmup, give_up_after, lambda host: self.wait_turn(host, urgent), urgent=urgent
+            url,
+            warmup,
+            give_up_after,
+            lambda host: self.wait_turn(host, urgent),
+            urgent=urgent,
+            # A record-only trial reads through its own tab, with its route's options
+            cache_mode=observation.cache_mode if observation else "no-store",
+            bypass_service_worker=observation.bypass_service_worker if observation else None,
+            observational=observation is not None,
+            max_bytes=observation.max_bytes if observation else MAX_BROWSER_BYTES,
         )
 
     async def browser_render(
@@ -315,6 +383,8 @@ class Fetcher:
         ahead of polls of data.sec.gov."""
         if self._session is None:
             raise RuntimeError("Fetcher must be used with `async with`")
+        # A record-only trial caps each response at its plan's byte allowance
+        max_bytes = observation.max_bytes if (observation := _OBSERVATION.get()) else None
         host = urlsplit(url).hostname or ""
         asked = time.monotonic()
         await self.wait_turn(host, urgent)
@@ -336,7 +406,9 @@ class Fetcher:
                     request.headers["User-Agent"] = (
                         self._sec_user_agent if attempt_sec else USER_AGENT
                     )
-                if attempt_sec:
+                # SEC's hops share its one limit. A record-only trial counts every hop against
+                # its own budget; monitoring's redirects elsewhere don't wait another turn.
+                if attempt_sec or _OBSERVATION.get() is not None:
                     waiting = time.monotonic()
                     await self.wait_turn(attempt_host, urgent)
                     followup_wait += time.monotonic() - waiting
@@ -356,7 +428,15 @@ class Fetcher:
             allow_redirects=allow_redirects,
             middlewares=(pace_followup,),
         ) as r:
-            body = await r.read()
+            if max_bytes is None:
+                body = await r.read()
+            else:
+                chunks = bytearray()
+                async for chunk in r.content.iter_chunked(64 * 1024):
+                    if len(chunks) + len(chunk) > max_bytes:
+                        raise ResponseTooLarge("Response exceeded the trial's byte allowance")
+                    chunks.extend(chunk)
+                body = bytes(chunks)
             headers = {name.lower(): value for name, value in r.headers.items()}
         return Response(
             url,
@@ -371,11 +451,16 @@ class Fetcher:
         """Returns once it's the caller's turn to send the host a request. Raises HostBusy for
         background research to a host an open window is polling."""
         key = queue_key(host)
+        observation = _OBSERVATION.get()
+        if observation:
+            observation.admit(host)
         if _background() is None:
-            if _BACKGROUND.get() is None:
+            if _BACKGROUND.get() is None and observation is None:
                 self._live[key] = time.monotonic()
-            await self._take_turn(key, 0 if urgent else 1)
+            await self._take_turn(key, 2 if observation else (0 if urgent else 1))
             _background()
+            if observation:
+                observation.check()
             return
         if key not in _SHARED_QUEUES:
             if time.monotonic() - self._live.get(key, float("-inf")) < LIVE_SECONDS:
@@ -409,6 +494,8 @@ class Fetcher:
         turn: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         if mode := _BACKGROUND.get():
             queue.policies[turn] = mode
+        if observation := _OBSERVATION.get():
+            queue.observations[turn] = observation
         heapq.heappush(queue.waiting, (priority, next(self._arrivals), turn))
         if queue.dispatcher is None or queue.dispatcher.done():
             queue.dispatcher = asyncio.create_task(self._dispatch(key, queue))
@@ -417,6 +504,7 @@ class Fetcher:
             await turn
         finally:
             queue.policies.pop(turn, None)
+            queue.observations.pop(turn, None)
 
     async def _dispatch(self, key: str, queue: _HostQueue) -> None:
         # Hands out the queue's turns one gap apart, best waiter first, until nobody's waiting
@@ -428,6 +516,12 @@ class Fetcher:
             while queue.waiting:
                 priority, _, turn = heapq.heappop(queue.waiting)
                 if not turn.done():
+                    if observation := queue.observations.get(turn):
+                        try:
+                            observation.check()
+                        except Exception as error:
+                            turn.set_exception(error)
+                            continue
                     if mode := queue.policies.get(turn):
                         try:
                             blocked = mode.deferred.is_set() or (

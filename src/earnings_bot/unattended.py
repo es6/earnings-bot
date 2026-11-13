@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import sqlite3
 import tomllib
 from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import dataclass
@@ -40,6 +41,7 @@ from earnings_bot.pipeline import (
     Releases,
     keep_warm,
 )
+from earnings_bot.publication_trials import TRIALS_STATE, load_plans, run_trials
 from earnings_bot.recorder import (
     DEGRADED_AFTER,
     FOLLOW_UP,
@@ -116,6 +118,10 @@ class DirectoryWatcher:
         self.store = store
         self.calendar = Calendar(store)
         self.planned: dict[str, Target] = {}
+        # Record-only publication trials (publication_trials.py), by plan ID
+        self.trials: dict[str, asyncio.Task[None]] = {}
+        self.trial_problems: set[str] = set()
+        self.trial_db: sqlite3.Connection | None = None
         self.dates = DateDiscovery(
             self.calendar,
             fetcher,
@@ -336,7 +342,28 @@ class DirectoryWatcher:
                 self._problem(name, None)
         return targets
 
+    def _scan_trials(self) -> None:
+        """Starts each record-only publication trial in `trials/` once, on this bot's fetcher
+        and journal, so its requests take turns behind monitoring in the same host queues."""
+        plans, problems = load_plans(self.directory)
+        for problem in problems:
+            if problem not in self.trial_problems:
+                self.trial_problems.add(problem)
+                self.journal.write(
+                    "publication_trial_error", error_type="invalid plan", detail=problem
+                )
+        now = self.journal.now()
+        for plan in plans:
+            if plan.id in self.trials or plan.ends_at <= now:
+                continue
+            if self.trial_db is None:
+                self.trial_db = sqlite3.connect(self.directory / TRIALS_STATE)
+            self.trials[plan.id] = asyncio.create_task(
+                run_trials(plan, self.fetcher, self.journal, self.trial_db)
+            )
+
     async def scan(self) -> None:
+        self._scan_trials()
         targets = self._targets()
         if targets is None:
             return
@@ -515,6 +542,11 @@ class DirectoryWatcher:
         finally:
             dates.cancel()
             await asyncio.gather(dates, return_exceptions=True)
+            for trial in self.trials.values():
+                trial.cancel()
+            await asyncio.gather(*self.trials.values(), return_exceptions=True)
+            if self.trial_db is not None:
+                self.trial_db.close()
             for window in self.windows.values():
                 window.task.cancel()
             await asyncio.gather(
