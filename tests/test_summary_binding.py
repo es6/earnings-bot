@@ -323,7 +323,14 @@ def test_unsupported_business_consequences_are_held_back(claim: str, shown: str 
 # WMT), reduced to their shape. Each pairs a supported claim with a false one.
 
 
-def bound(document: SourceDocument, metric: str, field: str = "current_actual", **changes: Any):
+def bound(
+    document: SourceDocument,
+    metric: str,
+    field: str = "current_actual",
+    *,
+    group: str = "",
+    **changes: Any,
+):
     """Bind one value of a fact, cited by the document's last block, through bind_answer."""
     block = document.tables[0] if document.tables else document.blocks[-1]
     ref = {
@@ -332,7 +339,7 @@ def bound(document: SourceDocument, metric: str, field: str = "current_actual", 
         "cell_ids": [c.id for c in block.cells] if isinstance(block, SourceTable) else [],
         "quote": block.text,
     }
-    data = fact(metric=metric, current_actual=None)
+    data = fact(metric=metric, current_actual=None, group=group)
     data[field] = value(**({"basis": "", "evidence": [ref]} | changes))
     report = bind_answer(
         json.dumps({"schema_version": "source-values/1", "facts": [data]}), document
@@ -570,3 +577,140 @@ def test_positions_alone_never_bind_a_value() -> None:
         "Third quarter 2026 results\nDiluted earnings per share was $4.30, up from $3.90."
     )
     assert bound(sentence, "Diluted EPS", **eps, amount="4.30")
+
+
+SEGMENTS = """<p>Acme Reports Third Quarter 2026 Results</p>
+<p>Net sales for the third quarter by business:</p><table>
+<tr><th>(in millions)</th><th>Q3 2026</th><th>Q3 2025</th></tr>
+<tr><td>Neuromodulation</td><td>331</td><td>293</td></tr>
+<tr><td>Net sales</td><td>5,138</td><td>5,065</td></tr></table>"""
+
+
+def test_a_segment_row_is_measured_by_the_sentence_that_introduces_its_table() -> None:
+    document = document_from_html(SEGMENTS)
+    assert bound(document, "Neuromodulation net sales", amount="331")
+    # The introduction names the measure, never a different one or the whole company
+    assert not bound(document, "Neuromodulation operating income", amount="331")
+    assert not bound(document, "Net sales", amount="331")
+    # A row that names its own measure keeps it
+    assert bound(document, "Net sales", amount="5138")
+
+
+def test_a_segment_row_is_measured_by_its_value_s_column_header() -> None:
+    document = document_from_html("""<p>Acme Reports Third Quarter 2026 Results</p>
+    <p>Segment results</p><table>
+    <tr><th>(in millions)</th><th colspan="2">Net sales</th>
+    <th colspan="2">Operating income</th></tr>
+    <tr><th></th><th>Q3 2026</th><th>Q3 2025</th><th>Q3 2026</th><th>Q3 2025</th></tr>
+    <tr><td>Americas</td><td>100</td><td>80</td><td>10</td><td>8</td></tr></table>""")
+    assert bound(document, "Americas net sales", amount="100")
+    assert bound(document, "Americas operating income", amount="10")
+    assert not bound(document, "Americas operating income", amount="100")
+    assert not bound(document, "Americas net sales", amount="10")
+
+
+def test_an_abbreviation_the_release_defines_names_its_segment() -> None:
+    table = """<table><tr><th>(in millions)</th><th>Q3 2026</th><th>Q3 2025</th></tr>
+    <tr><td>MA Revenue</td><td>936</td><td>909</td></tr></table>"""
+    defined = document_from_html(
+        "<p>Acme Corporation reports third quarter 2026 results for Moody's Analytics "
+        '("MA").</p>' + table
+    )
+    assert bound(defined, "Moody's Analytics Revenue", amount="936")
+    assert bound(defined, "Revenue", group="Moody's Analytics", amount="936")
+    assert not bound(defined, "Moody's Investors Service Revenue", amount="936")
+    undefined = document_from_html("<p>Acme reports third quarter 2026 results.</p>" + table)
+    assert not bound(undefined, "Moody's Analytics Revenue", amount="936")
+
+
+def test_net_can_be_left_out_of_a_measure_unless_the_release_lists_both() -> None:
+    sales = {"amount": "8.9", "scale": "billion"}
+    document = document_from_text(
+        "Acme Reports Third Quarter 2026 Results\nSales in the quarter were a record $8.9 billion."
+    )
+    assert bound(document, "Net sales", **sales)
+    narrower = document_from_text(
+        "Acme Reports Third Quarter 2026 Results\nOrganic sales were $8.9 billion."
+    )
+    assert not bound(narrower, "Net sales", **sales)
+    both = document_from_html("""<p>Acme Reports Third Quarter 2026 Results</p><table>
+    <tr><th>(in millions)</th><th>Q3 2026</th></tr>
+    <tr><td>Sales</td><td>120</td></tr>
+    <tr><td>Net sales</td><td>100</td></tr></table>""")
+    assert bound(both, "Net sales", amount="100")
+    assert not bound(both, "Net sales", amount="120")
+
+
+def test_guidance_and_growth_name_a_value_s_slot_not_its_measure() -> None:
+    document = document_from_html("""<p>Acme Reports Third Quarter 2026 Results</p>
+    <p>Full year 2026 guidance</p><table>
+    <tr><th>Metric</th><th>FY 2026 guidance</th></tr>
+    <tr><td>Adjusted Diluted EPS (1)</td><td>$16.50 to $17.00</td></tr></table>""")
+    guide = {
+        "amount": "16.50",
+        "upper": "17.00",
+        "scale": "one",
+        "unit": "per share",
+        "period": "FY 2026",
+        "duration": "twelve months",
+        "basis": "adjusted",
+    }
+    assert bound(document, "Adjusted Diluted EPS Guidance", "new_guidance", **guide)
+    assert not bound(document, "Adjusted Diluted EPS Guidance", **guide)
+    assert not bound(document, "Operating margin guidance", "new_guidance", **guide)
+
+
+def test_a_measure_named_right_after_its_number_binds_only_as_that_measure() -> None:
+    revenue = {"amount": "1.1", "scale": "billion"}
+    document = document_from_text(
+        "Acme Reports Third Quarter 2026 Results\nAcme delivered $1.1 billion in revenue."
+    )
+    assert bound(document, "Revenue", **revenue)
+    synergies = document_from_text(
+        "Acme Reports Third Quarter 2026 Results\nAcme expects $1.1 billion in revenue synergies."
+    )
+    assert not bound(synergies, "Revenue", **revenue)
+    growth = {"scale": "one", "unit": "%", "currency": "", "amount": "19"}
+    organic = document_from_text(
+        "Acme Reports Third Quarter 2026 Results\n"
+        "The sales increase consisted of 19% growth in organic sales."
+    )
+    assert bound(organic, "Net sales", "comparable_growth", **growth, basis="organic")
+    assert not bound(organic, "Operating income", "comparable_growth", **growth, basis="organic")
+
+
+def test_earnings_per_share_can_follow_the_net_income_it_divides() -> None:
+    eps = {"amount": "0.40", "scale": "one", "unit": "per share"}
+    document = document_from_text(
+        "Acme Reports Third Quarter 2026 Results\nAcme reported net income attributable to "
+        "common stockholders of $582 million, or $0.40 per diluted share."
+    )
+    assert bound(document, "Diluted EPS", **eps)
+    basic = document_from_text(
+        "Acme Reports Third Quarter 2026 Results\nAcme reported net income of $582 million, "
+        "or $0.40 per basic share."
+    )
+    assert not bound(basic, "Diluted EPS", **eps)
+
+
+def test_a_group_naming_the_issuer_or_the_fact_s_role_is_no_segment() -> None:
+    document = document_from_html("""<p>Acme Corporation (NYSE: ACME) Reports Third Quarter
+    2026 Results</p><table><tr><th>(in millions)</th><th>Q3 2026</th><th>Q3 2025</th></tr>
+    <tr><td>ACME Revenue</td><td>1,850</td><td>1,700</td></tr></table>""")
+    for group in ("ACME", "Acme Corporation", "headline", "guidance"):
+        kept = bound(document, "Revenue", group=group, amount="1850")
+        assert kept, group
+    assert not bound(document, "Revenue", group="Acme Analytics", amount="1850")
+
+
+def test_a_heading_row_above_a_segment_names_its_measure() -> None:
+    document = document_from_html("""<p>Acme Reports Third Quarter 2026 Results</p><table>
+    <tr><th>(in millions)</th><th>Q3 2026</th><th>Q3 2025</th></tr>
+    <tr><td colspan="3">Revenue:</td></tr>
+    <tr><td>Product</td><td>319</td><td>191</td></tr>
+    <tr><td colspan="3">Cost of revenue:</td></tr>
+    <tr><td>Service</td><td>46</td><td>39</td></tr></table>""")
+    assert bound(document, "Product revenue", amount="319")
+    # The nearest heading decides: these service costs are no service revenue
+    assert not bound(document, "Service revenue", amount="46")
+    assert bound(document, "Service cost of revenue", amount="46")
