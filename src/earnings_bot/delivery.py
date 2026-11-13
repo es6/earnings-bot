@@ -41,6 +41,7 @@ class SummaryJob:
     held_back: list[str] | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None
+    replaced: str | None = None  # source of the PDF-based summary this one replaced
 
 
 class DeliveryStore:
@@ -106,6 +107,10 @@ class DeliveryStore:
                 PRIMARY KEY (channel_id, day)
             )
         """)
+        # The source of the PDF-based summary a page's summary replaced, if it replaced one
+        columns = {row["name"] for row in self.db.execute("PRAGMA table_info(summaries)")}
+        if "replaced" not in columns:
+            self.db.execute("ALTER TABLE summaries ADD COLUMN replaced TEXT")
 
     def last_scan(self) -> datetime | None:
         row = self.db.execute(
@@ -202,25 +207,29 @@ class DeliveryStore:
             json.loads(row["held_back"]) if row["held_back"] else None,
             row["input_tokens"],
             row["output_tokens"],
+            row["replaced"],
         )
 
-    def summary_started(self, key: str, document: str, source: str, day: str) -> None:
+    def summary_started(
+        self, key: str, document: str, source: str, day: str, *, replaces: str | None = None
+    ) -> None:
         """Records a model call starting for the release, from this document, and counts it
-        toward the day's calls."""
+        toward the day's calls. `replaces` names the source of the summary it will replace."""
         now = datetime.now(UTC).isoformat()
         with self.db:
             self.db.execute(
                 """
                 INSERT INTO summaries (channel_id, release_key, document, source, status,
-                                       attempts, updated)
-                VALUES (?, ?, ?, ?, ?, 1, ?)
+                                       attempts, updated, replaced)
+                VALUES (?, ?, ?, ?, ?, 1, ?, ?)
                 ON CONFLICT (channel_id, release_key) DO UPDATE SET
                     document = excluded.document, source = excluded.source,
                     status = excluded.status, attempts = attempts + 1, text = NULL,
                     footer = NULL, held_back = NULL, input_tokens = NULL,
-                    output_tokens = NULL, updated = excluded.updated
+                    output_tokens = NULL, updated = excluded.updated,
+                    replaced = excluded.replaced
                 """,
-                (self.channel_id, key, document, source, RUNNING, now),
+                (self.channel_id, key, document, source, RUNNING, now, replaces),
             )
             self.db.execute(
                 """
