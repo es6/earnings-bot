@@ -1,6 +1,6 @@
 [project]
 name = "earnings-bot"
-version = "0.21.5"
+version = "0.21.6"
 description = "Discord bot that posts company earnings the moment they're released"
 readme = "README.md"
 license = "MIT"
