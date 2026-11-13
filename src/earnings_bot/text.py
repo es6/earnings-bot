@@ -58,6 +58,8 @@ class _Cell(NamedTuple):
     text: str
     span: int  # colspan
     rows: int  # rowspan
+    header: bool = False
+    scope: str = ""
 
 
 class _Placed(NamedTuple):
@@ -76,6 +78,8 @@ class _Table:
         self.cell: list[str] | None = None
         self._row: list[_Cell] | None = None
         self._spans = (1, 1)
+        self._header = False
+        self._scope = ""
 
     def start_row(self) -> None:
         self.end_row()
@@ -88,16 +92,21 @@ class _Table:
             self.items.append(self._row)
             self._row = None
 
-    def start_cell(self, colspan: int, rowspan: int) -> None:
+    def start_cell(
+        self, colspan: int, rowspan: int, *, header: bool = False, scope: str = ""
+    ) -> None:
         self.end_cell()
         if self._row is None:
             self.start_row()
         self.cell = []
         self._spans = (colspan, rowspan)
+        self._header, self._scope = header, scope
 
     def end_cell(self) -> None:
         if self.cell is not None and self._row is not None:
-            self._row.append(_Cell(_clean("".join(self.cell)), *self._spans))
+            self._row.append(
+                _Cell(_clean("".join(self.cell)), *self._spans, self._header, self._scope)
+            )
         self.cell = None
 
     def close(self) -> list[str]:
@@ -234,7 +243,12 @@ class _TextParser(HTMLParser):
             self._table().start_row()
         elif tag in ("td", "th"):
             spans = dict(attrs)
-            self._table().start_cell(_span(spans.get("colspan")), _span(spans.get("rowspan")))
+            self._table().start_cell(
+                _span(spans.get("colspan")),
+                _span(spans.get("rowspan")),
+                header=tag == "th",
+                scope=spans.get("scope") or "",
+            )
         elif _BLOCK.fullmatch(tag):
             self._block()
 

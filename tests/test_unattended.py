@@ -20,7 +20,7 @@ from earnings_bot.recorder import ET, Journal, OnNew, Polls, Target, Trial, Watc
 from earnings_bot.release_cards import release_content
 from earnings_bot.sources import EdgarFilings, EdgarLatest, GuessedFile, RssFeed, Sighting
 from earnings_bot.track_progress import TrackProgress
-from tests.fakes import RoutedFetcher
+from tests.fakes import PinnedClock, RoutedFetcher
 from tests.test_pipeline import FakePoster, uber
 
 
@@ -728,7 +728,7 @@ async def test_a_restart_resumes_later_links_without_a_second_alert(
 ) -> None:
     channel = FakeDiscord()
     fetcher = RoutedFetcher({})
-    journal = Journal(io.StringIO())
+    journal = Journal(io.StringIO(), PinnedClock())
     when = journal.now() - timedelta(minutes=31)
     target = Target(ticker="SE", cik=1703399, expected=when)
     (tmp_path / "a.toml").write_text(_plan("SE", target.cik, when), encoding="utf-8")
@@ -781,7 +781,7 @@ async def test_a_restart_resumes_later_links_without_a_second_alert(
 async def test_changed_sources_rearm_an_active_followup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    journal = Journal(io.StringIO())
+    journal = Journal(io.StringIO(), PinnedClock())
     when = journal.now() - timedelta(minutes=31)
     target = Target(ticker="SE", cik=1703399, expected=when)
     plan = tmp_path / "a.toml"
