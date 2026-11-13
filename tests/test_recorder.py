@@ -812,3 +812,35 @@ async def test_resume_enriches_from_a_verified_guessed_page_and_baselines_head_o
     )
 
     assert [item.url for item in sightings if item.earnings] == [report]
+
+
+async def test_each_watch_reports_its_progress_for_the_watchdog(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Most polls that find nothing write nothing, so a route refused for the rest of a window
+    (Nebius's newsroom, Nov 12) looked the same in the journal as a quiet one."""
+    monkeypatch.setattr(fetch, "BLOCK_PAUSE", 0.2)
+    log = io.StringIO()
+    journal = Journal(log)
+    w = Watch("NBIS", ListSource())
+    fetcher = FakeFetcher((200, "old"), (403, ""), (200, "old"))
+
+    await watch(w, fetcher, journal, end=journal.now() + timedelta(seconds=0.5))
+
+    progress = [
+        record
+        for line in log.getvalue().splitlines()
+        if (record := json.loads(line))["event"] == "progress"
+    ]
+    # The first poll, the refusal and the recovery report at once; other polls wait 30 s
+    assert [(p["polls"], bool(p["problem"])) for p in progress] == [
+        (1, False),
+        (2, True),
+        (3, False),
+    ]
+    first, refused, recovered = progress
+    assert refused["answered"] == first["answered"]  # the refused poll didn't answer
+    assert refused["retry_in"] > 0
+    assert recovered["answered"] > refused["answered"]
+    assert {p["ticker"] for p in progress} == {"NBIS"}
+    assert {p["source"] for p in progress} == {"list"}

@@ -35,6 +35,8 @@ class Settings(BaseSettings):
     live_summaries: bool = False
     meta_model_api_key: SecretStr | None = None
     fmp_api_key: SecretStr | None = None  # earnings-calendar lookups
+    # Where the watchdog (python -m earnings_bot.watchdog) posts its alarms
+    watchdog_webhook_url: SecretStr | None = None
 
 
 class RecorderSettings(BaseSettings):

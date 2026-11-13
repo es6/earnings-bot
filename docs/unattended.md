@@ -126,3 +126,23 @@ for per-release schedule settings.
   interrupt a release window whose alert isn't posted yet.
 - After an outage, a release already out can still be caught during its open
   window. Windows that expired during the gap are reported in the status log.
+
+## Watchdog
+
+`uv run earnings-bot-watchdog schedules` runs apart from the bot and posts to the Discord
+webhook in `WATCHDOG_WEBHOOK_URL` when a release window is open and polling has stopped. It
+is not a second bot: it never connects to Discord's gateway. Every 30 seconds it:
+
+- reads the release windows from the schedule files and the tracking calendar, as the
+  restart check does, so it still alarms if the bot is down when a window opens;
+- reads the journal. Each watch writes a `progress` event every 30 seconds, and at once
+  when it starts failing, recovers or finishes. The event says when its source last
+  answered;
+- from two minutes after a window opens until it closes, alarms once, by name, for:
+  - a route with no answer for 90 seconds, or five of its poll intervals if longer, with
+    its last error;
+  - a route the window lists that hasn't polled at all;
+  - a journal silent for two minutes, meaning the bot may be down.
+- says when an alarmed route polls again while its window is still open.
+
+Run it with `--once` to check a single time.

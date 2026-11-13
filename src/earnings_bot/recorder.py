@@ -341,6 +341,7 @@ class Watch:
     # the fetcher shares among loops reading the same route (Source.pause_route).
     pause: RoutePause = field(default_factory=RoutePause)
     blocked: int = 0  # polls the site refused in all
+    reported: float | None = None  # time.monotonic() of the last progress event
     stopped: str | None = None
     period: str | None = None
 
@@ -584,6 +585,31 @@ def _failed(w: Watch, error: PollError, journal: Journal) -> float:
     return pause
 
 
+# How often each watch writes a `progress` event, for the watchdog (earnings_bot.watchdog)
+PROGRESS_SECONDS = 30.0
+
+
+def _progress(w: Watch, journal: Journal, *, now: bool = False) -> None:
+    """Says that the watch is polling and when its source last answered, every PROGRESS_SECONDS
+    and at once when it starts failing, recovers or finishes. Most polls that find nothing log
+    nothing, so without this a stalled or refused route looks the same as a quiet one."""
+    if not now and w.reported is not None and time.monotonic() - w.reported < PROGRESS_SECONDS:
+        return
+    w.reported = time.monotonic()
+    journal.write(
+        "progress",
+        ticker=w.ticker,
+        source=w.source.name,
+        interval=w.source.interval,
+        polls=w.polls,
+        answered=w.previous,  # when the last answered poll went out
+        problem=w.problem,
+        blocked=w.blocked,
+        retry_in=round(w.pause.left(), 1),
+        done=w.done,
+    )
+
+
 def take(
     w: Watch,
     sent: datetime,
@@ -595,6 +621,21 @@ def take(
 ) -> float:
     """Records one poll's outcome for one watch, and returns how many seconds more than usual
     to wait before the next poll."""
+    problem = w.problem
+    pause = _take(w, sent, outcome, journal, on_new, items=items)
+    _progress(w, journal, now=w.done or w.problem != problem)
+    return pause
+
+
+def _take(
+    w: Watch,
+    sent: datetime,
+    outcome: Response | PollError,
+    journal: Journal,
+    on_new: Callable[[Source, Sighting], None] | None = None,
+    *,
+    items: list[Sighting] | None = None,
+) -> float:
     w.polls += 1
     if isinstance(w.source, BrowserRelease) and w.source.listing_poll:
         listing, received = w.source.listing_poll
