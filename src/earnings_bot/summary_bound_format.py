@@ -2,7 +2,7 @@
 
 from decimal import ROUND_HALF_UP, Decimal
 
-from earnings_bot.binding_text import SCALES
+from earnings_bot.binding_text import SCALES, duration
 from earnings_bot.summary_binding import BindingReport
 from earnings_bot.summary_evidence import ReferencedFact, SourcedValue
 from earnings_bot.summary_format import discord_brief, format_value
@@ -95,7 +95,7 @@ def _display(
         value=value_text(value),
         source=" ".join(ref.quote for ref in value.evidence),
         kind=kind or fact.kind,
-        period=value.period,
+        period=_display_period(value),
         basis=value.basis,
         unit=value.unit,
         currency="",
@@ -104,6 +104,13 @@ def _display(
         role=fact.role,
         relevance=fact.relevance,
     )
+
+
+def _display_period(value: SourcedValue) -> str:
+    span = duration(value.duration)
+    if value.duration.strip() and span is not None and span != duration(value.period):
+        return f"{value.period} ({value.duration})".strip()
+    return value.period
 
 
 def display_facts(report: BindingReport) -> list[SummaryFact]:
@@ -133,7 +140,7 @@ def display_facts(report: BindingReport) -> list[SummaryFact]:
         elif changes:
             periods: dict[str, list[SourcedValue]] = {}
             for change in changes:
-                periods.setdefault(change.period, []).append(change)
+                periods.setdefault(_display_period(change), []).append(change)
             for period, growths in periods.items():
                 result.append(
                     SummaryFact(

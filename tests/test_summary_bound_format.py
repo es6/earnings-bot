@@ -13,6 +13,46 @@ from tests.test_summary_binding import TABLE
 from tests.test_summary_evidence import fact, value
 
 
+@pytest.mark.parametrize("months", [3, 6, 9, 12])
+def test_a_window_ending_on_a_date_is_not_a_point_in_time(months: int) -> None:
+    from earnings_bot.binding_text import duration
+
+    assert duration(f"{months} months ending December 31, 2026") == months
+    assert duration("as of December 31, 2026") == 0
+
+
+def test_a_growth_rate_keeps_its_rolling_observation_window() -> None:
+    report = trusted(
+        metric="Organic orders",
+        current_actual=None,
+        reported_growth=value(
+            amount="39",
+            scale="one",
+            unit="%",
+            currency="",
+            duration="twelve-month rolling average ending September 30, 2026",
+        ),
+    )
+    shown = render_bound(report)
+    assert "twelve-month rolling average" in shown and "39%" in shown
+
+
+def test_year_only_guidance_keeps_its_verified_quarter_horizon() -> None:
+    report = trusted(
+        metric="Adjusted EPS",
+        current_actual=None,
+        new_guidance=value(
+            amount="4.05",
+            upper="4.15",
+            scale="one",
+            unit="per share",
+            period="2026",
+            duration="three months ending December 31, 2026",
+        ),
+    )
+    assert "three months ending December 31, 2026" in render_bound(report)
+
+
 def trusted(**changes: Any) -> BindingReport:
     candidate = ReferencedFact.model_validate_json(json.dumps(fact(**changes)))
     return BindingReport((BoundFact(candidate, ("test-only",)),), ())
