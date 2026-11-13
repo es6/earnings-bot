@@ -572,6 +572,7 @@ async def watch_directory(
                 summarizer,
                 lambda target: DurableDiscordPoster(channel, store, target.release_key, author_id),
                 priority=priority,
+                store=store,
             )
             benchmark = EarningsBenchmark(fetcher, journal.now)
             watcher = DirectoryWatcher(

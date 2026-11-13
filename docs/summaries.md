@@ -17,6 +17,19 @@ Summaries cost money per release, so they run only with both `LIVE_SUMMARIES=tru
 the brief never calls a beat or miss. The checks establish traceability, not that the model
 chose the right facts or that a cited sentence describes the chosen metric.
 
+Each release's summary job is kept in `.earnings-state.sqlite3`, with:
+- the SHA-256 of the text it was written from, and that text's source;
+- its status (running, written, delivered or failed) and attempt count;
+- the result, the facts held back, and token counts.
+
+A restart or a schedule change never summarizes a delivered release again. A summary written
+before a crash but never posted is posted from the store, with no new call. Limits:
+- at most three model calls per release, restarts included;
+- two calls at once across releases;
+- 40 calls a day.
+
+None of these limits delays an alert.
+
 Replaying the 36 saved Ember-low outputs from the November 12 effort tests, the checker keeps
 78% of selected facts. It accepts quotes that differ only in table-cell breaks or spacing, or
 that join several exact passages; a scale written once covers both ends of a range; per-share
