@@ -281,14 +281,20 @@ class Fetcher:
             url, warmup, give_up_after, lambda host: self.wait_turn(host, urgent), urgent=urgent
         )
 
-    async def browser_render(self, url: str, give_up_after: float) -> RenderedPage:
+    async def browser_render(
+        self,
+        url: str,
+        give_up_after: float,
+        *,
+        ready: Callable[[RenderedPage], bool] | None = None,
+    ) -> RenderedPage:
         self._check_chrome()
         if self._session is None:
             raise RuntimeError("Fetcher must be used with 'async with'")
         if self._browser is None:
             self._browser = DesktopChrome()
             self._browser.allowed = self._browser_allowed
-        return await self._browser.render(url, give_up_after, self.wait_turn)
+        return await self._browser.render(url, give_up_after, self.wait_turn, ready=ready)
 
     async def request(
         self,

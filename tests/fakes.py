@@ -125,7 +125,12 @@ class RoutedChrome:
         return await self.fetcher.request("GET", url, give_up_after=give_up_after)
 
     async def render(
-        self, url: str, give_up_after: float, wait_turn: Callable[[str], Awaitable[None]]
+        self,
+        url: str,
+        give_up_after: float,
+        wait_turn: Callable[[str], Awaitable[None]],
+        *,
+        ready: Callable[[RenderedPage], bool] | None = None,
     ) -> RenderedPage:
         self.fetcher.chrome_calls.append(url)
         reply = await self.fetcher.request("GET", url, give_up_after=give_up_after)
