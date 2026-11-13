@@ -882,10 +882,11 @@ class DateDiscovery:
                 self.checked[row.cik] = time.monotonic() + 3600
                 # Recorded before the check, so one that fails early still waits the hour
                 self.reviewed[row.cik] = review
-                if self.windows_open():
-                    with self.fetcher.background(chrome=not self.chrome_live()):
-                        await self.run_once(row)
-                else:
+                with self.fetcher.background(
+                    active=self.windows_open,
+                    paused=lambda cik=row.cik: self.busy() or self.in_window(cik),
+                    chrome=lambda: not self.chrome_live(),
+                ):
                     await self.run_once(row)
             with suppress(TimeoutError):
                 await asyncio.wait_for(self.changed.wait(), timeout=60)
@@ -903,8 +904,10 @@ class DateDiscovery:
             # Room for a first investigation and a read of the IR site, both through Chrome
             async with asyncio.timeout(RESEARCH_SECONDS) as research:
                 await self._check(row, preflight=True, deadline=research.when())
-                if (current := self.calendar.find(row.ticker)) and (
-                    current.target is None or current.target.window[1] <= self.now()
+                if (
+                    not self.fetcher.research_deferred()
+                    and (current := self.calendar.find(row.ticker))
+                    and (current.target is None or current.target.window[1] <= self.now())
                 ):
                     await self._prepare_cache(current)
         except Exception:
@@ -913,7 +916,7 @@ class DateDiscovery:
         finally:
             self.working.discard(row.cik)
             # A window that opened meanwhile cut the check short, and it runs again after
-            if self.busy():
+            if self.busy() or self.in_window(row.cik) or self.fetcher.research_deferred():
                 self.looked.discard(row.cik)
             else:
                 self.looked.add(row.cik)
@@ -1166,7 +1169,11 @@ class DateDiscovery:
             ticker=row.ticker,
             report=report,
         )
-        if self.busy() or row not in self.calendar.entries():
+        if self._defer_if_busy(row.cik) or row not in self.calendar.entries():
+            return row
+        if self._chrome_waits():
+            self._defer_chrome(row.cik)
+            self._phase(row.cik, "Investigation waits for live Chrome windows to close")
             return row
         # The previous audit may have timed a different set of sources.
         self.calendar.clear_review(row.cik)
@@ -1420,11 +1427,16 @@ class DateDiscovery:
         return chrome_available() and self.chrome is None and not self.fetcher.chrome_allowed()
 
     def _defer_chrome(self, cik: int) -> None:
+        self.fetcher.defer_research()
         # Checked again in 10 minutes, not on every scan, so waiting costs no requests
         self.checked[cik] = min(self.checked.get(cik, math.inf), time.monotonic() + CHROME_RETRY)
 
     def _defer_if_busy(self, cik: int) -> bool:
-        if not self.busy():
+        if self.fetcher.research_deferred():
+            self._defer_chrome(cik)
+            self._phase(cik, "Research yielded to monitoring; retrying in 10 minutes")
+            return True
+        if not (self.busy() or self.in_window(cik)):
             return False
         self.checked.pop(cik, None)
         self._phase(cik, "Waiting for an open release window to close")

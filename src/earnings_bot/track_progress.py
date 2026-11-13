@@ -244,6 +244,7 @@ class TrackProgress:
         research_paused: Callable[[], bool] | None = None,
         in_window: Callable[[int], bool] | None = None,
         research_mode: Callable[[], contextlib.AbstractContextManager[None]] | None = None,
+        research_deferred: Callable[[], bool] = lambda: False,
     ) -> None:
         self.calendar, self.store, self.channel = calendar, store, channel
         # Source audits stop while research is paused (by default, while any window is open);
@@ -251,6 +252,7 @@ class TrackProgress:
         self.research_paused = research_paused or busy
         self.in_window = in_window or (lambda _: False)
         self.research_mode = research_mode or contextlib.nullcontext
+        self.research_deferred = research_deferred
         self.card_spacing = card_spacing
         self._last_card_edit = -card_spacing
         # Release posts and edits go first (see edit_priority)
@@ -594,6 +596,11 @@ class TrackProgress:
             self.audit_failed.add(row.cik)
             self.changed.set()
             return
+        if self.research_deferred() or self.research_paused() or self.in_window(row.cik):
+            self.next_attempt[row.cik] = now + timedelta(minutes=10)
+            self.audit_failed.add(row.cik)
+            self.changed.set()
+            return
         self.audit_failed.discard(row.cik)
         if any(item.cik == row.cik for item in self.calendar.entries()):
             self.calendar.save_review(row.cik, now, speed.to_json())
@@ -627,7 +634,7 @@ class TrackProgress:
                         and (checked is None or now - checked >= REFRESH)
                         and self.next_attempt.get(row.cik, now) <= now
                     ):
-                        # The task keeps the mode it starts in (contextvars are copied)
+                        # Tasks inherit the policy; its callbacks follow window changes.
                         with self.research_mode():
                             self.active = row.cik, asyncio.create_task(self._check(row))
                     checking = bool(self.active and self.active[0] == row.cik)

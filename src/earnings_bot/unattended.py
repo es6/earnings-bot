@@ -193,9 +193,9 @@ class DirectoryWatcher:
 
     def research_mode(self) -> contextlib.AbstractContextManager[None]:
         """How research runs now: in the background while a window is open."""
-        if not self.busy():
-            return contextlib.nullcontext()
-        return self.fetcher.background(chrome=not self.chrome_live())
+        return self.fetcher.background(
+            active=self.busy, paused=self.research_paused, chrome=lambda: not self.chrome_live()
+        )
 
     def health(self) -> str:
         now = self.journal.now()
@@ -714,6 +714,7 @@ async def watch_directory(
                 research_paused=lambda: watcher.research_paused() or watcher.chrome_live(),
                 in_window=watcher.in_window,
                 research_mode=watcher.research_mode,
+                research_deferred=fetcher.research_deferred,
             )
             watcher.dates.on_progress = watcher.progress.changed.set
             watcher.progress.follow_calendar()

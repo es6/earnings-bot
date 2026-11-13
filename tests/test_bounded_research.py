@@ -73,6 +73,28 @@ async def test_research_pauses_only_in_the_minutes_around_a_release(tmp_path: Pa
             assert fetcher.chrome_allowed()
 
 
+async def test_research_permissions_follow_a_window_that_opens_after_the_task_started(
+    tmp_path: Path,
+) -> None:
+    fetcher = RoutedFetcher({})
+    journal = Journal(io.StringIO())
+    now = journal.now()
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        runner = unattended.DirectoryWatcher(
+            tmp_path, fetcher, journal, Releases(FakePoster, fetcher, journal, None), store, print
+        )
+        with runner.research_mode():
+            assert fetcher.chrome_allowed()
+            runner.planned = {"a": target("AAA", 1, now + timedelta(minutes=30), chrome=True)}
+            assert not fetcher.chrome_allowed()
+            runner.planned = {"a": target("AAA", 1, now + timedelta(minutes=5), chrome=True)}
+            with pytest.raises(HostBusy):
+                await fetcher.wait_turn("www.sec.gov")
+            runner.planned = {}
+            assert fetcher.research_deferred() and not fetcher.chrome_allowed()
+        assert fetcher.chrome_allowed() and not fetcher.research_deferred()
+
+
 async def test_date_discovery_researches_other_companies_behind_the_polls(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -156,6 +178,48 @@ async def test_research_that_needs_chrome_waits_without_retrying_every_scan(
         wait = dates.checked[row.cik] - time.monotonic()
         assert 500 < wait <= 600
         assert dates.phases[row.cik] == "Investigation waits for live Chrome windows to close"
+
+
+@pytest.mark.parametrize("interruption", ["chrome", "http"])
+async def test_an_interrupted_investigation_does_not_save_a_partial_profile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    interruption: str,
+) -> None:
+    from earnings_bot import date_discovery
+
+    monkeypatch.setattr(date_discovery, "chrome_available", lambda: True)
+    state = {"live": False}
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        calendar = Calendar(store)
+        previous = company("SE").model_copy(update={"investigated": date(2026, 6, 1)})
+        row, _ = calendar.add("SE", previous)
+        fetcher = RoutedFetcher({})
+        dates = DateDiscovery(
+            calendar,
+            fetcher,
+            lambda: datetime(2026, 11, 13, tzinfo=UTC),
+            lambda: False,
+            lambda _: None,
+        )
+        dates.checked[row.cik] = time.monotonic() + 3600
+
+        async def interrupted(*args: object, **kwargs: object):
+            if interruption == "chrome":
+                state["live"] = True
+            else:
+                with pytest.raises(HostBusy):
+                    await fetcher.wait_turn("investors.example.com")
+            return previous.model_copy(update={"investigated": date(2026, 11, 13)})
+
+        monkeypatch.setattr(date_discovery, "investigate", interrupted)
+        if interruption == "http":
+            await fetcher.wait_turn("investors.example.com")
+        with fetcher.background(chrome=lambda: not state["live"]):
+            assert await dates._investigate(row) == row
+        saved = calendar.find("SE")
+        assert saved is not None and saved.company.investigated == date(2026, 6, 1)
+        assert 500 < dates.checked[row.cik] - time.monotonic() <= 600
 
 
 def test_a_window_whose_routes_use_chrome_is_recognized() -> None:

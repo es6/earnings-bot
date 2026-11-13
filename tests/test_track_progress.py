@@ -936,3 +936,28 @@ async def test_the_audit_runs_in_the_background_during_a_window_but_not_its_own(
         finally:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_a_deferred_audit_preserves_the_previous_review(tmp_path: Path) -> None:
+    deferred = False
+
+    async def interrupted(ticker: str, company: KnownCompany, when: datetime) -> Speed:
+        nonlocal deferred
+        deferred = True
+        return Speed(None)
+
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        calendar = Calendar(store)
+        row, _ = calendar.add("LCID", INVESTIGATED)
+        previous = (NOW - timedelta(hours=2), "previous source evidence")
+        calendar.save_review(row.cik, *previous)
+        progress = tracker(
+            store,
+            FakeDiscord(),
+            audit=interrupted,
+            research_deferred=lambda: deferred,
+        )
+        await progress._check(row)
+        assert calendar.review(row.cik) == previous
+        assert progress.next_attempt[row.cik] == NOW + timedelta(minutes=10)
+        assert row.cik in progress.audit_failed

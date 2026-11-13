@@ -510,6 +510,13 @@ public response fixture is `tests/fixtures/ir_misses.json`; the replay is
   - **It leaves Chrome to live windows that use it.** An investigation, or a cache check that
     needs Chrome, waits and is retried in 10 minutes, rather than being saved half-done or
     with a "Chrome unavailable" verdict.
+  - **Admission follows window changes during a job.** Research started between windows
+    rechecks before a queued host turn and after browser pacing. A denied request marks the
+    whole check deferred: later work cannot save a partial investigation or replace the last
+    source audit. It retries after 10 minutes. Yielding does not discard a live warm tab.
+  - An already admitted SEC research request can occupy one 125 ms host gap. Priority and
+    transition tests cover the queue rules; effects on real publication timing remain
+    unmeasured until a record-only trial across a release. No deployment is implied.
 
 - **Rate limits are per host and shared across companies.** On a busy evening, a dozen companies
   report at 4 PM and all of them share SEC's 10 requests per second. SEC's limit covers all of

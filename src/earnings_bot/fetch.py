@@ -6,7 +6,7 @@ import heapq
 import itertools
 import re
 import time
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -28,7 +28,28 @@ LIVE_SECONDS = 30.0
 
 @dataclass(frozen=True)
 class _Background:
-    chrome: bool  # whether research may open its own Chrome now
+    chrome: bool | Callable[[], bool]
+    active: bool | Callable[[], bool]
+    paused: bool | Callable[[], bool]
+    deferred: asyncio.Event = field(default_factory=asyncio.Event)
+
+
+def _flag(value: bool | Callable[[], bool]) -> bool:
+    return value() if callable(value) else value
+
+
+def _background() -> _Background | None:
+    mode = _BACKGROUND.get()
+    if mode is None:
+        return None
+    if mode.deferred.is_set():
+        raise HostBusy("This research check yielded to monitoring and must retry later")
+    if not _flag(mode.active):
+        return None
+    if _flag(mode.paused):
+        mode.deferred.set()
+        raise HostBusy("Research waits for the release's priority interval to finish")
+    return mode
 
 
 _BACKGROUND: ContextVar[_Background | None] = ContextVar("background_research", default=None)
@@ -131,6 +152,7 @@ class _HostQueue:
     next_turn: float = 0.0  # time.monotonic() from which the host can take another request
     waiting: list[tuple[int, int, asyncio.Future[None]]] = field(default_factory=list)
     dispatcher: asyncio.Task[None] | None = None
+    policies: dict[asyncio.Future[None], _Background] = field(default_factory=dict)
 
 
 # An already-encoded URL: allowed characters, and % only as the start of an escape
@@ -185,11 +207,17 @@ class Fetcher:
                 await self._session.close()
 
     @contextmanager
-    def background(self, *, chrome: bool) -> Iterator[None]:
+    def background(
+        self,
+        *,
+        chrome: bool | Callable[[], bool],
+        active: bool | Callable[[], bool] = True,
+        paused: bool | Callable[[], bool] = False,
+    ) -> Iterator[None]:
         """Requests made inside, and in tasks started inside, run in the background: behind
         every poll, never to a host an open window is polling, and to SEC at most once every
         BACKGROUND_SEC_GAP seconds. Without `chrome`, research may not open its own Chrome."""
-        token = _BACKGROUND.set(_Background(chrome))
+        token = _BACKGROUND.set(_Background(chrome, active, paused))
         try:
             yield
         finally:
@@ -197,15 +225,37 @@ class Fetcher:
 
     def chrome_allowed(self) -> bool:
         """Whether research may open its own Chrome now."""
-        background = _BACKGROUND.get()
-        return background is None or background.chrome
+        mode = _BACKGROUND.get()
+        return mode is None or (
+            not mode.deferred.is_set()
+            and (not _flag(mode.active) or (not _flag(mode.paused) and _flag(mode.chrome)))
+        )
+
+    def research_deferred(self) -> bool:
+        mode = _BACKGROUND.get()
+        return mode is not None and mode.deferred.is_set()
+
+    def defer_research(self) -> None:
+        if mode := _BACKGROUND.get():
+            mode.deferred.set()
+
+    def _browser_allowed(self) -> bool:
+        allowed = self.chrome_allowed()
+        if not allowed:
+            self.defer_research()
+        return allowed
+
+    def _check_chrome(self) -> None:
+        if not self._browser_allowed():
+            raise BrowserError("Research waits for live Chrome windows to close")
 
     @asynccontextmanager
     async def research_browser(self) -> AsyncIterator[DesktopChrome]:
-        if not self.chrome_allowed():
-            raise BrowserError("Research waits to open Chrome until open release windows close")
+        self._check_chrome()
         async with self._research_lock:
+            self._check_chrome()
             browser = DesktopChrome()
+            browser.allowed = self._browser_allowed
             try:
                 yield browser
             finally:
@@ -219,19 +269,23 @@ class Fetcher:
     async def browser_request(
         self, url: str, warmup: str, give_up_after: float, *, urgent: bool = False
     ) -> Response:
+        self._check_chrome()
         if self._session is None:
             raise RuntimeError("Fetcher must be used with 'async with'")
         if self._browser is None:
             self._browser = DesktopChrome()
+            self._browser.allowed = self._browser_allowed
         return await self._browser.request(
             url, warmup, give_up_after, lambda host: self.wait_turn(host, urgent)
         )
 
     async def browser_render(self, url: str, give_up_after: float) -> RenderedPage:
+        self._check_chrome()
         if self._session is None:
             raise RuntimeError("Fetcher must be used with 'async with'")
         if self._browser is None:
             self._browser = DesktopChrome()
+            self._browser.allowed = self._browser_allowed
         return await self._browser.render(url, give_up_after, self.wait_turn)
 
     async def request(
@@ -309,14 +363,21 @@ class Fetcher:
         """Returns once it's the caller's turn to send the host a request. Raises HostBusy for
         background research to a host an open window is polling."""
         key = queue_key(host)
-        if _BACKGROUND.get() is None:
-            self._live[key] = time.monotonic()
+        if _background() is None:
+            if _BACKGROUND.get() is None:
+                self._live[key] = time.monotonic()
             await self._take_turn(key, 0 if urgent else 1)
+            _background()
             return
         if key not in _SHARED_QUEUES:
             if time.monotonic() - self._live.get(key, float("-inf")) < LIVE_SECONDS:
+                self.defer_research()
                 raise HostBusy(f"{key} is being polled for an open release window")
             await self._take_turn(key, 2)
+            _background()
+            if time.monotonic() - self._live.get(key, float("-inf")) < LIVE_SECONDS:
+                self.defer_research()
+                raise HostBusy(f"{key} became active while research waited")
             return
         # SEC is shared by every window and needed by nearly all research, so research gets a
         # sliver of it: one turn every BACKGROUND_SEC_GAP seconds, each behind every poll. The
@@ -324,7 +385,9 @@ class Fetcher:
         async with self._background_locks.setdefault(key, asyncio.Lock()):
             while (wait := self._background_next.get(key, 0.0) - time.monotonic()) > 0:  # noqa: ASYNC110
                 await asyncio.sleep(wait)
+            _background()
             await self._take_turn(key, 2)
+            _background()
             self._background_next[key] = time.monotonic() + BACKGROUND_SEC_GAP
 
     async def _take_turn(self, key: str, priority: int) -> None:
@@ -336,11 +399,16 @@ class Fetcher:
             queue.next_turn = now + host_gap(key)
             return
         turn: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        if mode := _BACKGROUND.get():
+            queue.policies[turn] = mode
         heapq.heappush(queue.waiting, (priority, next(self._arrivals), turn))
         if queue.dispatcher is None or queue.dispatcher.done():
             queue.dispatcher = asyncio.create_task(self._dispatch(key, queue))
         # A caller that gets cancelled cancels its turn too, and the dispatcher skips it
-        await turn
+        try:
+            await turn
+        finally:
+            queue.policies.pop(turn, None)
 
     async def _dispatch(self, key: str, queue: _HostQueue) -> None:
         # Hands out the queue's turns one gap apart, best waiter first, until nobody's waiting
@@ -350,8 +418,31 @@ class Fetcher:
             while (wait := queue.next_turn - time.monotonic()) > 0:  # noqa: ASYNC110
                 await asyncio.sleep(wait)
             while queue.waiting:
-                _, _, turn = heapq.heappop(queue.waiting)
+                priority, _, turn = heapq.heappop(queue.waiting)
                 if not turn.done():
+                    if mode := queue.policies.get(turn):
+                        try:
+                            blocked = mode.deferred.is_set() or (
+                                _flag(mode.active)
+                                and (
+                                    priority < 2
+                                    or _flag(mode.paused)
+                                    or (
+                                        key not in _SHARED_QUEUES
+                                        and time.monotonic() - self._live.get(key, float("-inf"))
+                                        < LIVE_SECONDS
+                                    )
+                                )
+                            )
+                        except Exception as error:
+                            turn.set_exception(error)
+                            continue
+                        if blocked:
+                            mode.deferred.set()
+                            turn.set_exception(
+                                HostBusy("Research yielded before taking a monitoring turn")
+                            )
+                            continue
                     queue.next_turn = time.monotonic() + host_gap(key)
                     turn.set_result(None)
                     break

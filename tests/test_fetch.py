@@ -266,3 +266,61 @@ async def test_background_research_without_chrome_cannot_open_it() -> None:
         with pytest.raises(BrowserError):
             async with fetcher.research_browser():
                 pass
+
+
+async def test_background_research_cannot_use_the_shared_live_browser() -> None:
+    from earnings_bot.browser import BrowserError
+
+    class LiveBrowser:
+        async def render(self, *args: object) -> None:
+            raise AssertionError("Research reached the live browser")
+
+    fetcher = Fetcher("Test Person test@example.com")
+    fetcher._session = object()  # type: ignore[assignment]
+    fetcher._browser = LiveBrowser()  # type: ignore[assignment]
+    with fetcher.background(chrome=False), pytest.raises(BrowserError):
+        await fetcher.browser_render("https://issuer.example/results", 1.0)
+
+
+async def test_queued_research_yields_without_a_turn_when_a_window_opens() -> None:
+    from earnings_bot.fetch import HostBusy
+
+    fetcher = Fetcher("Test Person test@example.com")
+    state = {"active": False}
+    await fetcher.wait_turn("data.sec.gov")
+    reserved_until = fetcher._queues["sec.gov"].next_turn
+
+    async def research() -> None:
+        with fetcher.background(chrome=True, active=lambda: state["active"]):
+            with pytest.raises(HostBusy):
+                await fetcher.wait_turn("data.sec.gov")
+            assert fetcher.research_deferred()
+
+    task = asyncio.create_task(research())
+    await asyncio.sleep(0)
+    state["active"] = True
+    await task
+    assert fetcher._queues["sec.gov"].next_turn == reserved_until
+    await fetcher.wait_turn("data.sec.gov")
+
+
+async def test_a_queued_background_turn_is_not_spent_when_the_hot_interval_begins() -> None:
+    from earnings_bot.fetch import HostBusy
+
+    fetcher = Fetcher("Test Person test@example.com")
+    state = {"paused": False}
+    await fetcher.wait_turn("data.sec.gov")
+    reserved_until = fetcher._queues["sec.gov"].next_turn
+
+    async def research() -> None:
+        with (
+            fetcher.background(chrome=True, paused=lambda: state["paused"]),
+            pytest.raises(HostBusy),
+        ):
+            await fetcher.wait_turn("data.sec.gov")
+
+    task = asyncio.create_task(research())
+    await asyncio.sleep(0)
+    state["paused"] = True
+    await task
+    assert fetcher._queues["sec.gov"].next_turn == reserved_until
