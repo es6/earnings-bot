@@ -495,6 +495,21 @@ public response fixture is `tests/fixtures/ir_misses.json`; the replay is
   polls rotate list sizes and newswire readers can share a poll.
 - **Between windows.** The runner scans schedules, checks upcoming issuer notices and audits
   source history. Release polling begins when a scheduled window opens.
+- **Research during windows.** Research (date discovery, investigations, cache checks and the
+  `/track` scorecard's source audit) used to wait until every window closed. With many tracked
+  companies, that kept `/track` waiting for hours. Now:
+  - **It stops in the minutes a release is most likely:** from 10 minutes before an open
+    window's expected time until 30 minutes after it (`DirectoryWatcher.research_paused`).
+  - **The rest of a window, it runs in the background (`Fetcher.background`):**
+    - each request waits behind every poll and urgent download on its host;
+    - it never asks a non-SEC host that answered a window's poll in the last 30 seconds (it
+      gets `HostBusy` and is retried later);
+    - it asks SEC, which every window shares, at most once every 2 seconds.
+  - **It never touches a company whose own window is open.** Its watch keeps the plan it
+    started with.
+  - **It leaves Chrome to live windows that use it.** An investigation, or a cache check that
+    needs Chrome, waits and is retried in 10 minutes, rather than being saved half-done or
+    with a "Chrome unavailable" verdict.
 
 - **Rate limits are per host and shared across companies.** On a busy evening, a dozen companies
   report at 4 PM and all of them share SEC's 10 requests per second. SEC's limit covers all of
