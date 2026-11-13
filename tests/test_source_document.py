@@ -1,11 +1,14 @@
 """References must preserve document version and source table geometry before verification."""
 
+import json
 from dataclasses import FrozenInstanceError
 
 import pytest
 
+from earnings_bot import source_document
 from earnings_bot.source_document import (
     SourceCell,
+    SourceDocument,
     SourceTable,
     document_from_html,
     document_from_text,
@@ -112,9 +115,47 @@ def test_plain_pdf_text_does_not_gain_invented_table_cells() -> None:
     text = "Three Months Ended\nRevenue   100   80\nOperating income   10   8"
     document = document_from_text(text)
     assert document.format == "text" and document.tables == ()
+    assert document.text == text  # spacing in the existing writer's input stays intact
     assert document.resolve(document.sha256, "p2").text == "Revenue 100 80"
     with pytest.raises(ValueError, match="Unknown source reference"):
         document.resolve(document.sha256, "t1r1c1")
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        document_from_text("Revenue   100   80\n\nSecond line"),
+        document_from_html('<table><tr><th scope="row">Revenue</th><td>100</td></tr></table>'),
+    ],
+)
+def test_persisted_document_restores_frozen_blocks_and_cell_references(
+    document: SourceDocument,
+) -> None:
+    restored = SourceDocument.from_json(document.to_json())
+    assert restored == document and restored.text == document.text
+    reference = "t1r0c1" if document.tables else "p1"
+    assert restored.resolve(document.sha256, reference) == document.resolve(
+        document.sha256, reference
+    )
+    with pytest.raises(FrozenInstanceError):
+        restored.blocks[0].text = "overwritten"  # type: ignore[misc]
+
+
+def test_unknown_persisted_document_version_is_rejected() -> None:
+    data = json.loads(document_from_text("Valid report").to_json())
+    data["version"] = 999
+    with pytest.raises(ValueError, match="Unsupported source document"):
+        SourceDocument.from_json(json.dumps(data))
+
+
+def test_an_extraction_version_change_invalidates_old_reference_hashes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    old = document_from_text("Same report, different extraction rules")
+    monkeypatch.setattr(source_document, "DOCUMENT_VERSION", 2)
+    new = document_from_text("Same report, different extraction rules")
+    with pytest.raises(ValueError, match="different document"):
+        new.resolve(old.sha256, "p1")
 
 
 def test_huge_declared_spans_are_bounded_without_allocating_a_square_grid() -> None:

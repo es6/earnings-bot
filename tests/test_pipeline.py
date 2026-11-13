@@ -1,5 +1,4 @@
 import asyncio
-import hashlib
 import io
 import json
 import time
@@ -17,6 +16,7 @@ from earnings_bot.fetch import Response
 from earnings_bot.ir_research import quarter_headline
 from earnings_bot.pipeline import Poster, Release, Releases, describe_source
 from earnings_bot.recorder import ET, Journal, Target, Trial, Watch, watch
+from earnings_bot.source_document import SourceDocument, document_from_text
 from earnings_bot.sources import (
     GLOBENEWSWIRE_EARNINGS,
     PR_NEWSWIRE_EARNINGS,
@@ -87,10 +87,13 @@ def release_texts(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     """The release text each source gives, by sighting URL."""
     texts: dict[str, str] = {}
 
-    async def release_text(fetcher: object, source: Source, sighting: Sighting) -> str | None:
-        return texts.get(sighting.url)
+    async def release_document(
+        fetcher: object, source: Source, sighting: Sighting
+    ) -> SourceDocument | None:
+        text = texts.get(sighting.url)
+        return document_from_text(text) if text else None
 
-    monkeypatch.setattr(pipeline, "release_text", release_text)
+    monkeypatch.setattr(pipeline, "release_document", release_document)
     return texts
 
 
@@ -603,6 +606,8 @@ async def test_a_pdf_is_summarized_at_once_and_a_page_replaces_it_once(
         release.add(*ir_sighting(IR_PAGE + "?copy"))  # one replacement only
         await release.finish()
         job = store.summary(uber().release_key)
+        pdf = document_from_text("the PDF's text")
+        assert store.summary_document(uber().release_key, pdf.sha256) == pdf.to_json()
 
     assert summarizer.calls == ["the PDF's text", "the page's text"]
     assert [kind for kind, _ in poster.calls].count("summary") == 2
@@ -613,6 +618,7 @@ async def test_a_pdf_is_summarized_at_once_and_a_page_replaces_it_once(
         "release.pdf",
         2,
     )
+    assert job.source_document == document_from_text("the page's text").to_json()
 
 
 async def test_a_page_that_comes_during_the_pdf_summary_replaces_it_after(
@@ -861,7 +867,8 @@ async def test_a_restart_doesnt_summarize_a_delivered_release_again(
 
     assert summarizer.calls == ["the release"]
     assert job is not None and (job.status, job.attempts, job.source) == ("delivered", 1, "IR site")
-    assert job.document == hashlib.sha256(b"the release").hexdigest()
+    document = document_from_text("the release")
+    assert job.document == document.sha256 and job.source_document == document.to_json()
     skipped = [
         r for r in map(json.loads, log.getvalue().splitlines()) if r["event"] == "summary_skipped"
     ]

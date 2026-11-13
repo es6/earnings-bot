@@ -45,6 +45,7 @@ from earnings_bot.formatting import clock, period_label
 from earnings_bot.issuer_news import IssuerNews
 from earnings_bot.recorder import ET, Journal, Plan, PollError, Target, poll, record
 from earnings_bot.release_cards import release_cards, release_content
+from earnings_bot.source_document import SourceDocument
 from earnings_bot.sources import (
     BroadcomNewsroom,
     EdgarFilings,
@@ -56,7 +57,7 @@ from earnings_bot.sources import (
     Source,
 )
 from earnings_bot.summary import MODEL, WRITER, Summarizer, SummaryError
-from earnings_bot.text import release_text, verified_report
+from earnings_bot.text import release_document, verified_report
 
 FILE_TYPES = (".pdf", ".xlsx", ".xls")
 # A release PDF is summarized as soon as it's read. A page reads better (its tables keep their
@@ -387,30 +388,38 @@ class ReleaseText:
         self.fetcher = fetcher
         self.verified_only = verified_only
         self._locks: dict[str, asyncio.Lock] = {}
-        self._texts: dict[str, str] = {}
+        self._documents: dict[str, SourceDocument] = {}
 
     async def read(self, source: Source, sighting: Sighting) -> str | None:
+        document = await self.read_document(source, sighting)
+        return document.text if document else None
+
+    async def read_document(self, source: Source, sighting: Sighting) -> SourceDocument | None:
         key = _filing_folder(sighting.url) if isinstance(source, EdgarFilings) else None
         if isinstance(source, RssFeed):
             key = sighting.url
         if key is None:
             return await self._fetch(source, sighting)
         async with self._locks.setdefault(key, asyncio.Lock()):
-            if key not in self._texts:
-                text = await self._fetch(source, sighting)
-                if text is None:
+            if key not in self._documents:
+                document = await self._fetch(source, sighting)
+                if document is None:
                     return None  # Another sighting can retry the miss.
-                self._texts[key] = text
-            return self._texts[key]
+                self._documents[key] = document
+            return self._documents[key]
 
-    async def _fetch(self, source: Source, sighting: Sighting) -> str | None:
-        text = await release_text(self.fetcher, source, sighting)
+    async def _fetch(self, source: Source, sighting: Sighting) -> SourceDocument | None:
+        document = await release_document(self.fetcher, source, sighting)
         requires_report = (
             self.verified_only
             or isinstance(source, BrowserRss)
             or (isinstance(source, BrowserRelease) and source.verify_text)
         )
-        return text if not requires_report or verified_report(text) else None
+        return (
+            document
+            if document and (not requires_report or verified_report(document.text))
+            else None
+        )
 
 
 class Release:
@@ -770,11 +779,12 @@ class Release:
     ) -> None:
         """Gets the release's text from this sighting, logs when the first text arrives, and
         starts the summary from it. Several sources can deliver the text; the first one wins."""
-        text = await self._text.read(source, sighting)
-        if text is None:
+        document = await self._text.read_document(source, sighting)
+        if document is None:
             if isinstance(source, RssFeed) and sighting.earnings:
                 self._ask_issuer()
             return
+        text = document.text
         if measure and not sighting.caught_up and verified_report(text):
             self.journal.write(
                 "source_body",
@@ -802,12 +812,12 @@ class Release:
             return
         kind = "pdf" if sighting.body is not None and sighting.body.startswith(b"%PDF-") else "page"
         if not self.summarizing:
-            await self._summarize(self.summarizer, text, label, kind)
+            await self._summarize(self.summarizer, document, label, kind)
         elif kind == "page" and self._page_can_replace():
             self.replaced = True  # once: later pages don't replace it again
             async with self._summary_turn:  # after the PDF-based summary is posted
                 await self._summarize(
-                    self.summarizer, text, label, kind, replaces=self.summary_label
+                    self.summarizer, document, label, kind, replaces=self.summary_label
                 )
 
     async def _read_pdf(self, source: Source, sighting: Sighting, label: str) -> None:
@@ -884,7 +894,7 @@ class Release:
     async def _summarize(
         self,
         summarizer: Summarizer,
-        text: str,
+        document: SourceDocument,
         label: str,
         kind: str = "page",
         replaces: str | None = None,
@@ -901,15 +911,15 @@ class Release:
             )
             return
         if replaces is not None:
-            await self._summarize_now(summarizer, text, label, kind, job, replaces)
+            await self._summarize_now(summarizer, document, label, kind, job, replaces)
             return
         async with self._summary_turn:
-            await self._summarize_now(summarizer, text, label, kind, job, None)
+            await self._summarize_now(summarizer, document, label, kind, job, None)
 
     async def _summarize_now(
         self,
         summarizer: Summarizer,
-        text: str,
+        document: SourceDocument,
         label: str,
         kind: str,
         job: SummaryJob | None,
@@ -929,7 +939,7 @@ class Release:
                 replaces = None  # the PDF-based summary failed, so nothing is replaced
             self.summary_kind, self.summary_label = kind, label
             self.summary_started = time.monotonic()
-            await self._write_summary(summarizer, text, label, replaces)
+            await self._write_summary(summarizer, document, label, replaces)
 
     def _summary_limit(self, job: SummaryJob | None) -> str | None:
         """Why no model call may start for this release now, if one may not."""
@@ -943,16 +953,27 @@ class Release:
         return self.journal.now().astimezone(ET).date().isoformat()
 
     async def _write_summary(
-        self, summarizer: Summarizer, text: str, label: str, replaces: str | None = None
+        self,
+        summarizer: Summarizer,
+        document: SourceDocument,
+        label: str,
+        replaces: str | None = None,
     ) -> None:
         key = self.target.release_key
         async with self.model_calls:
             if self.jobs:
-                document = hashlib.sha256(text.encode()).hexdigest()
-                self.jobs.summary_started(key, document, label, self._day(), replaces=replaces)
+                evidence = await asyncio.to_thread(document.to_json)
+                self.jobs.summary_started(
+                    key,
+                    document.sha256,
+                    label,
+                    self._day(),
+                    replaces=replaces,
+                    source_document=evidence,
+                )
             started = time.monotonic()
             try:
-                summary = await summarizer.write(self.target.ticker, text)
+                summary = await summarizer.write_document(self.target.ticker, document)
             except SummaryError as error:
                 if self.jobs:
                     self.jobs.summary_status(key, FAILED)
@@ -984,6 +1005,7 @@ class Release:
             held_back=summary.unverified,
             input_tokens=summary.input_tokens,
             output_tokens=summary.output_tokens,
+            document_sha256=document.sha256,
             **({"replaces": replaces} if replaces else {}),
         )
 

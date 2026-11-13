@@ -32,7 +32,7 @@ class SummaryJob:
     edited onto an old alert again (it was on Nov 12, twice after one restart)."""
 
     key: str
-    document: str  # SHA-256 of the release text it was written from
+    document: str  # source-document version hash (legacy jobs contain a plain-text hash)
     source: str  # where that text came from, such as "SEC 6-K"
     status: str
     attempts: int  # model calls made for this release
@@ -42,6 +42,7 @@ class SummaryJob:
     input_tokens: int | None = None
     output_tokens: int | None = None
     replaced: str | None = None  # source of the PDF-based summary this one replaced
+    source_document: str | None = None  # versioned extraction JSON; absent on legacy jobs
 
 
 class DeliveryStore:
@@ -105,6 +106,15 @@ class DeliveryStore:
                 day TEXT NOT NULL,
                 calls INTEGER NOT NULL,
                 PRIMARY KEY (channel_id, day)
+            )
+        """)
+        self.db.execute("""
+            CREATE TABLE IF NOT EXISTS summary_documents (
+                channel_id INTEGER NOT NULL,
+                release_key TEXT NOT NULL,
+                document TEXT NOT NULL,
+                source_document TEXT NOT NULL,
+                PRIMARY KEY (channel_id, release_key, document)
             )
         """)
         # The source of the PDF-based summary a page's summary replaced, if it replaced one
@@ -214,7 +224,9 @@ class DeliveryStore:
 
     def summary(self, key: str) -> SummaryJob | None:
         row = self.db.execute(
-            "SELECT * FROM summaries WHERE channel_id = ? AND release_key = ?",
+            "SELECT s.*, d.source_document FROM summaries s LEFT JOIN summary_documents d "
+            "USING (channel_id, release_key, document) "
+            "WHERE s.channel_id = ? AND s.release_key = ?",
             (self.channel_id, key),
         ).fetchone()
         if row is None:
@@ -231,15 +243,28 @@ class DeliveryStore:
             row["input_tokens"],
             row["output_tokens"],
             row["replaced"],
+            row["source_document"],
         )
 
     def summary_started(
-        self, key: str, document: str, source: str, day: str, *, replaces: str | None = None
+        self,
+        key: str,
+        document: str,
+        source: str,
+        day: str,
+        *,
+        replaces: str | None = None,
+        source_document: str | None = None,
     ) -> None:
         """Records a model call starting for the release, from this document, and counts it
         toward the day's calls. `replaces` names the source of the summary it will replace."""
         now = datetime.now(UTC).isoformat()
         with self.db:
+            if source_document is not None:
+                self.db.execute(
+                    "INSERT OR IGNORE INTO summary_documents VALUES (?, ?, ?, ?)",
+                    (self.channel_id, key, document, source_document),
+                )
             self.db.execute(
                 """
                 INSERT INTO summaries (channel_id, release_key, document, source, status,
@@ -261,6 +286,15 @@ class DeliveryStore:
                 """,
                 (self.channel_id, day),
             )
+
+    def summary_document(self, key: str, document: str) -> str | None:
+        """Keep earlier source versions addressable after a PDF/HTML replacement."""
+        row = self.db.execute(
+            "SELECT source_document FROM summary_documents "
+            "WHERE channel_id = ? AND release_key = ? AND document = ?",
+            (self.channel_id, key, document),
+        ).fetchone()
+        return row["source_document"] if row else None
 
     def summary_written(
         self,
