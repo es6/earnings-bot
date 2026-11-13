@@ -107,10 +107,10 @@ MEASURES = {
     "loans",
 }
 _ALIASES = [
-    (r"\bearnings per diluted share\b", "diluted eps"),
-    (r"\bdiluted earnings per share\b", "diluted eps"),
-    (r"\bbasic earnings per share\b", "basic eps"),
-    (r"\bearnings per share\b", "eps"),
+    (r"\bearnings per diluted (?:ordinary |common )?share\b", "diluted eps"),
+    (r"\bdiluted earnings per (?:ordinary |common )?share\b", "diluted eps"),
+    (r"\bbasic earnings per (?:ordinary |common )?share\b", "basic eps"),
+    (r"\bearnings per (?:ordinary |common )?share\b", "eps"),
     (r"\bnet loss per share\b", "eps"),
     (r"\bnet income per share\b", "eps"),
     (r"\brevenues\b", "revenue"),
@@ -169,6 +169,7 @@ def metric_words(metric: str) -> list[str]:
     """The words that identify a measure, in order and stemmed, without its basis, period
     or abbreviation."""
     text = re.sub(r"\(([A-Za-z]{2,6})\)", "", metric)  # "(RPO)", "(ARR)"
+    text = re.sub(r"(?<=\))\d{1,2}\b", "", text)  # a footnote mark: "(non-GAAP)3"
     text = re.sub(
         r"\((?:non-?gaap|gaap|ifrs|non-?ifrs|adjusted|reported)\)", "", text, flags=re.IGNORECASE
     )

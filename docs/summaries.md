@@ -120,6 +120,23 @@ binder now checks what a value asserts, and fails closed on any conflict:
   - A narrower measure doesn't bind: "subscription revenue" is not revenue, and "free
     cash flow margin" is not free cash flow.
   - A count can name what it counts after its number: "repurchased 9.5 million shares".
+    So can an amount or a growth rate, when the words after "in" are exactly the claimed
+    measure ("delivered $1.1 billion in revenue", "19% growth in organic sales", but not
+    "$1.1 billion in revenue synergies"). Earnings per share can follow the net income it
+    divides: "net income of $582 million, or $0.40 per diluted share".
+  - A segment's row ("North America", "Neuromodulation") takes its measure from what the
+    table says it measures: the value's column header ("Reported Net Revenues"), the nearest
+    heading row above it ("Revenue:", and "Cost of revenue:" for the rows under that), or
+    the sentence that introduces the table ("Net sales for the third quarter by business:").
+    A label that already names the claim binds on its own.
+  - An abbreviation the release defines for itself names the same thing ("Moody's Analytics
+    (MA)" makes "MA Revenue" Moody's Analytics revenue). The issuer's own name or ticker is
+    no part of a measure ("MCO Adjusted Diluted EPS" is adjusted diluted EPS).
+  - "Net sales" and "sales", and "net operating revenues" and "net revenues", are one
+    measure unless the release lists both as separate rows. "Diluted" can be left out of
+    EPS.
+  - "Guidance" and "growth" in a claim's name say which slot the value fills, not what it
+    measures: "EPS guidance" binds to "adjusted EPS between $13.70 and $13.80".
 - **The number.** Sign, scale and precision must match. "(37.5)" is negative, and "a 6.9%
   decrease" is −6.9%. A claim may round the stated number ("$6.8 billion" for $6.76
   billion), but it may not be more precise than the source.
@@ -139,7 +156,9 @@ binder now checks what a value asserts, and fails closed on any conflict:
   - a YoY label the clause doesn't say;
   - a currency on a count;
   - a count unit the text doesn't name;
-  - a group the evidence doesn't name, such as "Profitability" or "Bookings".
+  - a group the evidence doesn't name, such as "Profitability" or "Bookings";
+  - a group that names the company itself ("MCO", "Boston Scientific") or only the fact's
+    role ("guidance", "headline"). It is no segment, so it is neither required nor shown.
 - **Business updates** show the source's own sentence. The model's version must agree with
   it: every number with its sign, every year, and most of its words.
 - **One bad fact sinks only itself.** `bind_answer` validates each fact on its own, and an
@@ -162,6 +181,33 @@ Measured on Ember-low reference answers (values kept out of all values selected)
 - **Where retention is still lowest:** IBKR (0/33), NET, AAPL, SNPS and NOW. The usual
   causes are tables whose column headers sit in a separate header table, and measure names
   that the release words differently.
+
+**Nov 13, v0.21.18: measures named by their table, abbreviations and slots (measured,
+offline).** The same saved answers replayed through the binder, no new model calls. Most
+rejections were correct values refused by name: a segment row named only "Neuromodulation"
+under a table introduced as "Net sales by business", "MA Revenue" against "Moody's Analytics
+revenue", "Net sales" against "Sales in the quarter were", "EPS guidance" against "adjusted
+EPS between", and groups such as "MCO" or "guidance" required as if they were segments.
+
+| Set | Before | After |
+|---|---|---|
+| Held out, 16 releases (above) | 129/440 (29%) | 161/440 (37%) |
+| Nov 13 unseen issuers: KO, MCO, ETN, BSX, 60 answers | 428/1,869 (23%) | 782/1,869 (42%) |
+| Nov 13 development answers: ADBE, CMG, GE, JPM, PLTR, WMT | 81/184 | 82/184 |
+
+- **Important topics kept** (the unseen study's frozen annotations, 12 per issuer and run):
+  149 → 275 of 720.
+- **Wrong values among them** (the study's own known-value checks): 0 of 141 before, 0 of
+  268 after. Those checks cover only annotated values. Every distinct value newly kept in the
+  unseen set was also read against its quote by hand; none was wrong.
+- No held-out release kept fewer values. Arista's product and service revenue had passed
+  only because the model's group "Revenue" stripped the word; they now bind through the
+  "Revenue:" heading row above them.
+- Still refused, mostly rightly: values the cited passage doesn't state (the model cited
+  the wrong block), segment bullets nested under a heading in running text, and model
+  paraphrases ("rolling average organic orders").
+- Retention is still below what default activation needs, and the reference request's
+  extra latency is unchanged. Activation stays off.
 
 ## Live summaries (v0.13.0)
 

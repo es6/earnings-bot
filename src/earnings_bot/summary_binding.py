@@ -149,12 +149,142 @@ _METADATA = re.compile(
 )
 
 
+# "Moody's Analytics ("MA")": a name and the abbreviation the release defines for it
+_DEFINED = re.compile(
+    r"((?:(?:[A-Z][\w'’&.-]*|of|and|on|for|the|&)\s+){0,5}[A-Z][\w'’&.-]*)"
+    r"\s*\(\s*[\"“]?([A-Z]{2,5})[\"”]?\s*\)"
+)
+# Abbreviations of an accounting basis, period or market, never expanded
+_NOT_NAMES = {"GAAP", "IFRS", "SEC", "YTD", "LTM", "TTM", "YOY", "QOQ", "NYSE", "NASDAQ", "USD"}
+# A word that can be left out of a measure's name without changing the measure: "net sales"
+# and "sales", "net operating revenues" and "revenues". Unless the release lists both.
+_OPTIONAL = frozenset(
+    (stem(word), stem(measure))
+    for word, measure in (("net", "sales"), ("net", "revenue"), ("operating", "revenue"))
+)
+# "Moody's Corporation (NYSE: MCO)": the issuer's name and ticker, from its exchange tag
+_LISTED = re.compile(
+    r"((?:[\w'’&.,-]+\s+){0,5}[\w'’&.,-]+)\s*\((?:NYSE|NASDAQ|Nasdaq|NYSE American)\s*:\s*"
+    r"([A-Z][A-Z.]{0,5})\)"
+)
+_LEGAL = {"plc", "inc", "inc.", "co", "co.", "ltd", "ltd.", "corp", "corp.", "n.v.", "s.a.", "ag"}
+# Group words that name no segment: the whole company, or the role a fact plays
+_NOT_SEGMENT = {
+    "the",
+    "consolidated",
+    "total",
+    "company",
+    "corporation",
+    "inc",
+    "plc",
+    "group",
+    "overall",
+    "firmwide",
+    "guidance",
+    "outlook",
+    "headline",
+    "headlines",
+    "highlights",
+    "results",
+    "financial",
+    "financials",
+    "key",
+    "metrics",
+    "kpis",
+    "performance",
+    "summary",
+    "profitability",
+    "profit",
+    "growth",
+    "net",
+    "sales",
+    "revenue",
+    "revenues",
+    "earnings",
+}
+# Words that name the slot a value fills, not its measure: "EPS guidance", "Revenue growth"
+_GUIDANCE_STEMS = frozenset(stem(w) for w in ("guidance", "outlook", "forecast", "target"))
+_GROWTH_STEMS = frozenset(stem(w) for w in ("growth", "change", "increase", "decrease", "yoy"))
+
+
+@dataclass(frozen=True)
+class _Terms:
+    """What a release itself establishes about the names it uses."""
+
+    acronyms: tuple[tuple[str, str], ...] = ()  # ("MA", "Moody's Analytics"), as it defines
+    # (word, measure) pairs the release lists separately: "net sales" and "sales" rows
+    distinct: frozenset[tuple[str, str]] = frozenset()
+    issuer: frozenset[str] = frozenset()  # the words of the issuer's name and its ticker
+
+    def expand(self, text: str) -> str:
+        for short, name in self.acronyms:
+            text = re.sub(rf"\b{short}\b", lambda _, name=name: name, text)
+        return text
+
+    def optional(self, measure: set[str]) -> set[str]:
+        """The words a measure's name can go without here."""
+        found = {w for w, m in _OPTIONAL if m in measure and (w, m) not in self.distinct}
+        if "eps" in measure:
+            found.add(stem("diluted"))
+        return found
+
+
+_NO_TERMS = _Terms()
+
+
+def _terms(document: SourceDocument) -> _Terms:
+    acronyms: dict[str, str] = {}
+    for match in _DEFINED.finditer(document.text):
+        names = match[1].split()
+        for start in range(len(names)):
+            tail = names[start:]
+            if not tail[0][0].isupper():
+                continue
+            if "".join(w[0] for w in tail if w[0].isupper()) == match[2]:
+                name = " ".join(tail)
+                # A measure's own abbreviation ("Free Cash Flow (FCF)") is an alias, not a name
+                if match[2] not in _NOT_NAMES and not set(metric_words(name)) & MEASURE_STEMS:
+                    acronyms.setdefault(match[2], name)
+                break
+    # Row labels only: a column header ("Reported Net Revenues") describes other rows
+    labels = set()
+    for table in document.tables:
+        for row in range(table.rows):
+            cells = [c for c in _row(table, row) if c.text.strip() not in _DECORATION]
+            if cells and len(cells[0].text) <= 80 and not _numeric(cells[0]):
+                labels.add(frozenset(metric_words(cells[0].text)))
+    distinct = frozenset(
+        (word, measure)
+        for word, measure in _OPTIONAL
+        if any(word in label and measure in label and label - {word} in labels for label in labels)
+    )
+    issuer: set[str] = set()
+    for match in _LISTED.finditer(document.text[:10_000]):
+        name = []
+        for word in reversed(match[1].split()):
+            if not (word[0].isupper() or word.casefold() in _LEGAL):
+                break
+            name.append(word)
+        issuer |= set(words(" ".join(name)).split()) | {match[2].casefold()}
+    return _Terms(tuple(acronyms.items()), distinct, frozenset(issuer))
+
+
+def _slot_stems(field: str) -> frozenset[str]:
+    if field in ("previous_guidance", "new_guidance"):
+        return _GUIDANCE_STEMS
+    if field in ("reported_growth", "comparable_growth"):
+        return _GROWTH_STEMS
+    return frozenset()
+
+
 @dataclass(frozen=True)
 class _Context:
     near: str  # the text just before the cited block, since the previous table
     far: str  # the release's opening, which names its reporting period
     offset: int = 0  # how far the release's fiscal year label runs ahead of the calendar
     reported: tuple[str, bool] | None = None  # the year the release reports, and if fiscal
+    lead: str = ""  # the paragraph right before a table: "Net sales by business and region:"
+    terms: _Terms = _NO_TERMS
 
     def __str__(self) -> str:
         return f"{self.near}\n{self.far}"
@@ -166,9 +296,11 @@ def _context(document: SourceDocument, block_id: str) -> _Context:
     opening: list[str] = []
     local: list[str] = []
     passed_table = False
+    lead = ""
     for block in document.blocks:
         if block.id == block_id:
             break
+        lead = block.text if block.kind == "paragraph" and len(block.text) <= 300 else ""
         if block.kind == "table":
             passed_table = True
             local.clear()
@@ -180,7 +312,7 @@ def _context(document: SourceDocument, block_id: str) -> _Context:
     # A bullet's period can be in a heading several paragraphs up
     near = [line for line in local[-10:] if _METADATA.search(line)][-2:]
     far = [line for line in opening[:12] if _METADATA.search(line)]
-    return _Context("\n".join(near), "\n".join(far))
+    return _Context("\n".join(near), "\n".join(far), lead=lead)
 
 
 # Words after a growth rate that say what it compares, not what it measures
@@ -226,7 +358,12 @@ def _row(table: SourceTable, index: int) -> list[SourceCell]:
 
 
 def _headers(table: SourceTable, value: SourceCell) -> str:
-    headers = []
+    return " ".join(_column_headers(table, value))
+
+
+def _column_headers(table: SourceTable, value: SourceCell) -> list[str]:
+    """The header cells above a value that cover its column, top first."""
+    headers: list[str] = []
     for row in range(value.row):
         cells = _row(table, row)
         label = next((c for c in cells if c.column == 0), None)
@@ -245,7 +382,45 @@ def _headers(table: SourceTable, value: SourceCell) -> str:
                 and (cell.column <= value.column < cell.column + cell.colspan)
             )
         )
-    return " ".join(headers)
+    return headers
+
+
+def _lead_measure(text: str) -> str:
+    """The measure a table's introduction names before what it's broken down by: "Net sales
+    for the third quarter by business and region:" names net sales."""
+    head = re.split(
+        r"\b(?:for|by|in|during|from|across|of the)\b|[:,;(.]", text.strip(), maxsplit=1
+    )[0]
+    return head if len(head.split()) <= 5 else ""
+
+
+def _row_measure(table: SourceTable, value: SourceCell, label: str, section: str, lead: str) -> str:
+    """What a row measures when its label names only a segment or region ("North America"):
+    the value's own column header ("Reported Net Revenues"), else the section above the row,
+    else the sentence that introduces the table. A label that names a measure keeps it."""
+    if set(metric_words(label)) & MEASURE_STEMS:
+        return ""
+    for text in [*reversed(_column_headers(table, value)), section, _heading(table, value)]:
+        if set(metric_words(text)) & MEASURE_STEMS:
+            return text
+    found = _lead_measure(lead)
+    return found if set(metric_words(found)) & MEASURE_STEMS else ""
+
+
+def _heading(table: SourceTable, value: SourceCell) -> str:
+    """The nearest heading row above a value that names a measure: a row with only a first
+    cell, however wide ("Revenue:" over "Product" and "Service"). "Cost of revenue:" is the
+    nearer heading for the rows under it."""
+    for row in range(value.row - 1, -1, -1):
+        cells = [c for c in _row(table, row) if c.text.strip() not in _DECORATION]
+        if (
+            len(cells) == 1
+            and cells[0].column == 0
+            and not _numeric(cells[0])
+            and set(metric_words(cells[0].text)) & MEASURE_STEMS
+        ):
+            return cells[0].text
+    return ""
 
 
 def _generic_heading(text: str) -> bool:
@@ -309,8 +484,13 @@ def _label_and_group(table: SourceTable, value: SourceCell) -> tuple[str, str]:
     return label, section
 
 
-def _group(fact: ReferencedFact) -> str:
-    return "" if words(fact.group) in _NEUTRAL_GROUPS else fact.group
+def _group(fact: ReferencedFact, terms: _Terms) -> str:
+    """The fact's segment, or none when its group names the whole company (its name or
+    ticker: "MCO") or only the role the fact plays ("guidance", "headline")."""
+    named = set(words(fact.group).split())
+    if words(fact.group) in _NEUTRAL_GROUPS or named <= _NOT_SEGMENT | terms.issuer:
+        return ""
+    return fact.group
 
 
 def _unit_note(note: str, unit: str) -> bool:
@@ -327,19 +507,31 @@ def _unit_note(note: str, unit: str) -> bool:
     )
 
 
-def _identity_issues(claim: str, label: str, group: str, unit: str = "") -> list[str]:
+def _identity_issues(
+    claim: str,
+    label: str,
+    group: str,
+    unit: str = "",
+    *,
+    slot: frozenset[str] = frozenset(),
+    terms: _Terms = _NO_TERMS,
+) -> list[str]:
     """A row names the claimed measure when they differ by at most generic words; a row that
     is a narrower or different measure (a margin, subscription revenue) does not bind. A
-    label's own unit note is not part of its name."""
+    label's own unit note is not part of its name, and neither is the slot a value fills
+    ("guidance", "growth")."""
     label = re.sub(r"\([^()]*\)", lambda m: "" if _unit_note(m[0], unit) else m[0], label)
-    claimed = set(metric_words(claim)) - set(metric_words(group))
-    named = set(metric_words(label)) - set(metric_words(group))
+    # The issuer's own name or ticker is no part of a measure's name: "MCO Revenue"
+    unnamed = set(metric_words(group)) | slot | {stem(w) for w in terms.issuer}
+    claimed = set(metric_words(claim)) - unnamed
+    named = set(metric_words(label)) - unnamed
     if not claimed:
         return ["metric names no measure"]
     generic = {stem("consolidated"), "group"}
     if "eps" in claimed:
         generic |= {stem("diluted"), stem("attributable")}
-    if claimed - named - {stem("diluted")} or named - claimed - generic:
+    optional = terms.optional(claimed | named)
+    if claimed - named - {stem("diluted")} - optional or named - claimed - generic - optional:
         return ["metric does not match the cited source row"]
     return []
 
@@ -482,7 +674,8 @@ def _table_binding(
 ) -> tuple[list[str], str, SourcedValue | None]:
     claims, dimension = claimed_amounts(value)
     kind = unit_kind(value.unit)
-    group = _group(fact)
+    terms = frame.terms
+    group = terms.expand(_group(fact, terms))
     context = str(frame)
     candidates: list[tuple[str, SourcedValue]] = []
     failures: list[str] = []
@@ -500,9 +693,23 @@ def _table_binding(
         raw = " ".join(
             [*(c.text for c in row[left:index]), body, *(c.text for c in row[index + 1 : right])]
         )
-        label, section = _label_and_group(table, cell)
+        label, section = (terms.expand(t) for t in _label_and_group(table, cell))
         headers = f"{_headers(table, cell)} {prefix}".strip()
-        issues = _identity_issues(fact.metric, label, group, value.unit)
+        # A label that names the claim binds on its own ("Gain on business divestitures"); a
+        # segment's label ("North America") binds with the measure its table states
+        measure = _row_measure(table, cell, label, section, frame.lead)
+        issues: list[str] = []
+        for name in dict.fromkeys((label, f"{label} {measure}".strip())):
+            issues = _identity_issues(
+                terms.expand(fact.metric),
+                name,
+                group,
+                value.unit,
+                slot=_slot_stems(field),
+                terms=terms,
+            )
+            if not issues:
+                break
         if field not in ("previous_guidance", "new_guidance", "prior_year_actual") and (
             _guidance_heading(frame.near)
         ):
@@ -636,6 +843,36 @@ def _metric_window(claim: list[str], prefix: str) -> tuple[int, int] | None:
     return None
 
 
+# A basis can sit inside the measure's name after a number: "19% growth in organic sales".
+# The basis check, not the name, decides whether it is the claimed one.
+_BASIS_STEMS = frozenset(stem(w) for w in ("organic", "comparable", "reported", "adjusted"))
+
+
+def _named_after(claim: list[str], following: str, kind: str, growth: bool) -> bool:
+    """An amount or a growth rate can name its measure right after it: "delivered $1.1 billion
+    in revenue", "up 28%, with 19% growth in organic sales". The phrase after "in" must be the
+    claimed measure, no more: "$5 million in revenue synergies" is not revenue."""
+    lead = r"\s*in\s+" if kind == "money" else r"\s*(?:growth|increase|decrease|decline)\s+in\s+"
+    if kind != "money" and not growth:
+        return False
+    found = re.match(lead + r"([a-z&\- ]+)", following)
+    if found is None:
+        return False
+    phrase = re.split(r"\b(?:and|or|compared|from|versus|vs|to|on|over|for)\b", found[1])[0]
+    named = stems(phrase)
+    return bool(named) and named[-1] == claim[-1] and set(named) - set(claim) <= _BASIS_STEMS
+
+
+def _per_share_window(claim: list[str], prefix: str, following: str) -> tuple[int, int] | None:
+    """Earnings per share often follows the net income it divides: "net income of $582
+    million, or $0.39 per share". The window is that net income's name."""
+    share = re.match(r"\s*per (?:(diluted|basic) )?(?:common |ordinary )?share\b", following)
+    if share is None or share[1] == "basic" or set(claim) - {"eps"}:
+        return None
+    income = list(re.finditer(r"\b(?:net (?:income|earnings|loss)|earnings)\b", prefix))
+    return (income[-1].start(), income[-1].end()) if income else None
+
+
 def _names_itself(fact: ReferencedFact, group: str, label: str) -> bool:
     """A metric that names its own segment ("Business Professionals & Consumers subscription
     revenue") needs no separate group: the row or clause that names it establishes it."""
@@ -711,17 +948,25 @@ def _paragraph_binding(
 ) -> tuple[list[str], str, SourcedValue | None]:
     claims, dimension = claimed_amounts(value)
     kind = unit_kind(value.unit)
-    group = _group(fact)
+    terms = frame.terms
+    group = terms.expand(_group(fact, terms))
+    metric = terms.expand(fact.metric)
     context = str(frame)
-    claim = [w for w in metric_words(fact.metric) if w not in set(metric_words(group))] or (
-        metric_words(fact.metric)
+    claim = [w for w in metric_words(metric) if w not in set(metric_words(group))] or (
+        metric_words(metric)
     )
-    if field in ("reported_growth", "comparable_growth"):
+    growth_slot = field in ("reported_growth", "comparable_growth")
+    if growth_slot:
         # The slot says it is a growth rate: "ARR growth" is named by "ARR grew"
         claim = [w for w in claim if w not in _CHANGE_STEMS] or claim
+    elif field in ("previous_guidance", "new_guidance"):
+        # And that it is guidance: "EPS guidance" is named by "expects adjusted EPS between"
+        claim = [w for w in claim if w not in _GUIDANCE_STEMS] or claim
+    # "Net sales" is named by "Sales in the quarter were", unless the release tells them apart
+    required = [w for w in claim if w not in terms.optional(set(claim))] or claim
     failures: list[str] = []
     for clause in _CLAUSES.split(ref.quote):
-        text = normalized(clause)
+        text = normalized(terms.expand(clause))
         caption = source_scale(clause) or (
             source_scale(context)
             if kind == "money" and not re.search(r"billion|million", text)
@@ -743,19 +988,26 @@ def _paragraph_binding(
                 continue
             issues: list[str] = []
             prefix = text[: token[0]]
+            following = text[run[-1][1] :]
             window = _metric_window(claim, prefix)
+            if window is None and required != claim:
+                window = _metric_window(required, prefix)
             if window is None and (
-                kind == "count" or (kind == "%" and re.match(r"\s*of\b", text[run[-1][1] :]))
+                kind == "count" or (kind == "%" and re.match(r"\s*of\b", following))
             ):
                 # A count can name what it counts after its number ("repurchased 9.5 million
                 # shares", "1 billion monthly active users"), and a share what it is a share of
                 # ("represented 38.8% of total food and beverage revenue")
-                following_words = stems(text[run[-1][1] :])[:7]
+                following_words = stems(following)[:7]
                 preceding_words = stems(prefix)[-6:]
-                if set(claim) & set(following_words) and set(claim) <= set(following_words) | set(
-                    preceding_words
-                ):
+                if set(required) & set(following_words) and set(required) <= set(
+                    following_words
+                ) | set(preceding_words):
                     window = (token[0], token[0])
+            if window is None and _named_after(required, following, kind, growth_slot):
+                window = (token[0], token[0])
+            if window is None and kind == "per share":
+                window = _per_share_window(required, prefix, following)
             if window is None:
                 failures.append("metric is absent from the cited claim clause")
                 continue
@@ -787,7 +1039,6 @@ def _paragraph_binding(
                 issues.append("segment/group is absent from the claim clause")
             issues.extend(qualifier_issues(value, text[max(0, token[0] - 20) : after_end]))
             span = f"{local} {text[token[0] : after_end]} {after}"
-            growth_slot = field in ("reported_growth", "comparable_growth")
             if growth_slot:
                 span = f"{span} {text[after_end:following]}"
             elif field in ("previous_guidance", "new_guidance") and not _GUIDANCE.search(span):
@@ -960,10 +1211,10 @@ def bind_brief(candidate: UnverifiedBrief, document: SourceDocument) -> BindingR
     return _bind(list(candidate.facts), document)
 
 
-def _group_stated(fact: ReferencedFact, document: SourceDocument) -> bool:
+def _group_stated(fact: ReferencedFact, document: SourceDocument, terms: _Terms) -> bool:
     """Whether the evidence of every kept value names the fact's group: in its passage, or
     for a cell in the row's label or the section above it."""
-    group = words(fact.group)
+    group = words(terms.expand(fact.group))
     if not group:
         return True
     for value in fact.values():
@@ -975,10 +1226,10 @@ def _group_stated(fact: ReferencedFact, document: SourceDocument) -> bool:
                 cells = [c for c in block.cells if c.id in ref.cell_ids]
                 if cells and not ref.quote.startswith(cells[0].text):
                     label, section = _label_and_group(block, cells[0])
-                    if group not in words(f"{label} {section}"):
+                    if group not in words(terms.expand(f"{label} {section}")):
                         return False
                     continue
-            if group not in words(ref.quote):
+            if group not in words(terms.expand(ref.quote)):
                 return False
     return True
 
@@ -1000,6 +1251,7 @@ def _bind(facts: list[ReferencedFact], document: SourceDocument) -> BindingRepor
     offset = fiscal_offset(document.text[:20_000])
     reported = reporting_year(document.text[:20_000])
     named_period = reported_period(document.text[:20_000])
+    terms = _terms(document)
     shown_updates: set[str] = set()
     for fact in facts:
         changes: dict[str, object] = {}
@@ -1016,7 +1268,10 @@ def _bind(facts: list[ReferencedFact], document: SourceDocument) -> BindingRepor
             for ref in resolvable:
                 block = document.resolve(ref.document_sha256, ref.block_id)
                 context = replace(
-                    _context(document, ref.block_id), offset=offset, reported=reported
+                    _context(document, ref.block_id),
+                    offset=offset,
+                    reported=reported,
+                    terms=terms,
                 )
                 if named_period and not quarter(context.far):
                     # A harmless layout table can precede the title. The release's own
@@ -1061,7 +1316,9 @@ def _bind(facts: list[ReferencedFact], document: SourceDocument) -> BindingRepor
                 shown_updates.add(shown)
                 changes["update"] = shown
         kept_fact = fact.model_copy(update=changes)
-        if _group(kept_fact) != kept_fact.group or not _group_stated(kept_fact, document):
+        if _group(kept_fact, terms) != kept_fact.group or not _group_stated(
+            kept_fact, document, terms
+        ):
             # A group the evidence doesn't name is the model's label, never shown as a segment
             kept_fact = kept_fact.model_copy(update={"group": ""})
         pair_issues = _pair_issues(kept_fact)
