@@ -112,7 +112,7 @@ async def test_confirmed_facts_are_laid_out_and_unconfirmed_ones_held_back() -> 
     assert summary.text == (
         "**Q3 2026 · Results**\n"
         "🔹 **Gross Bookings**: $59.8B; +20% YoY\n\n"
-        "**Q3 2026 · Business updates**\n"
+        "**Business updates**\n"
         "🔸 **Autonomous vehicles**: About 700 fully driverless vehicles on Uber by year-end"
     )
     assert len(summary.unverified) == 1
