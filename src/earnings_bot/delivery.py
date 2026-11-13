@@ -111,6 +111,29 @@ class DeliveryStore:
         columns = {row["name"] for row in self.db.execute("PRAGMA table_info(summaries)")}
         if "replaced" not in columns:
             self.db.execute("ALTER TABLE summaries ADD COLUMN replaced TEXT")
+        # The bot's standing messages in this channel, such as the latest start notice
+        self.db.execute("""
+            CREATE TABLE IF NOT EXISTS notices (
+                channel_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                message_id INTEGER NOT NULL,
+                PRIMARY KEY (channel_id, name)
+            )
+        """)
+
+    def notice(self, name: str) -> int | None:
+        row = self.db.execute(
+            "SELECT message_id FROM notices WHERE channel_id = ? AND name = ?",
+            (self.channel_id, name),
+        ).fetchone()
+        return row["message_id"] if row else None
+
+    def set_notice(self, name: str, message_id: int) -> None:
+        with self.db:
+            self.db.execute(
+                "INSERT OR REPLACE INTO notices VALUES (?, ?, ?)",
+                (self.channel_id, name, message_id),
+            )
 
     def last_scan(self) -> datetime | None:
         row = self.db.execute(

@@ -214,9 +214,10 @@ class WatchedDiscord(FakeDiscord):
         self,
         content: str = "",
         *,
-        nonce: str,
+        nonce: str | None = None,
         embed: discord.Embed | None = None,
         embeds: list[discord.Embed] | None = None,
+        allowed_mentions: object = None,
     ) -> FakeMessage:
         message = await super().send(content, nonce=nonce, embed=embed, embeds=embeds)
         self.sent.set()
