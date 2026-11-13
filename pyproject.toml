@@ -1,6 +1,6 @@
 [project]
 name = "earnings-bot"
-version = "0.15.3"
+version = "0.16.0"
 description = "Discord bot that posts company earnings the moment they're released"
 readme = "README.md"
 license = "MIT"
@@ -23,6 +23,7 @@ Repository = "https://github.com/es6/earnings-bot"
 earnings-bot = "earnings_bot.__main__:main"
 earnings-bot-record = "earnings_bot.recorder:main"
 earnings-bot-replay = "earnings_bot.replay:main"
+earnings-bot-watchdog = "earnings_bot.watchdog:main"
 
 [build-system]
 requires = ["uv_build>=0.13.6,<0.14.0"]

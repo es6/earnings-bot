@@ -155,7 +155,9 @@ async def test_a_refused_chrome_fallback_says_why_http_gave_way_and_http_is_trie
     assert refused.value.blocked and not refused.value.fatal
     assert pause == 30.0 and w.stopped is None
     assert source.http_failure == "HTTP 503"
-    records = [json.loads(line) for line in journal.file.getvalue().splitlines()]  # type: ignore[attr-defined]
+    lines = journal.file.getvalue().splitlines()  # type: ignore[attr-defined]
+    # The listing and the error; the watchdog's progress record says nothing about transport
+    records = [record for line in lines if (record := json.loads(line))["event"] != "progress"]
     assert [record.get("http_failure") for record in records] == ["HTTP 503", "HTTP 503"]
 
     fetcher.routes = {FICO: (200, listing)}
