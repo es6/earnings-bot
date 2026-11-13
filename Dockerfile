@@ -18,7 +18,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-dev --no-editable
 
 # --- Runtime stage: plain Python plus the virtualenv, running as a non-root user ---
-FROM python:3.13-slim-bookworm
+FROM python:3.15-slim-bookworm
 ARG EARNINGS_BOT_REVISION
 RUN useradd --create-home --uid 1000 bot
 COPY --from=build --chown=bot:bot /app/.venv /app/.venv
