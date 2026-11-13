@@ -97,6 +97,62 @@ metric aliases, incomplete headers and ambiguous context reduce retention. Saved
 evaluation, structured rendering and model request integration follow before activation.
 The deployed/legacy writer remains unchanged and summaries remain beta.
 
+### What a binding checks, after the first real evaluation
+
+The first six real Ember-low answers kept no values. Their claims were mostly right, but
+the checks read labels literally: "Total revenue" didn't match "record revenue of $6.76
+billion", a unit of "dollars" wasn't money, and "year-over-year" read as "more than". The
+binder now checks what a value asserts, and fails closed on any conflict:
+
+- **The measure.** Its key words must name the cited row, or appear in the number's own
+  clause with no other measure between them.
+  - Words are stemmed, footnote digits dropped, and EPS or "earnings per share" are aliases.
+  - A narrower measure doesn't bind: "subscription revenue" is not revenue, and "free
+    cash flow margin" is not free cash flow.
+  - A count can name what it counts after its number: "repurchased 9.5 million shares".
+- **The number.** Sign, scale and precision must match. "(37.5)" is negative, and "a 6.9%
+  decrease" is −6.9%. A claim may round the stated number ("$6.8 billion" for $6.76
+  billion), but it may not be more precise than the source.
+- **The period.**
+  - The column's year, quarter and duration decide. A fiscal label ("Q2 FY27") is compared
+    with calendar dates ("July 31, 2026") through the fiscal offset the release itself
+    states.
+  - A change column is headed by the year it compares with ("3Q25 O/(U) %").
+  - Running text uses the release's reporting year, the prior year for a prior-year value,
+    or a year named nearby for guidance.
+- **Position alone binds nothing.** A table row flattened into text ("Net income $ 1,331
+  $ 1,438 $ 448 $ 421") and a "respectively" list are rejected.
+- **The basis.** An adjusted measure's name ("Adjusted EPS") must match an adjusted
+  source, and an adjusted source value must be claimed as adjusted.
+- **Labels the source doesn't state are dropped, not shown:**
+  - a non-GAAP tag only in the model's `basis` field;
+  - a YoY label the clause doesn't say;
+  - a currency on a count;
+  - a count unit the text doesn't name;
+  - a group the evidence doesn't name, such as "Profitability" or "Bookings".
+- **Business updates** show the source's own sentence. The model's version must agree with
+  it: every number with its sign, every year, and most of its words.
+- **One bad fact sinks only itself.** `bind_answer` validates each fact on its own, and an
+  unresolvable reference rejects only its value.
+
+Measured on Ember-low reference answers (values kept out of all values selected):
+
+| Set | Releases | Kept |
+|---|---|---|
+| Tuning: the six frozen answers of Nov 13 | ADBE, CMG, GE, JPM, PLTR, WMT | 95/222 (43%), from 0 |
+| Held out: never used to tune the binder | 16, BN and NBIS included | 113/440 (26%) |
+
+- **Hand audit (measured):** every kept value of the six tuning releases, and those of 9 of
+  the 16 held-out ones, checked against its cited evidence. No wrong number, period or
+  basis was found. Two held-out values were right only by position, which is what
+  produced the position rule above.
+- **What the held-out batch cost:** 16 calls, $0.14 at list price, a median of 8.7 s and
+  a maximum of 12.0 s. The live request takes about 5 s, so activating this request would
+  delay summaries. That trade-off is for the owner to decide.
+- **Where retention is still lowest:** IBKR (0/33), NET, AAPL, SNPS and NOW. The usual
+  causes are tables whose column headers sit in a separate header table, and measure names
+  that the release words differently.
+
 ## Live summaries (v0.13.0)
 
 `summary_bound_format.py` supplies the item 6 presentation path for `BindingReport`

@@ -179,3 +179,43 @@ async def test_a_new_publication_audit_replans_before_the_hourly_check(
         with pytest.raises(ScanFinished):
             await dates.run()
         assert reads == 2
+
+
+async def test_failed_research_waits_an_hour_even_with_a_saved_audit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A check that fails before it reads the audit must not be retried on every scan: that
+    would ask the same IR sites for research once a minute instead of once an hour."""
+
+    class ScanFinished(Exception):
+        pass
+
+    async def finished() -> None:
+        raise ScanFinished
+
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        calendar = Calendar(store)
+        row, _ = calendar.add("ONON", company("ONON"))
+        speed = Speed(
+            date(2026, 8, 11),
+            confident=True,
+            form="6-K",
+            archive=[Timing("q4_press", datetime(2026, 8, 11, 5, tzinfo=ET))],
+        )
+        calendar.save_review(row.cik, NOW, speed.to_json())
+        dates = DateDiscovery(
+            calendar, RoutedFetcher({}), lambda: NOW, lambda: False, lambda _: None
+        )
+        checks = 0
+
+        async def failing(row, **_: object) -> None:
+            nonlocal checks
+            checks += 1
+            raise RuntimeError("Chrome went away")
+
+        monkeypatch.setattr(dates, "_check", failing)
+        monkeypatch.setattr(dates.changed, "wait", finished)
+        for _ in range(3):
+            with pytest.raises(ScanFinished):
+                await dates.run()
+        assert checks == 1
