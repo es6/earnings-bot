@@ -577,21 +577,79 @@ async def test_a_release_pdf_is_summarized_when_no_page_has_the_text() -> None:
     assert "from the release.pdf text" in poster.calls[-1][1]
 
 
-async def test_a_page_with_the_text_is_preferred_to_the_pdf(
-    release_texts: dict[str, str], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(pipeline, "PDF_TEXT_GRACE", 0.05)
-    release_texts[IR_PAGE] = "the release"
+def pdf_sighting() -> tuple[BrowserPDF, Sighting]:
     source = BrowserPDF(PDF_ONLY, MC)
-    sighting = source.parse(Response(PDF_ONLY, 200, {}, simple_pdf(RELEASE_LINES), 0.04))[0]
-    poster, summarizer = FakePoster(), FakeSummarizer()
-    release = Release(uber(), poster, RoutedFetcher({}), Journal(io.StringIO()), summarizer)
+    return source, source.parse(Response(PDF_ONLY, 200, {}, simple_pdf(RELEASE_LINES), 0.04))[0]
 
-    release.add(source, sighting)
-    release.add(Q4PressReleases("investor.uber.com"), Sighting("1700", "Results", IR_PAGE))
+
+async def test_a_pdf_is_summarized_at_once_and_a_page_replaces_it_once(
+    release_texts: dict[str, str], tmp_path: Path
+) -> None:
+    """BN's summary waited 4 minutes for a page with the PDF already in hand, and every
+    PDF-first release waited 10 s more. A page reads better, though: the checker kept 13 of
+    BN's 21 figures from the PDF and 20 of 25 from the page."""
+    release_texts[PDF_ONLY] = "the PDF's text"
+    release_texts[IR_PAGE] = "the page's text"
+    release_texts[IR_PAGE + "?copy"] = "another copy of the page"
+    poster, summarizer, log = FakePoster(), FakeSummarizer(), io.StringIO()
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        release = Release(uber(), poster, RoutedFetcher({}), Journal(log), summarizer, jobs=store)
+        release.add(*pdf_sighting())
+        await release.finish()
+        assert summarizer.calls == ["the PDF's text"]
+
+        release.add(*ir_sighting())
+        await release.finish()
+        release.add(*ir_sighting(IR_PAGE + "?copy"))  # one replacement only
+        await release.finish()
+        job = store.summary(uber().release_key)
+
+    assert summarizer.calls == ["the PDF's text", "the page's text"]
+    assert [kind for kind, _ in poster.calls].count("summary") == 2
+    posted = [r for r in map(json.loads, log.getvalue().splitlines()) if r["event"] == "summary"]
+    assert "replaces" not in posted[0] and posted[1]["replaces"] == "release.pdf"
+    assert job is not None and (job.source, job.replaced, job.attempts) == (
+        "IR site",
+        "release.pdf",
+        2,
+    )
+
+
+async def test_a_page_that_comes_during_the_pdf_summary_replaces_it_after(
+    release_texts: dict[str, str],
+) -> None:
+    release_texts[PDF_ONLY] = "the PDF's text"
+    release_texts[IR_PAGE] = "the page's text"
+
+    class Slow(FakeSummarizer):
+        async def write(self, ticker: str, release: str, seconds: float = 0.0) -> Summary:
+            await asyncio.sleep(0.1)
+            return await super().write(ticker, release, seconds)
+
+    poster, summarizer = FakePoster(), Slow()
+    release = Release(uber(), poster, RoutedFetcher({}), Journal(io.StringIO()), summarizer)
+    release.add(*pdf_sighting())
+    await asyncio.sleep(0.03)  # the PDF's summary is being written
+    release.add(*ir_sighting())
     await release.finish()
 
-    assert summarizer.calls == ["the release"]
+    assert summarizer.calls == ["the PDF's text", "the page's text"]
+    summaries = [text for kind, text in poster.calls if kind == "summary"]
+    assert len(summaries) == 2  # the page's summary went up after, and over, the PDF's
+
+
+async def test_a_pdf_never_replaces_a_page_based_summary(release_texts: dict[str, str]) -> None:
+    release_texts[PDF_ONLY] = "the PDF's text"
+    release_texts[IR_PAGE] = "the page's text"
+    summarizer = FakeSummarizer()
+    release = Release(uber(), FakePoster(), RoutedFetcher({}), Journal(io.StringIO()), summarizer)
+
+    release.add(*ir_sighting())
+    await release.finish()
+    release.add(*pdf_sighting())
+    await release.finish()
+
+    assert summarizer.calls == ["the page's text"]
 
 
 async def test_a_deck_or_unreadable_pdf_is_not_summarized() -> None:

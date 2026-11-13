@@ -42,10 +42,16 @@ The summary is written from the first source that delivers the release's text:
 
 - A page: the IR article, a Q4 release, a GlobeNewswire or PR Newswire article, or the SEC
   exhibit.
-- The release PDF, when no page has delivered the text 10 seconds after the PDF turned up. It
-  takes about 0.3 s to read. A page is preferred because its tables keep their cells: on
+- The release PDF, read as soon as it's downloaded, in about 0.3 s. Whichever text comes
+  first starts the summary. A page reads better because its tables keep their cells: on
   Brookfield's Q3 2026 release the checker kept 13 of 21 figures from the PDF and 20 of 25 from
   the 6-K, but the 6-K came 4 minutes later.
+
+  So a page that arrives within 30 minutes of a PDF-based summary replaces it, once. That is
+  while the alert is under an hour old, below Discord's cap on edits to old messages. A page
+  that comes while the PDF summary is still being written replaces it right after it posts.
+  The journal's `summary` event and the stored job name the replaced source. A PDF never
+  replaces a page-based summary.
 - The issuer's newsroom, after a wire alert whose article we can't read (Business Wire's pages
   are closed to us). The bot asks the newsroom listing for the same release every 5 seconds for
   3 minutes, whatever that route's own watcher is doing. On November 12, 2026 Nebius's summary
