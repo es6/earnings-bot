@@ -589,6 +589,21 @@ refused at times, and the journal records why a direct request gave way to Chrom
 profile. A Chrome request that is too slow is given up on inside the page, so its warm tab stays
 open for the next poll.
 
+Each host has a second warm tab for urgent reads, such as the release's article just after
+its listing showed it. One tab answers one request at a time, so on a single tab that read
+would wait for a slow listing poll to give up, up to its timeout plus a second. The second tab
+is prepared after the first warms. An urgent read cancels unfinished speculative work;
+a cold tab still pays for a navigation. Both tabs take turns in the host's one queue.
+Closing Chrome cancels and joins speculative tasks. Each Chrome listing poll records
+its waits separately (`tab_lock_ms`, `warmup_ms`, `pacing_ms`) next to `response_ms`.
+
+`python -m tests.browser_lane_replay --out measurements.json` compares the real worker
+locks and shared Fetcher queue with simulated warm tabs: three runs per mode on November
+13 measured median article completion of 1.65 s with one tab and 1.03 s with the urgent
+tab, while a listing took 1.6 s and the host allowed one request per second. This is an
+offline contention measurement, without an actual browser process or publisher. It does
+not establish a publication advantage or sustained access.
+
 ## Tracking companies
 
 `/track` runs in directory mode and accepts any ticker on SEC's list. A subscription is

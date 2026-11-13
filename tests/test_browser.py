@@ -130,3 +130,152 @@ async def test_research_yields_after_pacing_without_dropping_a_live_warm_tab() -
             "https://ir.example.com/results", "https://ir.example.com/", 1, wait_turn
         )
     assert socket.sent == [] and "ir.example.com" in chrome._tabs
+
+
+async def test_an_urgent_read_does_not_wait_for_a_slow_listing_poll_on_its_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Item 8: the release's article read uses the host's second warm tab, so a listing poll
+    that is taking its time on the first tab doesn't hold it up. Both still take turns."""
+    import asyncio
+    import time
+
+    from earnings_bot import browser as browser_module
+    from earnings_bot.browser import URGENT_LANE
+
+    chrome = DesktopChrome()
+    host = "ir.example.com"
+    chrome._tabs[host] = _Tab("listing", FakeTabSocket())  # type: ignore[arg-type]
+    chrome._tabs[host + URGENT_LANE] = _Tab("urgent", FakeTabSocket())  # type: ignore[arg-type]
+
+    async def started() -> None:
+        pass
+
+    async def evaluate(socket: object, expression: str) -> dict[str, Any]:
+        # The listing poll is slow; the article read is quick
+        await asyncio.sleep(0.05 if "q3-results" in expression else 1.0)
+        return {"status": 200, "headers": {}, "body": ""}
+
+    turns: list[str] = []
+
+    async def wait_turn(asked: str) -> None:
+        turns.append(asked)
+
+    monkeypatch.setattr(chrome, "_start", started)
+    monkeypatch.setattr(browser_module, "_evaluate", evaluate)
+    begun = time.monotonic()
+    listing = asyncio.create_task(
+        chrome.request(f"https://{host}/news", f"https://{host}/news", 4, wait_turn)
+    )
+    await asyncio.sleep(0.01)
+    article = await chrome.request(
+        f"https://{host}/news/q3-results", f"https://{host}/news", 4, wait_turn, urgent=True
+    )
+    assert time.monotonic() - begun < 0.5  # it didn't wait the listing's second
+    assert article.waits["tab_lock_ms"] < 100
+    await listing
+    assert turns == [host, host]  # each took its turn in the host's queue
+
+
+async def test_the_urgent_tab_is_warmed_once_the_polling_tab_is(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    from earnings_bot import browser as browser_module
+    from earnings_bot.browser import URGENT_LANE
+
+    chrome = DesktopChrome()
+    host = "ir.example.com"
+    warmed: list[str] = []
+
+    async def started() -> None:
+        pass
+
+    async def warm(key: str, warmup: str, host_: str | None = None) -> _Tab:
+        warmed.append(key)
+        tab = chrome._tabs[key] = _Tab(key, FakeTabSocket())  # type: ignore[arg-type]
+        return tab
+
+    async def evaluate(socket: object, expression: str) -> dict[str, Any]:
+        return {"status": 200, "headers": {}, "body": ""}
+
+    async def wait_turn(asked: str) -> None:
+        pass
+
+    monkeypatch.setattr(chrome, "_start", started)
+    monkeypatch.setattr(chrome, "_warm", warm)
+    monkeypatch.setattr(browser_module, "_evaluate", evaluate)
+    await chrome.request(f"https://{host}/news", f"https://{host}/news", 4, wait_turn)
+    await asyncio.gather(*chrome._prewarming.values())
+    assert warmed == [host, host + URGENT_LANE]
+
+
+async def test_closing_chrome_cancels_and_joins_speculative_warmup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    chrome = DesktopChrome()
+    entered, cancelled = asyncio.Event(), asyncio.Event()
+
+    async def wait_turn(host: str) -> None:
+        entered.set()
+        try:
+            await asyncio.Future()
+        finally:
+            cancelled.set()
+
+    chrome._prewarm("ir.example.com", "https://ir.example.com/", wait_turn)
+    await entered.wait()
+    tasks = tuple(chrome._prewarming.values())
+    await chrome.close()
+    assert cancelled.is_set() and not chrome._prewarming
+    assert all(task.done() for task in tasks)
+
+
+async def test_an_urgent_read_cancels_lower_priority_speculative_pacing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    from earnings_bot import browser as browser_module
+    from earnings_bot.browser import URGENT_LANE
+
+    chrome = DesktopChrome()
+    host = "ir.example.com"
+    entered, cancelled = asyncio.Event(), asyncio.Event()
+
+    async def prewarm_turn(asked: str) -> None:
+        entered.set()
+        try:
+            await asyncio.Future()
+        finally:
+            cancelled.set()
+
+    async def started() -> None:
+        pass
+
+    async def warm(key: str, warmup: str, host_: str | None = None) -> _Tab:
+        return _Tab(key, FakeTabSocket())  # type: ignore[arg-type]
+
+    turns: list[str] = []
+
+    async def urgent_turn(asked: str) -> None:
+        turns.append(asked)
+
+    async def evaluate(socket: object, expression: str) -> dict[str, Any]:
+        return {"status": 200, "headers": {}, "body": ""}
+
+    monkeypatch.setattr(chrome, "_start", started)
+    monkeypatch.setattr(chrome, "_warm", warm)
+    monkeypatch.setattr(browser_module, "_evaluate", evaluate)
+    chrome._prewarm(host, f"https://{host}/", prewarm_turn)
+    await entered.wait()
+    result = await asyncio.wait_for(
+        chrome.request(f"https://{host}/q3", f"https://{host}/", 1, urgent_turn, urgent=True),
+        1,
+    )
+    assert cancelled.is_set() and not chrome._prewarming
+    assert turns == [host, host]  # navigation and article use the same budget
+    assert result.status == 200 and host + URGENT_LANE in chrome._locks

@@ -274,6 +274,22 @@ The model is told that each quoted source passage must contain every number it r
 releases, two runs each, that raised the figures the checker keeps from 61% to 84%, and
 headline figures from 45% to 84%.
 
+## Shorter model output (item 8, measured, not adopted)
+
+Dropping the hidden `relevance` rationale field from the live request was tested with Ember
+low on 20 saved releases, one call per variant ($0.11, November 13):
+
+| | Current request | Without `relevance` |
+|---|---|---|
+| Median / mean time | 5.21 s / 5.23 s | 4.79 s / 5.18 s |
+| Median output tokens | 3,836 | 3,344 (−13%) |
+| Facts the checker kept | 339 of 408 (83%) | 414 of 453 (91%) |
+
+The leaner request was faster on only 11 of the 20 releases (median paired saving 0.22 s), so
+a speed gain isn't established. It also changed selection: more facts, and more of them kept.
+Whether that makes better briefs is a quality judgment for the owner, so the request is
+unchanged.
+
 ## Offline research
 
 No API call is made by the offline evaluation commands.

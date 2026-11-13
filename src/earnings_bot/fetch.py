@@ -142,6 +142,8 @@ class Response:
     body: bytes
     elapsed: float  # seconds to read the whole response, excluding pacing waits
     queued: float = 0.0  # seconds spent waiting for request slots
+    # Chrome's separate waits, in ms: its tab lock, a first navigation, the host's pacing
+    waits: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -276,7 +278,7 @@ class Fetcher:
             self._browser = DesktopChrome()
             self._browser.allowed = self._browser_allowed
         return await self._browser.request(
-            url, warmup, give_up_after, lambda host: self.wait_turn(host, urgent)
+            url, warmup, give_up_after, lambda host: self.wait_turn(host, urgent), urgent=urgent
         )
 
     async def browser_render(self, url: str, give_up_after: float) -> RenderedPage:

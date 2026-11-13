@@ -28,6 +28,8 @@ if TYPE_CHECKING:
 _LOCAL_SUFFIXES = (".localhost", ".local", ".internal", ".lan", ".home", ".home.arpa", ".corp")
 # Bound the bytes Chrome transfers through its local control socket.
 MAX_BROWSER_BYTES = 12 * 1024 * 1024
+# The tab key of a host's second warm tab, for urgent reads (DesktopChrome.request)
+URGENT_LANE = "#urgent"
 MAX_JSON_BYTES = 1024 * 1024
 
 
@@ -223,7 +225,8 @@ class DesktopChrome:
         self._base = ""
         self._start_lock = asyncio.Lock()
         self._locks: dict[str, asyncio.Lock] = {}
-        self._tabs: dict[str, _Tab] = {}
+        self._tabs: dict[str, _Tab] = {}  # a host's own tab, and its urgent lane's
+        self._prewarming: dict[str, asyncio.Task[None]] = {}
         self._start_failure: str | None = None
         self.allowed: Callable[[], bool] = lambda: True
 
@@ -310,25 +313,26 @@ class DesktopChrome:
         self._tabs[host] = tab
         return tab
 
-    async def _warm(self, host: str, warmup: str) -> _Tab:
+    async def _warm(self, key: str, warmup: str, host: str | None = None) -> _Tab:
+        """The warm tab kept under `key`: a host's own, or its urgent lane's."""
         self._check_allowed()
-        if tab := self._tabs.get(host):
+        if tab := self._tabs.get(key):
             return tab
-        tab = await self._new_tab(host)
+        tab = await self._new_tab(key)
         ws = tab.socket
         try:
             async with asyncio.timeout(5):
                 navigation = await _command(ws, "Page.navigate", url=warmup)
                 if "errorText" in navigation:
                     raise BrowserError(navigation["errorText"])
-                origin = f"https://{host}"
+                origin = f"https://{host or key}"
                 while True:
                     state = await _evaluate(ws, "[location.origin, document.readyState]")
                     if state and state[0] == origin and state[1] != "loading":
                         return tab
                     await asyncio.sleep(0.1)
         except BaseException:
-            await self._drop(host)
+            await self._drop(key)
             raise
 
     async def _drop(self, host: str) -> None:
@@ -415,7 +419,12 @@ class DesktopChrome:
         warmup: str,
         give_up_after: float,
         wait_turn: Callable[[str], Awaitable[None]],
+        *,
+        urgent: bool = False,
     ) -> Response:
+        """An urgent request (a release's article, just found) uses the host's second warm tab,
+        so it can proceed while a listing poll is slow. Both take turns in the host's one
+        queue (wait_turn); a cold urgent tab still needs a navigation."""
         from earnings_bot.fetch import Response
 
         host = browser_host(url)
@@ -423,11 +432,24 @@ class DesktopChrome:
             raise ValueError("A browser request must stay on the warm tab's own origin")
         self._check_allowed()
         await self._start()
-        async with self._locks.setdefault(host, asyncio.Lock()):
+        key = host + URGENT_LANE if urgent else host
+        # Speculative navigation must not keep the urgent read behind normal-priority
+        # pacing. Cancellation releases its lock and closes any partly warmed tab first.
+        if urgent and (warming := self._prewarming.pop(key, None)):
+            warming.cancel()
+            await asyncio.gather(warming, return_exceptions=True)
+        lock_wait = time.monotonic()
+        async with self._locks.setdefault(key, asyncio.Lock()):
+            locked = time.monotonic()
             try:
-                if host not in self._tabs:
+                cold = key not in self._tabs
+                pacing = time.monotonic()
+                if cold:
                     await wait_turn(host)
-                tab = await self._warm(host, warmup)
+                warming_started = time.monotonic()
+                tab = await self._warm(key, warmup, host)
+                if cold and not urgent:
+                    self._prewarm(host, warmup, wait_turn)
                 asked = time.monotonic()
                 await wait_turn(host)
                 self._check_allowed()
@@ -451,20 +473,56 @@ class DesktopChrome:
                     {name.lower(): value for name, value in result["headers"].items()},
                     base64.b64decode(result["body"], validate=True),
                     time.monotonic() - started,
-                    queued=started - asked,
+                    queued=warming_started - pacing + started - asked,
+                    waits={
+                        "tab_lock_ms": round((locked - lock_wait) * 1000),
+                        "warmup_ms": round((asked - warming_started) * 1000) if cold else 0,
+                        "pacing_ms": round((warming_started - pacing + started - asked) * 1000),
+                    },
                 )
             except BrowserDeferred:
                 raise
             except _SlowAnswer:
                 raise TimeoutError from None
             except (aiohttp.ClientError, ValueError, KeyError, TypeError) as error:
-                await self._drop(host)
+                await self._drop(key)
                 raise BrowserError(str(error)) from error
             except BaseException:
-                await self._drop(host)
+                await self._drop(key)
                 raise
 
+    def _prewarm(self, host: str, warmup: str, wait_turn: Callable[[str], Awaitable[None]]) -> None:
+        """Prepare one urgent tab per host, using the same request budget as polling."""
+        key = host + URGENT_LANE
+        if key in self._prewarming or key in self._tabs:
+            return
+
+        async def warm() -> None:
+            async with self._locks.setdefault(key, asyncio.Lock()):
+                if key in self._tabs:
+                    return
+                with suppress(BrowserError, aiohttp.ClientError, TimeoutError):
+                    await wait_turn(host)
+                    await self._warm(key, warmup, host)
+
+        task = asyncio.create_task(warm())
+        self._prewarming[key] = task
+
+        def finished(done: asyncio.Task[None]) -> None:
+            if self._prewarming.get(key) is done:
+                self._prewarming.pop(key)
+            # Observe failures even when nobody awaits speculative work.
+            if not done.cancelled():
+                done.exception()
+
+        task.add_done_callback(finished)
+
     async def close(self) -> None:
+        warming = tuple(self._prewarming.values())
+        self._prewarming.clear()
+        for task in warming:
+            task.cancel()
+        await asyncio.gather(*warming, return_exceptions=True)
         if self._session:
             try:
                 if self._browser_socket:

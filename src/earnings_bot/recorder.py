@@ -658,6 +658,7 @@ def _take(
             status=listing.status,
             response_ms=round(listing.elapsed * 1000),
             queued_ms=round(listing.queued * 1000),
+            **listing.waits,  # Chrome: tab lock, first navigation, pacing
             headers=_cache_headers(listing),
             **(
                 {"http_failure": failure}
