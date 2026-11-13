@@ -857,6 +857,8 @@ class DateDiscovery:
                 ):
                     continue
                 self.checked[row.cik] = time.monotonic() + 3600
+                # Recorded before the check, so one that fails early still waits the hour
+                self.reviewed[row.cik] = review
                 await self.run_once(row)
             with suppress(TimeoutError):
                 await asyncio.wait_for(self.changed.wait(), timeout=60)
