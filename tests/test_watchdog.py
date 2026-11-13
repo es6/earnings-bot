@@ -1,4 +1,5 @@
 import json
+import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -126,3 +127,25 @@ def test_the_journal_is_read_as_it_grows_even_mid_line(tmp_path: Path) -> None:
     assert dog.progress["NVDA", "edgar"].answered == seen
     assert dog.last_line == seen
     assert posts == []
+
+
+def test_a_failed_check_is_logged_and_the_next_one_still_alarms(tmp_path: Path) -> None:
+    """The bot's calendar is a SQLite file the bot writes to; a busy moment must not end the
+    watch, as an uncaught error would."""
+    journal, posts = tmp_path / "watch.jsonl", []
+    calls = 0
+
+    def windows() -> list[Window]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return [WINDOW]
+
+    dog = Watchdog(journal, windows, posts.append)
+    seen = OPEN + timedelta(minutes=5)
+    write(journal, progress(seen, "edgar", seen))
+
+    assert not dog.check_safely(seen + timedelta(minutes=3))
+    assert dog.check_safely(seen + timedelta(minutes=3, seconds=30))
+    assert len(posts) == 1 and "The bot may be down." in posts[0]

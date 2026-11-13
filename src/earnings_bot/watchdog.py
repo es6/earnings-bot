@@ -14,6 +14,7 @@ import argparse
 import json
 import sys
 import time
+import traceback
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -203,6 +204,18 @@ class Watchdog:
                 route = f" · `{key[1]}`" if key[1] else ""
                 self._send(f"✅ **{window.ticker}**{route}: polling again.")
 
+    def check_safely(self, now: datetime) -> bool:
+        """`check`, logging any failure instead of raising, so one bad check, such as the
+        calendar database being busy, doesn't end the watch. False when it failed."""
+        try:
+            self.check(now)
+        except Exception:
+            print(f"{datetime.now(UTC):%H:%M:%S} check failed:", flush=True)
+            traceback.print_exc()
+            sys.stderr.flush()
+            return False
+        return True
+
     def _send(self, text: str) -> bool:
         try:
             self.post(text)
@@ -235,10 +248,11 @@ def main() -> None:
         lambda: planned_windows(args.schedules, channel),
         lambda text: post_webhook(url, text),
     )
+    print(f"{datetime.now(UTC):%H:%M:%S} watching {args.schedules} every {CHECK_SECONDS:g}s")
     while True:
-        dog.check(datetime.now(UTC))
+        ok = dog.check_safely(datetime.now(UTC))
         if args.once:
-            return
+            sys.exit(0 if ok else 1)
         time.sleep(CHECK_SECONDS)
 
 

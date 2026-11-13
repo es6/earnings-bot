@@ -145,4 +145,7 @@ is not a second bot: it never connects to Discord's gateway. Every 30 seconds it
   - a journal silent for two minutes, meaning the bot may be down.
 - says when an alarmed route polls again while its window is still open.
 
-Run it with `--once` to check a single time.
+Run it with `--once` to check a single time. A check that fails, such as when the calendar
+database is busy, is logged and the next one runs 30 seconds later. On Windows,
+`scripts/run-watchdog.ps1` keeps it running for its own scheduled task ("Earnings Bot
+Watchdog", at logon), restarts it after any exit, and writes `recordings/watchdog-<date>.log`.
