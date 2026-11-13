@@ -274,7 +274,7 @@ def _pair_issues(fact: ReferencedFact) -> dict[str, tuple[str, ...]]:
             or quarter(current.period) != quarter(prior.period)
             or any(
                 words(getattr(current, key)) != words(getattr(prior, key))
-                for key in ("unit", "currency", "basis")
+                for key in ("unit", "currency", "basis", "comparison_qualifier")
             )
             or duration(current.duration) != duration(prior.duration)
         ):
@@ -290,9 +290,10 @@ def _pair_issues(fact: ReferencedFact) -> dict[str, tuple[str, ...]]:
                 (quarter(change.period), re.findall(r"20\d{2}", change.period))
                 != (quarter(current.period), re.findall(r"20\d{2}", current.period))
                 or duration(change.duration) != duration(current.duration)
+                or words(change.basis) != words(current.basis)
             )
         ):
-            issues[field] = ("growth is for a different reporting period",)
+            issues[field] = ("growth is for a different reporting period or accounting basis",)
     if fact.previous_guidance and fact.new_guidance:
         old, new = fact.previous_guidance, fact.new_guidance
         if any(

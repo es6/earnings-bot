@@ -198,6 +198,38 @@ def test_a_bound_but_noncomparable_prior_quarter_cannot_become_a_yoy_pair() -> N
     assert "not comparable" in bound.rejected[-1].reasons[0]
 
 
+def test_growth_for_a_different_accounting_basis_is_not_attached_to_the_actual() -> None:
+    document = document_from_html("""<p>Q3 2026 USD millions</p><table>
+    <tr><th>Metric</th><th>Q3 2026 actual</th><th>Q3 2026 YoY growth %</th></tr>
+    <tr><td>GAAP Revenue</td><td>100</td><td></td></tr>
+    <tr><td>Non-GAAP Revenue</td><td></td><td>25</td></tr></table>""")
+    table = document.tables[0]
+    ref = {
+        "document_sha256": document.sha256,
+        "block_id": table.id,
+        "cell_ids": [c.id for c in table.cells],
+        "quote": table.text,
+    }
+    data = fact(
+        current_actual=value(basis="GAAP", evidence=[ref]),
+        reported_growth=value(
+            amount="25",
+            unit="%",
+            scale="one",
+            currency="",
+            comparison="YoY",
+            basis="non-GAAP",
+            evidence=[ref],
+        ),
+    )
+    candidate = parse_referenced_brief(
+        json.dumps({"schema_version": "source-values/1", "facts": [data]}), document
+    )
+    bound = bind_brief(candidate, document)
+    assert bound.facts[0].fact.current_actual and bound.facts[0].fact.reported_growth is None
+    assert "basis" in bound.rejected[-1].reasons[0]
+
+
 def test_column_duration_and_reported_basis_are_bound_without_global_row_search() -> None:
     document = document_from_html("""<p>Q3 2026 USD (in millions)</p><table>
     <tr><th></th><th colspan="2">Three months ended</th><th>Nine months ended</th></tr>

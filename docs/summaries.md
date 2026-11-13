@@ -5,7 +5,7 @@
 `source_document.py` adds a version-scoped evidence representation. Retrieval now carries
 that document through the first-text/PDF-replacement path to `Summarizer.write_document`.
 The writer delegates to the existing text request and quote checker; the reference-aware
-schema and semantic verifier remain future work. Summaries remain beta: a number appearing
+schema and binding APIs below remain offline pending evaluation/integration. Summaries remain beta: a number appearing
 in a quote still does not prove that the model chose the correct metric or period.
 
 `document_from_html` uses the live HTML reader and retains its plain text. It gives each
@@ -98,6 +98,17 @@ evaluation, structured rendering and model request integration follow before act
 The deployed/legacy writer remains unchanged and summaries remain beta.
 
 ## Live summaries (v0.13.0)
+
+`summary_bound_format.py` supplies the item 6 presentation path for `BindingReport`
+objects only. It formats separate structured values, retains range endpoints, units,
+currency, per-share precision and comparison qualifiers, and computes YoY only from
+verified comparable exact actuals. Percentage-level changes use basis points. Zero or
+negative priors, losses, bounds, ranges and approximate levels show the supported prior
+instead of a precise growth calculation. Previous guidance is never treated as a prior
+actual; old and new ranges retain their target period. Unsupported optional comparisons
+are absent from the display. Exact supported business clauses are shown without relying
+on a model-selected topic label as evidence. The existing relevance/ranking layout has
+no editorial fact/word/line cap. Client integration and evaluation are still pending.
 
 The bot posts the release immediately; the summary is a separate follow-up that never delays
 the alert. When the release text arrives, `summary.py` sends Muse Ember low (Meta's Model API,
