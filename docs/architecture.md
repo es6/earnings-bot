@@ -872,6 +872,18 @@ One Discord message per release, edited as more arrives:
 3. **Summary, when enabled.** The first source that supplies full text starts the optional
    summary independently of the alert. Its highlights card is edited into the same message.
 
+**When Discord refuses a step.** discord.py waits out rate limits itself. A send, link edit or
+summary that still fails with a 429, a 5xx or a dropped connection gets two more tries, 1 and
+2 s apart. If Discord still refuses it, nothing is dropped. The link stays on the alert's list
+and the summary is kept. The release sends them again after 5, 10, 20, 40, 60 and 120 s, then
+every 5 minutes, about an hour in all. Each try sends the whole alert, so it carries every
+refused link. A summary ready before the alert is up goes on right after the alert.
+
+The journal logs `delivery_refused` for each refusal, and `delivery_failed` if the hour runs
+out. The summary job stays `written`, so a restart still posts it. Before v0.21.17 a refused
+link was dropped and a refused summary waited for a restart. On Nov 12, NBIS's summary edit
+hit error 30046 (edits to messages over an hour old) and landed 72 s late.
+
 Where the text comes from:
 
 | Source | Text | Notes |

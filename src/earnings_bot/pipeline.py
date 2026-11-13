@@ -79,6 +79,13 @@ MAX_CONTENT = 2000  # Discord's limit for a message's text
 # Seconds between tries for a file that a feed lists before it's uploaded. Cloudflare's Q3 2026
 # supplement was listed at 4:15:32 PM and went up at 4:38:11.
 ATTACH_RETRY_SECONDS = 30.0
+# A link or summary that Discord still refuses after retry_delivery's tries is kept and sent
+# again after each of these waits, about an hour in all. On Nov 12 NBIS's summary edit failed
+# with error 30046 (edits to messages over an hour old); before this, a refused link was
+# dropped and a refused summary waited for a restart. A summary job stays "written" until it
+# lands, so a restart still posts it.
+REDELIVERY_SECONDS: tuple[float, ...] = (5.0, 10.0, 20.0, 40.0, 60.0, 120.0) + (300.0,) * 11
+DISCORD_ERRORS = (discord.HTTPException, aiohttp.ClientError, TimeoutError)
 # Seconds between requests that keep the connection to Discord open while a window is open.
 # discord.py's HTTP client closes a connection after 15 s idle, and opening a new one cost 86 to
 # 175 ms from the owner's PC, against 24 ms on an open one: a third of the 0.2 to 0.4 s from
@@ -476,6 +483,12 @@ class Release:
         self._summary_turn = asyncio.Lock()  # a replacement waits for the summary it replaces
         self.lock = asyncio.Lock()  # one Discord edit at a time, in order
         self.tasks: set[asyncio.Task[None]] = set()
+        # What Discord refused, kept to send again: the labels of links not yet on the alert,
+        # and the latest summary (text, footer, source, journal details)
+        self.redelivery = REDELIVERY_SECONDS
+        self._refused_links: list[str] = []
+        self._refused_summary: tuple[str, str, str, dict[str, Any]] | None = None
+        self._redelivering = False
 
     def add(self, source: Source, sighting: Sighting, *, measure: bool = False) -> None:
         """Called by the poller for each new item that looks like the release. Returns at once;
@@ -576,17 +589,90 @@ class Release:
                 return
             self.links[url] = label
             try:
-                if self.posted:
-                    stamp = await retry_delivery(lambda: self.poster.edit(self._content()))
-                    event = "linked"
-                else:
-                    self.poster.first_seen = self.first_seen
-                    stamp = await retry_delivery(lambda: self.poster.send(self._content()))
-                    self.posted = True
-                    event = "resumed" if self.poster.resumed else "posted"
+                stamp, event = await self._deliver_alert()
+            except DISCORD_ERRORS as error:
+                # Kept: every send or edit carries all the links, so the next one includes it
+                self._refused_links.append(label)
+                self._refused("alert", error)
+                return
             except Exception:
                 del self.links[url]
                 raise
+            labels, self._refused_links = [*self._refused_links, label], []
+        self._log_alert(event, labels, stamp)
+
+    async def _deliver_alert(self) -> tuple[datetime | None, str]:
+        """Sends the alert, or edits it, with every link so far. The caller holds the lock."""
+        if self.posted:
+            return await retry_delivery(lambda: self.poster.edit(self._content())), "linked"
+        self.poster.first_seen = self.first_seen
+        stamp = await retry_delivery(lambda: self.poster.send(self._content()))
+        self.posted = True
+        return stamp, "resumed" if self.poster.resumed else "posted"
+
+    def _refused(self, step: str, error: Exception) -> None:
+        self.journal.write(
+            "delivery_refused", ticker=self.target.ticker, step=step, message=repr(error)
+        )
+        self.journal.say(f"{self.target.ticker}: Discord refused the {step}: {error!r}")
+        self._redeliver_soon()
+
+    def _redeliver_soon(self) -> None:
+        if not self._redelivering:
+            self._redelivering = True
+            self._spawn(self._redeliver())
+
+    async def _redeliver(self) -> None:
+        """Sends what Discord refused again after each wait in `redelivery`, until it lands.
+        Each try sends the whole alert, so it carries every link refused so far."""
+        try:
+            for attempt, wait in enumerate(self.redelivery, 1):
+                await asyncio.sleep(wait)
+                try:
+                    if await self._deliver_refused():
+                        return
+                except DISCORD_ERRORS as error:
+                    self.journal.write(
+                        "delivery_refused",
+                        ticker=self.target.ticker,
+                        step="retry",
+                        attempt=attempt,
+                        message=repr(error),
+                    )
+            self.journal.write(
+                "delivery_failed",
+                ticker=self.target.ticker,
+                links=self._refused_links,
+                summary=self._refused_summary is not None,
+            )
+            self.journal.say(
+                f"{self.target.ticker}: Discord kept refusing the alert's update, so it stopped "
+                f"trying after {sum(self.redelivery):.0f}s"
+            )
+        finally:
+            self._redelivering = False
+
+    async def _deliver_refused(self) -> bool:
+        """One more try at what was refused. Returns whether nothing refused is left."""
+        async with release_step(self.priority), self.lock:
+            if self._refused_links:
+                stamp, event = await self._deliver_alert()
+                labels, self._refused_links = self._refused_links, []
+                self._log_alert(event, labels, stamp)
+            if (refused := self._refused_summary) and self.posted:
+                text, footer, label, details = refused
+                stamp = await retry_delivery(lambda: self.poster.set_summary(text, footer))
+                self._refused_summary = None
+                self._summary_delivered(stamp, text, label, details)
+            return not self._refused_links and self._refused_summary is None
+
+    def _log_alert(self, event: str, labels: list[str], stamp: datetime | None) -> None:
+        """Logs one alert step for each link it delivered: the first is what posted the alert
+        (or the new link), and links refused before it went with it."""
+        for index, label in enumerate(labels):
+            self._log_step(event if index == 0 else "linked", label, stamp)
+
+    def _log_step(self, event: str, label: str, stamp: datetime | None) -> None:
         live = self._live_after(stamp)
         self.journal.write(
             event,
@@ -1020,7 +1106,24 @@ class Release:
 
     async def _post_summary(self, text: str, footer: str, label: str, **details: Any) -> None:
         async with self.lock:
-            stamp = await self.poster.set_summary(text, footer)
+            if not self.posted:
+                # Discord refused the alert itself: the summary goes on once the alert is up
+                self._refused_summary = (text, footer, label, details)
+                self._redeliver_soon()
+                return
+            try:
+                stamp = await retry_delivery(lambda: self.poster.set_summary(text, footer))
+            except DISCORD_ERRORS as error:
+                # Kept, the latest one: a page-based replacement supersedes a refused summary
+                self._refused_summary = (text, footer, label, details)
+                self._refused("summary", error)
+                return
+            self._refused_summary = None
+        self._summary_delivered(stamp, text, label, details)
+
+    def _summary_delivered(
+        self, stamp: datetime | None, text: str, label: str, details: dict[str, Any]
+    ) -> None:
         self.summary_posted = True
         if self.jobs:
             self.jobs.summary_status(self.target.release_key, DELIVERED)

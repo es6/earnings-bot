@@ -4,12 +4,14 @@ import json
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, cast
 
 import aiohttp
+import discord
 import pytest
 
-from earnings_bot import fetch, pipeline
+from earnings_bot import delivery, fetch, pipeline
 from earnings_bot.browser_sources import BrowserPDF, IRSource
 from earnings_bot.delivery import DeliveryStore
 from earnings_bot.fetch import Response
@@ -1005,3 +1007,109 @@ async def test_a_file_link_reads_without_url_escapes() -> None:
     await release.finish()
 
     assert f"[Nebius Q3 2026 Results.pdf](<{url}>)" in poster.calls[0][1]
+
+
+def refused_edit() -> discord.HTTPException:
+    """What discord.py raises once its own retries of a 429 are used up. NBIS's summary edit
+    failed this way on Nov 12: error 30046, edits to messages over an hour old."""
+    response = SimpleNamespace(status=429, reason="Too Many Requests", headers={})
+    return discord.HTTPException(
+        cast(Any, response),
+        {
+            "message": "Maximum number of edits to messages older than 1 hour reached.",
+            "code": 30046,
+        },
+    )
+
+
+class RefusingPoster(FakePoster):
+    """Discord refuses this many sends, edits and summaries, each, before it accepts them."""
+
+    def __init__(self, sends: int = 0, edits: int = 0, summaries: int = 0) -> None:
+        super().__init__()
+        self.refusals = {"send": sends, "edit": edits, "summary": summaries}
+
+    def _refuse(self, kind: str) -> None:
+        if self.refusals[kind]:
+            self.refusals[kind] -= 1
+            self.calls.append((f"refused {kind}", ""))
+            raise refused_edit()
+
+    async def send(self, content: str) -> datetime | None:
+        self._refuse("send")
+        return await super().send(content)
+
+    async def edit(self, content: str) -> datetime | None:
+        self._refuse("edit")
+        return await super().edit(content)
+
+    async def set_summary(self, text: str, footer: str) -> datetime | None:
+        self._refuse("summary")
+        return await super().set_summary(text, footer)
+
+
+def quick_retries(monkeypatch: pytest.MonkeyPatch, release: Release, tries: int) -> None:
+    monkeypatch.setattr(delivery, "RETRY_DELAYS", (0.0, 0.0))
+    release.redelivery = (0.01,) * tries
+
+
+async def test_a_link_and_summary_discord_refuses_still_reach_the_alert(
+    release_texts: dict[str, str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """1.0 gate failure replay: Discord refusing an edit. A link edit that failed all three
+    tries was dropped, and a refused summary waited for a restart."""
+    release_texts[IR_PAGE] = "the release"
+    poster, log = RefusingPoster(edits=4, summaries=4), io.StringIO()
+    filing = Sighting(ACCESSION, "8-K 2.02,9.01", FILING, earnings=True)
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        release = Release(uber(), poster, fetcher(), Journal(log), FakeSummarizer(), jobs=store)
+        quick_retries(monkeypatch, release, 5)
+        release.add(*ir_sighting())
+        release.add(EdgarFilings(1543151), filing)
+        await release.finish()
+        job = store.summary(uber().release_key)
+
+    accepted = [text for kind, text in poster.calls if kind == "edit"]
+    assert accepted and f"[SEC 8-K](<{FILING}>)" in accepted[-1]
+    assert [kind for kind, _ in poster.calls].count("summary") == 1
+    assert job is not None and job.status == "delivered"
+    events = [json.loads(line) for line in log.getvalue().splitlines()]
+    names = [e["event"] for e in events]
+    assert "post_error" not in names and "delivery_failed" not in names
+    assert {e["step"] for e in events if e["event"] == "delivery_refused"} >= {"alert", "summary"}
+    linked = next(e for e in events if e["event"] == "linked")
+    assert linked["source"] == "SEC 8-K" and linked["live_seconds"] is not None
+
+
+async def test_a_refused_first_post_is_sent_again_and_the_summary_follows_it(
+    release_texts: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    release_texts[IR_PAGE] = "the release"
+    poster, log = RefusingPoster(sends=3), io.StringIO()
+    release = Release(uber(), poster, fetcher(), Journal(log), FakeSummarizer())
+    quick_retries(monkeypatch, release, 5)
+    release.add(*ir_sighting())
+    await release.finish()
+
+    kinds = [kind for kind, _ in poster.calls]
+    assert kinds.count("send") == 1 and kinds.count("summary") == 1
+    assert kinds.index("send") < kinds.index("summary")
+    posted = next(e for e in map(json.loads, log.getvalue().splitlines()) if e["event"] == "posted")
+    assert posted["source"] == "IR site"
+
+
+async def test_redelivery_stops_after_its_last_wait_and_says_so(
+    release_texts: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    poster, log = RefusingPoster(edits=10**6), io.StringIO()
+    filing = Sighting(ACCESSION, "8-K 2.02,9.01", FILING, earnings=True)
+    release = Release(uber(), poster, fetcher(), Journal(log), None)
+    quick_retries(monkeypatch, release, 3)
+    release.add(*ir_sighting())
+    release.add(EdgarFilings(1543151), filing)
+    await asyncio.wait_for(release.finish(), 5)
+
+    events = [json.loads(line) for line in log.getvalue().splitlines()]
+    [failed] = [e for e in events if e["event"] == "delivery_failed"]
+    assert failed["links"] == ["SEC 8-K"]
+    assert sum(e["event"] == "delivery_refused" for e in events) == 4  # first, then 3 retries
