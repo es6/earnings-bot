@@ -77,6 +77,26 @@ and [Meta structured output documentation](https://dev.meta.ai/docs/structured-o
 The exact new request has not been sent to the provider, so wire compatibility is still
 unproven. No model quality, cost or latency improvement is claimed here.
 
+## Item 6 binding checks (pending evaluation)
+
+Item 6 also has a conservative binding library in `summary_binding.py` and
+`binding_text.py`. `bind_brief` resolves the candidate's evidence first, then checks
+metric identity against the source row or claim clause; table-column period/duration;
+numeric amount, sign, scale and dimension; accounting basis; currency and physical
+units; approximation/bounds; segment section; and actual/growth/old/new-guidance status.
+Comparative values with unlabeled columns are held back. Source-local headers override
+document context; another table's rows cannot supply units or period labels. Ambiguous
+or unsupported interpretations are rejected with per-value reasons. Optional rejected
+comparisons do not discard a separately bound current actual. Prior-year/guidance pairs
+must also be comparable. Updates must be exact supported clauses, preserving signs and
+punctuation; a label is not permission to infer an economic consequence.
+
+This closes the two reproduced wrong-metric and wrong-quarter cases in the binding API,
+with valid controls retained. It is not a universal financial-language verifier: unknown
+metric aliases, incomplete headers and ambiguous context reduce retention. Saved-report
+evaluation, structured rendering and model request integration follow before activation.
+The deployed/legacy writer remains unchanged and summaries remain beta.
+
 ## Live summaries (v0.13.0)
 
 The bot posts the release immediately; the summary is a separate follow-up that never delays
