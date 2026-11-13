@@ -1,3 +1,4 @@
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import cast
@@ -128,9 +129,45 @@ def test_long_links_and_summaries_fit_discord_without_losing_recovery_data() -> 
     assert cards is not None
     assert sum(map(len, cards)) <= 6000
     assert all(len(c.description or "") <= 4096 for c in cards)
-    assert (cards[0].description or "").endswith("…")
+    assert len(cards) <= 10
+    # What still doesn't fit is counted where people can see it, not cut silently
+    shown = [c for c in cards if c.author.name == HIGHLIGHTS]
+    assert re.search(r"\d+ more lines didn't fit", shown[-1].description or "")
     message = FakeMessage(1, HEADER, extra_embeds=cards)
     assert release_content(message) == content
+
+
+def bn_like_summary(lines: int = 60) -> str:
+    """A long brief: BN's ran 25 lines on Nov 12, and briefs ran 13 to 33."""
+    return "\n".join(
+        f"🔹 **Segment {n}**: distributable earnings ${n}.{n:02d}B; +{n}% YoY" for n in range(lines)
+    )
+
+
+def test_a_summary_longer_than_one_embed_shows_every_line() -> None:
+    text = bn_like_summary(80)
+    assert len(text) > 4096
+    cards = release_cards(CONTENT, first_seen=SEEN, summary=(text, FOOTER))
+    assert cards is not None
+    shown = [c for c in cards if c.author.name == HIGHLIGHTS]
+    assert len(shown) >= 2 and shown[1].title == "Highlights, continued"
+    assert "\n".join(c.description or "" for c in shown) == text
+    assert sum(map(len, cards)) <= 6000
+    assert cards[-1].author.name == RELEASE
+
+
+def test_a_later_link_keeps_a_continued_summary_whole() -> None:
+    text = bn_like_summary(80)
+    cards = release_cards(CONTENT, first_seen=SEEN, summary=(text, FOOTER))
+    assert cards is not None
+    posted = FakeMessage(1, HEADER, extra_embeds=cards)
+
+    again = release_cards(f"{CONTENT}\n{IR}", previous=posted)
+
+    assert again is not None
+    shown = [c for c in again if c.author.name == HIGHLIGHTS]
+    assert "\n".join(c.description or "" for c in shown) == text
+    assert shown[0].footer.text == FOOTER
 
 
 def test_catchup_and_replay_labels_stay_visible_and_legacy_content_is_untouched() -> None:

@@ -71,7 +71,8 @@ configuration, then stop that copy before starting the scheduled task.
 To put the latest `main` on the running bot, run `.\scripts\update-bot.ps1`. It refuses if
 the checkout isn't a clean `main`, or if a release window is open, or opens within 5 minutes,
 with its alert not posted yet. Otherwise it stops the bot, fast-forwards to `main`, starts the
-scheduled task again and waits until the bot says monitoring has started. Add `-Wait` to
+scheduled task again, waits until the bot says monitoring has started, then restarts the
+watchdog task so it runs the new code too. Add `-Wait` to
 restart as soon as the window allows, `-Restart` to restart with nothing new, or `-Force` to
 restart during a window.
 

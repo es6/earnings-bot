@@ -2,6 +2,7 @@ import asyncio
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 from html.parser import HTMLParser
 from types import TracebackType
 from typing import Any, Self, cast
@@ -12,8 +13,21 @@ import discord
 from yarl import URL
 
 from earnings_bot.browser import DesktopChrome, RenderedPage
+from earnings_bot.clock import TrustedClock
 from earnings_bot.fetch import Fetcher, Response
 from earnings_bot.text import html_to_text
+
+
+class PinnedClock(TrustedClock):
+    """Advance normally from a fixed daytime instant, independent of the CI host's date."""
+
+    def __init__(self) -> None:
+        super().__init__(servers=())
+        self.started = time.monotonic()
+        self.anchor = datetime(2026, 11, 10, 17, tzinfo=UTC)
+
+    def now(self) -> datetime:
+        return self.anchor + timedelta(seconds=time.monotonic() - self.started)
 
 
 class _Anchors(HTMLParser):

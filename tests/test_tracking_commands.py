@@ -16,17 +16,19 @@ import pytest
 from discord import app_commands
 
 from earnings_bot import calendar as tracking_calendar
+from earnings_bot import recorder, unattended
+from earnings_bot.browser_sources import BrowserRelease
 from earnings_bot.calendar import describe
 from earnings_bot.clock import TrustedClock
 from earnings_bot.delivery import DeliveryStore
 from earnings_bot.fetch import Response
-from earnings_bot.formatting import clock, day, stamp
+from earnings_bot.formatting import AMBER, clock, day, stamp
 from earnings_bot.known import KnownCompany, known_companies, to_target
 from earnings_bot.pipeline import Releases
-from earnings_bot.recorder import ET, Journal
+from earnings_bot.recorder import ET, Journal, Watch
 from earnings_bot.release_cards import release_content
 from earnings_bot.source_audit import Speed
-from earnings_bot.sources import PR_NEWSWIRE_EARNINGS
+from earnings_bot.sources import PR_NEWSWIRE_EARNINGS, EdgarFilings
 from earnings_bot.track_progress import TrackProgress
 from earnings_bot.tracking_commands import OFFLINE, TrackingCommands, upcoming_embed
 from earnings_bot.unattended import DirectoryWatcher, _Window
@@ -745,3 +747,55 @@ async def test_watch_status_shows_each_releases_time_beside_when_its_watch_opens
     assert "results about" not in text
     assert "📝 Live summaries off" in text
     assert embed.footer.text == "Build abc1234"
+
+
+def test_a_route_that_went_quiet_marks_the_window_report_degraded() -> None:
+    """Nebius's newsroom was refused at 6:59 AM on Nov 12 and went unanswered for the rest of
+    the window. A route dying mid-window must be loud (the 1.0 gate)."""
+    expected = datetime(2026, 11, 12, 8, 0, tzinfo=ET)
+    target = to_target("HD", expected, 2026, 3)
+    start = target.window[0]
+    listing = BrowserRelease("https://ir.example.com/news", "third quarter")
+    quiet = Watch("HD", listing, target.window, previous=start)
+    edgar = Watch("HD", EdgarFilings(354950), target.window, previous=start)
+    answers = (
+        (quiet, [start + timedelta(seconds=s) for s in (1, 2, 200)]),
+        (edgar, [start + timedelta(seconds=s) for s in range(1, 200, 3)]),
+    )
+    for w, times in answers:
+        for sent in times:
+            recorder.take(
+                w, sent, Response("", 200, {}, b"", 0.01), Journal(io.StringIO()), items=[]
+            )
+
+    report = unattended._window_report(target, [quiet, edgar])
+
+    assert report.splitlines()[0] == "🏁 **HD Q3 FY26 window closed** · ⚠️ degraded"
+    assert (
+        "⚠️ Went without an answer for up to: IR press release page, read in Chrome 3m 18s" in report
+    )
+    assert "SEC 8-K" not in report.splitlines()[-1]
+
+
+async def test_status_names_a_degraded_route_while_its_window_is_open(
+    watcher: DirectoryWatcher,
+) -> None:
+    target = to_target("HD", NOW + timedelta(minutes=5), 2026, 3)
+    start = target.window[0]
+    refused = "HTTP 403: the site refused us. Trying again after a pause"
+    listing = Watch("HD", BrowserRelease("https://ir.example.com/news", "q3"), target.window)
+    listing.previous, listing.problem = start, refused
+    edgar = Watch("HD", EdgarFilings(354950), target.window, previous=NOW)
+    task = asyncio.create_task(asyncio.sleep(3600))
+    watcher.windows[target.release_key] = _Window(target, task)
+    watcher.live_watches[target.release_key] = [listing, edgar]
+    try:
+        embed = watcher.health_embed("v0.19.5", None)
+    finally:
+        task.cancel()
+
+    text = embed_text(embed)
+    assert "⚠️ Degraded: IR press release page, read in Chrome, no answer for" in text
+    assert refused in text
+    assert "Degraded: SEC" not in text
+    assert embed.color is not None and embed.color.value == AMBER

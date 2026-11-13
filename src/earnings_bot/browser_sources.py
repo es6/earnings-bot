@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from earnings_bot.browser import BrowserError, DesktopChrome, browser_host
 from earnings_bot.fetch import Fetcher, Response
-from earnings_bot.issuer_news import IssuerNews
+from earnings_bot.issuer_news import IssuerNews, IssuerResults
 from earnings_bot.quarterly_table import quarter_pdf, rendered_pdf
 from earnings_bot.sources import (
     GuessedFile,
@@ -62,6 +62,7 @@ class IRSource(BaseModel):
     listing: str | None = None
     rss: str | None = None
     news_api: str | None = None
+    results_api: str | None = None
     results_table: str | None = None
     table_http: bool = False
     table_rendered: bool = False
@@ -78,7 +79,9 @@ class IRSource(BaseModel):
 
     @model_validator(mode="after")
     def check_sources(self) -> Self:
-        if bool(self.listing or self.rss or self.news_api) != bool(self.headline):
+        if bool(self.listing or self.rss or self.news_api or self.results_api) != bool(
+            self.headline
+        ):
             raise ValueError(
                 "An IR listing or feed requires a headline regex for the scheduled quarter"
             )
@@ -86,6 +89,8 @@ class IRSource(BaseModel):
             browser_host(self.listing)
         if self.news_api:
             browser_host(self.news_api)
+        if self.results_api:
+            browser_host(self.results_api)
         if self.results_table:
             browser_host(self.results_table)
         if (self.table_http or self.table_rendered or self.table_period) and not self.results_table:
@@ -93,12 +98,12 @@ class IRSource(BaseModel):
         if self.table_http and self.table_rendered:
             raise ValueError("A rendered results table uses Chrome")
         if any(
-            url not in (self.listing, self.news_api, self.rss, self.results_table)
+            url not in (self.listing, self.news_api, self.results_api, self.rss, self.results_table)
             for url in self.cache_bust_urls
         ):
             raise ValueError("A cache-busted URL must be a configured listing, API or feed")
         if any(
-            url not in (self.listing, self.news_api, self.rss, self.results_table)
+            url not in (self.listing, self.news_api, self.results_api, self.rss, self.results_table)
             for url in self.spelled_urls
         ):
             raise ValueError("A spelled URL must be a configured listing, API or feed")
@@ -125,6 +130,7 @@ class IRSource(BaseModel):
             self.listing
             or self.rss
             or self.news_api
+            or self.results_api
             or self.results_table
             or self.pdfs
             or self.tesla_deck
@@ -156,6 +162,16 @@ class IRSource(BaseModel):
                     day,
                     cache_bust=self.news_api in self.cache_bust_urls,
                     spell=self.news_api in self.spelled_urls,
+                )
+            )
+        if self.results_api and self.results_api != self.news_api and self.headline:
+            sources.append(
+                IssuerResults(
+                    self.results_api,
+                    self.headline,
+                    day,
+                    cache_bust=self.results_api in self.cache_bust_urls,
+                    spell=self.results_api in self.spelled_urls,
                 )
             )
         period = period or self.table_period

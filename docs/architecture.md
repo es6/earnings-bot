@@ -435,6 +435,54 @@ What it tells us:
 - **Cloudflare re-posted its release three times** under new IDs (4:19:50, 4:21:31 and
   4:23:24). The bot logged each one as new, but the post went out once.
 
+**Nov 10, On (ONON) and Sea (SE)** (`schedules/watch.jsonl`, reviewed Nov 12).
+Neither incident shows the mid-window 403 retirement that later affected Nebius.
+
+| | On | Sea |
+|---|---|---|
+| Window opened, ET (journal) | 05:10:00.181 | 06:00:00.227 |
+| Prepared expected time | 06:10, from results 6-K history | 07:00 |
+| Issuer route | Q4 press releases and files | `/api/invest/news?page=1&size=12` |
+| Issuer route outcome | No sighting; 9,415 press polls, 1,000 file polls, no errors/timeouts | No sighting; 8,921 polls, no errors/timeouts |
+| First source sighting | SEC latest-filings, 06:07:05.957 | Business Wire, 06:33:20.099 |
+| Visible Discord alert | 06:07:06.017 | 06:33:20.213 |
+
+On's saved Q4 response identifies release 1791 as Q3 2026 with the zone-less stamp
+`11/10/2026 05:00:00`. The historical window began ten minutes after that stamp.
+The journal records five entries at its first press poll and zero caught-up entries;
+it does not retain their bodies. Thus first-poll suppression is a plausible explanation,
+not proof of the exact contents or first public availability at 05:10. A later PDF
+Last-Modified is an upload/revision timestamp, not an availability measurement.
+
+Current code already catches up a period-matching Q4 release dated that day and already
+uses earlier verified publisher times to place the next window. The saved-response replay
+now exercises the actual On headline and timestamp: the first poll emits it once as
+caught-up, without assigning a measured first-sighting latency. A completed source audit
+now invalidates the hourly date-check wait at the next idle scan, so a newly learned
+earlier IR time is used promptly. The normal hourly cadence resumes for an unchanged audit.
+No timezone is invented from the Q4 string alone; existing corroboration rules still apply.
+
+Sea's separately published `/api/financial/resource` response contains the Q3 press
+release PDF, while the saved newsroom response omits it. That results endpoint was in
+the stored profile, but the historical target watched only the newsroom. The saved
+Business Wire item is stamped **06:30:00**, its feed build **06:33:18**, and the alert
+was visible at **06:33:20.213**. The PDF's reported 04:03 Last-Modified does not establish
+that its URL or results listing was publicly discoverable then.
+
+Results-API parsing and promotion existed before this review. The source plan now keeps
+the independently verified results API **alongside** a newsroom instead of using one slot
+for both. `IRSource.results_api` creates `issuer-results`; `news_api` retains `issuer-news`.
+Both use the same host pacing and separate cache evidence, and a legacy results URL in
+`news_api` is migrated without duplicate polling. The replay verifies the prior PDF during
+preparation, then obtains Q3 from results even while the newsroom has no Q3 entry.
+
+The saved On files also use lowercase `DocumentType: "online"` for a webcast. File parsing
+now excludes that type regardless of case/outer whitespace, retaining legacy file records.
+These replays establish matching/planning behavior, not historical or future publication
+latency. Recheck both routes and the body path before the next live release. The reduced
+public response fixture is `tests/fixtures/ir_misses.json`; the replay is
+`tests/test_ir_release_coverage.py`.
+
 ### Scheduling
 
 - **Calendar.** The directory watcher combines optional TOML schedules with persisted windows

@@ -112,7 +112,12 @@ async def test_window_report_uses_discord_message_creation_time(
     releases = Releases(FakePoster, fetcher, journal, None)
 
     async def record(
-        t: Target, f: Fetcher, j: Journal, on_new: OnNew | None, polls: Polls | None
+        t: Target,
+        f: Fetcher,
+        j: Journal,
+        on_new: OnNew | None,
+        polls: Polls | None,
+        **kwargs: object,
     ) -> list[Watch]:
         store.prepare(t.release_key, "alert")
         store.delivered(t.release_key, discord.utils.time_snowflake(alert_time))

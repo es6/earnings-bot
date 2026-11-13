@@ -171,3 +171,9 @@ class IssuerNews(Source):
         ):
             return [Sighting(row.url, row.title, row.url, earnings=True, body=response.body)]
         return []
+
+
+class IssuerResults(IssuerNews):
+    """The independently published results resources, alongside the newsroom."""
+
+    name = "issuer-results"

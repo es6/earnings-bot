@@ -33,6 +33,7 @@ from earnings_bot.clock import TrustedClock
 from earnings_bot.config import RecorderSettings
 from earnings_bot.fetch import Fetcher, Response, RoutePause
 from earnings_bot.periods import agrees_with_period
+from earnings_bot.release_band import SLOW_INTERVAL, full_speed_from, issuer_route
 from earnings_bot.sec_results import SixKResults, SixKUnavailable, is_results_release
 from earnings_bot.sources import (
     BUSINESS_WIRE_EARNINGS,
@@ -342,6 +343,9 @@ class Watch:
     pause: RoutePause = field(default_factory=RoutePause)
     blocked: int = 0  # polls the site refused in all
     reported: float | None = None  # time.monotonic() of the last progress event
+    longest_quiet: float = 0.0  # the longest stretch in seconds between answered polls
+    # Polled every SLOW_INTERVAL before this, at its own speed after (release_band)
+    slow_until: datetime | None = None
     stopped: str | None = None
     period: str | None = None
 
@@ -688,8 +692,30 @@ def _take(
     w.elapsed.append(outcome.elapsed)
     w.queued.append(outcome.queued)
     record_items(w, items, outcome, journal, sent, on_new)
+    since = w.previous or (w.window[0] if w.window else None)
+    if since is not None:
+        w.longest_quiet = max(w.longest_quiet, (sent - since).total_seconds())
     w.previous = sent
     return 0.0
+
+
+# A route with no answer for this long during a window counts as degraded, in /status and the
+# window report, as the watchdog's alarm does (watchdog.QUIET)
+DEGRADED_AFTER = timedelta(seconds=90)
+
+
+def route_trouble(w: Watch, now: datetime) -> str | None:
+    """Why a watch's route is degraded right now, or None while it's polling normally."""
+    if w.stopped:
+        return f"stopped: {w.stopped}"
+    if w.done or w.window is None or now < w.window[0]:
+        return None
+    since = w.previous or w.window[0]
+    quiet = now - since
+    if quiet <= max(DEGRADED_AFTER, timedelta(seconds=5 * w.source.interval)):
+        return None
+    why = f": {w.problem}" if w.problem else ""
+    return f"no answer for {round(quiet.total_seconds())}s{why}"
 
 
 async def _poll_once(source: Source, fetcher: Fetcher) -> Response | PollError:
@@ -742,7 +768,12 @@ async def watch(
             # Another loop reading this route was refused or asked to wait
             await asyncio.sleep(min(wait, (end - sent).total_seconds()))
             continue
-        next_poll = time.monotonic() + (interval or w.source.interval)
+        # An issuer route before the company's usual release time (release_band)
+        slow = w.slow_until is not None and sent < w.slow_until
+        next_poll = time.monotonic() + (SLOW_INTERVAL if slow else interval or w.source.interval)
+        if slow and w.slow_until is not None:
+            # Go to full speed on time, not up to SLOW_INTERVAL late
+            next_poll = min(next_poll, time.monotonic() + (w.slow_until - sent).total_seconds())
         outcome = await _poll_once(w.source, fetcher)
         items = None
         if sixk and isinstance(outcome, Response):
@@ -965,13 +996,46 @@ async def keep_clock_synced(journal: Journal, end: datetime) -> None:
         await sync_clock(journal, periodic=True)
 
 
+async def slow_until_usual_time(
+    target: Target, watches: list[Watch], fetcher: Fetcher, journal: Journal
+) -> None:
+    """Polls the issuer's own routes every SLOW_INTERVAL until LEAD before the company's usual
+    release time (release_band), and at full speed from then. Runs beside the window's polls, so
+    the lookup never delays them, and never raises: on any failure every route stays at full
+    speed."""
+    try:
+        fast = await full_speed_from(fetcher, target.cik, target.sec_form, target.expected)
+    except Exception as error:
+        journal.write("polling_band_error", ticker=target.ticker, message=repr(error))
+        return
+    routes = [w for w in watches if issuer_route(w.source)]
+    journal.write(
+        "polling_band",
+        ticker=target.ticker,
+        full_speed_from=fast,
+        slow_routes=[w.source.name for w in routes] if fast else [],
+    )
+    if fast is None or fast <= journal.now() or not routes:
+        return
+    for w in routes:
+        w.slow_until = fast
+    journal.say(
+        f"{target.ticker}: polling its own site every {SLOW_INTERVAL:g}s until "
+        f"{_clock(fast)} ET, a minute before its usual release time, then at full speed"
+    )
+
+
 async def record_target(
     target: Target,
     fetcher: Fetcher,
     journal: Journal,
     on_new: OnNew | None = None,
     polls: Polls | None = None,
+    *,
+    on_watches: Callable[[list[Watch]], None] | None = None,
 ) -> list[Watch]:
+    """Watches one release's window. `on_watches` gets its watches as they start, for /status
+    to show a degraded route while the window is open."""
     start, end = target.window
     if journal.now() >= end:
         journal.say(f"{target.ticker}: its window closed at {_clock(end)} ET, skipping")
@@ -992,6 +1056,8 @@ async def record_target(
         Watch(target.ticker, source, (start, end), period=target.period)
         for source in target.sources()
     ]
+    if on_watches:
+        on_watches(watches)
     notify = (lambda source, item: on_new(target, source, item)) if on_new else None
     journal.write(
         "window",
@@ -1005,6 +1071,7 @@ async def record_target(
     try:
         async with asyncio.TaskGroup() as group:
             group.create_task(keep_clock_synced(journal, end))
+            group.create_task(slow_until_usual_time(target, watches, fetcher, journal))
             for w in watches:
                 group.create_task(polls.watch(w, end, notify))
     finally:

@@ -88,7 +88,13 @@ hour old (error 30046) much harder. Release alerts go first:
    a time outside release windows and refresh after a monitored release.
 4. **Prepare and watch.** The watcher picks up a confirmed window within a few
    seconds. A matching TOML entry supplies its source settings and release key.
-   The configured sources race in parallel. The first verified release sighting
+   The configured sources race in parallel. The company's own IR routes are polled every
+   15 seconds until a minute before its usual release time, then at full speed; SEC and
+   newswire feeds keep their speed throughout. The usual time is the earliest of the
+   tightest span holding six of its last eight results 8-Ks (SEC acceptance time, in the
+   same half of the day), or the expected time if earlier. A 6-K filer, a history spread
+   over more than 30 minutes, or a failed lookup keeps every route at full speed.
+   The first verified release sighting
    starts the Discord post, which is edited as links, files and any summary arrive.
    Release posts have a green earnings card, separate from research scorecards.
    The ticker and quarter stay in notification text; the card holds first-seen
@@ -149,3 +155,5 @@ Run it with `--once` to check a single time. A check that fails, such as when th
 database is busy, is logged and the next one runs 30 seconds later. On Windows,
 `scripts/run-watchdog.ps1` keeps it running for its own scheduled task ("Earnings Bot
 Watchdog", at logon), restarts it after any exit, and writes `recordings/watchdog-<date>.log`.
+`scripts/update-bot.ps1` restarts that task after it restarts the bot, so the watchdog
+always runs the same code.

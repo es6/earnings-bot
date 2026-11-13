@@ -1,5 +1,158 @@
 # Summaries and shared rules
 
+## Source references: extraction and durable runtime handoff
+
+`source_document.py` adds a version-scoped evidence representation. Retrieval now carries
+that document through the first-text/PDF-replacement path to `Summarizer.write_document`.
+The writer delegates to the existing text request and quote checker; the reference-aware
+schema and semantic verifier remain future work. Summaries remain beta: a number appearing
+in a quote still does not prove that the model chose the correct metric or period.
+
+`document_from_html` uses the live HTML reader and retains its plain text. It gives each
+text block and table a stable local ID, scoped to a SHA-256 of the extraction version,
+source and format. Cells
+retain their original row/column, blank/decorative cells, declared spans, and explicit HTML
+header/scope tags. No period, currency, scale, or metric labels are invented. Nested outer
+layout tables are marked as such; their text is not independent table-cell evidence.
+`document_from_text` supplies block references for already extracted text, including PDF
+text, without inferring table cells from spacing. It preserves the original text, including
+spacing, for the existing request. It does not preserve PDF table geometry. A previously
+classified SEC exhibit is treated as text rather than parsed as HTML a second time.
+
+Before a model call, the summary job transaction saves versioned extraction JSON in
+`summary_documents`, keyed by channel, release and document hash, and records that hash
+on the job. Earlier versions stay addressable through `DeliveryStore.summary_document`
+after a PDF/HTML replacement; retrying the same version cannot overwrite its evidence.
+`SourceDocument.from_json` restores immutable blocks and cells and rejects unknown codec
+versions. Legacy jobs have no saved document; their delivered/written states and results
+continue to prevent repeat paid calls. A new extraction version changes the source hash.
+
+Resolve a reference using both the document hash and local ID. A missing ID or a different
+document version fails explicitly. The upcoming verifier must additionally check cell
+headers, metric, period/duration, basis, units and scale against this observed source
+structure. Merely returning an existing cell ID will not establish claim correctness.
+
+## Item 6 candidate schema (offline only)
+
+`summary_evidence.py` defines an immutable `UnverifiedBrief`. Each fact has separate
+current actual, prior-year actual, reported growth, comparable growth, previous guidance
+and new guidance slots. Unavailable values are null. Each present value carries a signed
+decimal string, optional range endpoint, scale, explicit unit/currency, bounds or
+approximation, period, duration, basis and material comparison qualifier. Updates carry
+their own supported text and citations. Schema validation rejects malformed numbers,
+reversed ranges, missing units, unknown fields and unsourced values or updates.
+
+`parse_referenced_brief` checks reference integrity: the exact document version, a real
+paragraph/table ID, cells belonging to that table, and a quote local to that block. It
+rejects outer nested layout tables as independent bindings. It does **not** establish
+that the metric, period, basis, unit or number match those cells. A wrong-metric or
+wrong-period candidate with existing references can still pass this guard; tests record
+that boundary explicitly. Candidates cannot be passed directly to the live renderer.
+
+`referenced_request` serializes reading order and observed table geometry with compact
+cell arrays. The schema is stable across reports; document-specific hashes/IDs are input
+data, never per-report enum/const definitions. It keeps Ember low and the existing
+selection policy. It rejects plain text above 200,000 characters or annotated input
+above 400,000 characters without truncation. Those are input guards, not editorial
+length limits or a guarantee about token count/cost. Both source text and advisory
+issuer context are data; issuer context cannot supply evidence.
+
+Prepare requests without credentials or API calls:
+
+```powershell
+python scripts/summary_prepare.py ADBE CMG GE JPM PLTR WMT --docs <saved-docs> --out requests.json --references
+```
+
+The preparer uses a saved `<ticker>.html` when present, otherwise plain blocks from the
+JSON `release` text. It never infers PDF cells. Reference-schema preparation permits only
+Ember; `--include-haiku` is rejected with `--references`. This mode is not connected to
+the live writer. Next work: semantic binding, code formatting of structured values,
+separate correctness/retention/omission scoring on saved reports plus BN/NBIS, then an
+explicitly bounded Ember-only evaluation before considering activation.
+
+The schema follows the raw `output_config.format` shape and uses the SDK's schema
+transformation for unsupported constraints; local Pydantic validation retains those
+constraints. See [Anthropic structured output documentation](https://platform.claude.com/docs/en/build-with-claude/structured-outputs)
+and [Meta structured output documentation](https://dev.meta.ai/docs/structured-output).
+The exact new request has not been sent to the provider, so wire compatibility is still
+unproven. No model quality, cost or latency improvement is claimed here.
+
+## Item 6 binding checks (pending evaluation)
+
+Item 6 also has a conservative binding library in `summary_binding.py` and
+`binding_text.py`. `bind_brief` resolves the candidate's evidence first, then checks
+metric identity against the source row or claim clause; table-column period/duration;
+numeric amount, sign, scale and dimension; accounting basis; currency and physical
+units; approximation/bounds; segment section; and actual/growth/old/new-guidance status.
+Comparative values with unlabeled columns are held back. Source-local headers override
+document context; another table's rows cannot supply units or period labels. Ambiguous
+or unsupported interpretations are rejected with per-value reasons. Optional rejected
+comparisons do not discard a separately bound current actual. Prior-year/guidance pairs
+must also be comparable. Updates must be exact supported clauses, preserving signs and
+punctuation; a label is not permission to infer an economic consequence.
+
+This closes the two reproduced wrong-metric and wrong-quarter cases in the binding API,
+with valid controls retained. It is not a universal financial-language verifier: unknown
+metric aliases, incomplete headers and ambiguous context reduce retention. Saved-report
+evaluation, structured rendering and model request integration follow before activation.
+The deployed/legacy writer remains unchanged and summaries remain beta.
+
+### What a binding checks, after the first real evaluation
+
+The first six real Ember-low answers kept no values. Their claims were mostly right, but
+the checks read labels literally: "Total revenue" didn't match "record revenue of $6.76
+billion", a unit of "dollars" wasn't money, and "year-over-year" read as "more than". The
+binder now checks what a value asserts, and fails closed on any conflict:
+
+- **The measure.** Its key words must name the cited row, or appear in the number's own
+  clause with no other measure between them.
+  - Words are stemmed, footnote digits dropped, and EPS or "earnings per share" are aliases.
+  - A narrower measure doesn't bind: "subscription revenue" is not revenue, and "free
+    cash flow margin" is not free cash flow.
+  - A count can name what it counts after its number: "repurchased 9.5 million shares".
+- **The number.** Sign, scale and precision must match. "(37.5)" is negative, and "a 6.9%
+  decrease" is −6.9%. A claim may round the stated number ("$6.8 billion" for $6.76
+  billion), but it may not be more precise than the source.
+- **The period.**
+  - The column's year, quarter and duration decide. A fiscal label ("Q2 FY27") is compared
+    with calendar dates ("July 31, 2026") through the fiscal offset the release itself
+    states.
+  - A change column is headed by the year it compares with ("3Q25 O/(U) %").
+  - Running text uses the release's reporting year, the prior year for a prior-year value,
+    or a year named nearby for guidance.
+- **Position alone binds nothing.** A table row flattened into text ("Net income $ 1,331
+  $ 1,438 $ 448 $ 421") and a "respectively" list are rejected.
+- **The basis.** An adjusted measure's name ("Adjusted EPS") must match an adjusted
+  source, and an adjusted source value must be claimed as adjusted.
+- **Labels the source doesn't state are dropped, not shown:**
+  - a non-GAAP tag only in the model's `basis` field;
+  - a YoY label the clause doesn't say;
+  - a currency on a count;
+  - a count unit the text doesn't name;
+  - a group the evidence doesn't name, such as "Profitability" or "Bookings".
+- **Business updates** show the source's own sentence. The model's version must agree with
+  it: every number with its sign, every year, and most of its words.
+- **One bad fact sinks only itself.** `bind_answer` validates each fact on its own, and an
+  unresolvable reference rejects only its value.
+
+Measured on Ember-low reference answers (values kept out of all values selected):
+
+| Set | Releases | Kept |
+|---|---|---|
+| Tuning: the six frozen answers of Nov 13 | ADBE, CMG, GE, JPM, PLTR, WMT | 95/222 (43%), from 0 |
+| Held out: never used to tune the binder | 16, BN and NBIS included | 113/440 (26%) |
+
+- **Hand audit (measured):** every kept value of the six tuning releases, and those of 9 of
+  the 16 held-out ones, checked against its cited evidence. No wrong number, period or
+  basis was found. Two held-out values were right only by position, which is what
+  produced the position rule above.
+- **What the held-out batch cost:** 16 calls, $0.14 at list price, a median of 8.7 s and
+  a maximum of 12.0 s. The live request takes about 5 s, so activating this request would
+  delay summaries. That trade-off is for the owner to decide.
+- **Where retention is still lowest:** IBKR (0/33), NET, AAPL, SNPS and NOW. The usual
+  causes are tables whose column headers sit in a separate header table, and measure names
+  that the release words differently.
+
 ## Live summaries (v0.13.0)
 
 The bot posts the release immediately; the summary is a separate follow-up that never delays
@@ -12,10 +165,72 @@ confirmed facts by period and kind, as in the reviewed Discord previews, and the
 counts the facts held back. A failed or fully unconfirmed summary posts nothing, and the next
 source's text can try again.
 
+The brief puts the most important facts first, using the role the model gives each fact:
+
+1. The quarter's headline results.
+2. The outlook.
+3. The quarter's other results, under "More results" when an outlook comes between them and
+   the headline. They include balances at the quarter's end date, with each measure's
+   segments on one line, largest first. A segment's level and its growth make one entry.
+4. Results for other periods, such as year to date.
+5. Business updates, under one heading, with their own period when it differs from the
+   quarter.
+
+Formatting rules, all in code and applied the same way for every company:
+- A level whose release gives the year-ago figure shows its change: growth in percent, and
+  a margin's change in basis points. When the year-ago figure is a loss or zero, the line
+  shows that figure instead of a growth rate.
+- Negatives read `-$37.5M`, whatever form the release used ("(37.5)", "$(37.5)").
+- A single scaled amount keeps at most four significant digits and two decimals, so
+  `$7.9637B` reads `$7.96B`. Ranges, per-share figures and percentages keep every digit.
+- A count keeps its unit (`5.3M square feet`). A margin over anything but revenue names its
+  base (`3.6% of Gross Bookings`).
+- Some labels are dropped:
+  - a reporting standard, such as GAAP, IFRS or "reported", which is the default reading;
+  - statement names and generic tags, such as "Operating KPI";
+  - a consolidated scope;
+  - the company's own name, when it is the segment named on most lines.
+
+  Adjusted and non-GAAP labels stay, and so does a GAAP tag on an adjusted label, where it
+  shows a conflict.
+
+Replaying the 63 saved Ember-low outputs from November 13 (measured offline; the model calls
+cost $0.18):
+
+| Measure | Before | After |
+|---|---|---|
+| Briefs with every headline fact at the top | 42% | 90% |
+| Where the outlook starts, as a share of the brief | 60% | 18% |
+| Levels showing a change | 37% | 53% |
+| Over-precise scaled values | 183 | 18 (all guidance ranges, kept exact) |
+| Reporting-standard tags on labels | 246 | 33 |
+| Unformatted negatives | 17 | 0 |
+| Average characters | 1,174 | 1,091 |
+
+These measure layout and formatting, not whether the model chose the right facts.
+
+A brief longer than one embed's 4,096 characters continues in "Highlights, continued" embeds,
+split at line breaks. Anything past Discord's 6,000-character limit for a whole message is
+counted in a visible note at the end, not cut silently. A later link edit rebuilds the brief
+from all of its embeds.
+
 Summaries cost money per release, so they run only with both `LIVE_SUMMARIES=true` and
 `META_MODEL_API_KEY` in `.env`; a key alone never starts paid calls. Estimates aren't sent, so
 the brief never calls a beat or miss. The checks establish traceability, not that the model
 chose the right facts or that a cited sentence describes the chosen metric.
+
+Each release's summary job is kept in `.earnings-state.sqlite3`, with:
+- the SHA-256 of the text it was written from, and that text's source;
+- its status (running, written, delivered or failed) and attempt count;
+- the result, the facts held back, and token counts.
+
+A restart or a schedule change never summarizes a delivered release again. A summary written
+before a crash but never posted is posted from the store, with no new call. Limits:
+- at most three model calls per release, restarts included;
+- two calls at once across releases;
+- 40 calls a day.
+
+None of these limits delays an alert.
 
 Replaying the 36 saved Ember-low outputs from the November 12 effort tests, the checker keeps
 78% of selected facts. It accepts quotes that differ only in table-cell breaks or spacing, or
@@ -29,10 +244,16 @@ The summary is written from the first source that delivers the release's text:
 
 - A page: the IR article, a Q4 release, a GlobeNewswire or PR Newswire article, or the SEC
   exhibit.
-- The release PDF, when no page has delivered the text 10 seconds after the PDF turned up. It
-  takes about 0.3 s to read. A page is preferred because its tables keep their cells: on
+- The release PDF, read as soon as it's downloaded, in about 0.3 s. Whichever text comes
+  first starts the summary. A page reads better because its tables keep their cells: on
   Brookfield's Q3 2026 release the checker kept 13 of 21 figures from the PDF and 20 of 25 from
   the 6-K, but the 6-K came 4 minutes later.
+
+  So a page that arrives within 30 minutes of a PDF-based summary replaces it, once. That is
+  while the alert is under an hour old, below Discord's cap on edits to old messages. A page
+  that comes while the PDF summary is still being written replaces it right after it posts.
+  The journal's `summary` event and the stored job name the replaced source. A PDF never
+  replaces a page-based summary.
 - The issuer's newsroom, after a wire alert whose article we can't read (Business Wire's pages
   are closed to us). The bot asks the newsroom listing for the same release every 5 seconds for
   3 minutes, whatever that route's own watcher is doing. On November 12, 2026 Nebius's summary

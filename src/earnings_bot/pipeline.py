@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 from functools import partial
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 import aiohttp
 import discord
@@ -30,12 +30,22 @@ from earnings_bot.browser_sources import (
     article_matches,
     issuer_pdf_url,
 )
-from earnings_bot.delivery import Delivery, DeliveryStore, retry_delivery
+from earnings_bot.delivery import (
+    DELIVERED,
+    FAILED,
+    WRITTEN,
+    Delivery,
+    DeliveryStore,
+    SummaryJob,
+    retry_delivery,
+)
 from earnings_bot.edit_priority import EditPriority, release_step
 from earnings_bot.fetch import Fetcher, Response
 from earnings_bot.formatting import clock, period_label
+from earnings_bot.issuer_news import IssuerNews
 from earnings_bot.recorder import ET, Journal, Plan, PollError, Target, poll, record
 from earnings_bot.release_cards import release_cards, release_content
+from earnings_bot.source_document import SourceDocument
 from earnings_bot.sources import (
     BroadcomNewsroom,
     EdgarFilings,
@@ -47,15 +57,21 @@ from earnings_bot.sources import (
     Source,
 )
 from earnings_bot.summary import MODEL, WRITER, Summarizer, SummaryError
-from earnings_bot.text import release_text, verified_report
+from earnings_bot.text import release_document, verified_report
 
 FILE_TYPES = (".pdf", ".xlsx", ".xls")
-# How long a release PDF waits for a page to deliver the text before it is read itself. A page
-# reads better (its tables keep their cells) and usually arrives with the PDF.
-PDF_TEXT_GRACE = 10.0
+# A release PDF is summarized as soon as it's read. A page reads better (its tables keep their
+# cells: on BN the checker kept 13 of 21 figures from the PDF and 20 of 25 from the page), so
+# a page that comes within this long of a PDF-based summary replaces it, once. The alert is
+# then under an hour old, below Discord's cap on edits to old messages.
+REPLACE_WITHIN = 30 * 60.0  # seconds
 # After a wire alert whose article we can't read, how long and how often the issuer's newsroom
 # is asked for the same release
 ISSUER_TEXT_SECONDS, ISSUER_TEXT_EVERY = 180.0, 5.0
+# Limits on paid summary calls. A release gets at most three model calls in all, restarts
+# included; at most two run at once; and the day's calls stop at the cap. None of this delays
+# an alert. Not measured: a full day has had at most a handful of releases.
+MAX_SUMMARY_ATTEMPTS, MAX_MODEL_CALLS, DAILY_SUMMARY_CALLS = 3, 2, 40
 # Discord's upload limit for bots in servers without boosts. Earnings PDFs are well under 1 MB.
 MAX_FILE_BYTES = 10 * 1024 * 1024
 UNKNOWN_MESSAGE = 10008  # Discord's error code for a missing message
@@ -106,6 +122,14 @@ class Poster(ABC):
     async def set_summary(self, text: str, footer: str) -> datetime | None: ...
 
 
+def discord_filename(name: str) -> str:
+    """The name a file goes up under: letters, digits, "." "-" and "_" only, which Discord
+    keeps as they are. Discord drops other characters, so a resumed alert couldn't recognize
+    its own file and attached it again: Nebius's Q3 2026 alert had its PDF three times (read
+    back from Discord on Nov 12)."""
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", unquote(name)).strip("_") or "file"
+
+
 class DiscordPoster(Poster):
     def __init__(self, channel: discord.abc.Messageable) -> None:
         self.channel = channel
@@ -136,7 +160,7 @@ class DiscordPoster(Poster):
 
     async def attach(self, name: str, data: bytes) -> datetime | None:
         message = self._sent()
-        file = discord.File(io.BytesIO(data), filename=name)
+        file = discord.File(io.BytesIO(data), filename=discord_filename(name))
         self.message = await message.edit(attachments=[*message.attachments, file])
         return self.message.edited_at
 
@@ -274,7 +298,10 @@ class DurableDiscordPoster(DiscordPoster):
 
     async def attach(self, name: str, data: bytes) -> datetime | None:
         message = self._sent()
-        if any(attachment.filename == name for attachment in message.attachments):
+        # The forms Discord may have stored it under, an upload from before discord_filename
+        # included: it drops "%", so "Nebius%20Q3...pdf" became "Nebius20Q3...pdf"
+        stored = {name, discord_filename(name), name.replace("%", "")}
+        if any(attachment.filename in stored for attachment in message.attachments):
             return message.edited_at
         return await self._update(
             partial(super().attach, name, data),
@@ -293,7 +320,7 @@ class DurableDiscordPoster(DiscordPoster):
 def describe_source(source: Source) -> str:
     if isinstance(source, BrowserRss):
         return "IR press release feed"
-    if isinstance(source, Q4PressReleases | Q4FinancialReports | BrowserRelease):
+    if isinstance(source, Q4PressReleases | Q4FinancialReports | BrowserRelease | IssuerNews):
         return "IR site"
     if isinstance(source, EdgarFilings):
         return f"SEC {source.form}"
@@ -361,30 +388,38 @@ class ReleaseText:
         self.fetcher = fetcher
         self.verified_only = verified_only
         self._locks: dict[str, asyncio.Lock] = {}
-        self._texts: dict[str, str] = {}
+        self._documents: dict[str, SourceDocument] = {}
 
     async def read(self, source: Source, sighting: Sighting) -> str | None:
+        document = await self.read_document(source, sighting)
+        return document.text if document else None
+
+    async def read_document(self, source: Source, sighting: Sighting) -> SourceDocument | None:
         key = _filing_folder(sighting.url) if isinstance(source, EdgarFilings) else None
         if isinstance(source, RssFeed):
             key = sighting.url
         if key is None:
             return await self._fetch(source, sighting)
         async with self._locks.setdefault(key, asyncio.Lock()):
-            if key not in self._texts:
-                text = await self._fetch(source, sighting)
-                if text is None:
+            if key not in self._documents:
+                document = await self._fetch(source, sighting)
+                if document is None:
                     return None  # Another sighting can retry the miss.
-                self._texts[key] = text
-            return self._texts[key]
+                self._documents[key] = document
+            return self._documents[key]
 
-    async def _fetch(self, source: Source, sighting: Sighting) -> str | None:
-        text = await release_text(self.fetcher, source, sighting)
+    async def _fetch(self, source: Source, sighting: Sighting) -> SourceDocument | None:
+        document = await release_document(self.fetcher, source, sighting)
         requires_report = (
             self.verified_only
             or isinstance(source, BrowserRss)
             or (isinstance(source, BrowserRelease) and source.verify_text)
         )
-        return text if not requires_report or verified_report(text) else None
+        return (
+            document
+            if document and (not requires_report or verified_report(document.text))
+            else None
+        )
 
 
 class Release:
@@ -399,6 +434,8 @@ class Release:
         summarizer: Summarizer | None,
         note: str = "",
         priority: EditPriority | None = None,
+        jobs: DeliveryStore | None = None,
+        model_calls: asyncio.Semaphore | None = None,
     ) -> None:
         self.target = target
         self.poster = poster
@@ -406,13 +443,15 @@ class Release:
         self.journal = journal
         self.summarizer = summarizer
         self.note = note
+        # The summary job kept across restarts, and the model calls shared by all releases
+        self.jobs = jobs
+        self.model_calls = model_calls or asyncio.Semaphore(MAX_MODEL_CALLS)
         # Scorecard edits wait while this release has a post, edit or summary on the way
         self.priority = priority
         self.links: dict[str, str] = {}  # url -> label, in the order they turned up
         self.files: set[str] = set()
         self._downloading: set[str] = set()
         self.attach_retry = ATTACH_RETRY_SECONDS
-        self.pdf_grace = PDF_TEXT_GRACE
         self.issuer_text_seconds, self.issuer_text_every = ISSUER_TEXT_SECONDS, ISSUER_TEXT_EVERY
         self._pdfs: dict[str, bytes] = {}  # attached PDFs by name, for reading their text
         self._pdf_read: set[str] = set()
@@ -426,6 +465,13 @@ class Release:
         self.first_text_at: datetime | None = None
         self._text = ReleaseText(fetcher)
         self.summarizing = False
+        # What the summary was written from: "pdf" or "page", its source, and when it began
+        self.summary_kind: str | None = None
+        self.summary_label = ""
+        self.summary_started = 0.0  # time.monotonic()
+        self.replaced = False  # a page has replaced a PDF-based summary
+        self.summary_posted = False
+        self._summary_turn = asyncio.Lock()  # a replacement waits for the summary it replaces
         self.lock = asyncio.Lock()  # one Discord edit at a time, in order
         self.tasks: set[asyncio.Task[None]] = set()
 
@@ -440,7 +486,7 @@ class Release:
             sighting.url
         ).path.lower().endswith(FILE_TYPES)
         if is_file:
-            label = self._attachment_name(sighting.url)
+            label = self._file_label(sighting.url)
         self._spawn(self._link(label, sighting.url))
         if is_file:
             self._spawn(self._attach(sighting.url, sighting.body))
@@ -453,8 +499,23 @@ class Release:
         else:
             if isinstance(source, BrowserRelease) and sighting.body is not None:
                 self._spawn(self._browser_attachment(source, sighting, measure))
-            if measure or not self.has_text or (self.summarizer and not self.summarizing):
+            if (
+                measure
+                or not self.has_text
+                or (self.summarizer and not self.summarizing)
+                or self._page_can_replace()
+            ):
                 self._spawn(self._read(source, sighting, label, measure))
+
+    def _page_can_replace(self) -> bool:
+        """Whether a page's text would still replace the summary: one written from a PDF, not
+        yet replaced, begun under REPLACE_WITHIN ago."""
+        return (
+            self.summarizer is not None
+            and self.summary_kind == "pdf"
+            and not self.replaced
+            and time.monotonic() - self.summary_started < REPLACE_WITHIN
+        )
 
     async def finish(self) -> None:
         """Waits for every pending step."""
@@ -468,7 +529,10 @@ class Release:
         """Seconds from the first sighting to Discord's own timestamp on a change, which is when
         people could see it. Discord's reply can reach us seconds later than that, when
         discord.py waits out a rate limit before returning."""
-        if stamp is None or self.first_seen is None:
+        if stamp is None or self.first_seen is None or stamp < self.first_seen:
+            # A stamp from before the sighting belongs to an alert resumed after a restart that
+            # already had this change, so nothing went live now. It logged "live after
+            # -15761.29s" on Nov 12.
             return None
         return round((stamp - self.first_seen).total_seconds(), 2)
 
@@ -537,7 +601,8 @@ class Release:
         elif event == "resumed":
             self.journal.say(f"{self.target.ticker}: resumed the existing alert")
         else:
-            self.journal.say(f"{self.target.ticker}: added the {label} link, live after {live}s")
+            when = f", live after {live}s" if live is not None else ""
+            self.journal.say(f"{self.target.ticker}: added the {label} link{when}")
 
     def _attachment_name(self, url: str) -> str:
         name = _file_name(url)
@@ -545,6 +610,12 @@ class Release:
             period = self.target.period or self.target.expected.astimezone(ET).date()
             return f"{self.target.ticker}-{period}-results.pdf"
         return name
+
+    def _file_label(self, url: str) -> str:
+        """A file's name as the alert shows it, without URL escapes: Nebius's Q3 2026 PDF read
+        "Nebius%20Q3%202026%20Financial%20Results%20Press%20Release.pdf". The attachment keeps
+        its name as before, so an alert resumed after a restart still recognizes its file."""
+        return unquote(self._attachment_name(url))
 
     async def _read_browser_feed(
         self, source: BrowserRss, sighting: Sighting, label: str, measure: bool
@@ -629,7 +700,7 @@ class Release:
                     url=url,
                     format="pdf",
                 )
-            await self._link(name, url)
+            await self._link(self._file_label(url), url)
             await self._attach(url, response.body)
         elif name not in self.files:
             self.journal.write(
@@ -708,11 +779,12 @@ class Release:
     ) -> None:
         """Gets the release's text from this sighting, logs when the first text arrives, and
         starts the summary from it. Several sources can deliver the text; the first one wins."""
-        text = await self._text.read(source, sighting)
-        if text is None:
+        document = await self._text.read_document(source, sighting)
+        if document is None:
             if isinstance(source, RssFeed) and sighting.earnings:
                 self._ask_issuer()
             return
+        text = document.text
         if measure and not sighting.caught_up and verified_report(text):
             self.journal.write(
                 "source_body",
@@ -736,23 +808,32 @@ class Release:
                 f"{self.target.ticker}: got the release text from the {label} after "
                 f"{self._since_first_seen()}s"
             )
-        if self.summarizer and not self.summarizing:
-            await self._summarize(self.summarizer, text, label)
+        if not self.summarizer:
+            return
+        kind = "pdf" if sighting.body is not None and sighting.body.startswith(b"%PDF-") else "page"
+        if not self.summarizing:
+            await self._summarize(self.summarizer, document, label, kind)
+        elif kind == "page" and self._page_can_replace():
+            self.replaced = True  # once: later pages don't replace it again
+            async with self._summary_turn:  # after the PDF-based summary is posted
+                await self._summarize(
+                    self.summarizer, document, label, kind, replaces=self.summary_label
+                )
 
     async def _read_pdf(self, source: Source, sighting: Sighting, label: str) -> None:
-        """Reads the release from its PDF when no page has delivered the text shortly after.
-        Brookfield's Q3 2026 summary waited 4 minutes for the 6-K with the PDF already posted."""
+        """Reads the release from its PDF as soon as it's downloaded. Brookfield's Q3 2026
+        summary waited 4 minutes for the 6-K with the PDF already posted, and the 10 s grace
+        for a page that followed cost every PDF-first release 10 s."""
         name = self._attachment_name(sighting.url)
         if name in self._pdf_read:
             return
         self._pdf_read.add(name)
-        await asyncio.sleep(self.pdf_grace)
         while name in self._downloading:  # noqa: ASYNC110
             await asyncio.sleep(0.2)
         body = sighting.body or self._pdfs.get(name)
         done = self.has_text and (self.summarizer is None or self.summarizing)
         if done or body is None or not body.startswith(b"%PDF-"):
-            return
+            return  # a page's summary is never replaced by a PDF's
         await self._read(source, replace(sighting, body=body), label)
 
     def _ask_issuer(self) -> None:
@@ -810,29 +891,130 @@ class Release:
                 return
             await asyncio.sleep(self.issuer_text_every)
 
-    async def _summarize(self, summarizer: Summarizer, text: str, label: str) -> None:
+    async def _summarize(
+        self,
+        summarizer: Summarizer,
+        document: SourceDocument,
+        label: str,
+        kind: str = "page",
+        replaces: str | None = None,
+    ) -> None:
+        """Summarizes from this text: the release's first summary, or with `replaces`, the one
+        page-based replacement of a PDF-based summary (the caller holds _summary_turn)."""
         self.summarizing = True
+        job = self.jobs.summary(self.target.release_key) if self.jobs else None
+        if job and job.status == DELIVERED and replaces is None:
+            # After a restart or a schedule change: Nov 12's restart re-summarized both
+            # delivered releases, two paid calls and two edits to hours-old alerts
+            self.journal.write(
+                "summary_skipped", ticker=self.target.ticker, reason="already delivered"
+            )
+            return
+        if replaces is not None:
+            await self._summarize_now(summarizer, document, label, kind, job, replaces)
+            return
+        async with self._summary_turn:
+            await self._summarize_now(summarizer, document, label, kind, job, None)
+
+    async def _summarize_now(
+        self,
+        summarizer: Summarizer,
+        document: SourceDocument,
+        label: str,
+        kind: str,
+        job: SummaryJob | None,
+        replaces: str | None,
+    ) -> None:
         # The alert waits on this edit from the moment its text arrives
         async with release_step(self.priority):
-            await self._write_summary(summarizer, text, label)
+            if job and job.status == WRITTEN and job.text is not None and replaces is None:
+                # Written before a restart and never posted: post it, with no new call
+                await self._post_summary(job.text, job.footer or "", job.source, reused=True)
+                return
+            if why := self._summary_limit(job):
+                self.journal.write("summary_skipped", ticker=self.target.ticker, reason=why)
+                self.journal.say(f"{self.target.ticker}: no summary: {why}")
+                return
+            if replaces is not None and not self.summary_posted:
+                replaces = None  # the PDF-based summary failed, so nothing is replaced
+            self.summary_kind, self.summary_label = kind, label
+            self.summary_started = time.monotonic()
+            await self._write_summary(summarizer, document, label, replaces)
 
-    async def _write_summary(self, summarizer: Summarizer, text: str, label: str) -> None:
-        started = time.monotonic()
-        try:
-            summary = await summarizer.write(self.target.ticker, text)
-        except SummaryError as error:
-            self.summarizing = False  # let a later source try
-            self.journal.write("summary_error", ticker=self.target.ticker, message=str(error))
-            self.journal.say(f"{self.target.ticker}: summary failed: {error}")
-            return
+    def _summary_limit(self, job: SummaryJob | None) -> str | None:
+        """Why no model call may start for this release now, if one may not."""
+        if job and job.attempts >= MAX_SUMMARY_ATTEMPTS:
+            return f"{job.attempts} model calls already made for this release"
+        if self.jobs and self.jobs.summary_calls(self._day()) >= DAILY_SUMMARY_CALLS:
+            return f"the day's {DAILY_SUMMARY_CALLS} summary calls are used up"
+        return None
+
+    def _day(self) -> str:
+        return self.journal.now().astimezone(ET).date().isoformat()
+
+    async def _write_summary(
+        self,
+        summarizer: Summarizer,
+        document: SourceDocument,
+        label: str,
+        replaces: str | None = None,
+    ) -> None:
+        key = self.target.release_key
+        async with self.model_calls:
+            if self.jobs:
+                evidence = await asyncio.to_thread(document.to_json)
+                self.jobs.summary_started(
+                    key,
+                    document.sha256,
+                    label,
+                    self._day(),
+                    replaces=replaces,
+                    source_document=evidence,
+                )
+            started = time.monotonic()
+            try:
+                summary = await summarizer.write_document(self.target.ticker, document)
+            except SummaryError as error:
+                if self.jobs:
+                    self.jobs.summary_status(key, FAILED)
+                self.summarizing = False  # let a later source try
+                self.journal.write("summary_error", ticker=self.target.ticker, message=str(error))
+                self.journal.say(f"{self.target.ticker}: summary failed: {error}")
+                return
         took = time.monotonic() - started
         footer = f"Summary by {WRITER} in {took:.0f}s from the {label} text"
         if summary.unverified:
             held = len(summary.unverified)
             figures = "figure" if held == 1 else "figures"
             footer += f" · {held} {figures} held back: the release didn't confirm them"
+        footer = footer[:2048]
+        if self.jobs:
+            self.jobs.summary_written(
+                key,
+                summary.text,
+                footer,
+                summary.unverified,
+                summary.input_tokens,
+                summary.output_tokens,
+            )
+        await self._post_summary(
+            summary.text,
+            footer,
+            label,
+            model_seconds=round(took, 1),
+            held_back=summary.unverified,
+            input_tokens=summary.input_tokens,
+            output_tokens=summary.output_tokens,
+            document_sha256=document.sha256,
+            **({"replaces": replaces} if replaces else {}),
+        )
+
+    async def _post_summary(self, text: str, footer: str, label: str, **details: Any) -> None:
         async with self.lock:
-            stamp = await self.poster.set_summary(summary.text, footer[:2048])
+            stamp = await self.poster.set_summary(text, footer)
+        self.summary_posted = True
+        if self.jobs:
+            self.jobs.summary_status(self.target.release_key, DELIVERED)
         self.journal.write(
             "summary",
             ticker=self.target.ticker,
@@ -840,12 +1022,9 @@ class Release:
             live_seconds=self._live_after(stamp),
             visible=stamp,
             model=MODEL,
-            model_seconds=round(took, 1),
             source=label,
-            text=summary.text,
-            held_back=summary.unverified,
-            input_tokens=summary.input_tokens,
-            output_tokens=summary.output_tokens,
+            text=text,
+            **details,
         )
         self.journal.say(f"{self.target.ticker}: summary posted after {self._since_first_seen()}s")
 
@@ -885,6 +1064,7 @@ class Releases:
         summarizer: Summarizer | None,
         durable_poster: Callable[[Target], Poster] | None = None,
         priority: EditPriority | None = None,
+        store: DeliveryStore | None = None,
     ) -> None:
         self.new_poster = new_poster
         self.durable_poster = durable_poster
@@ -892,6 +1072,8 @@ class Releases:
         self.fetcher = fetcher
         self.journal = journal
         self.summarizer = summarizer
+        self.store = store  # keeps each release's summary job across restarts
+        self.model_calls = asyncio.Semaphore(MAX_MODEL_CALLS)
         self.active: dict[str, Release] = {}
 
     def on_new(
@@ -910,6 +1092,8 @@ class Releases:
                 self.journal,
                 self.summarizer,
                 priority=self.priority,
+                jobs=self.store,
+                model_calls=self.model_calls,
             )
         release.add(source, sighting, measure=measure)
 

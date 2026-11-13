@@ -18,9 +18,9 @@ from earnings_bot.fetch import Fetcher
 from earnings_bot.pipeline import DurableDiscordPoster, Release, Releases
 from earnings_bot.recorder import ET, Journal, OnNew, Polls, Target, Trial, Watch
 from earnings_bot.release_cards import release_content
-from earnings_bot.sources import EdgarFilings, EdgarLatest, RssFeed, Sighting
+from earnings_bot.sources import EdgarFilings, EdgarLatest, GuessedFile, RssFeed, Sighting
 from earnings_bot.track_progress import TrackProgress
-from tests.fakes import RoutedFetcher
+from tests.fakes import PinnedClock, RoutedFetcher
 from tests.test_pipeline import FakePoster, uber
 
 
@@ -64,7 +64,11 @@ class FakeMessage:
         if content is not None:
             self.content = content
         if attachments is not None:
-            self.attachments = attachments
+            # As Discord stores them: it drops "%" from a filename ("Nebius%20Q3...pdf" came
+            # back as "Nebius20Q3...pdf" on Nov 12)
+            self.attachments = [
+                SimpleNamespace(filename=a.filename.replace("%", "")) for a in attachments
+            ]
         self.edited_at = datetime.now(UTC)
         return self
 
@@ -87,18 +91,21 @@ class FakeDiscord:
         self,
         content: str = "",
         *,
-        nonce: str,
+        nonce: str | None = None,
         embed: discord.Embed | None = None,
         embeds: list[discord.Embed] | None = None,
+        allowed_mentions: object = None,
     ) -> FakeMessage:
         self.attempts += 1
         if self.fail_before_send:
             self.fail_before_send = False
             raise TimeoutError("request timed out before delivery")
-        if nonce in self.nonces:
+        if nonce is not None and nonce in self.nonces:
             return self.nonces[nonce]
         message = FakeMessage(next(self.ids), content, embed=embed, extra_embeds=embeds or [])
-        self.messages[message.id] = self.nonces[nonce] = message
+        self.messages[message.id] = message
+        if nonce is not None:
+            self.nonces[nonce] = message
         if self.lose_response:
             self.lose_response = False
             raise TimeoutError("Discord accepted the message but the response was lost")
@@ -112,9 +119,11 @@ class FakeDiscord:
     def delete(self, message_id: int) -> None:
         self.messages.pop(message_id).deleted = True
 
-    async def history(self, *, limit: int | None, after: datetime) -> AsyncIterator[FakeMessage]:
+    async def history(
+        self, *, limit: int | None, after: datetime | None = None
+    ) -> AsyncIterator[FakeMessage]:
         for message in self.messages.values():
-            if message.created_at > after:
+            if after is None or message.created_at > after:
                 yield message
 
     def poster(self, store: DeliveryStore, target: Target) -> DurableDiscordPoster:
@@ -267,7 +276,7 @@ async def test_an_update_recreates_a_deleted_alert_and_is_applied(
 async def test_a_window_that_keeps_failing_is_reported_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    async def broken(*args: object) -> list[Watch]:
+    async def broken(*args: object, **kwargs: object) -> list[Watch]:
         raise RuntimeError("feed parser bug")
 
     monkeypatch.setattr(unattended, "record_target", broken)
@@ -303,7 +312,12 @@ async def test_both_globenewswire_copies_post_one_alert_from_one_article_read(
     sighting = Sighting(url, "NVIDIA Reports Third Quarter Results", url, earnings=True)
 
     async def record(
-        target: Target, fetcher: Fetcher, journal: Journal, on_new: OnNew, polls: Polls
+        target: Target,
+        fetcher: Fetcher,
+        journal: Journal,
+        on_new: OnNew,
+        polls: Polls,
+        **kwargs: object,
     ) -> list[Watch]:
         for source in target.trial.sources():
             on_new(target, source, sighting)
@@ -397,6 +411,7 @@ async def test_schedule_reload_preserves_running_windows_and_shares_polls(
         journal: Journal,
         on_new: OnNew | None = None,
         polls: Polls | None = None,
+        **kwargs: object,
     ) -> list[Watch]:
         started.append((target, polls))
         await asyncio.Event().wait()
@@ -467,7 +482,7 @@ async def test_restart_reports_windows_that_closed_while_offline(tmp_path: Path)
 async def test_calendar_updates_edit_one_card_and_keep_their_log(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    async def watch(*args: object) -> list[Watch]:
+    async def watch(*args: object, **kwargs: object) -> list[Watch]:
         await asyncio.Event().wait()
         return []
 
@@ -577,7 +592,7 @@ async def test_two_schedules_defining_one_release_use_the_first(
 ) -> None:
     started: list[str] = []
 
-    async def watch(target: Target, *args: object) -> list[Watch]:
+    async def watch(target: Target, *args: object, **kwargs: object) -> list[Watch]:
         started.append(target.ticker)
         await asyncio.Event().wait()
         return []
@@ -618,7 +633,7 @@ async def test_a_finished_window_isnt_watched_again_after_a_restart(
 ) -> None:
     started: list[str] = []
 
-    async def watch(target: Target, *args: object) -> list[Watch]:
+    async def watch(target: Target, *args: object, **kwargs: object) -> list[Watch]:
         started.append(target.ticker)
         return []
 
@@ -689,7 +704,7 @@ def test_a_window_report_names_the_winner_then_how_far_behind_the_rest_were() ->
     report = unattended._window_report(target, watches, "@earnings_guy: no post found")
 
     assert report.splitlines() == [
-        "🏁 **LCID Q3 FY26 window closed**",
+        "🏁 **LCID Q3 FY26 window closed** · ⚠️ degraded",
         "🥇 PR Newswire earnings feed at 4:06:02.708 PM ET",
         "Then SEC 8-K filings +2m 51s",
         "⚠️ Stopped early: SEC 8-K filings",
@@ -713,7 +728,7 @@ async def test_a_restart_resumes_later_links_without_a_second_alert(
 ) -> None:
     channel = FakeDiscord()
     fetcher = RoutedFetcher({})
-    journal = Journal(io.StringIO())
+    journal = Journal(io.StringIO(), PinnedClock())
     when = journal.now() - timedelta(minutes=31)
     target = Target(ticker="SE", cik=1703399, expected=when)
     (tmp_path / "a.toml").write_text(_plan("SE", target.cik, when), encoding="utf-8")
@@ -766,7 +781,7 @@ async def test_a_restart_resumes_later_links_without_a_second_alert(
 async def test_changed_sources_rearm_an_active_followup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    journal = Journal(io.StringIO())
+    journal = Journal(io.StringIO(), PinnedClock())
     when = journal.now() - timedelta(minutes=31)
     target = Target(ticker="SE", cik=1703399, expected=when)
     plan = tmp_path / "a.toml"
@@ -807,3 +822,76 @@ async def test_changed_sources_rearm_an_active_followup(
             await asyncio.gather(
                 *(window.task for window in runner.windows.values()), return_exceptions=True
             )
+
+
+async def test_a_resumed_alert_gives_no_time_for_a_link_it_already_had(tmp_path: Path) -> None:
+    """After the Nov 12 restart: "NBIS: added the IR site link, live after -15761.29s". The
+    link was already on the hours-old alert, so nothing went live then."""
+    target, channel, log = uber(), FakeDiscord(), io.StringIO()
+    feed = RssFeed("issuer", "https://issuer.example/rss")
+    sightings = [
+        Sighting("1", "Quarterly results", "https://issuer.example/q3", earnings=True),
+        Sighting("2", "Quarterly results", "https://wire.example/q3", earnings=True),
+    ]
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        release = Release(
+            target, channel.poster(store, target), RoutedFetcher({}), Journal(io.StringIO()), None
+        )
+        for sighting in sightings:
+            release.add(feed, sighting)
+        await release.finish()
+        alert = channel.messages[1]
+        assert alert.edited_at is not None
+        alert.edited_at -= timedelta(hours=4)
+
+        resumed = Release(
+            target, channel.poster(store, target), RoutedFetcher({}), Journal(log), None
+        )
+        for sighting in sightings:
+            resumed.add(feed, sighting)
+        await resumed.finish()
+
+    linked = [r for r in map(json.loads, log.getvalue().splitlines()) if r["event"] == "linked"]
+    assert linked
+    assert [r["live_seconds"] for r in linked] == [None] * len(linked)
+
+
+async def test_a_start_notice_replaces_the_ones_before_it(tmp_path: Path) -> None:
+    """Each deploy left another "Earnings monitoring started" message in the channel."""
+    channel = FakeDiscord()
+    old = await channel.send("🟢 **Earnings monitoring started** · v0.15.3 · `schedules/`")
+    alert = await channel.send("🚨 **$AMAT Q4 FY26 earnings are out**", nonce="alert")
+    with DeliveryStore(tmp_path / "progress.db", 7) as store:
+        messages = cast(discord.abc.Messageable, channel)
+        await unattended.replace_start_notice(
+            messages, store, 42, "🟢 **Earnings monitoring started** · v0.19.3"
+        )
+        [first] = [m for m in channel.messages.values() if m.content.endswith("v0.19.3")]
+        assert old.deleted and not first.deleted
+        await unattended.replace_start_notice(
+            messages, store, 42, "🟢 **Earnings monitoring started** · v0.19.4"
+        )
+
+    shown = [m.content for m in channel.messages.values() if not m.deleted]
+    assert shown == [alert.content, "🟢 **Earnings monitoring started** · v0.19.4"]
+    assert first.deleted
+
+
+async def test_a_resumed_alert_doesnt_attach_its_file_again(tmp_path: Path) -> None:
+    """Nebius's alert had its PDF three times by the evening of Nov 12, one more per restart:
+    Discord stored "Nebius%20Q3...pdf" as "Nebius20Q3...pdf", so the check for a file
+    already on the alert never matched."""
+    target, channel = uber(), FakeDiscord()
+    url = "https://nebius.com/files/Nebius%20Q3%202026%20Results.pdf"
+    sighting = Sighting(url, "Nebius Q3 2026 Results", url, earnings=True)
+    fetcher = RoutedFetcher({".pdf": (200, b"%PDF-1.7 results")})
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        for _ in range(3):  # the first start, then two restarts
+            release = Release(
+                target, channel.poster(store, target), fetcher, Journal(io.StringIO()), None
+            )
+            release.add(GuessedFile(url), sighting)
+            await release.finish()
+
+    [alert] = channel.messages.values()
+    assert [a.filename for a in alert.attachments] == ["Nebius_Q3_2026_Results.pdf"]

@@ -75,6 +75,8 @@ def source_label(name: str, form: str = "8-K") -> str:
         return "IR press release page, direct HTTP"
     if name == "issuer-news":
         return "IR newsroom API and results PDF, direct HTTP"
+    if name == "issuer-results":
+        return "IR quarterly results API and PDF, direct HTTP"
     if name == "issuer-table":
         return "IR quarterly results PDF"
     if name == "browser-rss":

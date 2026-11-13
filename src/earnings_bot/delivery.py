@@ -1,6 +1,7 @@
 """Durable alert intents and message IDs for the unattended runner."""
 
 import asyncio
+import json
 import sqlite3
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -18,6 +19,30 @@ class Delivery:
     content: str
     prepared: datetime
     message_id: int | None
+
+
+# A summary job's states: being written by the model, written but not yet on the alert, on the
+# alert, or failed (a later source's text may try again, up to the attempt limit)
+RUNNING, WRITTEN, DELIVERED, FAILED = "running", "written", "delivered", "failed"
+
+
+@dataclass(frozen=True)
+class SummaryJob:
+    """The summary of one release, kept across restarts so a delivered one isn't paid for and
+    edited onto an old alert again (it was on Nov 12, twice after one restart)."""
+
+    key: str
+    document: str  # source-document version hash (legacy jobs contain a plain-text hash)
+    source: str  # where that text came from, such as "SEC 6-K"
+    status: str
+    attempts: int  # model calls made for this release
+    text: str | None = None
+    footer: str | None = None
+    held_back: list[str] | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    replaced: str | None = None  # source of the PDF-based summary this one replaced
+    source_document: str | None = None  # versioned extraction JSON; absent on legacy jobs
 
 
 class DeliveryStore:
@@ -57,6 +82,68 @@ class DeliveryStore:
                 scanned TEXT NOT NULL
             )
         """)
+        self.db.execute("""
+            CREATE TABLE IF NOT EXISTS summaries (
+                channel_id INTEGER NOT NULL,
+                release_key TEXT NOT NULL,
+                document TEXT NOT NULL,
+                source TEXT NOT NULL,
+                status TEXT NOT NULL,
+                attempts INTEGER NOT NULL,
+                text TEXT,
+                footer TEXT,
+                held_back TEXT,
+                input_tokens INTEGER,
+                output_tokens INTEGER,
+                updated TEXT NOT NULL,
+                PRIMARY KEY (channel_id, release_key)
+            )
+        """)
+        # Model calls by day (US Eastern), for the daily cap on summary spend
+        self.db.execute("""
+            CREATE TABLE IF NOT EXISTS summary_calls (
+                channel_id INTEGER NOT NULL,
+                day TEXT NOT NULL,
+                calls INTEGER NOT NULL,
+                PRIMARY KEY (channel_id, day)
+            )
+        """)
+        self.db.execute("""
+            CREATE TABLE IF NOT EXISTS summary_documents (
+                channel_id INTEGER NOT NULL,
+                release_key TEXT NOT NULL,
+                document TEXT NOT NULL,
+                source_document TEXT NOT NULL,
+                PRIMARY KEY (channel_id, release_key, document)
+            )
+        """)
+        # The source of the PDF-based summary a page's summary replaced, if it replaced one
+        columns = {row["name"] for row in self.db.execute("PRAGMA table_info(summaries)")}
+        if "replaced" not in columns:
+            self.db.execute("ALTER TABLE summaries ADD COLUMN replaced TEXT")
+        # The bot's standing messages in this channel, such as the latest start notice
+        self.db.execute("""
+            CREATE TABLE IF NOT EXISTS notices (
+                channel_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                message_id INTEGER NOT NULL,
+                PRIMARY KEY (channel_id, name)
+            )
+        """)
+
+    def notice(self, name: str) -> int | None:
+        row = self.db.execute(
+            "SELECT message_id FROM notices WHERE channel_id = ? AND name = ?",
+            (self.channel_id, name),
+        ).fetchone()
+        return row["message_id"] if row else None
+
+    def set_notice(self, name: str, message_id: int) -> None:
+        with self.db:
+            self.db.execute(
+                "INSERT OR REPLACE INTO notices VALUES (?, ?, ?)",
+                (self.channel_id, name, message_id),
+            )
 
     def last_scan(self) -> datetime | None:
         row = self.db.execute(
@@ -134,6 +221,124 @@ class DeliveryStore:
             ).fetchone()
             is not None
         )
+
+    def summary(self, key: str) -> SummaryJob | None:
+        row = self.db.execute(
+            "SELECT s.*, d.source_document FROM summaries s LEFT JOIN summary_documents d "
+            "USING (channel_id, release_key, document) "
+            "WHERE s.channel_id = ? AND s.release_key = ?",
+            (self.channel_id, key),
+        ).fetchone()
+        if row is None:
+            return None
+        return SummaryJob(
+            row["release_key"],
+            row["document"],
+            row["source"],
+            row["status"],
+            row["attempts"],
+            row["text"],
+            row["footer"],
+            json.loads(row["held_back"]) if row["held_back"] else None,
+            row["input_tokens"],
+            row["output_tokens"],
+            row["replaced"],
+            row["source_document"],
+        )
+
+    def summary_started(
+        self,
+        key: str,
+        document: str,
+        source: str,
+        day: str,
+        *,
+        replaces: str | None = None,
+        source_document: str | None = None,
+    ) -> None:
+        """Records a model call starting for the release, from this document, and counts it
+        toward the day's calls. `replaces` names the source of the summary it will replace."""
+        now = datetime.now(UTC).isoformat()
+        with self.db:
+            if source_document is not None:
+                self.db.execute(
+                    "INSERT OR IGNORE INTO summary_documents VALUES (?, ?, ?, ?)",
+                    (self.channel_id, key, document, source_document),
+                )
+            self.db.execute(
+                """
+                INSERT INTO summaries (channel_id, release_key, document, source, status,
+                                       attempts, updated, replaced)
+                VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+                ON CONFLICT (channel_id, release_key) DO UPDATE SET
+                    document = excluded.document, source = excluded.source,
+                    status = excluded.status, attempts = attempts + 1, text = NULL,
+                    footer = NULL, held_back = NULL, input_tokens = NULL,
+                    output_tokens = NULL, updated = excluded.updated,
+                    replaced = excluded.replaced
+                """,
+                (self.channel_id, key, document, source, RUNNING, now, replaces),
+            )
+            self.db.execute(
+                """
+                INSERT INTO summary_calls VALUES (?, ?, 1)
+                ON CONFLICT (channel_id, day) DO UPDATE SET calls = calls + 1
+                """,
+                (self.channel_id, day),
+            )
+
+    def summary_document(self, key: str, document: str) -> str | None:
+        """Keep earlier source versions addressable after a PDF/HTML replacement."""
+        row = self.db.execute(
+            "SELECT source_document FROM summary_documents "
+            "WHERE channel_id = ? AND release_key = ? AND document = ?",
+            (self.channel_id, key, document),
+        ).fetchone()
+        return row["source_document"] if row else None
+
+    def summary_written(
+        self,
+        key: str,
+        text: str,
+        footer: str,
+        held_back: list[str],
+        input_tokens: int,
+        output_tokens: int,
+    ) -> None:
+        with self.db:
+            self.db.execute(
+                """
+                UPDATE summaries SET status = ?, text = ?, footer = ?, held_back = ?,
+                    input_tokens = ?, output_tokens = ?, updated = ?
+                WHERE channel_id = ? AND release_key = ?
+                """,
+                (
+                    WRITTEN,
+                    text,
+                    footer,
+                    json.dumps(held_back),
+                    input_tokens,
+                    output_tokens,
+                    datetime.now(UTC).isoformat(),
+                    self.channel_id,
+                    key,
+                ),
+            )
+
+    def summary_status(self, key: str, status: str) -> None:
+        with self.db:
+            self.db.execute(
+                "UPDATE summaries SET status = ?, updated = ? WHERE channel_id = ? "
+                "AND release_key = ?",
+                (status, datetime.now(UTC).isoformat(), self.channel_id, key),
+            )
+
+    def summary_calls(self, day: str) -> int:
+        row = self.db.execute(
+            "SELECT calls FROM summary_calls WHERE channel_id = ? AND day = ?",
+            (self.channel_id, day),
+        ).fetchone()
+        return row["calls"] if row else 0
 
     def close_window(self, key: str, expected: datetime) -> None:
         with self.db:

@@ -1,6 +1,7 @@
 """Watch a changing schedule directory with one polling and delivery coordinator."""
 
 import asyncio
+import contextlib
 import tomllib
 from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import dataclass
@@ -38,6 +39,7 @@ from earnings_bot.pipeline import (
     keep_warm,
 )
 from earnings_bot.recorder import (
+    DEGRADED_AFTER,
     FOLLOW_UP,
     Journal,
     Plan,
@@ -48,6 +50,7 @@ from earnings_bot.recorder import (
     followup_end,
     parse_plan,
     record_target,
+    route_trouble,
 )
 from earnings_bot.sec_results import SixKResults
 from earnings_bot.source_audit import audit_sources
@@ -126,6 +129,8 @@ class DirectoryWatcher:
         self.since = store.last_scan() or journal.now()
         self.closed: set[tuple[str, datetime]] = set()
         self.followed: set[tuple[str, datetime]] = set()
+        # Each open window's watches, so /status can name a degraded route while it's open
+        self.live_watches: dict[str, list[Watch]] = {}
 
     def _inline_status(self, message: str) -> None:
         """Routine calendar changes belong on the existing scorecard; keep their log too."""
@@ -194,12 +199,18 @@ class DirectoryWatcher:
         lines.append(f"📝 Live summaries {'on' if self.summaries else 'off'}")
         embed.description = "\n".join(lines)
         if live:
-            lines = [
-                f"**{t.ticker}**{_period(t)} · results expected {clock(t.expected)} · "
-                f"watching until {clock(t.window[1])}"
-                for t in live
-            ]
+            lines = []
+            for t in live:
+                lines.append(
+                    f"**{t.ticker}**{_period(t)} · results expected {clock(t.expected)} · "
+                    f"watching until {clock(t.window[1])}"
+                )
+                for w in self.live_watches.get(t.release_key, []):
+                    if trouble := route_trouble(w, now):
+                        lines.append(f"⚠️ Degraded: {_route_label(w)}, {trouble}")
+                        color = AMBER
             embed.add_field(name="🔴 Live now", value=truncate("\n".join(lines)), inline=False)
+            embed.color = color
         if self.problems:
             problems = [f"**{name}**: {message}" for name, message in self.problems.items()]
             embed.add_field(name="⚠️ Problems", value=truncate("\n".join(problems)), inline=False)
@@ -374,9 +385,17 @@ class DirectoryWatcher:
         if self.benchmark:
             benchmark = asyncio.create_task(self.benchmark.watch(target.ticker, *target.window))
         try:
-            watches = await record_target(
-                target, self.fetcher, self.journal, self._on_new, self.polls
-            )
+            try:
+                watches = await record_target(
+                    target,
+                    self.fetcher,
+                    self.journal,
+                    self._on_new,
+                    self.polls,
+                    on_watches=partial(self.live_watches.__setitem__, target.release_key),
+                )
+            finally:
+                self.live_watches.pop(target.release_key, None)
             self._problem(problem, None)
             self.store.close_window(target.release_key, target.expected)
             self.dates.changed.set()
@@ -478,11 +497,13 @@ def _benchmark_report(result: BenchmarkResult, alert: datetime | None) -> str:
     return text
 
 
-def _window_report(target: Target, watches: list[Watch], comparison: str = "") -> str:
-    def label(watch: Watch) -> str:
-        form = watch.source.form if isinstance(watch.source, EdgarFilings) else "8-K"
-        return source_label(watch.source.name, form)
+def _route_label(watch: Watch) -> str:
+    form = watch.source.form if isinstance(watch.source, EdgarFilings) else "8-K"
+    return source_label(watch.source.name, form)
 
+
+def _window_report(target: Target, watches: list[Watch], comparison: str = "") -> str:
+    label = _route_label
     period = f" {period_label(target.period)}" if target.period else ""
     lines = [f"🏁 **{target.ticker}{period} window closed**"]
     seen: dict[str, datetime] = {}
@@ -507,9 +528,51 @@ def _window_report(target: Target, watches: list[Watch], comparison: str = "") -
         dict.fromkeys(label(w) for w in watches if w.blocked and not w.stopped and not w.first)
     ):
         lines.append(f"⚠️ Refused at times (HTTP 403), retried: {', '.join(refused)}")
+    limit = DEGRADED_AFTER.total_seconds()
+    quiet = {
+        label(w): w.longest_quiet
+        for w in watches
+        if w.longest_quiet > max(limit, 5 * w.source.interval) and not w.stopped
+    }
+    if quiet:
+        gaps = ", ".join(f"{name} {duration(gap)}" for name, gap in quiet.items())
+        lines.append(f"⚠️ Went without an answer for up to: {gaps}")
+    if stopped or refused or quiet:
+        # A route that died mid-window must be loud (the 1.0 gate)
+        lines[0] += " · ⚠️ degraded"
     if comparison:
         lines.append(f"-# {comparison}")
     return "\n".join(lines)
+
+
+STARTED = "🟢 **Earnings monitoring started**"
+# How far back the status channel is searched for earlier start notices to remove
+NOTICE_LOOKBACK = 100
+
+
+async def replace_start_notice(
+    channel: discord.abc.Messageable, store: DeliveryStore, author_id: int, text: str
+) -> None:
+    """Posts the start notice, then deletes the earlier ones, so the channel shows only the
+    running version's. Earlier ones are the notice whose ID was saved at the last start, and
+    any of the bot's own in the last NOTICE_LOOKBACK messages, which covers those posted
+    before IDs were saved."""
+    message = await channel.send(text[:1900], allowed_mentions=discord.AllowedMentions.none())
+    saved = store.notice("started")
+    store.set_notice("started", message.id)
+    stale: dict[int, discord.Message | None] = {}
+    if saved is not None and saved != message.id:
+        stale[saved] = None
+    async for earlier in channel.history(limit=NOTICE_LOOKBACK):
+        if (
+            earlier.id != message.id
+            and earlier.author.id == author_id
+            and earlier.content.startswith(STARTED)
+        ):
+            stale[earlier.id] = earlier
+    for message_id, earlier in stale.items():
+        with contextlib.suppress(discord.NotFound):
+            await (earlier or await channel.fetch_message(message_id)).delete()
 
 
 async def watch_directory(
@@ -532,21 +595,24 @@ async def watch_directory(
         DeliveryStore(directory / ".earnings-state.sqlite3", channel_id) as store,
     ):
         journal = Journal(file)
-        queue: asyncio.Queue[str] = asyncio.Queue()
+        queue: asyncio.Queue[tuple[str, bool]] = asyncio.Queue()
 
-        def status(message: str) -> None:
+        def status(message: str, *, start: bool = False) -> None:
             journal.write("status", message=message)
             journal.say(message)
             if status_channel is not None:
-                queue.put_nowait(message)
+                queue.put_nowait((message, start))
 
         async def report(channel: discord.abc.Messageable) -> None:
             while True:
-                message = await queue.get()
+                message, start = await queue.get()
                 try:
-                    await channel.send(
-                        message[:1900], allowed_mentions=discord.AllowedMentions.none()
-                    )
+                    if start:
+                        await replace_start_notice(channel, progress_store, author_id, message)
+                    else:
+                        await channel.send(
+                            message[:1900], allowed_mentions=discord.AllowedMentions.none()
+                        )
                 except (aiohttp.ClientError, discord.HTTPException, TimeoutError) as error:
                     journal.say(f"Status post failed: {error!r}")
 
@@ -572,6 +638,7 @@ async def watch_directory(
                 summarizer,
                 lambda target: DurableDiscordPoster(channel, store, target.release_key, author_id),
                 priority=priority,
+                store=store,
             )
             benchmark = EarningsBenchmark(fetcher, journal.now)
             watcher = DirectoryWatcher(
@@ -601,9 +668,7 @@ async def watch_directory(
             watcher.dates.on_progress = watcher.progress.changed.set
             watcher.progress.follow_calendar()
             ready(watcher)
-            status(
-                f"🟢 **Earnings monitoring started** · {release_version()} · `{directory.name}/`"
-            )
+            status(f"{STARTED} · {release_version()} · `{directory.name}/`", start=True)
             tasks = [
                 asyncio.create_task(recover_pending()),
                 asyncio.create_task(watcher.progress.run()),

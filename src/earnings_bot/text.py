@@ -1,12 +1,14 @@
 """Getting the full text of a release, wherever it was first seen, for the summary."""
 
+from __future__ import annotations
+
 import asyncio
 import io
 import json
 import re
 from bisect import bisect_left
 from html.parser import HTMLParser
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 from urllib.parse import urlsplit
 
 import aiohttp
@@ -24,6 +26,9 @@ from earnings_bot.sources import (
     Source,
     bust_cache,
 )
+
+if TYPE_CHECKING:
+    from earnings_bot.source_document import SourceDocument
 
 # Shorter than any real earnings release, so error pages and teasers don't count
 MIN_RELEASE_CHARS = 2000
@@ -58,6 +63,8 @@ class _Cell(NamedTuple):
     text: str
     span: int  # colspan
     rows: int  # rowspan
+    header: bool = False
+    scope: str = ""
 
 
 class _Placed(NamedTuple):
@@ -76,6 +83,8 @@ class _Table:
         self.cell: list[str] | None = None
         self._row: list[_Cell] | None = None
         self._spans = (1, 1)
+        self._header = False
+        self._scope = ""
 
     def start_row(self) -> None:
         self.end_row()
@@ -88,16 +97,21 @@ class _Table:
             self.items.append(self._row)
             self._row = None
 
-    def start_cell(self, colspan: int, rowspan: int) -> None:
+    def start_cell(
+        self, colspan: int, rowspan: int, *, header: bool = False, scope: str = ""
+    ) -> None:
         self.end_cell()
         if self._row is None:
             self.start_row()
         self.cell = []
         self._spans = (colspan, rowspan)
+        self._header, self._scope = header, scope
 
     def end_cell(self) -> None:
         if self.cell is not None and self._row is not None:
-            self._row.append(_Cell(_clean("".join(self.cell)), *self._spans))
+            self._row.append(
+                _Cell(_clean("".join(self.cell)), *self._spans, self._header, self._scope)
+            )
         self.cell = None
 
     def close(self) -> list[str]:
@@ -234,7 +248,12 @@ class _TextParser(HTMLParser):
             self._table().start_row()
         elif tag in ("td", "th"):
             spans = dict(attrs)
-            self._table().start_cell(_span(spans.get("colspan")), _span(spans.get("rowspan")))
+            self._table().start_cell(
+                _span(spans.get("colspan")),
+                _span(spans.get("rowspan")),
+                header=tag == "th",
+                scope=spans.get("scope") or "",
+            )
         elif _BLOCK.fullmatch(tag):
             self._block()
 
@@ -338,7 +357,9 @@ async def _broadcom_body(fetcher: Fetcher, sighting: Sighting) -> str | None:
     return body if isinstance(body, str) and body else None
 
 
-async def _q4_text(fetcher: Fetcher, source: Q4PressReleases, release_id: str) -> str | None:
+async def _q4_document(
+    fetcher: Fetcher, source: Q4PressReleases, release_id: str
+) -> SourceDocument | None:
     # The release that just turned up is nearly always the newest, so ask for it alone first:
     # Uber's list of five came to 459 KB and 0.76 s, its newest alone to 10 KB and 0.2 s. Each
     # length is its own copy on Q4's CDN, so if that copy is a few seconds too old to have the
@@ -354,8 +375,8 @@ async def _q4_text(fetcher: Fetcher, source: Q4PressReleases, release_id: str) -
         for release in releases:
             if isinstance(release, dict) and str(release.get("PressReleaseId")) == release_id:
                 body = release.get("Body")
-                if isinstance(body, str) and (text := await _usable_text(body)):
-                    return text
+                if isinstance(body, str) and (document := await _usable_document(body)):
+                    return document
     return None
 
 
@@ -446,8 +467,18 @@ def globe_article_url(url: str) -> str | None:
 
 
 async def release_text(fetcher: Fetcher, source: Source, sighting: Sighting) -> str | None:
+    """Compatibility reader for classifiers/audits that need only the release text."""
+    document = await release_document(fetcher, source, sighting)
+    return document.text if document else None
+
+
+async def release_document(
+    fetcher: Fetcher, source: Source, sighting: Sighting
+) -> SourceDocument | None:
     """The release's text from wherever this sighting points, or None if this source can't
     provide it."""
+    from earnings_bot.source_document import document_from_text
+
     try:
         if sighting.body is not None:
             # The poll already downloaded the page. A PDF is read too: the pipeline asks for
@@ -455,12 +486,17 @@ async def release_text(fetcher: Fetcher, source: Source, sighting: Sighting) -> 
             # after its PDF.
             if sighting.body.startswith(b"%PDF-"):
                 text = await asyncio.to_thread(pdf_text, sighting.body)
-                return text if verified_report(text) else None
+                return (
+                    await asyncio.to_thread(document_from_text, text)
+                    if verified_report(text)
+                    else None
+                )
             html = sighting.body.decode(errors="replace")
             if sighting.details.get("verified_exhibit") == "true":
-                return html  # The classifier already parsed and verified this exhibit.
+                # Already parsed by the classifier; do not reinterpret text as HTML.
+                return await asyncio.to_thread(document_from_text, html)
         elif isinstance(source, Q4PressReleases):
-            return await _q4_text(fetcher, source, sighting.key)
+            return await _q4_document(fetcher, source, sighting.key)
         elif isinstance(source, BroadcomNewsroom):
             html = await _broadcom_body(fetcher, sighting) if sighting.earnings else None
         elif isinstance(source, EdgarFilings):
@@ -481,11 +517,18 @@ async def release_text(fetcher: Fetcher, source: Source, sighting: Sighting) -> 
             return None
     except (aiohttp.ClientError, TimeoutError, ValueError, KeyError, TypeError):
         return None
-    return await _usable_text(html)
+    return await _usable_document(html)
 
 
-async def _usable_text(html: str | None) -> str | None:
+async def _usable_document(html: str | None) -> SourceDocument | None:
     # Parsing an 8-K exhibit takes about 30 ms of pure Python. In a thread, the event loop gets
     # the interpreter back every few milliseconds, so other windows' polls don't wait on it.
-    text = await asyncio.to_thread(html_to_text, html) if html else ""
-    return text if len(text) >= MIN_RELEASE_CHARS else None
+    from earnings_bot.source_document import document_from_html
+
+    if not html:
+        return None
+    try:
+        document = await asyncio.to_thread(document_from_html, html)
+    except ValueError:
+        return None
+    return document if len(document.text) >= MIN_RELEASE_CHARS else None

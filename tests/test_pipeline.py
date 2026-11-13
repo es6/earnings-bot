@@ -3,6 +3,7 @@ import io
 import json
 import time
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import aiohttp
@@ -10,10 +11,12 @@ import pytest
 
 from earnings_bot import fetch, pipeline
 from earnings_bot.browser_sources import BrowserPDF, IRSource
+from earnings_bot.delivery import DeliveryStore
 from earnings_bot.fetch import Response
 from earnings_bot.ir_research import quarter_headline
 from earnings_bot.pipeline import Poster, Release, Releases, describe_source
 from earnings_bot.recorder import ET, Journal, Target, Trial, Watch, watch
+from earnings_bot.source_document import SourceDocument, document_from_text
 from earnings_bot.sources import (
     GLOBENEWSWIRE_EARNINGS,
     PR_NEWSWIRE_EARNINGS,
@@ -84,10 +87,13 @@ def release_texts(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     """The release text each source gives, by sighting URL."""
     texts: dict[str, str] = {}
 
-    async def release_text(fetcher: object, source: Source, sighting: Sighting) -> str | None:
-        return texts.get(sighting.url)
+    async def release_document(
+        fetcher: object, source: Source, sighting: Sighting
+    ) -> SourceDocument | None:
+        text = texts.get(sighting.url)
+        return document_from_text(text) if text else None
 
-    monkeypatch.setattr(pipeline, "release_text", release_text)
+    monkeypatch.setattr(pipeline, "release_document", release_document)
     return texts
 
 
@@ -574,21 +580,82 @@ async def test_a_release_pdf_is_summarized_when_no_page_has_the_text() -> None:
     assert "from the release.pdf text" in poster.calls[-1][1]
 
 
-async def test_a_page_with_the_text_is_preferred_to_the_pdf(
-    release_texts: dict[str, str], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(pipeline, "PDF_TEXT_GRACE", 0.05)
-    release_texts[IR_PAGE] = "the release"
+def pdf_sighting() -> tuple[BrowserPDF, Sighting]:
     source = BrowserPDF(PDF_ONLY, MC)
-    sighting = source.parse(Response(PDF_ONLY, 200, {}, simple_pdf(RELEASE_LINES), 0.04))[0]
-    poster, summarizer = FakePoster(), FakeSummarizer()
-    release = Release(uber(), poster, RoutedFetcher({}), Journal(io.StringIO()), summarizer)
+    return source, source.parse(Response(PDF_ONLY, 200, {}, simple_pdf(RELEASE_LINES), 0.04))[0]
 
-    release.add(source, sighting)
-    release.add(Q4PressReleases("investor.uber.com"), Sighting("1700", "Results", IR_PAGE))
+
+async def test_a_pdf_is_summarized_at_once_and_a_page_replaces_it_once(
+    release_texts: dict[str, str], tmp_path: Path
+) -> None:
+    """BN's summary waited 4 minutes for a page with the PDF already in hand, and every
+    PDF-first release waited 10 s more. A page reads better, though: the checker kept 13 of
+    BN's 21 figures from the PDF and 20 of 25 from the page."""
+    release_texts[PDF_ONLY] = "the PDF's text"
+    release_texts[IR_PAGE] = "the page's text"
+    release_texts[IR_PAGE + "?copy"] = "another copy of the page"
+    poster, summarizer, log = FakePoster(), FakeSummarizer(), io.StringIO()
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        release = Release(uber(), poster, RoutedFetcher({}), Journal(log), summarizer, jobs=store)
+        release.add(*pdf_sighting())
+        await release.finish()
+        assert summarizer.calls == ["the PDF's text"]
+
+        release.add(*ir_sighting())
+        await release.finish()
+        release.add(*ir_sighting(IR_PAGE + "?copy"))  # one replacement only
+        await release.finish()
+        job = store.summary(uber().release_key)
+        pdf = document_from_text("the PDF's text")
+        assert store.summary_document(uber().release_key, pdf.sha256) == pdf.to_json()
+
+    assert summarizer.calls == ["the PDF's text", "the page's text"]
+    assert [kind for kind, _ in poster.calls].count("summary") == 2
+    posted = [r for r in map(json.loads, log.getvalue().splitlines()) if r["event"] == "summary"]
+    assert "replaces" not in posted[0] and posted[1]["replaces"] == "release.pdf"
+    assert job is not None and (job.source, job.replaced, job.attempts) == (
+        "IR site",
+        "release.pdf",
+        2,
+    )
+    assert job.source_document == document_from_text("the page's text").to_json()
+
+
+async def test_a_page_that_comes_during_the_pdf_summary_replaces_it_after(
+    release_texts: dict[str, str],
+) -> None:
+    release_texts[PDF_ONLY] = "the PDF's text"
+    release_texts[IR_PAGE] = "the page's text"
+
+    class Slow(FakeSummarizer):
+        async def write(self, ticker: str, release: str, seconds: float = 0.0) -> Summary:
+            await asyncio.sleep(0.1)
+            return await super().write(ticker, release, seconds)
+
+    poster, summarizer = FakePoster(), Slow()
+    release = Release(uber(), poster, RoutedFetcher({}), Journal(io.StringIO()), summarizer)
+    release.add(*pdf_sighting())
+    await asyncio.sleep(0.03)  # the PDF's summary is being written
+    release.add(*ir_sighting())
     await release.finish()
 
-    assert summarizer.calls == ["the release"]
+    assert summarizer.calls == ["the PDF's text", "the page's text"]
+    summaries = [text for kind, text in poster.calls if kind == "summary"]
+    assert len(summaries) == 2  # the page's summary went up after, and over, the PDF's
+
+
+async def test_a_pdf_never_replaces_a_page_based_summary(release_texts: dict[str, str]) -> None:
+    release_texts[PDF_ONLY] = "the PDF's text"
+    release_texts[IR_PAGE] = "the page's text"
+    summarizer = FakeSummarizer()
+    release = Release(uber(), FakePoster(), RoutedFetcher({}), Journal(io.StringIO()), summarizer)
+
+    release.add(*ir_sighting())
+    await release.finish()
+    release.add(*pdf_sighting())
+    await release.finish()
+
+    assert summarizer.calls == ["the page's text"]
 
 
 async def test_a_deck_or_unreadable_pdf_is_not_summarized() -> None:
@@ -778,3 +845,136 @@ async def test_the_newsroom_watcher_waits_while_a_read_of_the_newsroom_is_refuse
     await watch(Watch("NBIS", source), fetcher, journal, journal.now() + timedelta(seconds=1))
 
     assert fetcher.listing_asked and fetcher.listing_asked[0][0] - started >= 0.29
+
+
+def ir_sighting(url: str = IR_PAGE) -> tuple[Q4PressReleases, Sighting]:
+    return Q4PressReleases("investor.uber.com"), Sighting("1700", "Results", url, earnings=True)
+
+
+async def test_a_restart_doesnt_summarize_a_delivered_release_again(
+    release_texts: dict[str, str], tmp_path: Path
+) -> None:
+    """The Nov 12 restart re-read both delivered releases and summarized each again: two paid
+    calls, and edits to alerts hours old."""
+    release_texts[IR_PAGE] = "the release"
+    summarizer, log = FakeSummarizer(), io.StringIO()
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        for _ in range(2):  # the bot, then the bot after a restart, reading the same release
+            release = Release(uber(), FakePoster(), fetcher(), Journal(log), summarizer, jobs=store)
+            release.add(*ir_sighting())
+            await release.finish()
+        job = store.summary(uber().release_key)
+
+    assert summarizer.calls == ["the release"]
+    assert job is not None and (job.status, job.attempts, job.source) == ("delivered", 1, "IR site")
+    document = document_from_text("the release")
+    assert job.document == document.sha256 and job.source_document == document.to_json()
+    skipped = [
+        r for r in map(json.loads, log.getvalue().splitlines()) if r["event"] == "summary_skipped"
+    ]
+    assert [r["reason"] for r in skipped] == ["already delivered"]
+
+
+async def test_a_summary_written_before_a_crash_is_posted_with_no_new_call(
+    release_texts: dict[str, str], tmp_path: Path
+) -> None:
+    release_texts[IR_PAGE] = "the release"
+    key = uber().release_key
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        store.summary_started(key, "abc", "SEC 8-K", "2026-11-04")
+        store.summary_written(key, "**Q3 2026**", "Summary by Muse Ember in 4s", [], 900, 70)
+        summarizer, poster = FakeSummarizer(), FakePoster()
+        release = Release(uber(), poster, fetcher(), Journal(io.StringIO()), summarizer, jobs=store)
+        release.add(*ir_sighting())
+        await release.finish()
+        job = store.summary(key)
+
+    assert summarizer.calls == []
+    assert ("summary", "**Q3 2026** | Summary by Muse Ember in 4s") in poster.calls
+    assert job is not None and (job.status, job.attempts) == ("delivered", 1)
+
+
+class AlwaysFails(FakeSummarizer):
+    async def write(self, ticker: str, release: str, seconds: float = 0.0) -> Summary:
+        self.calls.append(release)
+        raise SummaryError("Ember API error 529: Overloaded")
+
+
+async def test_a_release_gets_at_most_three_model_calls_across_restarts(
+    release_texts: dict[str, str], tmp_path: Path
+) -> None:
+    pages = [f"{IR_PAGE}?copy={n}" for n in range(5)]
+    for page in pages:
+        release_texts[page] = f"text from {page}"
+    summarizer, log = AlwaysFails(), io.StringIO()
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        for page in pages:  # each a new source, after a restart
+            release = Release(uber(), FakePoster(), fetcher(), Journal(log), summarizer, jobs=store)
+            release.add(*ir_sighting(page))
+            await release.finish()
+
+    assert len(summarizer.calls) == 3
+    skipped = [
+        r for r in map(json.loads, log.getvalue().splitlines()) if r["event"] == "summary_skipped"
+    ]
+    assert [r["reason"] for r in skipped] == ["3 model calls already made for this release"] * 2
+
+
+async def test_summary_calls_stop_at_the_days_cap(
+    release_texts: dict[str, str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(pipeline, "DAILY_SUMMARY_CALLS", 1)
+    release_texts[IR_PAGE] = "the release"
+    lyft = Target(ticker="LYFT", expected=datetime(2026, 11, 4, 16, 5, tzinfo=ET), cik=1759509)
+    summarizer = FakeSummarizer()
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        for target in (uber(), lyft):
+            release = Release(
+                target, FakePoster(), fetcher(), Journal(io.StringIO()), summarizer, jobs=store
+            )
+            release.add(*ir_sighting())
+            await release.finish()
+
+    assert summarizer.calls == ["the release"]
+
+
+async def test_at_most_two_model_calls_run_at_once(
+    release_texts: dict[str, str], tmp_path: Path
+) -> None:
+    release_texts[IR_PAGE] = "the release"
+    running = most = 0
+
+    class Slow(FakeSummarizer):
+        async def write(self, ticker: str, release: str, seconds: float = 0.0) -> Summary:
+            nonlocal running, most
+            running += 1
+            most = max(most, running)
+            await asyncio.sleep(0.05)
+            running -= 1
+            return await super().write(ticker, release, seconds)
+
+    targets = [
+        Target(ticker=f"T{n}", expected=datetime(2026, 11, 4, 16, 5, tzinfo=ET), cik=1000 + n)
+        for n in range(3)
+    ]
+    summarizer = Slow()
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        releases = Releases(FakePoster, fetcher(), Journal(io.StringIO()), summarizer, store=store)
+        for target in targets:
+            releases.on_new(target, *ir_sighting())
+        await releases.finish()
+
+    assert len(summarizer.calls) == 3
+    assert most == 2
+
+
+async def test_a_file_link_reads_without_url_escapes() -> None:
+    """Nebius's Q3 2026 PDF showed as "Nebius%20Q3%202026%20Financial%20Results..."."""
+    url = "https://nebius.com/files/Nebius%20Q3%202026%20Results.pdf"
+    poster = FakePoster()
+    release = Release(uber(), poster, RoutedFetcher({}), Journal(io.StringIO()), None)
+
+    release.add(GuessedFile(url), Sighting(url, "Nebius Q3 2026 Results", url))
+    await release.finish()
+
+    assert f"[Nebius Q3 2026 Results.pdf](<{url}>)" in poster.calls[0][1]
