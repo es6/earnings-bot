@@ -42,7 +42,6 @@ from earnings_bot.ir_research import (
     issuer_listing,
     prior_period,
     quarter_headline,
-    research_chrome,
     verified_browser_source,
     verified_http_source,
     verified_news_source,
@@ -64,6 +63,14 @@ from earnings_bot.sources import BroadcomNewsroom, Q4PressReleases, RssFeed, is_
 from earnings_bot.text import html_to_text, release_text
 
 log = logging.getLogger(__name__)
+
+
+def _research_chrome(fetcher: Fetcher) -> bool:
+    """Whether research may open desktop Chrome now (see ir_research.research_chrome),
+    through this module's own `chrome_available`."""
+    return chrome_available() and fetcher.chrome_allowed()
+
+
 PT = ZoneInfo("America/Los_Angeles")
 FMP_EARNINGS = "https://financialmodelingprep.com/stable/earnings"
 CALENDAR_DATE = "FMP calendar date, time from past 8-Ks"
@@ -456,7 +463,7 @@ async def _listing_date(
     with suppress(aiohttp.ClientError, TimeoutError, ValueError, KeyError):
         if result := await check(direct):
             return result
-    if not research_chrome(fetcher):
+    if not _research_chrome(fetcher):
         return None
     try:
         async with fetcher.research_browser() as browser:
@@ -957,7 +964,7 @@ class DateDiscovery:
         """The date from the IR site as Chrome shows it, when its feeds and lists didn't give
         one. A date already found this way is read again every few hours, not hourly."""
         open_chrome = self.chrome or (
-            self.fetcher.research_browser if research_chrome(self.fetcher) else None
+            self.fetcher.research_browser if _research_chrome(self.fetcher) else None
         )
         starts = ir_starts(row.ticker, row.company)
         if open_chrome is None or not starts or self.busy():
@@ -1017,7 +1024,7 @@ class DateDiscovery:
         if route.warmup is None:
             return await probe_cache(get, route.url, signature)
         open_chrome = self.chrome or (
-            self.fetcher.research_browser if research_chrome(self.fetcher) else None
+            self.fetcher.research_browser if _research_chrome(self.fetcher) else None
         )
         if open_chrome is None:
             return CacheResult("Desktop Chrome unavailable")
@@ -1148,7 +1155,7 @@ class DateDiscovery:
         self._phase(row.cik, "Investigating its sources")
         report = self.reports[row.cik] = Report(changed=self.on_progress)
         chrome = self.chrome or (
-            self.fetcher.research_browser if research_chrome(self.fetcher) else None
+            self.fetcher.research_browser if _research_chrome(self.fetcher) else None
         )
         company = await investigate(
             self.fetcher,
@@ -1396,7 +1403,7 @@ class DateDiscovery:
         additions: dict[str, str | bool] = {}
         if table and (not ir or ir.results_table != table):
             additions.update(await verified_results_table(self.fetcher, table, target.period))
-        if browser_feed and (not ir or not ir.rss) and research_chrome(self.fetcher):
+        if browser_feed and (not ir or not ir.rss) and _research_chrome(self.fetcher):
             additions.update(
                 rss=browser_feed,
                 headline=quarter_headline(int(target.period[2:6]), int(target.period[-1])),
