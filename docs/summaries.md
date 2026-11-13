@@ -1,5 +1,25 @@
 # Summaries and shared rules
 
+## Source references: item 6 extraction groundwork
+
+`source_document.py` adds a version-scoped evidence representation, ready for the next
+request/schema and verifier changes. It is not yet used by the live writer. The existing
+quote checker remains in place, and summaries remain beta: a number appearing in a quote
+still does not prove that the model chose the correct metric or period.
+
+`document_from_html` uses the live HTML reader and retains its plain text. It gives each
+text block and table a stable local ID, scoped to a SHA-256 of the source and format. Cells
+retain their original row/column, blank/decorative cells, declared spans, and explicit HTML
+header/scope tags. No period, currency, scale, or metric labels are invented. Nested outer
+layout tables are marked as such; their text is not independent table-cell evidence.
+`document_from_text` supplies block references for already extracted text, including PDF
+text, without inferring table cells from spacing. It does not preserve PDF table geometry.
+
+Resolve a reference using both the document hash and local ID. A missing ID or a different
+document version fails explicitly. The upcoming verifier must additionally check cell
+headers, metric, period/duration, basis, units and scale against this observed source
+structure. Merely returning an existing cell ID will not establish claim correctness.
+
 ## Live summaries (v0.13.0)
 
 The bot posts the release immediately; the summary is a separate follow-up that never delays
