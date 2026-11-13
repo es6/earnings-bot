@@ -125,8 +125,9 @@ for per-release schedule settings.
   in the schedule directory. These hold calendar and delivery state, scorecard
   delivery state, and timing history respectively. Keep any optional TOML
   schedules there as well.
-- On Windows, [configure Task Scheduler](../README.md#run-continuously-on-windows)
-  to run the supervisor. `scripts/run-bot.ps1` restarts the bot after an exit
+- On Windows, `scripts/install-tasks.ps1` [registers the scheduled tasks](../README.md#run-continuously-on-windows)
+  that run the supervisors. They start at logon and every 5 minutes, without a window.
+  `scripts/run-bot.ps1` restarts the bot after an exit
   and writes console logs to `recordings/`. `scripts/update-bot.ps1` moves the
   checkout to the latest `main` and restarts the bot on it, unless that would
   interrupt a release window whose alert isn't posted yet.
