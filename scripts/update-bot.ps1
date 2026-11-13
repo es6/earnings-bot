@@ -6,7 +6,8 @@ Puts the latest main on the running bot in one command.
 Fetches main. If it has new commits, the script checks that no release window is open or about
 to open with its alert still unposted, stops the bot, fast-forwards this checkout to main and
 starts the "Earnings Bot" scheduled task again. It finishes when the bot says monitoring has
-started. If the bot isn't running, it starts it.
+started. If the bot isn't running, it starts it. Then it restarts the "Earnings Bot Watchdog"
+task, which runs from this checkout too, so the watchdog runs the same code as the bot.
 
     .\scripts\update-bot.ps1            update and restart if main has something new
     .\scripts\update-bot.ps1 -Wait      if a window is open, wait for it, then restart
@@ -19,6 +20,7 @@ param(
     [switch]$Force,
     [string]$ScheduleDirectory = "schedules",
     [string]$TaskName = "Earnings Bot",
+    [string]$WatchdogTaskName = "Earnings Bot Watchdog",
     [int]$StartTimeoutSeconds = 120
 )
 
@@ -152,6 +154,29 @@ function Start-Bot {
     Fail "The bot didn't say it started within $StartTimeoutSeconds s. See $log"
 }
 
+function Restart-Watchdog {
+    # The watchdog keeps running the code it started with, so it restarts with the bot
+    if (-not (Get-ScheduledTask -TaskName $WatchdogTaskName -ErrorAction SilentlyContinue)) {
+        Write-Host "There's no '$WatchdogTaskName' task, so no watchdog was restarted." -ForegroundColor Yellow
+        return
+    }
+    $supervisors = @(Get-CimInstance Win32_Process | Where-Object {
+        $_.Name -eq "powershell.exe" -and $_.CommandLine -match "run-watchdog\.ps1"
+    })
+    foreach ($supervisor in $supervisors) {
+        Invoke-Native "taskkill" @("/PID", "$($supervisor.ProcessId)", "/T", "/F") | Out-Null
+    }
+    $deadline = (Get-Date).AddSeconds(15)
+    while ((Get-ScheduledTask -TaskName $WatchdogTaskName).State -eq "Running") {
+        if ((Get-Date) -gt $deadline) {
+            Fail "Task Scheduler still shows '$WatchdogTaskName' running after the watchdog stopped."
+        }
+        Start-Sleep -Milliseconds 500
+    }
+    Start-ScheduledTask -TaskName $WatchdogTaskName
+    Write-Host "Restarted the watchdog on $(Invoke-Git rev-parse --short HEAD)." -ForegroundColor Green
+}
+
 Push-Location -LiteralPath $repo
 try {
     if (-not (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue)) {
@@ -194,6 +219,7 @@ try {
         $new | ForEach-Object { Write-Host "  $_" }
     }
     Start-Bot
+    Restart-Watchdog
 } finally {
     Pop-Location
 }

@@ -155,3 +155,5 @@ Run it with `--once` to check a single time. A check that fails, such as when th
 database is busy, is logged and the next one runs 30 seconds later. On Windows,
 `scripts/run-watchdog.ps1` keeps it running for its own scheduled task ("Earnings Bot
 Watchdog", at logon), restarts it after any exit, and writes `recordings/watchdog-<date>.log`.
+`scripts/update-bot.ps1` restarts that task after it restarts the bot, so the watchdog
+always runs the same code.
