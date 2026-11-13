@@ -39,6 +39,7 @@ from earnings_bot.pipeline import (
     keep_warm,
 )
 from earnings_bot.recorder import (
+    DEGRADED_AFTER,
     FOLLOW_UP,
     Journal,
     Plan,
@@ -49,6 +50,7 @@ from earnings_bot.recorder import (
     followup_end,
     parse_plan,
     record_target,
+    route_trouble,
 )
 from earnings_bot.sec_results import SixKResults
 from earnings_bot.source_audit import audit_sources
@@ -127,6 +129,8 @@ class DirectoryWatcher:
         self.since = store.last_scan() or journal.now()
         self.closed: set[tuple[str, datetime]] = set()
         self.followed: set[tuple[str, datetime]] = set()
+        # Each open window's watches, so /status can name a degraded route while it's open
+        self.live_watches: dict[str, list[Watch]] = {}
 
     def _inline_status(self, message: str) -> None:
         """Routine calendar changes belong on the existing scorecard; keep their log too."""
@@ -195,12 +199,18 @@ class DirectoryWatcher:
         lines.append(f"📝 Live summaries {'on' if self.summaries else 'off'}")
         embed.description = "\n".join(lines)
         if live:
-            lines = [
-                f"**{t.ticker}**{_period(t)} · results expected {clock(t.expected)} · "
-                f"watching until {clock(t.window[1])}"
-                for t in live
-            ]
+            lines = []
+            for t in live:
+                lines.append(
+                    f"**{t.ticker}**{_period(t)} · results expected {clock(t.expected)} · "
+                    f"watching until {clock(t.window[1])}"
+                )
+                for w in self.live_watches.get(t.release_key, []):
+                    if trouble := route_trouble(w, now):
+                        lines.append(f"⚠️ Degraded: {_route_label(w)}, {trouble}")
+                        color = AMBER
             embed.add_field(name="🔴 Live now", value=truncate("\n".join(lines)), inline=False)
+            embed.color = color
         if self.problems:
             problems = [f"**{name}**: {message}" for name, message in self.problems.items()]
             embed.add_field(name="⚠️ Problems", value=truncate("\n".join(problems)), inline=False)
@@ -375,9 +385,17 @@ class DirectoryWatcher:
         if self.benchmark:
             benchmark = asyncio.create_task(self.benchmark.watch(target.ticker, *target.window))
         try:
-            watches = await record_target(
-                target, self.fetcher, self.journal, self._on_new, self.polls
-            )
+            try:
+                watches = await record_target(
+                    target,
+                    self.fetcher,
+                    self.journal,
+                    self._on_new,
+                    self.polls,
+                    on_watches=partial(self.live_watches.__setitem__, target.release_key),
+                )
+            finally:
+                self.live_watches.pop(target.release_key, None)
             self._problem(problem, None)
             self.store.close_window(target.release_key, target.expected)
             self.dates.changed.set()
@@ -479,11 +497,13 @@ def _benchmark_report(result: BenchmarkResult, alert: datetime | None) -> str:
     return text
 
 
-def _window_report(target: Target, watches: list[Watch], comparison: str = "") -> str:
-    def label(watch: Watch) -> str:
-        form = watch.source.form if isinstance(watch.source, EdgarFilings) else "8-K"
-        return source_label(watch.source.name, form)
+def _route_label(watch: Watch) -> str:
+    form = watch.source.form if isinstance(watch.source, EdgarFilings) else "8-K"
+    return source_label(watch.source.name, form)
 
+
+def _window_report(target: Target, watches: list[Watch], comparison: str = "") -> str:
+    label = _route_label
     period = f" {period_label(target.period)}" if target.period else ""
     lines = [f"🏁 **{target.ticker}{period} window closed**"]
     seen: dict[str, datetime] = {}
@@ -508,6 +528,18 @@ def _window_report(target: Target, watches: list[Watch], comparison: str = "") -
         dict.fromkeys(label(w) for w in watches if w.blocked and not w.stopped and not w.first)
     ):
         lines.append(f"⚠️ Refused at times (HTTP 403), retried: {', '.join(refused)}")
+    limit = DEGRADED_AFTER.total_seconds()
+    quiet = {
+        label(w): w.longest_quiet
+        for w in watches
+        if w.longest_quiet > max(limit, 5 * w.source.interval) and not w.stopped
+    }
+    if quiet:
+        gaps = ", ".join(f"{name} {duration(gap)}" for name, gap in quiet.items())
+        lines.append(f"⚠️ Went without an answer for up to: {gaps}")
+    if stopped or refused or quiet:
+        # A route that died mid-window must be loud (the 1.0 gate)
+        lines[0] += " · ⚠️ degraded"
     if comparison:
         lines.append(f"-# {comparison}")
     return "\n".join(lines)
