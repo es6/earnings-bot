@@ -1,6 +1,7 @@
 """Edit one durable Discord scorecard for each tracked issuer, as the bot researches it."""
 
 import asyncio
+import contextlib
 import hashlib
 import logging
 import time
@@ -240,8 +241,18 @@ class TrackProgress:
         priority: EditPriority | None = None,
         settled: Callable[[int], bool] | None = None,
         old_card_spacing: float = OLD_CARD_SPACING,
+        research_paused: Callable[[], bool] | None = None,
+        in_window: Callable[[int], bool] | None = None,
+        research_mode: Callable[[], contextlib.AbstractContextManager[None]] | None = None,
+        research_deferred: Callable[[], bool] = lambda: False,
     ) -> None:
         self.calendar, self.store, self.channel = calendar, store, channel
+        # Source audits stop while research is paused (by default, while any window is open);
+        # otherwise they run in `research_mode`, never for a company whose own window is open
+        self.research_paused = research_paused or busy
+        self.in_window = in_window or (lambda _: False)
+        self.research_mode = research_mode or contextlib.nullcontext
+        self.research_deferred = research_deferred
         self.card_spacing = card_spacing
         self._last_card_edit = -card_spacing
         # Release posts and edits go first (see edit_priority)
@@ -398,7 +409,8 @@ class TrackProgress:
     def render(self, row: Tracked, review: str | None, checking: bool) -> discord.Embed:
         target = self._target(row)
         speed = Speed.from_json(review)
-        busy = self.busy()
+        # Research waits only while it's paused, or for the company's own window
+        busy = self.research_paused() or self.in_window(row.cik)
         catalog = row.ticker in known_companies()
         investigating = self._investigating(row)
         report = self.research(row.cik) if investigating else None
@@ -584,6 +596,11 @@ class TrackProgress:
             self.audit_failed.add(row.cik)
             self.changed.set()
             return
+        if self.research_deferred() or self.research_paused() or self.in_window(row.cik):
+            self.next_attempt[row.cik] = now + timedelta(minutes=10)
+            self.audit_failed.add(row.cik)
+            self.changed.set()
+            return
         self.audit_failed.discard(row.cik)
         if any(item.cik == row.cik for item in self.calendar.entries()):
             self.calendar.save_review(row.cik, now, speed.to_json())
@@ -594,10 +611,10 @@ class TrackProgress:
             while True:
                 self.changed.clear()
                 rows = self.calendar.entries()
-                busy = self.busy()
+                paused = self.research_paused()
                 if self.active:
                     cik, task = self.active
-                    if busy or not any(row.cik == cik for row in rows):
+                    if paused or self.in_window(cik) or not any(row.cik == cik for row in rows):
                         task.cancel()
                         self.next_attempt.pop(cik, None)
                     if task.done() or task.cancelling():
@@ -609,14 +626,17 @@ class TrackProgress:
                     if Speed.from_json(review) is None:
                         checked = None  # never checked, or saved in an older format
                     if (
-                        not busy
+                        not paused
+                        and not self.in_window(row.cik)
                         # Audit the sources the investigation finds, not the ones before it
                         and not self._investigating(row)
                         and self.active is None
                         and (checked is None or now - checked >= REFRESH)
                         and self.next_attempt.get(row.cik, now) <= now
                     ):
-                        self.active = row.cik, asyncio.create_task(self._check(row))
+                        # Tasks inherit the policy; its callbacks follow window changes.
+                        with self.research_mode():
+                            self.active = row.cik, asyncio.create_task(self._check(row))
                     checking = bool(self.active and self.active[0] == row.cik)
                     self.offer(row.cik, self.render(row, review, checking))
                 for cik, ticker in tuple(self.removed.items()):

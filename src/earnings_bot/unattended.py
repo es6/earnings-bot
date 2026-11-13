@@ -14,6 +14,7 @@ import discord
 from pydantic import ValidationError
 
 from earnings_bot.benchmark import BenchmarkResult, EarningsBenchmark
+from earnings_bot.browser_sources import BrowserRelease, BrowserRss
 from earnings_bot.calendar import Calendar
 from earnings_bot.date_discovery import DateDiscovery
 from earnings_bot.delivery import DeliveryStore, retry_delivery
@@ -83,6 +84,16 @@ def _period(target: Target) -> str:
     return f" {period_label(target.period)}" if target.period else ""
 
 
+# Research pauses from this long before a window's expected time until this long after it
+HOT_BEFORE = timedelta(minutes=10)
+HOT_AFTER = timedelta(minutes=30)
+
+
+def uses_chrome(target: Target) -> bool:
+    """Whether a target watches a route through desktop Chrome, which research would share."""
+    return any(isinstance(source, (BrowserRelease, BrowserRss)) for source in target.sources())
+
+
 class DirectoryWatcher:
     def __init__(
         self,
@@ -108,10 +119,13 @@ class DirectoryWatcher:
             self.calendar,
             fetcher,
             journal.now,
-            self.busy,
+            self.research_paused,
             self._inline_status,
             fmp_api_key,
             sixk=self.sixk,
+            windows_open=self.busy,
+            chrome_live=self.chrome_live,
+            in_window=self.in_window,
         )
         self.issuers = Issuers(fetcher)
         self.status = status
@@ -144,10 +158,43 @@ class DirectoryWatcher:
         return (w.target.window for w in self.windows.values() if not w.task.done())
 
     def busy(self) -> bool:
+        """Whether a release window is open, or opens within 2 minutes."""
+        return bool(self._open_targets())
+
+    def _open_targets(self) -> list[Target]:
+        now = self.journal.now()
+        return [
+            target
+            for target in self.planned.values()
+            if target.window[0] - timedelta(minutes=2) <= now <= target.window[1]
+        ]
+
+    def research_paused(self) -> bool:
+        """Research stops entirely in the minutes a release is most likely, from HOT_BEFORE
+        a window's expected time to HOT_AFTER it. The rest of a window, it runs behind the
+        polls (Fetcher.background)."""
         now = self.journal.now()
         return any(
-            target.window[0] - timedelta(minutes=2) <= now <= target.window[1]
+            target.expected - HOT_BEFORE <= now <= target.expected + HOT_AFTER
+            for target in self._open_targets()
+        )
+
+    def chrome_live(self) -> bool:
+        """Whether an open window watches a route through desktop Chrome."""
+        return any(uses_chrome(target) for target in self._open_targets())
+
+    def in_window(self, cik: int) -> bool:
+        """Whether this company's own window is open, or opens within HOT_BEFORE."""
+        now = self.journal.now()
+        return any(
+            target.cik == cik and target.window[0] - HOT_BEFORE <= now <= target.window[1]
             for target in self.planned.values()
+        )
+
+    def research_mode(self) -> contextlib.AbstractContextManager[None]:
+        """How research runs now: in the background while a window is open."""
+        return self.fetcher.background(
+            active=self.busy, paused=self.research_paused, chrome=lambda: not self.chrome_live()
         )
 
     def health(self) -> str:
@@ -664,6 +711,10 @@ async def watch_directory(
                 cache_caveats=watcher.dates.cache_caveats.get,
                 priority=priority,
                 settled=watcher.dates.settled,
+                research_paused=lambda: watcher.research_paused() or watcher.chrome_live(),
+                in_window=watcher.in_window,
+                research_mode=watcher.research_mode,
+                research_deferred=fetcher.research_deferred,
             )
             watcher.dates.on_progress = watcher.progress.changed.set
             watcher.progress.follow_calendar()

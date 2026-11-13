@@ -53,6 +53,12 @@ def chrome_available() -> bool:
     return os.name == "nt"
 
 
+def research_chrome(fetcher: Fetcher) -> bool:
+    """Whether research may open desktop Chrome now: on Windows, and not while open release
+    windows keep it for monitoring (see Fetcher.background)."""
+    return chrome_available() and fetcher.chrome_allowed()
+
+
 def issuer_listing(ticker: str, company: KnownCompany) -> str | None:
     """The press release listing Chrome reads for a company: one the bot found itself, or one
     researched by hand."""
@@ -138,7 +144,7 @@ def matches_release(value: object, day: date, titles: set[str]) -> bool:
 
 
 async def inspect_issuer(fetcher: Fetcher, url: str | None, day: date, titles: set[str]) -> str:
-    if url is None or not chrome_available():
+    if url is None or not research_chrome(fetcher):
         return ""
     try:
         async with fetcher.research_browser() as browser:
@@ -198,7 +204,7 @@ async def verified_results_table(fetcher: Fetcher, page: str, period: str) -> di
             return {"results_table": page, "table_http": True}
     except _ERRORS:
         pass
-    if chrome_available():
+    if research_chrome(fetcher):
         try:
             async with fetcher.research_browser() as browser:
                 for rendered in (False, True):
@@ -255,6 +261,8 @@ async def verified_browser_source(
     listing, or why there isn't one."""
     if not chrome_available():
         return None, "Chrome isn't available on this computer"
+    if not fetcher.chrome_allowed():
+        return None, "Chrome research waits for open release windows to close"
     if listing is None:
         return None, "No press release page found for it"
     year, quarter = int(period[2:6]), int(period[-1])

@@ -47,6 +47,10 @@ class BrowserUnavailable(BrowserError):
     """The browser could not start in this Windows session."""
 
 
+class BrowserDeferred(BrowserError):
+    """Research yielded browser capacity to monitoring; its existing warm tab is usable."""
+
+
 def _public(host: str) -> bool:
     try:
         address = ipaddress.ip_address(host.strip("[]"))
@@ -221,6 +225,11 @@ class DesktopChrome:
         self._locks: dict[str, asyncio.Lock] = {}
         self._tabs: dict[str, _Tab] = {}
         self._start_failure: str | None = None
+        self.allowed: Callable[[], bool] = lambda: True
+
+    def _check_allowed(self) -> None:
+        if not self.allowed():
+            raise BrowserDeferred("Research waits for live Chrome windows to close")
 
     @property
     def session(self) -> aiohttp.ClientSession:
@@ -234,6 +243,7 @@ class DesktopChrome:
 
     async def _start(self) -> None:
         async with self._start_lock:
+            self._check_allowed()
             if self._browser_socket and self._process and self._process.running:
                 return
             if self._process:
@@ -301,6 +311,7 @@ class DesktopChrome:
         return tab
 
     async def _warm(self, host: str, warmup: str) -> _Tab:
+        self._check_allowed()
         if tab := self._tabs.get(host):
             return tab
         tab = await self._new_tab(host)
@@ -336,6 +347,7 @@ class DesktopChrome:
     async def inspect_json(self, url: str) -> list[BrowserJSON]:
         """Observe public JSON requests from a normal navigation without replaying them."""
         host = browser_host(url)
+        self._check_allowed()
         await self._start()
         async with self._locks.setdefault(host, asyncio.Lock()):
             await self._drop(host)
@@ -356,6 +368,7 @@ class DesktopChrome:
         host = browser_host(url)
         await self._start()
         await wait_turn(host)
+        self._check_allowed()
         tab = await self._new_tab(f"render:{host}:{time.monotonic_ns()}")
         try:
             async with asyncio.timeout(give_up_after):
@@ -368,6 +381,7 @@ class DesktopChrome:
                 # Settled: loaded, and the links and text stayed the same for about a second
                 while True:
                     await asyncio.sleep(0.3)
+                    self._check_allowed()
                     with suppress(BrowserError):
                         state = await _evaluate(tab.socket, _SETTLED)
                         seen.append(state)
@@ -407,6 +421,7 @@ class DesktopChrome:
         host = browser_host(url)
         if browser_host(warmup) != host:
             raise ValueError("A browser request must stay on the warm tab's own origin")
+        self._check_allowed()
         await self._start()
         async with self._locks.setdefault(host, asyncio.Lock()):
             try:
@@ -415,6 +430,7 @@ class DesktopChrome:
                 tab = await self._warm(host, warmup)
                 asked = time.monotonic()
                 await wait_turn(host)
+                self._check_allowed()
                 started = time.monotonic()
                 # The page gives up first and keeps its tab. Dropping the tab on every slow
                 # answer cost a fresh navigation each time: Brookfield's page timed out twice as
@@ -437,6 +453,8 @@ class DesktopChrome:
                     time.monotonic() - started,
                     queued=started - asked,
                 )
+            except BrowserDeferred:
+                raise
             except _SlowAnswer:
                 raise TimeoutError from None
             except (aiohttp.ClientError, ValueError, KeyError, TypeError) as error:

@@ -2,6 +2,7 @@ import asyncio
 import io
 import itertools
 import time
+from collections.abc import Iterator
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -876,3 +877,87 @@ async def test_an_old_card_discord_keeps_refusing_is_posted_again(
 
     assert new.embed is not None and new.embed.description == "Newer"
     assert tries == REPLACE_AFTER
+
+
+async def test_the_audit_runs_in_the_background_during_a_window_but_not_its_own(
+    tmp_path: Path,
+) -> None:
+    """Item 9: a window being open no longer holds every audit; the minutes around a release,
+    and the company's own window, still do."""
+    import contextlib
+    import contextvars
+
+    mode: contextvars.ContextVar[str] = contextvars.ContextVar("mode", default="normal")
+
+    @contextlib.contextmanager
+    def background() -> Iterator[None]:
+        token = mode.set("background")
+        try:
+            yield
+        finally:
+            mode.reset(token)
+
+    audited: list[tuple[str, str]] = []
+    asked = asyncio.Event()
+
+    async def audit(ticker: str, company: KnownCompany, when: datetime) -> Speed:
+        audited.append((ticker, mode.get()))
+        asked.set()
+        return Speed(None)
+
+    found = LUCID.model_copy(
+        update={
+            "investigated": date(2026, 11, 9),
+            "evidence": "Investigated Nov 09: X.",
+            "checks": [SourceCheck(source="SEC 8-K filings", watch=True, why="Filed here")],
+            "investigation": INVESTIGATION,
+        }
+    )
+    own_window = {"open": True}
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        Calendar(store).add("LCID", found)
+        progress = tracker(
+            store,
+            WatchedDiscord(),
+            audit=audit,
+            busy=lambda: True,  # some window is open
+            research_paused=lambda: False,
+            in_window=lambda cik: own_window["open"],
+            research_mode=background,
+        )
+        task = asyncio.create_task(progress.run())
+        try:
+            await asyncio.sleep(0.3)
+            assert audited == []  # Lucid's own window is open
+            own_window["open"] = False
+            progress.changed.set()
+            await asyncio.wait_for(asked.wait(), 5)
+            assert audited == [("LCID", "background")]
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_a_deferred_audit_preserves_the_previous_review(tmp_path: Path) -> None:
+    deferred = False
+
+    async def interrupted(ticker: str, company: KnownCompany, when: datetime) -> Speed:
+        nonlocal deferred
+        deferred = True
+        return Speed(None)
+
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        calendar = Calendar(store)
+        row, _ = calendar.add("LCID", INVESTIGATED)
+        previous = (NOW - timedelta(hours=2), "previous source evidence")
+        calendar.save_review(row.cik, *previous)
+        progress = tracker(
+            store,
+            FakeDiscord(),
+            audit=interrupted,
+            research_deferred=lambda: deferred,
+        )
+        await progress._check(row)
+        assert calendar.review(row.cik) == previous
+        assert progress.next_attempt[row.cik] == NOW + timedelta(minutes=10)
+        assert row.cik in progress.audit_failed

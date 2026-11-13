@@ -105,3 +105,28 @@ async def test_a_slow_answer_times_out_without_losing_the_warm_tab() -> None:
     assert "ir.example.com" in chrome._tabs
     # The page is told how long to wait, so it gives up before the bot does
     assert socket.sent[-1]["params"]["expression"].endswith(", 3000)")
+
+
+async def test_research_yields_after_pacing_without_dropping_a_live_warm_tab() -> None:
+    from earnings_bot.browser import BrowserDeferred
+
+    chrome = DesktopChrome()
+    socket = FakeTabSocket()
+    chrome._tabs["ir.example.com"] = _Tab("tab", socket)  # type: ignore[arg-type]
+
+    async def started() -> None:
+        return None
+
+    async def wait_turn(host: str) -> None:
+        chrome.allowed = lambda: False
+
+    async def drop(host: str) -> None:
+        raise AssertionError("A deferred background request dropped the live tab")
+
+    chrome._start = started  # type: ignore[method-assign]
+    chrome._drop = drop  # type: ignore[method-assign]
+    with pytest.raises(BrowserDeferred):
+        await chrome.request(
+            "https://ir.example.com/results", "https://ir.example.com/", 1, wait_turn
+        )
+    assert socket.sent == [] and "ir.example.com" in chrome._tabs

@@ -201,3 +201,126 @@ async def test_sec_redirects_and_connection_retries_wait_for_the_shared_queue(
     assert [host for host, _ in turns] == [host for host, _ in arrivals]
     sec_turns = [at for host, at in turns if host.endswith(".sec.gov")]
     assert all(b - a >= SEC_GAP - 1e-6 for a, b in itertools.pairwise(sec_turns))
+
+
+# Item 9: research during open release windows runs in the background
+
+
+async def test_background_research_waits_behind_every_poll_and_paces_sec(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("earnings_bot.fetch.BACKGROUND_SEC_GAP", 0.4)
+    fetcher = Fetcher("Test Person test@example.com")
+    turns: list[tuple[str, float]] = []
+
+    async def take_turn(name: str, host: str, background: bool = False) -> None:
+        if background:
+            with fetcher.background(chrome=False):
+                await fetcher.wait_turn(host)
+        else:
+            await fetcher.wait_turn(host)
+        turns.append((name, time.monotonic()))
+
+    await take_turn("latest filings", "www.sec.gov")  # SEC is free, so this goes at once
+    research = [
+        asyncio.create_task(take_turn(f"research {i}", "data.sec.gov", background=True))
+        for i in range(2)
+    ]
+    await asyncio.sleep(0)
+    polls = [asyncio.create_task(take_turn(f"poll {i}", "data.sec.gov")) for i in range(3)]
+    await asyncio.gather(*research, *polls)
+
+    names = [name for name, _ in turns]
+    # Every poll that was waiting went before the research that asked earlier
+    assert names[:4] == ["latest filings", "poll 0", "poll 1", "poll 2"]
+    times = dict(turns)
+    assert times["research 1"] - times["research 0"] >= 0.4 - 0.01
+
+
+async def test_background_research_gives_way_to_a_host_a_window_is_polling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from earnings_bot.fetch import HostBusy
+
+    fetcher = Fetcher("Test Person test@example.com")
+    await fetcher.wait_turn("investors.example.com")  # a window's poll
+    with fetcher.background(chrome=False), pytest.raises(HostBusy):
+        await fetcher.wait_turn("investors.example.com")
+    # A host no window polls is fine, and so is the polled one once it has been quiet a while
+    with fetcher.background(chrome=False):
+        await fetcher.wait_turn("www.another-issuer.com")
+    monkeypatch.setattr("earnings_bot.fetch.LIVE_SECONDS", 0.0)
+    with fetcher.background(chrome=False):
+        await fetcher.wait_turn("investors.example.com")
+
+
+async def test_background_research_without_chrome_cannot_open_it() -> None:
+    from earnings_bot.browser import BrowserError
+
+    fetcher = Fetcher("Test Person test@example.com")
+    assert fetcher.chrome_allowed()
+    with fetcher.background(chrome=True):
+        assert fetcher.chrome_allowed()
+    with fetcher.background(chrome=False):
+        assert not fetcher.chrome_allowed()
+        with pytest.raises(BrowserError):
+            async with fetcher.research_browser():
+                pass
+
+
+async def test_background_research_cannot_use_the_shared_live_browser() -> None:
+    from earnings_bot.browser import BrowserError
+
+    class LiveBrowser:
+        async def render(self, *args: object) -> None:
+            raise AssertionError("Research reached the live browser")
+
+    fetcher = Fetcher("Test Person test@example.com")
+    fetcher._session = object()  # type: ignore[assignment]
+    fetcher._browser = LiveBrowser()  # type: ignore[assignment]
+    with fetcher.background(chrome=False), pytest.raises(BrowserError):
+        await fetcher.browser_render("https://issuer.example/results", 1.0)
+
+
+async def test_queued_research_yields_without_a_turn_when_a_window_opens() -> None:
+    from earnings_bot.fetch import HostBusy
+
+    fetcher = Fetcher("Test Person test@example.com")
+    state = {"active": False}
+    await fetcher.wait_turn("data.sec.gov")
+    reserved_until = fetcher._queues["sec.gov"].next_turn
+
+    async def research() -> None:
+        with fetcher.background(chrome=True, active=lambda: state["active"]):
+            with pytest.raises(HostBusy):
+                await fetcher.wait_turn("data.sec.gov")
+            assert fetcher.research_deferred()
+
+    task = asyncio.create_task(research())
+    await asyncio.sleep(0)
+    state["active"] = True
+    await task
+    assert fetcher._queues["sec.gov"].next_turn == reserved_until
+    await fetcher.wait_turn("data.sec.gov")
+
+
+async def test_a_queued_background_turn_is_not_spent_when_the_hot_interval_begins() -> None:
+    from earnings_bot.fetch import HostBusy
+
+    fetcher = Fetcher("Test Person test@example.com")
+    state = {"paused": False}
+    await fetcher.wait_turn("data.sec.gov")
+    reserved_until = fetcher._queues["sec.gov"].next_turn
+
+    async def research() -> None:
+        with (
+            fetcher.background(chrome=True, paused=lambda: state["paused"]),
+            pytest.raises(HostBusy),
+        ):
+            await fetcher.wait_turn("data.sec.gov")
+
+    task = asyncio.create_task(research())
+    await asyncio.sleep(0)
+    state["paused"] = True
+    await task
+    assert fetcher._queues["sec.gov"].next_turn == reserved_until
