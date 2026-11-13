@@ -321,6 +321,21 @@ implementation tests do not establish summary quality.
 
 ## Offline research
 
+`summary_review.review_variant` prepares opt-in reference-request variants with the two
+owner-selected historical FICO/Uber examples and/or a short internal selection check.
+It preserves source evidence and the default request. `headline_repair_request` prepares
+one replacement request only when code rejects a headline or guidance value; malformed
+answers and accepted headlines do not automatically start another call. Callers must
+reserve its full cost, cap repairs at one, and bind the replacement against the original
+document again. These helpers make no calls and do not alter the live summary policy.
+
+Reference requests omit empty decorative table cells while retaining every nonempty
+cell's original ID, row, column and spans. The durable source document and verifier keep
+the full original geometry. This reduces redundant serialization without truncating
+release text or renumbering evidence. Existing size limits still reject oversized input.
+This became necessary during unseen-issuer preparation before any summary call; the
+original draft requests and policy were preserved for comparison.
+
 No API call is made by the offline evaluation commands.
 
 ## What the feedback changed
