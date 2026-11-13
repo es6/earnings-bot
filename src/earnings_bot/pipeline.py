@@ -1003,6 +1003,7 @@ class Release:
                 summary.unverified,
                 summary.input_tokens,
                 summary.output_tokens,
+                evidence=summary.evidence,
             )
         await self._post_summary(
             summary.text,
@@ -1013,6 +1014,7 @@ class Release:
             input_tokens=summary.input_tokens,
             output_tokens=summary.output_tokens,
             document_sha256=document.sha256,
+            validation="source-references/1" if summary.evidence else "legacy",
             **({"replaces": replaces} if replaces else {}),
         )
 

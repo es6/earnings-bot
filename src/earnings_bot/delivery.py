@@ -43,6 +43,7 @@ class SummaryJob:
     output_tokens: int | None = None
     replaced: str | None = None  # source of the PDF-based summary this one replaced
     source_document: str | None = None  # versioned extraction JSON; absent on legacy jobs
+    evidence: str | None = None  # bound result, candidate and request provenance, when enabled
 
 
 class DeliveryStore:
@@ -115,6 +116,16 @@ class DeliveryStore:
                 document TEXT NOT NULL,
                 source_document TEXT NOT NULL,
                 PRIMARY KEY (channel_id, release_key, document)
+            )
+        """)
+        self.db.execute("""
+            CREATE TABLE IF NOT EXISTS summary_evidence (
+                channel_id INTEGER NOT NULL,
+                release_key TEXT NOT NULL,
+                document TEXT NOT NULL,
+                attempts INTEGER NOT NULL,
+                result TEXT NOT NULL,
+                PRIMARY KEY (channel_id, release_key, document, attempts)
             )
         """)
         # The source of the PDF-based summary a page's summary replaced, if it replaced one
@@ -224,8 +235,10 @@ class DeliveryStore:
 
     def summary(self, key: str) -> SummaryJob | None:
         row = self.db.execute(
-            "SELECT s.*, d.source_document FROM summaries s LEFT JOIN summary_documents d "
+            "SELECT s.*, d.source_document, e.result AS evidence "
+            "FROM summaries s LEFT JOIN summary_documents d "
             "USING (channel_id, release_key, document) "
+            "LEFT JOIN summary_evidence e USING (channel_id, release_key, document, attempts) "
             "WHERE s.channel_id = ? AND s.release_key = ?",
             (self.channel_id, key),
         ).fetchone()
@@ -244,6 +257,7 @@ class DeliveryStore:
             row["output_tokens"],
             row["replaced"],
             row["source_document"],
+            row["evidence"],
         )
 
     def summary_started(
@@ -304,8 +318,17 @@ class DeliveryStore:
         held_back: list[str],
         input_tokens: int,
         output_tokens: int,
+        *,
+        evidence: str | None = None,
     ) -> None:
         with self.db:
+            if evidence is not None:
+                self.db.execute(
+                    "INSERT OR REPLACE INTO summary_evidence "
+                    "SELECT channel_id, release_key, document, attempts, ? FROM summaries "
+                    "WHERE channel_id = ? AND release_key = ?",
+                    (evidence, self.channel_id, key),
+                )
             self.db.execute(
                 """
                 UPDATE summaries SET status = ?, text = ?, footer = ?, held_back = ?,
@@ -332,6 +355,16 @@ class DeliveryStore:
                 "AND release_key = ?",
                 (status, datetime.now(UTC).isoformat(), self.channel_id, key),
             )
+
+    def bound_summary_evidence(self, key: str, document: str) -> str | None:
+        """Earlier PDF/HTML versions remain auditable after a permitted replacement."""
+        row = self.db.execute(
+            "SELECT result FROM summary_evidence "
+            "WHERE channel_id = ? AND release_key = ? AND document = ? "
+            "ORDER BY attempts DESC LIMIT 1",
+            (self.channel_id, key, document),
+        ).fetchone()
+        return row[0] if row else None
 
     def summary_calls(self, day: str) -> int:
         row = self.db.execute(

@@ -854,22 +854,25 @@ Where the text comes from:
 | Broadcom's newsroom | The `body` field of `/api/getmetadata` | An ID that isn't up yet answers 200 with a stub that has no body, so no text |
 | Business Wire, GlobeNewswire | None | The default HTTP client could not retrieve their articles |
 
-The optional live writer uses Sonnet (`claude-sonnet-5-5`, effort `low`) and the shared
-business-aware selection policy. It gets release text and, when configured, consensus EPS
-and revenue from Financial Modeling Prep. It targets a concise brief without an editorial word
-or line cap; EPS is
+The optional live writer uses Muse Ember low through Meta's Model API and the shared
+business-aware selection policy. `LIVE_SUMMARIES=true` and `META_MODEL_API_KEY` are
+required; a key alone does not enable it. The summary path makes no estimates lookup.
+It targets a concise brief without an editorial word or line cap; EPS is
 optional, guidance periods are explicit, and the relevant segments, operating KPIs, margins
 and business updates depend on the issuer. No implicit model fallback changes this selection.
 
 The live number checker flags numbers it cannot find, allowing rounding and monetary scale
 conversions. Finding a number is not proof that its metric, period or basis is correct.
-Structured evidence and comparable-arithmetic checks are currently offline research helpers,
-not a complete live validator. Without `ANTHROPIC_API_KEY`, no summary is generated.
+`SOURCE_REFERENCED_SUMMARIES=true` separately opts into source-bound values, comparison
+arithmetic and rendering; its default is false because final coverage remains too low.
+That path rejects unbound candidates without a legacy fallback, preserves candidate and
+bound-result evidence by document/attempt in SQLite, and logs its validation mode.
+The default checker and deployed bot remain unchanged by adding the opt-in path.
 
-[Summary research](summaries.md) records the feedback rules and offline commands. Future
-experiments compare Sonnet low with Muse Ember low; Haiku is opt-in. Ember has no live bot
-adapter yet. Open work includes fresh unseen-company evaluation, factual validation,
-compact rendering of structured output, second-document context and KPI-specific estimates.
+[Summary handling](summaries.md) records the feedback rules, optional issuer profiles and
+offline commands. The [November 13 comparison](evaluation-2026-11-13.md) separates selection,
+known-value checks, retention, consistency, latency and cost. Summaries remain beta; the
+experiment does not establish all-claims accuracy or default reference-writer readiness.
 
 ## Running unattended
 
