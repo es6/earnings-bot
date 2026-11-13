@@ -844,3 +844,30 @@ async def test_each_watch_reports_its_progress_for_the_watchdog(
     assert recovered["answered"] > refused["answered"]
     assert {p["ticker"] for p in progress} == {"NBIS"}
     assert {p["source"] for p in progress} == {"list"}
+
+
+async def test_repeated_timeouts_as_a_release_goes_live_dont_delay_it() -> None:
+    """1.0 gate failure replay: a source times out poll after poll just as the release goes
+    up (SEC's live feed takes 7 to 12 s on about 2% of requests). Each timeout is followed at
+    once by the next poll, not a backoff, so the release is caught on the first answer, and
+    the route reports the trouble and the recovery for the watchdog."""
+    log = io.StringIO()
+    journal = Journal(log)
+    w = Watch("NVDA", ListSource())
+    seen: list[float] = []
+    started = time.monotonic()
+    timeouts = [(0, "")] * 6
+    fetcher = FakeFetcher((200, "old"), *timeouts, (200, "old results"))
+
+    await watch(
+        w,
+        fetcher,
+        journal,
+        end=journal.now() + timedelta(seconds=0.5),
+        on_new=lambda source, item: seen.append(time.monotonic() - started),
+    )
+
+    assert seen and seen[0] < 0.2  # eight polls at 0.01 s apart, not a backoff
+    assert (w.timeouts, w.errors, w.problem, w.first_title) == (6, 0, None, "Item results")
+    reports = [r for r in events(log) if r["event"] == "progress"]
+    assert [bool(r["problem"]) for r in reports] == [False, True, False]
