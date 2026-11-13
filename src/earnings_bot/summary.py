@@ -60,16 +60,32 @@ class Summarizer:
         )
 
     async def write_document(
-        self, ticker: str, document: SourceDocument, seconds: float = 0.0
+        self,
+        ticker: str,
+        document: SourceDocument,
+        seconds: float = 0.0,
+        *,
+        context: dict[str, Any] | None = None,
     ) -> Summary:
         """Keep the existing request until the reference schema/verifier is ready."""
-        return await self.write(ticker, document.text, seconds)
+        return (
+            await self.write(ticker, document.text, seconds, context=context)
+            if context
+            else await self.write(ticker, document.text, seconds)
+        )
 
-    async def write(self, ticker: str, release: str, seconds: float = 0.0) -> Summary:
+    async def write(
+        self,
+        ticker: str,
+        release: str,
+        seconds: float = 0.0,
+        *,
+        context: dict[str, Any] | None = None,
+    ) -> Summary:
         # No consensus estimates: the tested setting had none, and the brief never calls a beat
         # or miss without a matching estimate
         try:
-            request = structured_request(ticker, release)
+            request = structured_request(ticker, release, context)
         except ValueError as error:
             raise SummaryError(str(error)) from error
         try:

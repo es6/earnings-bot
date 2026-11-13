@@ -21,6 +21,7 @@ from earnings_bot.browser import BrowserError, RenderedPage
 from earnings_bot.browser_sources import IRSource
 from earnings_bot.cache_research import CHECKING_CACHE, CacheResult, CacheRoute, probe_cache
 from earnings_bot.calendar import Calendar, Tracked, describe, same_release
+from earnings_bot.driver_profiles import DriverProfiles
 from earnings_bot.fetch import Fetcher, Response
 from earnings_bot.formatting import clock, day, period_label
 from earnings_bot.investigate import OpenChrome, Report, due, investigate
@@ -831,6 +832,7 @@ class DateDiscovery:
         in_window: Callable[[int], bool] = lambda cik: False,
     ) -> None:
         self.calendar, self.fetcher, self.now = calendar, fetcher, now
+        self.profiles: DriverProfiles | None = None
         # `busy` pauses all research: the minutes around a release. Outside them, research
         # continues during open windows in the background (Fetcher.background), never for a
         # company whose own window is open, and with Chrome only while no live window uses it.
@@ -910,6 +912,8 @@ class DateDiscovery:
                     and (current.target is None or current.target.window[1] <= self.now())
                 ):
                     await self._prepare_cache(current)
+                if self.profiles and (current := self.calendar.find(row.ticker)):
+                    await self.profiles.ensure(current, self.now())
         except Exception:
             log.exception("Date discovery failed for %s", row.ticker)
             self._phase(row.cik, "Research failed. Retrying in an hour.")

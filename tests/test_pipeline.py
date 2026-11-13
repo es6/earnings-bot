@@ -68,9 +68,13 @@ class FakePoster(Poster):
 class FakeSummarizer(Summarizer):
     def __init__(self) -> None:
         self.calls: list[str] = []  # the release text of each request
+        self.contexts: list[dict | None] = []
 
-    async def write(self, ticker: str, release: str, seconds: float = 0.0) -> Summary:
+    async def write(
+        self, ticker: str, release: str, seconds: float = 0.0, *, context: dict | None = None
+    ) -> Summary:
         self.calls.append(release)
+        self.contexts.append(context)
         return Summary("UBER $UBER Q3'26 EARNINGS HIGHLIGHTS", ["12%"], 0.0, 1000, 200)
 
 
@@ -445,7 +449,9 @@ async def test_the_summary_starts_as_soon_as_the_text_arrives(
     started: list[float] = []
 
     class TimedSummarizer(FakeSummarizer):
-        async def write(self, ticker: str, release: str, seconds: float = 0.0) -> Summary:
+        async def write(
+            self, ticker: str, release: str, seconds: float = 0.0, *, context: dict | None = None
+        ) -> Summary:
             started.append(time.monotonic())
             return await super().write(ticker, release, seconds)
 
@@ -481,7 +487,9 @@ async def test_a_file_too_big_for_discord_stays_a_link(monkeypatch: pytest.Monke
 
 
 class FailsOnceSummarizer(FakeSummarizer):
-    async def write(self, ticker: str, release: str, seconds: float = 0.0) -> Summary:
+    async def write(
+        self, ticker: str, release: str, seconds: float = 0.0, *, context: dict | None = None
+    ) -> Summary:
         if not self.calls:
             self.calls.append(release)
             raise SummaryError("Claude API error 529: Overloaded")
@@ -628,7 +636,9 @@ async def test_a_page_that_comes_during_the_pdf_summary_replaces_it_after(
     release_texts[IR_PAGE] = "the page's text"
 
     class Slow(FakeSummarizer):
-        async def write(self, ticker: str, release: str, seconds: float = 0.0) -> Summary:
+        async def write(
+            self, ticker: str, release: str, seconds: float = 0.0, *, context: dict | None = None
+        ) -> Summary:
             await asyncio.sleep(0.1)
             return await super().write(ticker, release, seconds)
 
@@ -895,7 +905,9 @@ async def test_a_summary_written_before_a_crash_is_posted_with_no_new_call(
 
 
 class AlwaysFails(FakeSummarizer):
-    async def write(self, ticker: str, release: str, seconds: float = 0.0) -> Summary:
+    async def write(
+        self, ticker: str, release: str, seconds: float = 0.0, *, context: dict | None = None
+    ) -> Summary:
         self.calls.append(release)
         raise SummaryError("Ember API error 529: Overloaded")
 
@@ -945,7 +957,9 @@ async def test_at_most_two_model_calls_run_at_once(
     running = most = 0
 
     class Slow(FakeSummarizer):
-        async def write(self, ticker: str, release: str, seconds: float = 0.0) -> Summary:
+        async def write(
+            self, ticker: str, release: str, seconds: float = 0.0, *, context: dict | None = None
+        ) -> Summary:
             nonlocal running, most
             running += 1
             most = max(most, running)
@@ -966,6 +980,19 @@ async def test_at_most_two_model_calls_run_at_once(
 
     assert len(summarizer.calls) == 3
     assert most == 2
+
+
+async def test_release_writer_reads_prepared_context_without_blocking_detection(
+    release_texts: dict[str, str],
+) -> None:
+    release_texts[IR_PAGE] = "the current release"
+    writer = FakeSummarizer()
+    context = {"advisory_prior_release_profile": {"usual_kpi": "Gross Bookings"}}
+    releases = Releases(FakePoster, fetcher(), Journal(io.StringIO()), writer)
+    releases.issuer_context = lambda target: context if target.cik == uber().cik else {}
+    releases.on_new(uber(), *ir_sighting())
+    await releases.finish()
+    assert writer.calls == ["the current release"] and writer.contexts == [context]
 
 
 async def test_a_file_link_reads_without_url_escapes() -> None:

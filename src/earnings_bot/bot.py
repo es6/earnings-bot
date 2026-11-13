@@ -117,6 +117,7 @@ class EarningsBot(discord.Client):
                 status_channel,
                 self._watch_ready,
                 ping,
+                driver_profiles=settings.live_driver_profiles,
             )
             return
         await watch_schedule(

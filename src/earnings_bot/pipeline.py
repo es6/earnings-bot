@@ -436,12 +436,14 @@ class Release:
         priority: EditPriority | None = None,
         jobs: DeliveryStore | None = None,
         model_calls: asyncio.Semaphore | None = None,
+        issuer_context: Callable[[], dict[str, Any]] = dict,
     ) -> None:
         self.target = target
         self.poster = poster
         self.fetcher = fetcher
         self.journal = journal
         self.summarizer = summarizer
+        self.issuer_context = issuer_context
         self.note = note
         # The summary job kept across restarts, and the model calls shared by all releases
         self.jobs = jobs
@@ -973,7 +975,12 @@ class Release:
                 )
             started = time.monotonic()
             try:
-                summary = await summarizer.write_document(self.target.ticker, document)
+                context = self.issuer_context()
+                summary = (
+                    await summarizer.write_document(self.target.ticker, document, context=context)
+                    if context
+                    else await summarizer.write_document(self.target.ticker, document)
+                )
             except SummaryError as error:
                 if self.jobs:
                     self.jobs.summary_status(key, FAILED)
@@ -1075,6 +1082,7 @@ class Releases:
         self.store = store  # keeps each release's summary job across restarts
         self.model_calls = asyncio.Semaphore(MAX_MODEL_CALLS)
         self.active: dict[str, Release] = {}
+        self.issuer_context: Callable[[Target], dict[str, Any]] = lambda target: {}
 
     def on_new(
         self, target: Target, source: Source, sighting: Sighting, *, measure: bool = False
@@ -1094,6 +1102,7 @@ class Releases:
                 priority=self.priority,
                 jobs=self.store,
                 model_calls=self.model_calls,
+                issuer_context=lambda: self.issuer_context(target),
             )
         release.add(source, sighting, measure=measure)
 

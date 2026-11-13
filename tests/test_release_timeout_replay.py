@@ -59,7 +59,9 @@ class RecordingWriter(Summarizer):
     def __init__(self) -> None:
         self.texts: list[str] = []
 
-    async def write(self, ticker: str, release: str, seconds: float = 0.0) -> Summary:
+    async def write(
+        self, ticker: str, release: str, seconds: float = 0.0, *, context: dict | None = None
+    ) -> Summary:
         self.texts.append(release)
         return Summary("Revenue $10B", [], 0.0, 100, 10)
 

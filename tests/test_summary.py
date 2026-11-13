@@ -134,6 +134,14 @@ async def test_document_entry_point_preserves_the_current_model_request_and_vali
     assert from_document == from_text and len(from_document.unverified) == 1
 
 
+async def test_advisory_context_reaches_the_request_but_cannot_verify_a_claim() -> None:
+    context = {"advisory_prior_release_profile": {"Revenue": "$15,800 million"}}
+    summarizer, asked = summarizer_answering("end_turn", answer(BOOKINGS, INVENTED))
+    result = await summarizer.write_document("UBER", document_from_text(RELEASE), context=context)
+    assert json.dumps(context) in asked[0]["messages"][0]["content"]
+    assert len(result.unverified) == 1 and "$15,800" not in result.text
+
+
 @pytest.mark.parametrize(
     ("stop_reason", "texts"),
     [
