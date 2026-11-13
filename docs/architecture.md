@@ -573,6 +573,35 @@ public response fixture is `tests/fixtures/ir_misses.json`; the replay is
   The audit ranks those live report times separately from headline sightings. The one-off
   `earnings-bot-record` command uses the same release window and source pollers for local tests.
 
+### Publication trials (record-only)
+
+Plan item 8's speed experiments are judged on a real publication: when did the release
+become visible on each route? A trial plan is a JSON file in the schedule folder's `trials/`
+(`TrialPlan` in `publication_trials.py`). It names two to six routes to compare, such as a
+cache variant, a Chrome read, a mirror, a burst around round minutes, a direct file or SEC's
+filing directory. It also sets a start time, a duration of up to an hour, and a budget of up
+to 120 requests.
+
+The running bot starts each plan once, on its own fetcher and journal:
+- **Behind monitoring.** Every trial request, redirect hops included, waits behind
+  monitoring's polls in the host's queue.
+- **Its own Chrome tab.** A Chrome route uses a trial tab, never a live one.
+- **A durable budget.** The budget is counted per plan ID in
+  `.publication-trials.sqlite3` and survives a restart. Reusing an ID for a different plan is
+  refused.
+- **Pauses like live routes.** A 403 or a Retry-After pauses a route.
+- **Record-only.** A trial never posts. It writes `publication_trial` events: status, bytes,
+  content hash, whether the issuer, period and results patterns matched, whether that's a
+  verified full report, and whether the match appeared after a poll that didn't have it
+  (`transition_observed`, a measured publication). A match on the first poll is
+  `already_present`, not a measurement. Each event also has its timings (queued, network,
+  parse, total, and Chrome's separate waits) and the cache headers.
+
+`python -m earnings_bot.publication_trials plan.json --dry-run` checks a plan without sending
+anything. Plans that probe an issuer's site add requests to it, so each budget is the owner's
+call; GlobeNewswire article-ID probing in particular waits for the owner's decision on its
+rate.
+
 ### HTTP and Chrome workers
 
 HTTP requests share host queues and handle timeouts and backoff per source. A source that returns
