@@ -802,7 +802,7 @@ async def test_track_arms_the_rendered_results_page_alongside_the_issuer_api(
             fetcher.routes[page] = (503, b"")
             await dates._check(row)
             [row] = calendar.entries()
-            assert row.target and row.target.ir and row.target.ir.news_api == api
+            assert row.target and row.target.ir and row.target.ir.results_api == api
             assert row.target.ir.results_table is None
             fetcher.routes[page] = (200, listing.encode())
         await dates._check(row)
@@ -810,7 +810,7 @@ async def test_track_arms_the_rendered_results_page_alongside_the_issuer_api(
 
     assert row.target is not None
     sources = row.target.sources()
-    assert any(source.name == "issuer-news" for source in sources)
+    assert any(source.name == "issuer-results" for source in sources)
     tables = [source for source in sources if isinstance(source, QuarterlyTable)]
     assert len(tables) == 1
     table = tables[0]

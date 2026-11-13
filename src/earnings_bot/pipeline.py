@@ -42,6 +42,7 @@ from earnings_bot.delivery import (
 from earnings_bot.edit_priority import EditPriority, release_step
 from earnings_bot.fetch import Fetcher, Response
 from earnings_bot.formatting import clock, period_label
+from earnings_bot.issuer_news import IssuerNews
 from earnings_bot.recorder import ET, Journal, Plan, PollError, Target, poll, record
 from earnings_bot.release_cards import release_cards, release_content
 from earnings_bot.sources import (
@@ -318,7 +319,7 @@ class DurableDiscordPoster(DiscordPoster):
 def describe_source(source: Source) -> str:
     if isinstance(source, BrowserRss):
         return "IR press release feed"
-    if isinstance(source, Q4PressReleases | Q4FinancialReports | BrowserRelease):
+    if isinstance(source, Q4PressReleases | Q4FinancialReports | BrowserRelease | IssuerNews):
         return "IR site"
     if isinstance(source, EdgarFilings):
         return f"SEC {source.form}"

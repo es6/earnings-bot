@@ -219,7 +219,8 @@ def test_q4_financial_reports() -> None:
     assert document.earnings
 
 
-def test_q4_financial_reports_webcast_link_isnt_the_release() -> None:
+@pytest.mark.parametrize("online", ["Online", "online", "ONLINE", " online "])
+def test_q4_financial_reports_webcast_link_isnt_the_release(online: str) -> None:
     source = Q4FinancialReports("investors.atlassian.com")
     letter = "https://s206.q4cdn.com/270053503/files/doc_financials/2027/q1/TEAM-Q1-2027-Shareholder-Letter.pdf"
     webcast = "https://events.q4inc.com/attendee/400181594"
@@ -232,7 +233,7 @@ def test_q4_financial_reports_webcast_link_isnt_the_release() -> None:
                         {
                             "DocumentTitle": "Webcast",
                             "DocumentPath": webcast,
-                            "DocumentType": "Online",
+                            "DocumentType": online,
                         },
                         {
                             "DocumentTitle": "Shareholder letter",
