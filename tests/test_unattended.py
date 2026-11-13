@@ -18,7 +18,7 @@ from earnings_bot.fetch import Fetcher
 from earnings_bot.pipeline import DurableDiscordPoster, Release, Releases
 from earnings_bot.recorder import ET, Journal, OnNew, Polls, Target, Trial, Watch
 from earnings_bot.release_cards import release_content
-from earnings_bot.sources import EdgarFilings, EdgarLatest, RssFeed, Sighting
+from earnings_bot.sources import EdgarFilings, EdgarLatest, GuessedFile, RssFeed, Sighting
 from earnings_bot.track_progress import TrackProgress
 from tests.fakes import RoutedFetcher
 from tests.test_pipeline import FakePoster, uber
@@ -64,7 +64,11 @@ class FakeMessage:
         if content is not None:
             self.content = content
         if attachments is not None:
-            self.attachments = attachments
+            # As Discord stores them: it drops "%" from a filename ("Nebius%20Q3...pdf" came
+            # back as "Nebius20Q3...pdf" on Nov 12)
+            self.attachments = [
+                SimpleNamespace(filename=a.filename.replace("%", "")) for a in attachments
+            ]
         self.edited_at = datetime.now(UTC)
         return self
 
@@ -871,3 +875,23 @@ async def test_a_start_notice_replaces_the_ones_before_it(tmp_path: Path) -> Non
     shown = [m.content for m in channel.messages.values() if not m.deleted]
     assert shown == [alert.content, "🟢 **Earnings monitoring started** · v0.19.4"]
     assert first.deleted
+
+
+async def test_a_resumed_alert_doesnt_attach_its_file_again(tmp_path: Path) -> None:
+    """Nebius's alert had its PDF three times by the evening of Nov 12, one more per restart:
+    Discord stored "Nebius%20Q3...pdf" as "Nebius20Q3...pdf", so the check for a file
+    already on the alert never matched."""
+    target, channel = uber(), FakeDiscord()
+    url = "https://nebius.com/files/Nebius%20Q3%202026%20Results.pdf"
+    sighting = Sighting(url, "Nebius Q3 2026 Results", url, earnings=True)
+    fetcher = RoutedFetcher({".pdf": (200, b"%PDF-1.7 results")})
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        for _ in range(3):  # the first start, then two restarts
+            release = Release(
+                target, channel.poster(store, target), fetcher, Journal(io.StringIO()), None
+            )
+            release.add(GuessedFile(url), sighting)
+            await release.finish()
+
+    [alert] = channel.messages.values()
+    assert [a.filename for a in alert.attachments] == ["Nebius_Q3_2026_Results.pdf"]

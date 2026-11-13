@@ -120,6 +120,14 @@ class Poster(ABC):
     async def set_summary(self, text: str, footer: str) -> datetime | None: ...
 
 
+def discord_filename(name: str) -> str:
+    """The name a file goes up under: letters, digits, "." "-" and "_" only, which Discord
+    keeps as they are. Discord drops other characters, so a resumed alert couldn't recognize
+    its own file and attached it again: Nebius's Q3 2026 alert had its PDF three times (read
+    back from Discord on Nov 12)."""
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", unquote(name)).strip("_") or "file"
+
+
 class DiscordPoster(Poster):
     def __init__(self, channel: discord.abc.Messageable) -> None:
         self.channel = channel
@@ -150,7 +158,7 @@ class DiscordPoster(Poster):
 
     async def attach(self, name: str, data: bytes) -> datetime | None:
         message = self._sent()
-        file = discord.File(io.BytesIO(data), filename=name)
+        file = discord.File(io.BytesIO(data), filename=discord_filename(name))
         self.message = await message.edit(attachments=[*message.attachments, file])
         return self.message.edited_at
 
@@ -288,7 +296,10 @@ class DurableDiscordPoster(DiscordPoster):
 
     async def attach(self, name: str, data: bytes) -> datetime | None:
         message = self._sent()
-        if any(attachment.filename == name for attachment in message.attachments):
+        # The forms Discord may have stored it under, an upload from before discord_filename
+        # included: it drops "%", so "Nebius%20Q3...pdf" became "Nebius20Q3...pdf"
+        stored = {name, discord_filename(name), name.replace("%", "")}
+        if any(attachment.filename in stored for attachment in message.attachments):
             return message.edited_at
         return await self._update(
             partial(super().attach, name, data),
