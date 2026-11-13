@@ -6,8 +6,9 @@ import heapq
 import itertools
 import re
 import time
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager, contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Self
 from urllib.parse import urlsplit
@@ -15,7 +16,28 @@ from urllib.parse import urlsplit
 import aiohttp
 from yarl import URL
 
-from earnings_bot.browser import DesktopChrome, RenderedPage
+from earnings_bot.browser import BrowserError, DesktopChrome, RenderedPage
+
+# Research during an open release window runs in the background (see Fetcher.background): it
+# waits behind every poll, never asks a host a window is polling, and asks SEC, which every
+# window shares, at most once every BACKGROUND_SEC_GAP seconds
+BACKGROUND_SEC_GAP = 2.0
+# A host that answered a window's poll this recently is being watched
+LIVE_SECONDS = 30.0
+
+
+@dataclass(frozen=True)
+class _Background:
+    chrome: bool  # whether research may open its own Chrome now
+
+
+_BACKGROUND: ContextVar[_Background | None] = ContextVar("background_research", default=None)
+
+
+class HostBusy(TimeoutError):
+    """Background research asked a host that an open window is polling. It gives way at once,
+    as a timeout does, and the research tries again later."""
+
 
 # Says who we are, in the same form search engine crawlers use
 USER_AGENT = "Mozilla/5.0 (compatible; earnings-bot/0.1; +https://github.com/es6/earnings-bot)"
@@ -133,6 +155,9 @@ class Fetcher:
         self._browser: DesktopChrome | None = None
         self._research_lock = asyncio.Lock()
         self._route_pauses: dict[str, RoutePause] = {}
+        self._live: dict[str, float] = {}  # by queue_key: when a poll last took a turn
+        self._background_next: dict[str, float] = {}  # by queue_key: next background turn
+        self._background_locks: dict[str, asyncio.Lock] = {}
 
     def route_pause(self, route: str) -> RoutePause:
         """The pause shared by every loop that polls `route`, such as an IR listing's URL."""
@@ -159,8 +184,26 @@ class Fetcher:
             if self._session is not None:
                 await self._session.close()
 
+    @contextmanager
+    def background(self, *, chrome: bool) -> Iterator[None]:
+        """Requests made inside, and in tasks started inside, run in the background: behind
+        every poll, never to a host an open window is polling, and to SEC at most once every
+        BACKGROUND_SEC_GAP seconds. Without `chrome`, research may not open its own Chrome."""
+        token = _BACKGROUND.set(_Background(chrome))
+        try:
+            yield
+        finally:
+            _BACKGROUND.reset(token)
+
+    def chrome_allowed(self) -> bool:
+        """Whether research may open its own Chrome now."""
+        background = _BACKGROUND.get()
+        return background is None or background.chrome
+
     @asynccontextmanager
     async def research_browser(self) -> AsyncIterator[DesktopChrome]:
+        if not self.chrome_allowed():
+            raise BrowserError("Research waits to open Chrome until open release windows close")
         async with self._research_lock:
             browser = DesktopChrome()
             try:
@@ -263,15 +306,37 @@ class Fetcher:
         )
 
     async def wait_turn(self, host: str, urgent: bool = False) -> None:
-        """Returns once it's the caller's turn to send the host a request."""
+        """Returns once it's the caller's turn to send the host a request. Raises HostBusy for
+        background research to a host an open window is polling."""
         key = queue_key(host)
+        if _BACKGROUND.get() is None:
+            self._live[key] = time.monotonic()
+            await self._take_turn(key, 0 if urgent else 1)
+            return
+        if key not in _SHARED_QUEUES:
+            if time.monotonic() - self._live.get(key, float("-inf")) < LIVE_SECONDS:
+                raise HostBusy(f"{key} is being polled for an open release window")
+            await self._take_turn(key, 2)
+            return
+        # SEC is shared by every window and needed by nearly all research, so research gets a
+        # sliver of it: one turn every BACKGROUND_SEC_GAP seconds, each behind every poll. The
+        # lock makes background requests take their turns one at a time.
+        async with self._background_locks.setdefault(key, asyncio.Lock()):
+            while (wait := self._background_next.get(key, 0.0) - time.monotonic()) > 0:  # noqa: ASYNC110
+                await asyncio.sleep(wait)
+            await self._take_turn(key, 2)
+            self._background_next[key] = time.monotonic() + BACKGROUND_SEC_GAP
+
+    async def _take_turn(self, key: str, priority: int) -> None:
+        """Waits in the queue: urgent requests (0) first, then polls (1), then background
+        research (2), each in order of arrival."""
         queue = self._queues.setdefault(key, _HostQueue())
         now = time.monotonic()
         if not queue.waiting and now >= queue.next_turn:
             queue.next_turn = now + host_gap(key)
             return
         turn: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-        heapq.heappush(queue.waiting, (0 if urgent else 1, next(self._arrivals), turn))
+        heapq.heappush(queue.waiting, (priority, next(self._arrivals), turn))
         if queue.dispatcher is None or queue.dispatcher.done():
             queue.dispatcher = asyncio.create_task(self._dispatch(key, queue))
         # A caller that gets cancelled cancels its turn too, and the dispatcher skips it

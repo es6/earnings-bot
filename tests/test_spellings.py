@@ -153,6 +153,9 @@ class SpellingFetcher:
     async def request(self, method: str, url: str, *args: object, **kwargs: object) -> Response:
         return await self.get(url)
 
+    def chrome_allowed(self) -> bool:
+        return True
+
 
 async def test_the_planner_polls_a_feed_by_new_spellings_once_the_check_finds_they_work(
     tmp_path: Path,

@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import math
 import re
 import time
 from calendar import month_name
@@ -41,6 +42,7 @@ from earnings_bot.ir_research import (
     issuer_listing,
     prior_period,
     quarter_headline,
+    research_chrome,
     verified_browser_source,
     verified_http_source,
     verified_news_source,
@@ -85,6 +87,8 @@ READING_IR = "Reading its IR site in Chrome"
 RECHECKING = "Rechecking hourly."
 IR_REREAD = 6 * 3600  # seconds
 RESEARCH_SECONDS = 450  # for one company's hourly check
+# How soon to retry a check that needed Chrome while open windows kept it for monitoring
+CHROME_RETRY = 600
 VERIFYING_IR = "Verifying the issuer's last report"
 CACHE_REFRESH = 24 * 3600
 _RELEASE = re.compile(
@@ -452,7 +456,7 @@ async def _listing_date(
     with suppress(aiohttp.ClientError, TimeoutError, ValueError, KeyError):
         if result := await check(direct):
             return result
-    if not chrome_available():
+    if not research_chrome(fetcher):
         return None
     try:
         async with fetcher.research_browser() as browser:
@@ -814,9 +818,17 @@ class DateDiscovery:
         fmp_api_key: str | None = None,
         chrome: OpenChrome | None = None,
         sixk: SixKResults | None = None,
+        *,
+        windows_open: Callable[[], bool] = lambda: False,
+        chrome_live: Callable[[], bool] = lambda: False,
+        in_window: Callable[[int], bool] = lambda cik: False,
     ) -> None:
         self.calendar, self.fetcher, self.now = calendar, fetcher, now
+        # `busy` pauses all research: the minutes around a release. Outside them, research
+        # continues during open windows in the background (Fetcher.background), never for a
+        # company whose own window is open, and with Chrome only while no live window uses it.
         self.busy, self.status = busy, status
+        self.windows_open, self.chrome_live, self.in_window = windows_open, chrome_live, in_window
         self.fmp_api_key = fmp_api_key
         self.chrome = chrome  # for investigations; None means desktop Chrome on Windows
         self.sixk = sixk or SixKResults(fetcher)
@@ -851,6 +863,10 @@ class DateDiscovery:
             for row in self.calendar.entries():
                 if self.busy():
                     break
+                if self.in_window(row.cik):
+                    # Its watch runs on the plan it has; a new one waits for the window to close
+                    self._phase(row.cik, "Waiting for its own release window to close")
+                    continue
                 review = self.calendar.review(row.cik)[1]
                 if time.monotonic() < self.checked.get(row.cik, 0) and review == self.reviewed.get(
                     row.cik
@@ -859,7 +875,11 @@ class DateDiscovery:
                 self.checked[row.cik] = time.monotonic() + 3600
                 # Recorded before the check, so one that fails early still waits the hour
                 self.reviewed[row.cik] = review
-                await self.run_once(row)
+                if self.windows_open():
+                    with self.fetcher.background(chrome=not self.chrome_live()):
+                        await self.run_once(row)
+                else:
+                    await self.run_once(row)
             with suppress(TimeoutError):
                 await asyncio.wait_for(self.changed.wait(), timeout=60)
 
@@ -936,7 +956,9 @@ class DateDiscovery:
     ) -> tuple[Target, str] | None:
         """The date from the IR site as Chrome shows it, when its feeds and lists didn't give
         one. A date already found this way is read again every few hours, not hourly."""
-        open_chrome = self.chrome or (self.fetcher.research_browser if chrome_available() else None)
+        open_chrome = self.chrome or (
+            self.fetcher.research_browser if research_chrome(self.fetcher) else None
+        )
         starts = ir_starts(row.ticker, row.company)
         if open_chrome is None or not starts or self.busy():
             return None
@@ -994,7 +1016,9 @@ class DateDiscovery:
 
         if route.warmup is None:
             return await probe_cache(get, route.url, signature)
-        open_chrome = self.chrome or (self.fetcher.research_browser if chrome_available() else None)
+        open_chrome = self.chrome or (
+            self.fetcher.research_browser if research_chrome(self.fetcher) else None
+        )
         if open_chrome is None:
             return CacheResult("Desktop Chrome unavailable")
         warmup = route.warmup
@@ -1013,6 +1037,10 @@ class DateDiscovery:
     async def _prepare_cache(self, row: Tracked, *, save: bool = True) -> Target | None:
         if self.busy():
             self.checked.pop(row.cik, None)
+            return row.target
+        if self._chrome_waits() and any(route.warmup for route in _cache_routes(row)):
+            # A Chrome comparison now would record "Chrome unavailable" as the route's verdict
+            self._defer_chrome(row.cik)
             return row.target
         target, evidence = row.target, row.evidence
         ir = target.ir if target else None
@@ -1112,9 +1140,16 @@ class DateDiscovery:
         today = self.now().astimezone(ET).date()
         if not due(row.ticker, row.company, today):
             return row
+        if self._chrome_waits():
+            # Without Chrome it would be marked done for a month with half its checks
+            self._defer_chrome(row.cik)
+            self._phase(row.cik, "Investigation waits for live Chrome windows to close")
+            return row
         self._phase(row.cik, "Investigating its sources")
         report = self.reports[row.cik] = Report(changed=self.on_progress)
-        chrome = self.chrome or (self.fetcher.research_browser if chrome_available() else None)
+        chrome = self.chrome or (
+            self.fetcher.research_browser if research_chrome(self.fetcher) else None
+        )
         company = await investigate(
             self.fetcher,
             row.company,
@@ -1361,7 +1396,7 @@ class DateDiscovery:
         additions: dict[str, str | bool] = {}
         if table and (not ir or ir.results_table != table):
             additions.update(await verified_results_table(self.fetcher, table, target.period))
-        if browser_feed and (not ir or not ir.rss) and chrome_available():
+        if browser_feed and (not ir or not ir.rss) and research_chrome(self.fetcher):
             additions.update(
                 rss=browser_feed,
                 headline=quarter_headline(int(target.period[2:6]), int(target.period[-1])),
@@ -1372,6 +1407,14 @@ class DateDiscovery:
             ir = IRSource.model_validate({**(ir.model_dump() if ir else {}), **additions})
         self.ir_notes[row.cik] = why
         return target.model_copy(update={"ir": ir}) if ir else target
+
+    def _chrome_waits(self) -> bool:
+        """Whether Chrome research is only held back for now, by open windows using Chrome."""
+        return chrome_available() and self.chrome is None and not self.fetcher.chrome_allowed()
+
+    def _defer_chrome(self, cik: int) -> None:
+        # Checked again in 10 minutes, not on every scan, so waiting costs no requests
+        self.checked[cik] = min(self.checked.get(cik, math.inf), time.monotonic() + CHROME_RETRY)
 
     def _defer_if_busy(self, cik: int) -> bool:
         if not self.busy():
