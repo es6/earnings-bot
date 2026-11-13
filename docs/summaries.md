@@ -4,9 +4,11 @@
 
 `source_document.py` adds a version-scoped evidence representation. Retrieval now carries
 that document through the first-text/PDF-replacement path to `Summarizer.write_document`.
-The writer delegates to the existing text request and quote checker; the reference-aware
-schema and binding APIs below remain offline pending evaluation/integration. Summaries remain beta: a number appearing
-in a quote still does not prove that the model chose the correct metric or period.
+By default the writer delegates to the existing text request and quote checker.
+`SOURCE_REFERENCED_SUMMARIES=true` separately opts into the reference request, binder
+and bound renderer. It defaults off: the evaluation below does not justify activation.
+Summaries remain beta. A number appearing in a legacy quote does not prove the metric
+or period is correct.
 
 `document_from_html` uses the live HTML reader and retains its plain text. It gives each
 text block and table a stable local ID, scoped to a SHA-256 of the extraction version,
@@ -28,11 +30,11 @@ versions. Legacy jobs have no saved document; their delivered/written states and
 continue to prevent repeat paid calls. A new extraction version changes the source hash.
 
 Resolve a reference using both the document hash and local ID. A missing ID or a different
-document version fails explicitly. The upcoming verifier must additionally check cell
+document version fails explicitly. The reference verifier must additionally check cell
 headers, metric, period/duration, basis, units and scale against this observed source
 structure. Merely returning an existing cell ID will not establish claim correctness.
 
-## Item 6 candidate schema (offline only)
+## Item 6 unverified candidate schema
 
 `summary_evidence.py` defines an immutable `UnverifiedBrief`. Each fact has separate
 current actual, prior-year actual, reported growth, comparable growth, previous guidance
@@ -65,19 +67,18 @@ python scripts/summary_prepare.py ADBE CMG GE JPM PLTR WMT --docs <saved-docs> -
 
 The preparer uses a saved `<ticker>.html` when present, otherwise plain blocks from the
 JSON `release` text. It never infers PDF cells. Reference-schema preparation permits only
-Ember; `--include-haiku` is rejected with `--references`. This mode is not connected to
-the live writer. Next work: semantic binding, code formatting of structured values,
-separate correctness/retention/omission scoring on saved reports plus BN/NBIS, then an
-explicitly bounded Ember-only evaluation before considering activation.
+Ember; `--include-haiku` is rejected with `--references`. The opt-in writer uses the same
+request and source-binding code. Default activation remains held for final coverage and
+broader factual auditing; see the [frozen comparison](evaluation-2026-11-13.md).
 
 The schema follows the raw `output_config.format` shape and uses the SDK's schema
 transformation for unsupported constraints; local Pydantic validation retains those
 constraints. See [Anthropic structured output documentation](https://platform.claude.com/docs/en/build-with-claude/structured-outputs)
 and [Meta structured output documentation](https://dev.meta.ai/docs/structured-output).
-The exact new request has not been sent to the provider, so wire compatibility is still
-unproven. No model quality, cost or latency improvement is claimed here.
+Ember-low provider calls established wire compatibility. That does not establish model
+quality or a latency improvement.
 
-## Item 6 binding checks (pending evaluation)
+## Item 6 binding checks and limits
 
 Item 6 also has a conservative binding library in `summary_binding.py` and
 `binding_text.py`. `bind_brief` resolves the candidate's evidence first, then checks
@@ -94,8 +95,17 @@ punctuation; a label is not permission to infer an economic consequence.
 This closes the two reproduced wrong-metric and wrong-quarter cases in the binding API,
 with valid controls retained. It is not a universal financial-language verifier: unknown
 metric aliases, incomplete headers and ambiguous context reduce retention. Saved-report
-evaluation, structured rendering and model request integration follow before activation.
-The deployed/legacy writer remains unchanged and summaries remain beta.
+evaluation found retention too low for activation. The separately opt-in writer is
+integrated; the deployed/default writer remains unchanged and summaries remain beta.
+
+The opt-in path rejects malformed, unfinished and all-unbound candidates without falling
+back to legacy validation. It uses no SDK retry. Existing durable job attempt/concurrency
+and daily call limits apply, with no automatic repair request. Successful results persist
+the candidate, accepted bound references, rejection reasons, model/schema/system context
+and request hash in `summary_evidence`. Rows are scoped to channel, release, document and
+attempt, so a later legacy attempt cannot inherit an older binding verdict. PDF and HTML
+versions remain addressable after replacement. Saved delivered/written results still
+resume without another model call; the journal names the validation mode.
 
 ### What a binding checks, after the first real evaluation
 
