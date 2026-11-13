@@ -32,6 +32,51 @@ document version fails explicitly. The upcoming verifier must additionally check
 headers, metric, period/duration, basis, units and scale against this observed source
 structure. Merely returning an existing cell ID will not establish claim correctness.
 
+## Item 6 candidate schema (offline only)
+
+`summary_evidence.py` defines an immutable `UnverifiedBrief`. Each fact has separate
+current actual, prior-year actual, reported growth, comparable growth, previous guidance
+and new guidance slots. Unavailable values are null. Each present value carries a signed
+decimal string, optional range endpoint, scale, explicit unit/currency, bounds or
+approximation, period, duration, basis and material comparison qualifier. Updates carry
+their own supported text and citations. Schema validation rejects malformed numbers,
+reversed ranges, missing units, unknown fields and unsourced values or updates.
+
+`parse_referenced_brief` checks reference integrity: the exact document version, a real
+paragraph/table ID, cells belonging to that table, and a quote local to that block. It
+rejects outer nested layout tables as independent bindings. It does **not** establish
+that the metric, period, basis, unit or number match those cells. A wrong-metric or
+wrong-period candidate with existing references can still pass this guard; tests record
+that boundary explicitly. Candidates cannot be passed directly to the live renderer.
+
+`referenced_request` serializes reading order and observed table geometry with compact
+cell arrays. The schema is stable across reports; document-specific hashes/IDs are input
+data, never per-report enum/const definitions. It keeps Ember low and the existing
+selection policy. It rejects plain text above 200,000 characters or annotated input
+above 400,000 characters without truncation. Those are input guards, not editorial
+length limits or a guarantee about token count/cost. Both source text and advisory
+issuer context are data; issuer context cannot supply evidence.
+
+Prepare requests without credentials or API calls:
+
+```powershell
+python scripts/summary_prepare.py ADBE CMG GE JPM PLTR WMT --docs <saved-docs> --out requests.json --references
+```
+
+The preparer uses a saved `<ticker>.html` when present, otherwise plain blocks from the
+JSON `release` text. It never infers PDF cells. Reference-schema preparation permits only
+Ember; `--include-haiku` is rejected with `--references`. This mode is not connected to
+the live writer. Next work: semantic binding, code formatting of structured values,
+separate correctness/retention/omission scoring on saved reports plus BN/NBIS, then an
+explicitly bounded Ember-only evaluation before considering activation.
+
+The schema follows the raw `output_config.format` shape and uses the SDK's schema
+transformation for unsupported constraints; local Pydantic validation retains those
+constraints. See [Anthropic structured output documentation](https://platform.claude.com/docs/en/build-with-claude/structured-outputs)
+and [Meta structured output documentation](https://dev.meta.ai/docs/structured-output).
+The exact new request has not been sent to the provider, so wire compatibility is still
+unproven. No model quality, cost or latency improvement is claimed here.
+
 ## Live summaries (v0.13.0)
 
 The bot posts the release immediately; the summary is a separate follow-up that never delays
