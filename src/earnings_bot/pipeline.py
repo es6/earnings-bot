@@ -30,7 +30,15 @@ from earnings_bot.browser_sources import (
     article_matches,
     issuer_pdf_url,
 )
-from earnings_bot.delivery import Delivery, DeliveryStore, retry_delivery
+from earnings_bot.delivery import (
+    DELIVERED,
+    FAILED,
+    WRITTEN,
+    Delivery,
+    DeliveryStore,
+    SummaryJob,
+    retry_delivery,
+)
 from earnings_bot.edit_priority import EditPriority, release_step
 from earnings_bot.fetch import Fetcher, Response
 from earnings_bot.formatting import clock, period_label
@@ -56,6 +64,10 @@ PDF_TEXT_GRACE = 10.0
 # After a wire alert whose article we can't read, how long and how often the issuer's newsroom
 # is asked for the same release
 ISSUER_TEXT_SECONDS, ISSUER_TEXT_EVERY = 180.0, 5.0
+# Limits on paid summary calls. A release gets at most three model calls in all, restarts
+# included; at most two run at once; and the day's calls stop at the cap. None of this delays
+# an alert. Not measured: a full day has had at most a handful of releases.
+MAX_SUMMARY_ATTEMPTS, MAX_MODEL_CALLS, DAILY_SUMMARY_CALLS = 3, 2, 40
 # Discord's upload limit for bots in servers without boosts. Earnings PDFs are well under 1 MB.
 MAX_FILE_BYTES = 10 * 1024 * 1024
 UNKNOWN_MESSAGE = 10008  # Discord's error code for a missing message
@@ -399,6 +411,8 @@ class Release:
         summarizer: Summarizer | None,
         note: str = "",
         priority: EditPriority | None = None,
+        jobs: DeliveryStore | None = None,
+        model_calls: asyncio.Semaphore | None = None,
     ) -> None:
         self.target = target
         self.poster = poster
@@ -406,6 +420,9 @@ class Release:
         self.journal = journal
         self.summarizer = summarizer
         self.note = note
+        # The summary job kept across restarts, and the model calls shared by all releases
+        self.jobs = jobs
+        self.model_calls = model_calls or asyncio.Semaphore(MAX_MODEL_CALLS)
         # Scorecard edits wait while this release has a post, edit or summary on the way
         self.priority = priority
         self.links: dict[str, str] = {}  # url -> label, in the order they turned up
@@ -812,27 +829,85 @@ class Release:
 
     async def _summarize(self, summarizer: Summarizer, text: str, label: str) -> None:
         self.summarizing = True
+        key = self.target.release_key
+        job = self.jobs.summary(key) if self.jobs else None
+        if job and job.status == DELIVERED:
+            # After a restart or a schedule change: Nov 12's restart re-summarized both
+            # delivered releases, two paid calls and two edits to hours-old alerts
+            self.journal.write(
+                "summary_skipped", ticker=self.target.ticker, reason="already delivered"
+            )
+            return
         # The alert waits on this edit from the moment its text arrives
         async with release_step(self.priority):
+            if job and job.status == WRITTEN and job.text is not None:
+                # Written before a restart and never posted: post it, with no new call
+                await self._post_summary(job.text, job.footer or "", job.source, reused=True)
+                return
+            if why := self._summary_limit(job):
+                self.journal.write("summary_skipped", ticker=self.target.ticker, reason=why)
+                self.journal.say(f"{self.target.ticker}: no summary: {why}")
+                return
             await self._write_summary(summarizer, text, label)
 
+    def _summary_limit(self, job: SummaryJob | None) -> str | None:
+        """Why no model call may start for this release now, if one may not."""
+        if job and job.attempts >= MAX_SUMMARY_ATTEMPTS:
+            return f"{job.attempts} model calls already made for this release"
+        if self.jobs and self.jobs.summary_calls(self._day()) >= DAILY_SUMMARY_CALLS:
+            return f"the day's {DAILY_SUMMARY_CALLS} summary calls are used up"
+        return None
+
+    def _day(self) -> str:
+        return self.journal.now().astimezone(ET).date().isoformat()
+
     async def _write_summary(self, summarizer: Summarizer, text: str, label: str) -> None:
-        started = time.monotonic()
-        try:
-            summary = await summarizer.write(self.target.ticker, text)
-        except SummaryError as error:
-            self.summarizing = False  # let a later source try
-            self.journal.write("summary_error", ticker=self.target.ticker, message=str(error))
-            self.journal.say(f"{self.target.ticker}: summary failed: {error}")
-            return
+        key = self.target.release_key
+        async with self.model_calls:
+            if self.jobs:
+                document = hashlib.sha256(text.encode()).hexdigest()
+                self.jobs.summary_started(key, document, label, self._day())
+            started = time.monotonic()
+            try:
+                summary = await summarizer.write(self.target.ticker, text)
+            except SummaryError as error:
+                if self.jobs:
+                    self.jobs.summary_status(key, FAILED)
+                self.summarizing = False  # let a later source try
+                self.journal.write("summary_error", ticker=self.target.ticker, message=str(error))
+                self.journal.say(f"{self.target.ticker}: summary failed: {error}")
+                return
         took = time.monotonic() - started
         footer = f"Summary by {WRITER} in {took:.0f}s from the {label} text"
         if summary.unverified:
             held = len(summary.unverified)
             figures = "figure" if held == 1 else "figures"
             footer += f" · {held} {figures} held back: the release didn't confirm them"
+        footer = footer[:2048]
+        if self.jobs:
+            self.jobs.summary_written(
+                key,
+                summary.text,
+                footer,
+                summary.unverified,
+                summary.input_tokens,
+                summary.output_tokens,
+            )
+        await self._post_summary(
+            summary.text,
+            footer,
+            label,
+            model_seconds=round(took, 1),
+            held_back=summary.unverified,
+            input_tokens=summary.input_tokens,
+            output_tokens=summary.output_tokens,
+        )
+
+    async def _post_summary(self, text: str, footer: str, label: str, **details: Any) -> None:
         async with self.lock:
-            stamp = await self.poster.set_summary(summary.text, footer[:2048])
+            stamp = await self.poster.set_summary(text, footer)
+        if self.jobs:
+            self.jobs.summary_status(self.target.release_key, DELIVERED)
         self.journal.write(
             "summary",
             ticker=self.target.ticker,
@@ -840,12 +915,9 @@ class Release:
             live_seconds=self._live_after(stamp),
             visible=stamp,
             model=MODEL,
-            model_seconds=round(took, 1),
             source=label,
-            text=summary.text,
-            held_back=summary.unverified,
-            input_tokens=summary.input_tokens,
-            output_tokens=summary.output_tokens,
+            text=text,
+            **details,
         )
         self.journal.say(f"{self.target.ticker}: summary posted after {self._since_first_seen()}s")
 
@@ -885,6 +957,7 @@ class Releases:
         summarizer: Summarizer | None,
         durable_poster: Callable[[Target], Poster] | None = None,
         priority: EditPriority | None = None,
+        store: DeliveryStore | None = None,
     ) -> None:
         self.new_poster = new_poster
         self.durable_poster = durable_poster
@@ -892,6 +965,8 @@ class Releases:
         self.fetcher = fetcher
         self.journal = journal
         self.summarizer = summarizer
+        self.store = store  # keeps each release's summary job across restarts
+        self.model_calls = asyncio.Semaphore(MAX_MODEL_CALLS)
         self.active: dict[str, Release] = {}
 
     def on_new(
@@ -910,6 +985,8 @@ class Releases:
                 self.journal,
                 self.summarizer,
                 priority=self.priority,
+                jobs=self.store,
+                model_calls=self.model_calls,
             )
         release.add(source, sighting, measure=measure)
 

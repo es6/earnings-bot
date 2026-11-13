@@ -1,8 +1,10 @@
 import asyncio
+import hashlib
 import io
 import json
 import time
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import aiohttp
@@ -10,6 +12,7 @@ import pytest
 
 from earnings_bot import fetch, pipeline
 from earnings_bot.browser_sources import BrowserPDF, IRSource
+from earnings_bot.delivery import DeliveryStore
 from earnings_bot.fetch import Response
 from earnings_bot.ir_research import quarter_headline
 from earnings_bot.pipeline import Poster, Release, Releases, describe_source
@@ -778,3 +781,123 @@ async def test_the_newsroom_watcher_waits_while_a_read_of_the_newsroom_is_refuse
     await watch(Watch("NBIS", source), fetcher, journal, journal.now() + timedelta(seconds=1))
 
     assert fetcher.listing_asked and fetcher.listing_asked[0][0] - started >= 0.29
+
+
+def ir_sighting(url: str = IR_PAGE) -> tuple[Q4PressReleases, Sighting]:
+    return Q4PressReleases("investor.uber.com"), Sighting("1700", "Results", url, earnings=True)
+
+
+async def test_a_restart_doesnt_summarize_a_delivered_release_again(
+    release_texts: dict[str, str], tmp_path: Path
+) -> None:
+    """The Nov 12 restart re-read both delivered releases and summarized each again: two paid
+    calls, and edits to alerts hours old."""
+    release_texts[IR_PAGE] = "the release"
+    summarizer, log = FakeSummarizer(), io.StringIO()
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        for _ in range(2):  # the bot, then the bot after a restart, reading the same release
+            release = Release(uber(), FakePoster(), fetcher(), Journal(log), summarizer, jobs=store)
+            release.add(*ir_sighting())
+            await release.finish()
+        job = store.summary(uber().release_key)
+
+    assert summarizer.calls == ["the release"]
+    assert job is not None and (job.status, job.attempts, job.source) == ("delivered", 1, "IR site")
+    assert job.document == hashlib.sha256(b"the release").hexdigest()
+    skipped = [
+        r for r in map(json.loads, log.getvalue().splitlines()) if r["event"] == "summary_skipped"
+    ]
+    assert [r["reason"] for r in skipped] == ["already delivered"]
+
+
+async def test_a_summary_written_before_a_crash_is_posted_with_no_new_call(
+    release_texts: dict[str, str], tmp_path: Path
+) -> None:
+    release_texts[IR_PAGE] = "the release"
+    key = uber().release_key
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        store.summary_started(key, "abc", "SEC 8-K", "2026-11-04")
+        store.summary_written(key, "**Q3 2026**", "Summary by Muse Ember in 4s", [], 900, 70)
+        summarizer, poster = FakeSummarizer(), FakePoster()
+        release = Release(uber(), poster, fetcher(), Journal(io.StringIO()), summarizer, jobs=store)
+        release.add(*ir_sighting())
+        await release.finish()
+        job = store.summary(key)
+
+    assert summarizer.calls == []
+    assert ("summary", "**Q3 2026** | Summary by Muse Ember in 4s") in poster.calls
+    assert job is not None and (job.status, job.attempts) == ("delivered", 1)
+
+
+class AlwaysFails(FakeSummarizer):
+    async def write(self, ticker: str, release: str, seconds: float = 0.0) -> Summary:
+        self.calls.append(release)
+        raise SummaryError("Ember API error 529: Overloaded")
+
+
+async def test_a_release_gets_at_most_three_model_calls_across_restarts(
+    release_texts: dict[str, str], tmp_path: Path
+) -> None:
+    pages = [f"{IR_PAGE}?copy={n}" for n in range(5)]
+    for page in pages:
+        release_texts[page] = f"text from {page}"
+    summarizer, log = AlwaysFails(), io.StringIO()
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        for page in pages:  # each a new source, after a restart
+            release = Release(uber(), FakePoster(), fetcher(), Journal(log), summarizer, jobs=store)
+            release.add(*ir_sighting(page))
+            await release.finish()
+
+    assert len(summarizer.calls) == 3
+    skipped = [
+        r for r in map(json.loads, log.getvalue().splitlines()) if r["event"] == "summary_skipped"
+    ]
+    assert [r["reason"] for r in skipped] == ["3 model calls already made for this release"] * 2
+
+
+async def test_summary_calls_stop_at_the_days_cap(
+    release_texts: dict[str, str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(pipeline, "DAILY_SUMMARY_CALLS", 1)
+    release_texts[IR_PAGE] = "the release"
+    lyft = Target(ticker="LYFT", expected=datetime(2026, 11, 4, 16, 5, tzinfo=ET), cik=1759509)
+    summarizer = FakeSummarizer()
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        for target in (uber(), lyft):
+            release = Release(
+                target, FakePoster(), fetcher(), Journal(io.StringIO()), summarizer, jobs=store
+            )
+            release.add(*ir_sighting())
+            await release.finish()
+
+    assert summarizer.calls == ["the release"]
+
+
+async def test_at_most_two_model_calls_run_at_once(
+    release_texts: dict[str, str], tmp_path: Path
+) -> None:
+    release_texts[IR_PAGE] = "the release"
+    running = most = 0
+
+    class Slow(FakeSummarizer):
+        async def write(self, ticker: str, release: str, seconds: float = 0.0) -> Summary:
+            nonlocal running, most
+            running += 1
+            most = max(most, running)
+            await asyncio.sleep(0.05)
+            running -= 1
+            return await super().write(ticker, release, seconds)
+
+    targets = [
+        Target(ticker=f"T{n}", expected=datetime(2026, 11, 4, 16, 5, tzinfo=ET), cik=1000 + n)
+        for n in range(3)
+    ]
+    summarizer = Slow()
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        releases = Releases(FakePoster, fetcher(), Journal(io.StringIO()), summarizer, store=store)
+        for target in targets:
+            releases.on_new(target, *ir_sighting())
+        await releases.finish()
+
+    assert len(summarizer.calls) == 3
+    assert most == 2
