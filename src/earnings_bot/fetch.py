@@ -65,6 +65,9 @@ _BACKGROUND: ContextVar[_Background | None] = ContextVar("background_research", 
 class _Observation:
     admit: Callable[[str], None]
     check: Callable[[], None]
+    max_bytes: int = MAX_BROWSER_BYTES  # each response's cap
+    cache_mode: CacheMode = "no-store"  # a Chrome route's fetch cache mode
+    bypass_service_worker: bool | None = None
 
 
 _OBSERVATION: ContextVar[_Observation | None] = ContextVar("record_only_observation", default=None)
@@ -229,10 +232,24 @@ class Fetcher:
                 await self._session.close()
 
     @contextmanager
-    def observing(self, admit: Callable[[str], None], check: Callable[[], None]) -> Iterator[None]:
+    def observing(
+        self,
+        admit: Callable[[str], None],
+        check: Callable[[], None],
+        *,
+        max_bytes: int = MAX_BROWSER_BYTES,
+        cache_mode: CacheMode = "no-store",
+        bypass_service_worker: bool | None = None,
+    ) -> Iterator[None]:
         """A record-only trial reserves every transport turn and waits behind live polling.
-        Callbacks enforce its own budget/deadline, including queued turns and redirects."""
-        token = _OBSERVATION.set(_Observation(admit, check))
+        Callbacks enforce its own budget/deadline, including queued turns and redirects. The
+        options apply to the requests made inside: a byte cap, and for Chrome routes the
+        fetch cache mode and service-worker bypass."""
+        if not 0 < max_bytes <= MAX_BROWSER_BYTES:
+            raise ValueError("Invalid response byte limit")
+        token = _OBSERVATION.set(
+            _Observation(admit, check, max_bytes, cache_mode, bypass_service_worker)
+        )
         try:
             yield
         finally:
@@ -311,9 +328,6 @@ class Fetcher:
         give_up_after: float,
         *,
         urgent: bool = False,
-        cache_mode: CacheMode = "no-store",
-        bypass_service_worker: bool | None = None,
-        max_bytes: int = MAX_BROWSER_BYTES,
     ) -> Response:
         self._check_chrome()
         if self._session is None:
@@ -321,16 +335,18 @@ class Fetcher:
         if self._browser is None:
             self._browser = DesktopChrome()
             self._browser.allowed = self._browser_allowed
+        observation = _OBSERVATION.get()
         return await self._browser.request(
             url,
             warmup,
             give_up_after,
             lambda host: self.wait_turn(host, urgent),
             urgent=urgent,
-            cache_mode=cache_mode,
-            bypass_service_worker=bypass_service_worker,
-            observational=_OBSERVATION.get() is not None,
-            max_bytes=max_bytes,
+            # A record-only trial reads through its own tab, with its route's options
+            cache_mode=observation.cache_mode if observation else "no-store",
+            bypass_service_worker=observation.bypass_service_worker if observation else None,
+            observational=observation is not None,
+            max_bytes=observation.max_bytes if observation else MAX_BROWSER_BYTES,
         )
 
     async def browser_render(
@@ -358,7 +374,6 @@ class Fetcher:
         *,
         allow_redirects: bool = True,
         encoded_url: bool = False,
-        max_bytes: int | None = None,
     ) -> Response:
         """Raises TimeoutError if the whole response hasn't arrived within `give_up_after`
         seconds (the Fetcher's own timeout if None). Waiting for the initial slot doesn't count,
@@ -368,8 +383,8 @@ class Fetcher:
         ahead of polls of data.sec.gov."""
         if self._session is None:
             raise RuntimeError("Fetcher must be used with `async with`")
-        if max_bytes is not None and max_bytes <= 0:
-            raise ValueError("Response byte limit must be positive")
+        # A record-only trial caps each response at its plan's byte allowance
+        max_bytes = observation.max_bytes if (observation := _OBSERVATION.get()) else None
         host = urlsplit(url).hostname or ""
         asked = time.monotonic()
         await self.wait_turn(host, urgent)

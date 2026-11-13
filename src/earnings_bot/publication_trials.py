@@ -260,9 +260,6 @@ async def run_trials(
                             route.url,
                             route.warmup or route.url,
                             8,
-                            cache_mode=route.cache_mode,
-                            bypass_service_worker=route.bypass_service_worker,
-                            max_bytes=plan.max_response_bytes,
                         )
                         if route.transport == "chrome"
                         else await fetcher.request(
@@ -271,7 +268,6 @@ async def run_trials(
                             route.headers,
                             give_up_after=8,
                             allow_redirects=False,
-                            max_bytes=plan.max_response_bytes,
                         )
                     )
                     received = journal.now()
@@ -341,8 +337,17 @@ async def run_trials(
                     min(route.cadence(journal.now()), max(0, budget.deadline - time.monotonic()))
                 )
 
-        with fetcher.observing(budget.admit, budget.check):
-            tasks = [asyncio.create_task(observe(route)) for route in plan.routes]
+        for route in plan.routes:
+            # Each route's task keeps its own observation context: the plan's budget and
+            # byte cap, and the route's Chrome cache mode and service-worker bypass.
+            with fetcher.observing(
+                budget.admit,
+                budget.check,
+                max_bytes=plan.max_response_bytes,
+                cache_mode=route.cache_mode,
+                bypass_service_worker=route.bypass_service_worker,
+            ):
+                tasks.append(asyncio.create_task(observe(route)))
         async with asyncio.timeout(max(0, budget.deadline - time.monotonic())):
             await asyncio.gather(*tasks)
     except TimeoutError:

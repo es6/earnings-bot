@@ -12,10 +12,11 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import pytest
+from aiohttp import web
 
 from earnings_bot import unattended
 from earnings_bot.delivery import DeliveryStore
-from earnings_bot.fetch import Fetcher, Response
+from earnings_bot.fetch import Fetcher, Response, ResponseTooLarge
 from earnings_bot.pipeline import Releases
 from earnings_bot.publication_trials import TrialPlan, load_plans, run_trials
 from earnings_bot.recorder import Journal
@@ -168,3 +169,45 @@ async def test_the_bot_runs_trial_plans_from_its_schedule_folder(tmp_path: Path)
     assert len(events(log, "publication_trial_error")) == 1  # the broken plan, reported once
     assert "posted" not in {json.loads(line)["event"] for line in log.getvalue().splitlines()}
     assert (tmp_path / ".publication-trials.sqlite3").exists()
+
+
+async def test_a_trial_s_options_reach_its_requests_and_nothing_else(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A plan's byte cap stops an HTTP read, and a Chrome route's cache mode and service-worker
+    bypass reach the browser. Monitoring's requests keep their usual options."""
+
+    async def respond(request: web.Request) -> web.Response:
+        return web.Response(body=b"x" * 5000)
+
+    app = web.Application()
+    app.router.add_get("/big", respond)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    await web.TCPSite(runner, "127.0.0.1", 0).start()
+    url = f"http://127.0.0.1:{runner.addresses[0][1]}/big"
+    asked: list[dict[str, Any]] = []
+
+    class Browser:
+        async def request(self, *args: Any, **options: Any) -> Response:
+            asked.append(options)
+            return Response(args[0], 200, {}, b"", 0.01)
+
+        async def close(self) -> None:
+            pass
+
+    try:
+        async with Fetcher("Test Person test@example.com") as fetcher:
+            monkeypatch.setattr(fetcher, "_browser", Browser())
+            assert len((await fetcher.request("GET", url)).body) == 5000
+            await fetcher.browser_request(url, url, 8)
+            options = {"cache_mode": "reload", "bypass_service_worker": True}
+            with fetcher.observing(lambda host: None, lambda: None, max_bytes=4096, **options):
+                with pytest.raises(ResponseTooLarge):
+                    await fetcher.request("GET", url)
+                await fetcher.browser_request(url, url, 8)
+    finally:
+        await runner.cleanup()
+    monitoring, trial = asked
+    assert monitoring["cache_mode"] == "no-store" and not monitoring["observational"]
+    assert trial | options == trial and trial["observational"] and trial["max_bytes"] == 4096
