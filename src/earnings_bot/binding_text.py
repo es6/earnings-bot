@@ -295,6 +295,10 @@ def calendar_years(period: str, source: str, offset: int) -> set[str]:
 
 def duration(text: str) -> int | None:
     """Months a period covers; 0 for a point in time (a balance at a date)."""
+    # "Three months ending December 31" is a window, not a balance at that date.
+    explicit = re.search(r"\b(three|six|nine|twelve|3|6|9|12)[ -]*months?\b", text, re.IGNORECASE)
+    if explicit:
+        return _duration(explicit[0])
     if re.search(
         r"\bas of\b|\bas at\b|point.in.time|quarter.end|\bexit(?:ing)?\b|\bending\b|"
         r"end of (?:the )?(?:quarter|period|year)|balance",
@@ -411,6 +415,10 @@ def period_issues(
     expected = duration(value.duration) if value.duration.strip() else None
     if expected is None:
         expected = duration(value.period)
+    if expected in (3, 6, 9) and re.fullmatch(
+        r"\s*(?:FY|fiscal year|full[- ]year)\s*20\d{2}\s*", value.period, re.IGNORECASE
+    ):
+        issues.append("fiscal year label conflicts with the claimed subannual duration")
     source = _one(durations_in(local))
     if source is None and not durations_in(local):
         source = _one(durations_in(near))

@@ -292,6 +292,10 @@ unchanged.
 
 ## Prior-release driver profiles (opt-in)
 
+The [November 13 comparison](evaluation-2026-11-13.md) measured profiles, examples,
+an internal check and one conditional repair on four new issuers, three runs each.
+Final coverage remains too low for default reference-writer activation.
+
 `LIVE_DRIVER_PROFILES=true`, together with live summaries, lets `/track` research prepare
 advisory context from the issuer's latest verified SEC results release. It covers the
 business model, reported segments, recurring KPIs, guidance and material themes. Labels

@@ -41,6 +41,7 @@ from earnings_bot.binding_text import (
     words,
     years,
 )
+from earnings_bot.sec_results import reported_period
 from earnings_bot.source_document import SourceCell, SourceDocument, SourceTable
 from earnings_bot.summary_evidence import (
     VALUE_FIELDS,
@@ -403,6 +404,18 @@ def _slot_issues(field: str, value: SourcedValue, local: str, metric: str = "") 
     return issues
 
 
+def _guidance_heading(text: str) -> bool:
+    return any(
+        re.fullmatch(
+            r"(?:(?:(?:full|fiscal)[- ]year|q[1-4])\s+20\d{2}\s+)?"
+            r"(?:guidance|outlook|forecast)\s*:?",
+            line.strip(),
+            re.IGNORECASE,
+        )
+        for line in text.splitlines()
+    )
+
+
 def _comparison(field: str, value: SourcedValue, local: str) -> tuple[list[str], SourcedValue]:
     """A comparison label the source doesn't state is dropped, not shown; a comparable
     growth rate whose exclusions it doesn't state is rejected."""
@@ -490,6 +503,10 @@ def _table_binding(
         label, section = _label_and_group(table, cell)
         headers = f"{_headers(table, cell)} {prefix}".strip()
         issues = _identity_issues(fact.metric, label, group, value.unit)
+        if field not in ("previous_guidance", "new_guidance", "prior_year_actual") and (
+            _guidance_heading(frame.near)
+        ):
+            issues.append("actual is inside an explicit guidance section")
         sectioned = bool(words(section)) and words(section) not in _NEUTRAL_GROUPS
         if (
             group
@@ -776,6 +793,10 @@ def _paragraph_binding(
             elif field in ("previous_guidance", "new_guidance") and not _GUIDANCE.search(span):
                 span = f"{span} {frame.near}"  # an "Outlook" heading above the bullet
             issues.extend(_slot_issues(field, value, span, fact.metric))
+            if field not in ("previous_guidance", "new_guidance", "prior_year_actual") and (
+                _guidance_heading(frame.near)
+            ):
+                issues.append("actual is inside an explicit guidance section")
             shown = value
             if growth_slot:
                 compared, shown = _comparison(field, value, f"{text[after_end:following]} {text}")
@@ -978,6 +999,7 @@ def _bind(facts: list[ReferencedFact], document: SourceDocument) -> BindingRepor
     rejected = []
     offset = fiscal_offset(document.text[:20_000])
     reported = reporting_year(document.text[:20_000])
+    named_period = reported_period(document.text[:20_000])
     shown_updates: set[str] = set()
     for fact in facts:
         changes: dict[str, object] = {}
@@ -996,6 +1018,13 @@ def _bind(facts: list[ReferencedFact], document: SourceDocument) -> BindingRepor
                 context = replace(
                     _context(document, ref.block_id), offset=offset, reported=reported
                 )
+                if named_period and not quarter(context.far):
+                    # A harmless layout table can precede the title. The release's own
+                    # explicit reporting announcement supplies the missing opening scope;
+                    # it never supplies missing comparative column headers.
+                    year, q = named_period
+                    fiscal = "FY" if reported and reported[1] else ""
+                    context = replace(context, far=f"{context.far}\nQ{q} {fiscal}{year}")
                 used = ref
                 if isinstance(block, SourceTable):
                     issues, location, kept = _table_binding(fact, field, value, ref, block, context)

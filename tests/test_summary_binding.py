@@ -468,6 +468,61 @@ def test_text_laid_out_in_a_table_cell_is_read_as_text() -> None:
     assert not bound(document, "Operating cash flow", **claim)
 
 
+@pytest.mark.parametrize(("period", "accepted"), [("Q3 2026", True), ("Q4 2026", False)])
+def test_a_layout_table_before_the_reporting_title_does_not_erase_its_period(
+    period: str, accepted: bool
+) -> None:
+    document = document_from_html(
+        "<table><tr><td>Issuer logo</td></tr></table>"
+        "<p>Acme Reports Third Quarter 2026 Results</p>"
+        "<table><tr><td>Other information</td></tr></table>"
+        "<p>Revenue was $10 billion.</p>"
+    )
+    block = document.blocks[-1]
+    ref = {
+        "document_sha256": document.sha256,
+        "block_id": block.id,
+        "cell_ids": [],
+        "quote": block.text,
+    }
+    candidate = fact(
+        current_actual=value(amount="10", scale="billion", period=period, basis="", evidence=[ref])
+    )
+    result = bind_answer(
+        json.dumps({"schema_version": "source-values/1", "facts": [candidate]}), document
+    )
+    assert bool(result.facts) == accepted
+
+
+@pytest.mark.parametrize("table", [False, True])
+def test_a_reporting_title_cannot_turn_an_outlook_value_into_an_actual(table: bool) -> None:
+    document = (
+        document_from_html(
+            "<p>Acme Reports Third Quarter 2026 Results (USD billions)</p>"
+            "<p>Full Year 2026 Guidance</p><table><tr><th>Revenue</th>"
+            "<td>$12 billion to $13 billion</td></tr></table>"
+        )
+        if table
+        else document_from_text(
+            "Acme Reports Third Quarter 2026 Results\nFull Year 2026 Guidance\n"
+            "Revenue between $12 billion and $13 billion."
+        )
+    )
+    guide = {"amount": "12", "upper": "13", "scale": "billion", "duration": "full year"}
+    assert bound(document, "Revenue", "new_guidance", **guide, period="FY2026")
+    assert not bound(document, "Revenue", **guide, period="Q3 2026")
+
+
+def test_a_full_year_label_cannot_hide_a_quarter_guidance_duration() -> None:
+    document = document_from_text(
+        "Acme Reports Third Quarter 2026 Results\nQ4 2026 Outlook\n"
+        "Revenue between $12 billion and $13 billion."
+    )
+    guide = {"amount": "12", "upper": "13", "scale": "billion", "duration": "three months"}
+    assert bound(document, "Revenue", "new_guidance", **guide, period="Q4 2026")
+    assert not bound(document, "Revenue", "new_guidance", **guide, period="FY2026")
+
+
 def test_unstated_labels_are_dropped_and_a_bad_fact_does_not_sink_the_brief() -> None:
     document = document_from_text(
         "Third quarter 2026 results\nComparable restaurant sales increased 2.1%."
