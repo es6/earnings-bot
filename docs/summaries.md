@@ -12,6 +12,11 @@ confirmed facts by period and kind, as in the reviewed Discord previews, and the
 counts the facts held back. A failed or fully unconfirmed summary posts nothing, and the next
 source's text can try again.
 
+A brief longer than one embed's 4,096 characters continues in "Highlights, continued" embeds,
+split at line breaks. Anything past Discord's 6,000-character limit for a whole message is
+counted in a visible note at the end, not cut silently. A later link edit rebuilds the brief
+from all of its embeds.
+
 Summaries cost money per release, so they run only with both `LIVE_SUMMARIES=true` and
 `META_MODEL_API_KEY` in `.env`; a key alone never starts paid calls. Estimates aren't sent, so
 the brief never calls a beat or miss. The checks establish traceability, not that the model
