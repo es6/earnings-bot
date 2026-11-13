@@ -248,7 +248,10 @@ def main() -> None:
         lambda: planned_windows(args.schedules, channel),
         lambda text: post_webhook(url, text),
     )
-    print(f"{datetime.now(UTC):%H:%M:%S} watching {args.schedules} every {CHECK_SECONDS:g}s")
+    print(
+        f"{datetime.now(UTC):%H:%M:%S} watching {args.schedules} every {CHECK_SECONDS:g}s",
+        flush=True,
+    )
     while True:
         ok = dog.check_safely(datetime.now(UTC))
         if args.once:
