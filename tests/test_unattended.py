@@ -87,18 +87,21 @@ class FakeDiscord:
         self,
         content: str = "",
         *,
-        nonce: str,
+        nonce: str | None = None,
         embed: discord.Embed | None = None,
         embeds: list[discord.Embed] | None = None,
+        allowed_mentions: object = None,
     ) -> FakeMessage:
         self.attempts += 1
         if self.fail_before_send:
             self.fail_before_send = False
             raise TimeoutError("request timed out before delivery")
-        if nonce in self.nonces:
+        if nonce is not None and nonce in self.nonces:
             return self.nonces[nonce]
         message = FakeMessage(next(self.ids), content, embed=embed, extra_embeds=embeds or [])
-        self.messages[message.id] = self.nonces[nonce] = message
+        self.messages[message.id] = message
+        if nonce is not None:
+            self.nonces[nonce] = message
         if self.lose_response:
             self.lose_response = False
             raise TimeoutError("Discord accepted the message but the response was lost")
@@ -112,9 +115,11 @@ class FakeDiscord:
     def delete(self, message_id: int) -> None:
         self.messages.pop(message_id).deleted = True
 
-    async def history(self, *, limit: int | None, after: datetime) -> AsyncIterator[FakeMessage]:
+    async def history(
+        self, *, limit: int | None, after: datetime | None = None
+    ) -> AsyncIterator[FakeMessage]:
         for message in self.messages.values():
-            if message.created_at > after:
+            if after is None or message.created_at > after:
                 yield message
 
     def poster(self, store: DeliveryStore, target: Target) -> DurableDiscordPoster:
@@ -839,3 +844,24 @@ async def test_a_resumed_alert_gives_no_time_for_a_link_it_already_had(tmp_path:
     linked = [r for r in map(json.loads, log.getvalue().splitlines()) if r["event"] == "linked"]
     assert linked
     assert [r["live_seconds"] for r in linked] == [None] * len(linked)
+
+
+async def test_a_start_notice_replaces_the_ones_before_it(tmp_path: Path) -> None:
+    """Each deploy left another "Earnings monitoring started" message in the channel."""
+    channel = FakeDiscord()
+    old = await channel.send("🟢 **Earnings monitoring started** · v0.15.3 · `schedules/`")
+    alert = await channel.send("🚨 **$AMAT Q4 FY26 earnings are out**", nonce="alert")
+    with DeliveryStore(tmp_path / "progress.db", 7) as store:
+        messages = cast(discord.abc.Messageable, channel)
+        await unattended.replace_start_notice(
+            messages, store, 42, "🟢 **Earnings monitoring started** · v0.19.3"
+        )
+        [first] = [m for m in channel.messages.values() if m.content.endswith("v0.19.3")]
+        assert old.deleted and not first.deleted
+        await unattended.replace_start_notice(
+            messages, store, 42, "🟢 **Earnings monitoring started** · v0.19.4"
+        )
+
+    shown = [m.content for m in channel.messages.values() if not m.deleted]
+    assert shown == [alert.content, "🟢 **Earnings monitoring started** · v0.19.4"]
+    assert first.deleted

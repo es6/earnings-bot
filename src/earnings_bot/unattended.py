@@ -1,6 +1,7 @@
 """Watch a changing schedule directory with one polling and delivery coordinator."""
 
 import asyncio
+import contextlib
 import tomllib
 from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import dataclass
@@ -512,6 +513,36 @@ def _window_report(target: Target, watches: list[Watch], comparison: str = "") -
     return "\n".join(lines)
 
 
+STARTED = "🟢 **Earnings monitoring started**"
+# How far back the status channel is searched for earlier start notices to remove
+NOTICE_LOOKBACK = 100
+
+
+async def replace_start_notice(
+    channel: discord.abc.Messageable, store: DeliveryStore, author_id: int, text: str
+) -> None:
+    """Posts the start notice, then deletes the earlier ones, so the channel shows only the
+    running version's. Earlier ones are the notice whose ID was saved at the last start, and
+    any of the bot's own in the last NOTICE_LOOKBACK messages, which covers those posted
+    before IDs were saved."""
+    message = await channel.send(text[:1900], allowed_mentions=discord.AllowedMentions.none())
+    saved = store.notice("started")
+    store.set_notice("started", message.id)
+    stale: dict[int, discord.Message | None] = {}
+    if saved is not None and saved != message.id:
+        stale[saved] = None
+    async for earlier in channel.history(limit=NOTICE_LOOKBACK):
+        if (
+            earlier.id != message.id
+            and earlier.author.id == author_id
+            and earlier.content.startswith(STARTED)
+        ):
+            stale[earlier.id] = earlier
+    for message_id, earlier in stale.items():
+        with contextlib.suppress(discord.NotFound):
+            await (earlier or await channel.fetch_message(message_id)).delete()
+
+
 async def watch_directory(
     directory: Path,
     channel: discord.abc.Messageable,
@@ -532,21 +563,24 @@ async def watch_directory(
         DeliveryStore(directory / ".earnings-state.sqlite3", channel_id) as store,
     ):
         journal = Journal(file)
-        queue: asyncio.Queue[str] = asyncio.Queue()
+        queue: asyncio.Queue[tuple[str, bool]] = asyncio.Queue()
 
-        def status(message: str) -> None:
+        def status(message: str, *, start: bool = False) -> None:
             journal.write("status", message=message)
             journal.say(message)
             if status_channel is not None:
-                queue.put_nowait(message)
+                queue.put_nowait((message, start))
 
         async def report(channel: discord.abc.Messageable) -> None:
             while True:
-                message = await queue.get()
+                message, start = await queue.get()
                 try:
-                    await channel.send(
-                        message[:1900], allowed_mentions=discord.AllowedMentions.none()
-                    )
+                    if start:
+                        await replace_start_notice(channel, progress_store, author_id, message)
+                    else:
+                        await channel.send(
+                            message[:1900], allowed_mentions=discord.AllowedMentions.none()
+                        )
                 except (aiohttp.ClientError, discord.HTTPException, TimeoutError) as error:
                     journal.say(f"Status post failed: {error!r}")
 
@@ -602,9 +636,7 @@ async def watch_directory(
             watcher.dates.on_progress = watcher.progress.changed.set
             watcher.progress.follow_calendar()
             ready(watcher)
-            status(
-                f"🟢 **Earnings monitoring started** · {release_version()} · `{directory.name}/`"
-            )
+            status(f"{STARTED} · {release_version()} · `{directory.name}/`", start=True)
             tasks = [
                 asyncio.create_task(recover_pending()),
                 asyncio.create_task(watcher.progress.run()),
