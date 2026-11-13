@@ -107,6 +107,63 @@ async def test_a_slow_answer_times_out_without_losing_the_warm_tab() -> None:
     assert socket.sent[-1]["params"]["expression"].endswith(", 3000)")
 
 
+@pytest.mark.parametrize(
+    ("label", "host", "samples"),
+    [
+        ("Q3 2026 Earnings Release", "ir.example.com", 1),
+        ("Q2 2026 Earnings Release", "ir.example.com", 4),
+        ("Q3 2026 Earnings Release", "other.example.net", 4),
+        ("Q3 2026 Earnings Call", "ir.example.com", 4),
+    ],
+)
+async def test_render_only_skips_settling_for_a_verified_target_quarter_pdf(
+    label: str, host: str, samples: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from earnings_bot.browser import RenderedPage
+    from earnings_bot.quarterly_table import rendered_pdf
+
+    chrome = DesktopChrome()
+    socket = FakeTabSocket()
+    socket.value = {
+        "url": "https://ir.example.com/results",
+        "status": 200,
+        "title": "Results",
+        "text": "Results",
+        "links": [[f"https://{host}/report.pdf", label, "card"]],
+        "frames": [],
+    }
+
+    async def started() -> None:
+        pass
+
+    async def new_tab(key: str) -> _Tab:
+        tab = chrome._tabs[key] = _Tab(key, socket)  # type: ignore[arg-type]
+        return tab
+
+    async def drop(key: str) -> None:
+        chrome._tabs.pop(key)
+
+    async def wait_turn(host: str) -> None:
+        pass
+
+    def ready(page: RenderedPage) -> bool:
+        return rendered_pdf(page, 2026, 3) is not None
+
+    monkeypatch.setattr(chrome, "_start", started)
+    monkeypatch.setattr(chrome, "_new_tab", new_tab)
+    monkeypatch.setattr(chrome, "_drop", drop)
+    await chrome.render("https://ir.example.com/results", 10, wait_turn, ready=ready)
+    assert (
+        sum(
+            msg["params"].get("expression") == _SETTLED
+            for msg in socket.sent
+            if msg["method"] == "Runtime.evaluate"
+        )
+        == samples
+    )
+    assert not chrome._tabs
+
+
 async def test_research_yields_after_pacing_without_dropping_a_live_warm_tab() -> None:
     from earnings_bot.browser import BrowserDeferred
 

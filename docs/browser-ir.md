@@ -39,6 +39,13 @@ Chrome and checks the link's fiscal period before downloading the PDF.
 A working Chrome route can still return a cached copy. The journal records
 listing timings separately from PDF downloads.
 
+For a rendered quarterly-results page, the browser can return as soon as its existing
+issuer/period matcher finds the scheduled quarter's earnings-release PDF. It need not
+wait for four identical page samples while unrelated scripts update the page. Old
+quarters, earnings calls and another issuer's files do not trigger early return; the
+bounded settling fallback remains for pages without a match. PDF retrieval and full
+report verification still follow. Publication timing with this condition is unmeasured.
+
 An issuer's JSON newsroom and quarterly results API can also be watched together.
 `news_api` and `results_api` keep their own verified route and cache policy; both
 share the issuer host's request budget. A results API must retrieve the prior

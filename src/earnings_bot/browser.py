@@ -173,6 +173,20 @@ class RenderedPage:
     cards: list[str] = field(default_factory=list)
 
 
+def _rendered_page(page: dict[str, Any]) -> RenderedPage:
+    final = urldefrag(str(page["url"])).url
+    browser_host(final)
+    return RenderedPage(
+        url=final,
+        status=int(page["status"] or 0),
+        title=str(page["title"]),
+        text=str(page["text"]),
+        links=[(str(link), str(text)) for link, text, _ in page["links"]],
+        frames=[str(frame) for frame in page["frames"]],
+        cards=[str(card) for _, _, card in page["links"]],
+    )
+
+
 # Enough for a long press release or a list of a few hundred releases
 MAX_RENDERED_TEXT = 400_000
 _SETTLED = (
@@ -366,6 +380,8 @@ class DesktopChrome:
         url: str,
         give_up_after: float,
         wait_turn: Callable[[str], Awaitable[None]],
+        *,
+        ready: Callable[[RenderedPage], bool] | None = None,
     ) -> RenderedPage:
         """Open a page in its own tab and read it once its scripts stop changing it. Many IR
         sites build their release lists in the browser, so the HTML a request gets is empty."""
@@ -388,6 +404,12 @@ class DesktopChrome:
                     self._check_allowed()
                     with suppress(BrowserError):
                         state = await _evaluate(tab.socket, _SETTLED)
+                        if ready and state and state[0] != "loading":
+                            candidate = _rendered_page(
+                                await _evaluate(tab.socket, f"{_READ_PAGE}({MAX_RENDERED_TEXT})")
+                            )
+                            if ready(candidate):
+                                return candidate
                         seen.append(state)
                         if (
                             state
@@ -397,17 +419,7 @@ class DesktopChrome:
                         ) or time.monotonic() - started > give_up_after - 1.5:
                             break
                 page = await _evaluate(tab.socket, f"{_READ_PAGE}({MAX_RENDERED_TEXT})")
-            final = urldefrag(str(page["url"])).url
-            browser_host(final)  # a redirect to somewhere Chrome may not go isn't read
-            return RenderedPage(
-                url=final,
-                status=int(page["status"] or 0),
-                title=str(page["title"]),
-                text=str(page["text"]),
-                links=[(str(link), str(text)) for link, text, _ in page["links"]],
-                frames=[str(frame) for frame in page["frames"]],
-                cards=[str(card) for _, _, card in page["links"]],
-            )
+            return _rendered_page(page)
         except (aiohttp.ClientError, ValueError, KeyError, TypeError) as error:
             raise BrowserError(str(error)) from error
         finally:

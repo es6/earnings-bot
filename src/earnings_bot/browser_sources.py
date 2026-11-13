@@ -13,7 +13,7 @@ from urllib.parse import urldefrag, urljoin, urlsplit
 import aiohttp
 from pydantic import BaseModel, Field, model_validator
 
-from earnings_bot.browser import BrowserError, DesktopChrome, browser_host
+from earnings_bot.browser import BrowserError, DesktopChrome, RenderedPage, browser_host
 from earnings_bot.fetch import Fetcher, Response
 from earnings_bot.issuer_news import IssuerNews, IssuerResults
 from earnings_bot.quarterly_table import quarter_pdf, rendered_pdf
@@ -466,10 +466,16 @@ class QuarterlyTable(HttpRelease):
         url = self.listing_url()
         if self.rendered:
             sent = time.monotonic()
+
+            def ready(page: RenderedPage) -> bool:
+                return (
+                    page.status == 200 and rendered_pdf(page, self.year, self.quarter) is not None
+                )
+
             page = (
-                await self.browser.render(url, 10, fetcher.wait_turn)
+                await self.browser.render(url, 10, fetcher.wait_turn, ready=ready)
                 if self.browser
-                else await fetcher.browser_render(url, 10)
+                else await fetcher.browser_render(url, 10, ready=ready)
             )
             listing = Response(url, page.status, {}, b"", time.monotonic() - sent)
             self.listing_transport = "chrome-rendered"
