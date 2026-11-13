@@ -20,7 +20,7 @@ from earnings_bot.sec_results import SixKResults, is_results_release, reported_p
 from earnings_bot.source_audit import Speed, Timing, audit_sources, site_local_time
 from earnings_bot.sources import EdgarFilings, EdgarLatest, Sighting, _filing_type
 from earnings_bot.track_progress import TrackProgress
-from tests.fakes import RoutedFetcher, embed_text, sec_filing_detail
+from tests.fakes import PinnedClock, RoutedFetcher, embed_text, sec_filing_detail
 from tests.results_data import (
     CRM_RELEASES,
     HD_RELEASES,
@@ -497,7 +497,7 @@ async def test_a_results_6k_can_begin_after_a_full_cover_page() -> None:
 
 
 async def test_followup_verifies_a_results_6k_accepted_after_the_window() -> None:
-    journal = Journal(io.StringIO())
+    journal = Journal(io.StringIO(), PinnedClock())
     now = journal.now()
     target = Target(
         ticker="BN",

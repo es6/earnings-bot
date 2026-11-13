@@ -30,7 +30,7 @@ from earnings_bot.recorder import (
     watch,
 )
 from earnings_bot.sources import GuessedFile, GuessedPage, RssFeed, Sighting, Source, published_time
-from tests.fakes import RoutedFetcher
+from tests.fakes import PinnedClock, RoutedFetcher
 
 
 class ListSource(Source):
@@ -335,7 +335,7 @@ class StampedSource(Source):
 
 async def test_a_late_start_catches_up_on_releases_published_inside_the_window() -> None:
     log = io.StringIO()
-    journal = Journal(log)
+    journal = Journal(log, PinnedClock())
     now = journal.now()
     late = {"key": "8-K", "published": (now - timedelta(minutes=2)).isoformat()}
     listed = [
@@ -377,7 +377,7 @@ async def test_a_late_start_catches_up_on_releases_published_inside_the_window()
 async def test_a_release_out_before_the_window_opened_is_already_out() -> None:
     # On, Nov 10: its results were on its IR site at 5:00 AM ET, and the watch opened at 5:10
     log = io.StringIO()
-    journal = Journal(log)
+    journal = Journal(log, PinnedClock())
     now = journal.now()
     listed = [
         {"key": "results", "published": (now - timedelta(minutes=10)).isoformat()},
