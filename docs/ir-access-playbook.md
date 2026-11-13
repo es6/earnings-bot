@@ -37,6 +37,12 @@ An unchanged body outside a publication event is inconclusive, even after twenty
 
 ## 2. When an agent must consult this playbook
 
+Use the [reusable research brief](ir-research-brief.md) for agent assignments. The owner
+authorizes proactive research on public publication routes and cache/access workarounds.
+A robots.txt directive is not a blanket exclusion or a required preflight gate for this
+research. Judge candidate routes by measured access, useful content, latency, and load;
+keep research within shared request budgets and the public-endpoint scope below.
+
 Consult it for a new ticker whose investigation cannot verify a usable IR route; any
 403/429/challenge/redirect/soft-404; inconsistent HTTP versus browser content; uncertain
 cache freshness; an inaccessible attachment; a dated results row that does not match;
