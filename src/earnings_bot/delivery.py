@@ -381,9 +381,12 @@ class DeliveryStore:
             )
 
 
+RETRY_DELAYS = (1.0, 2.0)  # seconds before the second and third tries
+
+
 async def retry_delivery[T](send: Callable[[], Awaitable[T]]) -> T:
     """Give a transient Discord error two more chances on the same delivery intent."""
-    for delay in (1, 2):
+    for delay in RETRY_DELAYS:
         try:
             return await send()
         except discord.HTTPException as error:
