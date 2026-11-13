@@ -58,15 +58,27 @@ schedules so a restart resumes alerts and scorecards. New TOML entries should sp
 the issuer's fiscal year and quarter) so moving a window to another day keeps the same
 identity. Older entries use the issuer's CIK and Eastern release date.
 
-For Windows Task Scheduler, create a task that starts at system startup and launches
-`powershell.exe` with arguments like
-`-NoProfile -File "C:\earnings-bot\scripts\run-bot.ps1"`. Use the bot owner's Windows
-account, with access to the checkout, its `.env`, and `uv`. Select **Run whether user is
-logged on or not** for startup monitoring, and **Do not start a new instance** for
-overlapping task launches. Disable the task's execution time limit. The script restarts
-the bot after it exits and
-writes its console output to `recordings/`. Run the script manually first to check its
-configuration, then stop that copy before starting the scheduled task.
+To run the bot and its watchdog from Task Scheduler, run `.\scripts\install-tasks.ps1` as the
+Windows user that owns the checkout, its `.env` and `uv`. Add `-WhatIf` to see what it would
+register. It registers two tasks:
+
+- **"Earnings Bot"** runs `scripts/run-bot.ps1`.
+- **"Earnings Bot Watchdog"** runs `scripts/run-watchdog.ps1`.
+
+Each task:
+
+- runs only while that user is signed in, which Chrome needs;
+- starts at logon and again every 5 minutes. A copy that's already running ignores the extra
+  start, since each script holds a lock;
+- runs without a window, through `conhost.exe --headless`.
+
+The repeating start covers a logon that starts nothing: on Nov 13, 2026, the logon after a
+restart left the bot down for 13 hours. The hidden window means a Windows Terminal tab can't be
+closed by mistake, which stopped the bot twice on Nov 9.
+
+The script refuses to change the tasks while a release window is open. A bot already running
+keeps its old task definition until `.\scripts\update-bot.ps1 -Restart`. The scripts restart a
+bot or watchdog that exits, and write their console output to `recordings/`.
 
 To put the latest `main` on the running bot, run `.\scripts\update-bot.ps1`. It refuses if
 the checkout isn't a clean `main`, or if a release window is open, or opens within 5 minutes,
@@ -77,10 +89,8 @@ restart as soon as the window allows, `-Restart` to restart with nothing new, or
 restart during a window.
 
 [Chrome IR sources](docs/browser-ir.md) can be prepared by the planner or configured per release.
-They record timing by default.
-For Chrome, use an **At log on** trigger with **Run only when user is logged
-on**, unless you've already verified Chrome under the unattended startup account. Use a single
-task. Other sources keep running if Chrome cannot start.
+They record timing by default. Chrome needs the signed-in session the tasks above run in.
+Other sources keep running if Chrome cannot start.
 
 ## Development
 
