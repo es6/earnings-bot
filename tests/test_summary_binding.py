@@ -11,7 +11,7 @@ from earnings_bot.source_document import (
     document_from_html,
     document_from_text,
 )
-from earnings_bot.summary_binding import bind_brief
+from earnings_bot.summary_binding import bind_answer, bind_brief
 from earnings_bot.summary_evidence import parse_referenced_brief
 from tests.test_summary_evidence import fact, value
 
@@ -263,13 +263,15 @@ def test_an_invalid_optional_prior_is_dropped_while_the_bound_current_value_surv
 
 
 @pytest.mark.parametrize(
-    "claim,accepted",
+    "claim,shown",
     [
-        ("The facility opens in 2027.", True),
-        ("The facility opens in 2027 and doubles demand.", False),
+        ("The facility opens in 2027.", "The facility opens in 2027."),
+        # The consequence the source doesn't state is never shown: the source's own sentence is
+        ("The facility opens in 2027 and doubles demand.", "The facility opens in 2027."),
+        ("A new facility in Texas opens in 2028.", None),
     ],
 )
-def test_unsupported_business_consequences_are_held_back(claim: str, accepted: bool) -> None:
+def test_unsupported_business_consequences_are_held_back(claim: str, shown: str | None) -> None:
     document = document_from_text("The facility opens in 2027.")
     ref = {
         "document_sha256": document.sha256,
@@ -281,4 +283,203 @@ def test_unsupported_business_consequences_are_held_back(claim: str, accepted: b
     candidate = parse_referenced_brief(
         json.dumps({"schema_version": "source-values/1", "facts": [data]}), document
     )
-    assert bool(bind_brief(candidate, document).facts) == accepted
+    facts = bind_brief(candidate, document).facts
+    assert (facts[0].fact.update if facts else None) == shown
+
+
+# Patterns from the six frozen Ember-low outputs of November 13 (ADBE, CMG, GE, JPM, PLTR,
+# WMT), reduced to their shape. Each pairs a supported claim with a false one.
+
+
+def bound(document: SourceDocument, metric: str, field: str = "current_actual", **changes: Any):
+    """Bind one value of a fact, cited by the document's last block, through bind_answer."""
+    block = document.tables[0] if document.tables else document.blocks[-1]
+    ref = {
+        "document_sha256": document.sha256,
+        "block_id": block.id,
+        "cell_ids": [c.id for c in block.cells] if isinstance(block, SourceTable) else [],
+        "quote": block.text,
+    }
+    data = fact(metric=metric, current_actual=None)
+    data[field] = value(**({"basis": "", "evidence": [ref]} | changes))
+    report = bind_answer(
+        json.dumps({"schema_version": "source-values/1", "facts": [data]}), document
+    )
+    kept = [getattr(b.fact, field) for b in report.facts if getattr(b.fact, field)]
+    return kept[0] if kept else None
+
+
+RELEASE = "Adobe reports third quarter fiscal 2026 results\n"
+
+
+def test_a_measure_is_named_by_its_key_words_not_its_exact_label() -> None:
+    document = document_from_text(
+        RELEASE + "Adobe achieved record revenue of $6.76 billion in its third quarter of FY2026."
+    )
+    claim = {"amount": "6.76", "scale": "billion", "unit": "dollars", "period": "Q3 FY2026"}
+    assert bound(document, "Total revenue", **claim)
+    assert not bound(document, "Total operating income", **claim)
+    # A rounding of the stated number is that number; a different number is not
+    assert bound(document, "Total revenue", **(claim | {"amount": "6.8"}))
+    assert not bound(document, "Total revenue", **(claim | {"amount": "6.67"}))
+    assert not bound(document, "Total revenue", **(claim | {"amount": "6.761"}))
+
+
+def test_each_basis_in_one_sentence_binds_to_its_own_number() -> None:
+    document = document_from_text(
+        RELEASE + "Diluted earnings per share was $4.62 on a GAAP basis and $6.13 on a "
+        "non-GAAP basis."
+    )
+    eps = {"scale": "one", "unit": "dollars per share", "period": "Q3 FY2026"}
+    assert bound(document, "Diluted EPS (non-GAAP)", **eps, amount="6.13")
+    assert bound(document, "Diluted EPS (GAAP)", **eps, amount="4.62")
+    assert not bound(document, "Diluted EPS (non-GAAP)", **eps, amount="4.62")
+    assert not bound(document, "Diluted EPS (GAAP)", **eps, amount="6.13")
+
+
+def test_year_over_year_is_not_read_as_more_than() -> None:
+    document = document_from_text(
+        RELEASE + "Revenue was $6.76 billion, which represents 13% year-over-year growth."
+    )
+    growth = {
+        "amount": "13",
+        "scale": "one",
+        "unit": "percent",
+        "currency": "",
+        "comparison": "YoY",
+    }
+    assert bound(document, "Revenue", "reported_growth", **growth, period="Q3 FY2026")
+    assert not bound(
+        document,
+        "Revenue",
+        "reported_growth",
+        **growth,
+        period="Q3 FY2026",
+        value_qualifier="more_than",
+    )
+
+
+def test_a_decrease_is_a_negative_growth_rate() -> None:
+    document = document_from_text(
+        "Third quarter 2026 results\nDiluted earnings per share was $0.27, a 6.9% decrease "
+        "from $0.29."
+    )
+    growth = {"scale": "one", "unit": "%", "currency": "", "period": "Q3 2026"}
+    assert bound(document, "Diluted EPS", "reported_growth", **growth, amount="-6.9")
+    assert not bound(document, "Diluted EPS", "reported_growth", **growth, amount="6.9")
+
+
+def test_a_fiscal_label_is_compared_with_calendar_columns_through_the_release_offset() -> None:
+    document = document_from_html(
+        "<p>Walmart reports second quarter of fiscal year 2027 results for the three months "
+        "ended July 31, 2026 (amounts in millions).</p><table>"
+        "<tr><th></th><th>Three Months Ended July 31, 2026</th>"
+        "<th>Three Months Ended July 31, 2025</th></tr>"
+        "<tr><td>Operating income</td><td>$9,383</td><td>$7,286</td></tr></table>"
+    )
+    claim = {"amount": "9383", "scale": "million", "unit": "money"}
+    assert bound(document, "Operating income", **claim, period="Q2 FY27")
+    assert not bound(document, "Operating income", **claim, period="Q2 FY26")
+    assert bound(
+        document,
+        "Operating income",
+        "prior_year_actual",
+        amount="7286",
+        scale="million",
+        period="Q2 FY26",
+    )
+
+
+def test_a_change_column_is_headed_by_the_year_it_compares_with() -> None:
+    document = document_from_html(
+        "<p>Third quarter 2026 results ($ in millions)</p><table>"
+        "<tr><th></th><th>3Q26</th><th>3Q25</th><th>3Q25 O/(U) %</th></tr>"
+        "<tr><td>Net revenue</td><td>$46,400</td><td>$43,000</td><td>8</td></tr></table>"
+    )
+    growth = {"amount": "8", "scale": "one", "unit": "%", "currency": "", "comparison": "YoY"}
+    assert bound(document, "Net revenue", "reported_growth", **growth, period="3Q26")
+    assert not bound(document, "Net revenue", "reported_growth", **growth, period="3Q27")
+
+
+def test_a_count_can_name_what_it_counts_after_the_number() -> None:
+    document = document_from_text(
+        "Third quarter 2026 results\nWe repurchased approximately 9.5 million shares during "
+        "the quarter."
+    )
+    claim = {
+        "amount": "9.5",
+        "scale": "million",
+        "unit": "shares",
+        "currency": "USD",
+        "period": "Q3 2026",
+        "value_qualifier": "approximately",
+    }
+    shares = bound(document, "Shares repurchased", **claim)
+    assert shares and shares.currency == "" and shares.unit == "shares"
+    assert not bound(document, "Restaurants opened", **claim)
+
+
+def test_text_laid_out_in_a_table_cell_is_read_as_text() -> None:
+    document = document_from_html(
+        "<p>Second quarter fiscal 2027 results</p><table><tr><td>Highlights</td><td>"
+        "Free cash flow of $5.5 billion for the six months ended July 31, 2026, a decrease of "
+        "$1.4 billion.</td></tr></table>"
+    )
+    claim = {
+        "amount": "5.5",
+        "scale": "billion",
+        "unit": "money",
+        "period": "H1 FY27",
+        "duration": "six months",
+    }
+    assert bound(document, "Free cash flow", **claim)
+    assert not bound(document, "Operating cash flow", **claim)
+
+
+def test_unstated_labels_are_dropped_and_a_bad_fact_does_not_sink_the_brief() -> None:
+    document = document_from_text(
+        "Third quarter 2026 results\nComparable restaurant sales increased 2.1%."
+    )
+    block = document.blocks[-1]
+    ref = {
+        "document_sha256": document.sha256,
+        "block_id": block.id,
+        "cell_ids": [],
+        "quote": block.text,
+    }
+    growth = value(
+        amount="2.1", scale="one", unit="%", currency="", comparison="YoY", basis="", evidence=[ref]
+    )
+    good = fact(
+        metric="Comparable restaurant sales",
+        group="Profitability",
+        current_actual=None,
+        comparable_growth=growth,
+    )
+    broken = fact(metric="Store count", update="New stores", update_evidence=[])
+    report = bind_answer(
+        json.dumps({"schema_version": "source-values/1", "facts": [broken, good]}), document
+    )
+    [kept] = [b.fact for b in report.facts if b.fact.comparable_growth]
+    # The source says "increased", not year over year, and names no "Profitability" segment
+    assert kept.comparable_growth and kept.comparable_growth.comparison == ""
+    assert kept.group == ""
+
+
+def test_positions_alone_never_bind_a_value() -> None:
+    """Guards for the looser clause matching above: a flattened table row or a "respectively"
+    list ties numbers to items only by position, which proves nothing."""
+    row = document_from_text("Third quarter 2026 results\nNet income $ 1,331 $ 1,438 $ 448 $ 421")
+    claim = {"scale": "million", "unit": "money", "period": "Q3 2026"}
+    assert not bound(row, "Net income", **claim, amount="448")
+    listed = document_from_text(
+        "Third quarter 2026 results\nBasic and diluted earnings per share were $4.31 and "
+        "$4.30, respectively."
+    )
+    eps = {"scale": "one", "unit": "per share", "period": "Q3 2026"}
+    assert not bound(listed, "Diluted EPS", **eps, amount="4.30")
+    assert not bound(listed, "Diluted EPS", **eps, amount="4.31")
+    sentence = document_from_text(
+        "Third quarter 2026 results\nDiluted earnings per share was $4.30, up from $3.90."
+    )
+    assert bound(sentence, "Diluted EPS", **eps, amount="4.30")
