@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 from functools import partial
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 import aiohttp
 import discord
@@ -465,7 +465,7 @@ class Release:
             sighting.url
         ).path.lower().endswith(FILE_TYPES)
         if is_file:
-            label = self._attachment_name(sighting.url)
+            label = self._file_label(sighting.url)
         self._spawn(self._link(label, sighting.url))
         if is_file:
             self._spawn(self._attach(sighting.url, sighting.body))
@@ -508,7 +508,10 @@ class Release:
         """Seconds from the first sighting to Discord's own timestamp on a change, which is when
         people could see it. Discord's reply can reach us seconds later than that, when
         discord.py waits out a rate limit before returning."""
-        if stamp is None or self.first_seen is None:
+        if stamp is None or self.first_seen is None or stamp < self.first_seen:
+            # A stamp from before the sighting belongs to an alert resumed after a restart that
+            # already had this change, so nothing went live now. It logged "live after
+            # -15761.29s" on Nov 12.
             return None
         return round((stamp - self.first_seen).total_seconds(), 2)
 
@@ -577,7 +580,8 @@ class Release:
         elif event == "resumed":
             self.journal.say(f"{self.target.ticker}: resumed the existing alert")
         else:
-            self.journal.say(f"{self.target.ticker}: added the {label} link, live after {live}s")
+            when = f", live after {live}s" if live is not None else ""
+            self.journal.say(f"{self.target.ticker}: added the {label} link{when}")
 
     def _attachment_name(self, url: str) -> str:
         name = _file_name(url)
@@ -585,6 +589,12 @@ class Release:
             period = self.target.period or self.target.expected.astimezone(ET).date()
             return f"{self.target.ticker}-{period}-results.pdf"
         return name
+
+    def _file_label(self, url: str) -> str:
+        """A file's name as the alert shows it, without URL escapes: Nebius's Q3 2026 PDF read
+        "Nebius%20Q3%202026%20Financial%20Results%20Press%20Release.pdf". The attachment keeps
+        its name as before, so an alert resumed after a restart still recognizes its file."""
+        return unquote(self._attachment_name(url))
 
     async def _read_browser_feed(
         self, source: BrowserRss, sighting: Sighting, label: str, measure: bool
@@ -669,7 +679,7 @@ class Release:
                     url=url,
                     format="pdf",
                 )
-            await self._link(name, url)
+            await self._link(self._file_label(url), url)
             await self._attach(url, response.body)
         elif name not in self.files:
             self.journal.write(

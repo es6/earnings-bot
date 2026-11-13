@@ -807,3 +807,35 @@ async def test_changed_sources_rearm_an_active_followup(
             await asyncio.gather(
                 *(window.task for window in runner.windows.values()), return_exceptions=True
             )
+
+
+async def test_a_resumed_alert_gives_no_time_for_a_link_it_already_had(tmp_path: Path) -> None:
+    """After the Nov 12 restart: "NBIS: added the IR site link, live after -15761.29s". The
+    link was already on the hours-old alert, so nothing went live then."""
+    target, channel, log = uber(), FakeDiscord(), io.StringIO()
+    feed = RssFeed("issuer", "https://issuer.example/rss")
+    sightings = [
+        Sighting("1", "Quarterly results", "https://issuer.example/q3", earnings=True),
+        Sighting("2", "Quarterly results", "https://wire.example/q3", earnings=True),
+    ]
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        release = Release(
+            target, channel.poster(store, target), RoutedFetcher({}), Journal(io.StringIO()), None
+        )
+        for sighting in sightings:
+            release.add(feed, sighting)
+        await release.finish()
+        alert = channel.messages[1]
+        assert alert.edited_at is not None
+        alert.edited_at -= timedelta(hours=4)
+
+        resumed = Release(
+            target, channel.poster(store, target), RoutedFetcher({}), Journal(log), None
+        )
+        for sighting in sightings:
+            resumed.add(feed, sighting)
+        await resumed.finish()
+
+    linked = [r for r in map(json.loads, log.getvalue().splitlines()) if r["event"] == "linked"]
+    assert linked
+    assert [r["live_seconds"] for r in linked] == [None] * len(linked)

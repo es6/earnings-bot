@@ -959,3 +959,15 @@ async def test_at_most_two_model_calls_run_at_once(
 
     assert len(summarizer.calls) == 3
     assert most == 2
+
+
+async def test_a_file_link_reads_without_url_escapes() -> None:
+    """Nebius's Q3 2026 PDF showed as "Nebius%20Q3%202026%20Financial%20Results..."."""
+    url = "https://nebius.com/files/Nebius%20Q3%202026%20Results.pdf"
+    poster = FakePoster()
+    release = Release(uber(), poster, RoutedFetcher({}), Journal(io.StringIO()), None)
+
+    release.add(GuessedFile(url), Sighting(url, "Nebius Q3 2026 Results", url))
+    await release.finish()
+
+    assert f"[Nebius Q3 2026 Results.pdf](<{url}>)" in poster.calls[0][1]
