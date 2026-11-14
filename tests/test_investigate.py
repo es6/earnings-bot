@@ -939,7 +939,9 @@ AMAT_NOTICE_TITLE = (
 )
 
 
-def amat_chrome(results_page: bool = True) -> FakeChrome:
+def amat_chrome(
+    results_page: bool = True, title: str = "Applied Materials Announces Third Quarter 2026 Results"
+) -> FakeChrome:
     """Applied Materials' IR site: the newest page of its list has only the date notice, and
     its last results are on the next page."""
     return FakeChrome(
@@ -955,15 +957,14 @@ def amat_chrome(results_page: bool = True) -> FakeChrome:
             AMAT_LIST + "?page=1": (
                 200,
                 (
-                    f'<a href="{AMAT_Q3}">Applied Materials Announces Third Quarter 2026 '
-                    "Results</a>"
+                    f'<a href="{AMAT_Q3}">{title}</a>'
                     '<a href="?page=0">Previous page</a><a href="?page=2">Next page</a>'
                 ),
             ),
             AMAT_Q3: (
                 200,
                 (
-                    "<h1>Applied Materials Announces Third Quarter 2026 Results</h1>"
+                    f"<h1>{title}</h1>"
                     "<p>Aug 13, 2026 at 4:01 PM EDT</p><p>SANTA CLARA, Calif., Aug. 13, 2026 "
                     f"(GLOBE NEWSWIRE) -- Applied Materials, Inc. today reported</p>{REPORT}"
                 ),
@@ -1007,6 +1008,21 @@ async def test_chrome_looks_past_a_date_notice_to_the_last_results_and_their_tim
             "Results”, posted Aug 13 at 4:01 PM ET"
         ),
     ) in [(c.source, c.watch, c.why) for c in found.checks]
+
+
+async def test_preliminary_results_dont_give_the_release_time(
+    released: Callable[[str], None],
+) -> None:
+    # Construction Partners' preliminary results came at 8:30 AM, two weeks ahead of full
+    # results it had put out at 7:00 or 7:30 AM for six quarters
+    title = "Applied Materials Announces Preliminary Third Quarter 2026 Results"
+    released(f"{title}. ir.appliedmaterials.com")
+    fetcher = RoutedFetcher({"ir.appliedmaterials.com/": (403, b"Access Denied")})
+
+    found = await investigate.investigate(fetcher, LUCID, TODAY, amat_chrome(title=title).open)
+
+    assert (found.ir_listing, found.ir_release) == (AMAT_LIST, AMAT_Q3)
+    assert found.ir_posted is None
 
 
 async def test_a_date_notice_alone_keeps_both_live_wires(released: Callable[[str], None]) -> None:

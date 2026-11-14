@@ -78,10 +78,17 @@ hour old (error 30046) much harder. Release alerts go first:
    uses FMP's calendar date. An exact release time uses a 10-minute lead
    for 8-K issuers and a 30-minute lead for 6-K issuers, with 30 minutes of
    follow-up. A confirmed day with an approximate time uses a wider window.
-   Publisher timings from a prior quarter can move the window earlier. Pending
-   issuers are rechecked roughly hourly outside release windows.
-   Before the speed audit finishes, a verified results-article timestamp can
-   already replace the SEC acceptance-time estimate for the first plan.
+   An approximate time is the company's usual one: the earliest of its last four
+   quarterly releases, as its IR site or a wire timed them (or SEC, when it had
+   the release sooner), in the session most of them came out in. It needs two
+   such releases; with one, the last release places the window. Preliminary
+   results don't count: Construction Partners' came at 8:30 AM, two weeks before
+   full results it had put out at 7:00 or 7:30 for six quarters. A Q4 site's
+   stamp counts as Eastern only within an hour of an 8-K filer's results 8-K
+   (Alphabet's are Pacific). Pending issuers are rechecked roughly hourly outside
+   release windows. Before the speed audit finishes, a verified results-article
+   timestamp can already replace the SEC acceptance-time estimate for the first
+   plan.
 3. **Audit the last release.** The scorecard separates measured report-text and
    headline timings from archive timestamp estimates. It includes the
    `@earnings_guy` comparison when X verifies a matching post. Audits run one at

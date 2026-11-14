@@ -1,8 +1,10 @@
 import asyncio
 import io
 import itertools
+import json
 import time
 from collections.abc import Iterator
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -496,6 +498,33 @@ async def test_a_check_saved_in_the_old_format_is_redone(tmp_path: Path) -> None
             await asyncio.gather(task, return_exceptions=True)
         _, saved = calendar.review(LCID_CIK)
     assert Speed.from_json(saved) == SPEED
+
+
+async def test_a_check_saved_without_a_release_history_is_redone(tmp_path: Path) -> None:
+    channel = WatchedDiscord()
+    asked = asyncio.Event()
+    redone = replace(SPEED, history=[datetime(2026, 8, 5, 16, 5, tzinfo=ET)])
+
+    async def audit(ticker: str, company: KnownCompany, when: datetime) -> Speed:
+        asked.set()
+        return redone
+
+    # What an audit saved before it kept the release history, an hour ago
+    saved = {key: value for key, value in json.loads(SPEED.to_json()).items() if key != "history"}
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        calendar = Calendar(store)
+        calendar.add("LCID", INVESTIGATED)
+        calendar.save_review(LCID_CIK, NOW - timedelta(hours=1), json.dumps(saved))
+        progress = tracker(store, channel, audit=audit)
+        task = asyncio.create_task(progress.run())
+        try:
+            await asyncio.wait_for(asked.wait(), 5)
+            await asyncio.sleep(0.05)
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        _, review = calendar.review(LCID_CIK)
+    assert Speed.from_json(review) == redone
 
 
 async def test_a_removed_ticker_gets_a_closing_card(tmp_path: Path) -> None:

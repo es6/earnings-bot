@@ -34,6 +34,7 @@ from earnings_bot.sources import (
     is_date_notice,
     looks_like_earnings,
     needs_exhibit_check,
+    preliminary_headline,
     published_time,
 )
 from earnings_bot.text import html_to_text, release_text, verified_report
@@ -872,7 +873,10 @@ async def investigate(
                 if when := visit.posted:
                     why += f", posted {when:%b} {when.day} at {clock(when)}"
                 report.watch(f"Press release page <{visit.listing}>, read in Chrome", why)
-                findings.posted, findings.release_url = visit.posted, visit.url
+                findings.release_url = visit.url
+                # Preliminary results come at a time of their own, so they don't place a window
+                if not preliminary_headline(visit.title):
+                    findings.posted = visit.posted
             else:
                 report.reject(f"{host} press release page", visit.problem or "Unread")
         if (
