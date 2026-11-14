@@ -16,6 +16,7 @@ from earnings_bot.date_discovery import (
     FMP_EARNINGS,
     DateDiscovery,
     calendar_date,
+    event_target,
     find_date,
     parse_notice,
     rendered_date,
@@ -24,6 +25,7 @@ from earnings_bot.date_discovery import (
 from earnings_bot.delivery import DeliveryStore
 from earnings_bot.fetch import Fetcher, Response
 from earnings_bot.investigate import INVESTIGATION
+from earnings_bot.ir_pages import Moment
 from earnings_bot.ir_research import IR_LISTINGS
 from earnings_bot.issuers import profile
 from earnings_bot.known import KnownCompany, SourceCheck, known_companies, to_target
@@ -712,8 +714,43 @@ def test_a_window_opens_by_when_the_ir_site_had_the_last_release_not_sec() -> No
     assert timed_by_publishers(company, None) == company
 
 
+def test_a_window_is_placed_by_recent_quarterly_releases_not_a_preliminary_one() -> None:
+    # Construction Partners put out full results at 7:00 or 7:30 AM for six quarters. Its last
+    # results were a preliminary release at 8:30 AM on Nov 5, which put the Nov 19 window at 7:30
+    road = AMAT.model_copy(
+        update={
+            "name": "Construction Partners, Inc.",
+            "fiscal_year_end": "0930",
+            "release_time": "09:10",
+            "ir_posted": datetime(2026, 11, 5, 8, 30, tzinfo=ET),
+        }
+    )
+    sec = Timing("SEC 8-K acceptance", datetime(2026, 11, 5, 9, 10, tzinfo=ET))
+    preliminary = Timing("rss:ir.constructionpartners.net", datetime(2026, 11, 5, 8, 30, tzinfo=ET))
+    last = Speed(date(2026, 11, 5), archive=[sec, preliminary])
+    history = [
+        datetime(2026, 8, 7, 7, tzinfo=ET),
+        datetime(2026, 5, 8, 7, tzinfo=ET),
+        datetime(2026, 2, 5, 7, 30, tzinfo=ET),
+        datetime(2025, 11, 20, 7, tzinfo=ET),
+    ]
+    review = Speed(date(2026, 8, 7), archive=[sec, preliminary], history=history).to_json()
+
+    timed = timed_by_publishers(road, review)
+    call = Moment(date(2026, 11, 19), datetime(2026, 11, 19, 10, tzinfo=ET))
+    title = "Construction Partners Fourth Quarter 2026 Earnings Conference Call"
+    result = event_target("ROAD", timed, title, call, NOW)
+
+    assert (timed.release_time, timed.release_published) == ("07:00", True)
+    assert result is not None
+    assert result[0].expected == datetime(2026, 11, 19, 7, tzinfo=ET)
+    assert result[0].window[0] == datetime(2026, 11, 19, 6, tzinfo=ET)
+    # Without a history, the last release still places it
+    assert timed_by_publishers(road, last.to_json()).release_time == "08:30"
+
+
 def test_the_first_plan_uses_the_verified_article_time_before_the_audit() -> None:
-    # ROAD was placed by 09:10 SEC acceptances despite an already verified 08:30 IR release.
+    # A verified results article's time places the first plan ahead of later SEC acceptances
     company = AMAT.model_copy(
         update={
             "release_time": "09:10",
