@@ -1028,6 +1028,34 @@ def _paragraph_binding(
                 tokens[index + len(claims)][0] if index + len(claims) < len(tokens) else len(text)
             )
             after = re.split(r"\band\b|,|;", text[after_end:following], maxsplit=1)[0]
+            previous = [t for t in tokens[:index] if t[4] == dimension]
+            before_start = max(window[0] - 40, previous[-1][1] if previous else 0)
+            boundaries = list(
+                re.finditer(r"[,;]|\b(?:and|but|while|whereas)\b", text[before_start : window[0]])
+            )
+            if previous and boundaries:
+                before_start += boundaries[-1].end()
+            before = text[before_start : token[0]]
+            roles = list(
+                re.finditer(
+                    r"\b(?:compared (?:with|to)|versus|vs\.?|from|to)\b", prefix[window[1] :]
+                )
+            )
+            if roles and roles[-1][0] == "to":
+                before = prefix[window[1] + roles[-1].end() :]
+            temporal = f"{before} {text[after_end:following]}"
+            prior_word = bool(re.search(r"\b(?:last year|prior[- ]year|year[- ]ago)\b", temporal))
+            comparator = bool(roles) and (
+                roles[-1][0] == "from" or (roles[-1][0] != "to" and bool(previous))
+            )
+            if field == "current_actual" and (prior_word or comparator):
+                issues.append("current actual is attached to the comparison/prior-year amount")
+            if (
+                field == "prior_year_actual"
+                and not prior_word
+                and not (years(temporal) and years(temporal) == years(value.period))
+            ):
+                issues.append("prior-year actual lacks a period attached to its own amount")
             near = " ".join(re.findall(r"[a-z-]+", prefix[: window[0]])[-2:])
             local = f"{near} {text[window[0] : token[0]]}"
             basis_source = (
@@ -1052,15 +1080,32 @@ def _paragraph_binding(
             if growth_slot:
                 compared, shown = _comparison(field, value, f"{text[after_end:following]} {text}")
                 issues.extend(compared)
+            period_text = text
+            period_near = f"{ref.quote}\n{frame.near}"
+            if field == "current_actual" and frame.reported:
+                # A year attached to an explicit comparison after this amount describes its
+                # comparator. Keep earlier period labels authoritative and require the
+                # comparator's sole year to be the release's prior year before trimming it.
+                comparison = re.search(
+                    r"\b(?:compared (?:with|to)|versus|vs\.?|"
+                    r"(?:up|down)\s+[\d,.]+%\s+from)\b",
+                    text[after_end:],
+                )
+                if comparison and years(text[after_end + comparison.start() :]) == {
+                    str(int(frame.reported[0]) - 1)
+                }:
+                    period_text = text[: after_end + comparison.start()]
+                    period_near = f"{period_text}\n{frame.near}"
             issues.extend(
                 period_issues(
                     value,
-                    text,
-                    f"{ref.quote}\n{frame.near}",
+                    period_text,
+                    period_near,
                     frame.far,
                     comparative=False,
                     clause=True,
-                    prior=field == "prior_year_actual",
+                    prior=field == "prior_year_actual"
+                    and years(period_text) != years(value.period),
                     offset=frame.offset,
                     reported=frame.reported,
                     change=growth_slot,

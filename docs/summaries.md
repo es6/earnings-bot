@@ -574,6 +574,22 @@ deterministic checks around it, until a frozen unseen-company evaluation proves 
 
 ## Offline commands
 
+November 15 follow-up: paragraph binding now separates a current amount from its explicit
+prior-year comparison, and rejects assigning a comparator to `current_actual` or borrowing
+the current amount for `prior_year_actual`. An earlier metric's "a year ago" label does not
+carry across a comma/conjunction into the next metric. Existing explicit period labels,
+table columns, basis, currency and duration checks remain authoritative.
+
+The frozen 60-answer corpus retains 790/1,869 selected values (42%), up from 782; this restores
+the same correct Eaton sales observation in eight saved answers, not eight independent
+issuer wins. Important-topic instances rise from 275/720 to 283/720. The frozen scorer checks
+272 retained known values and flags zero numeric errors; it does not establish accuracy of
+all retained claims. The six development answers retain 78/184, down from 82 because four
+quoted comparators lack an explicit attached prior-year period. Those are unproven by their
+cites, not established model errors. The 619-fact legacy replay's verdict counts are unchanged.
+No paid calls were made. Retention still fails the activation gate: reference mode and driver
+profiles remain opt-in/off by default, and summaries remain Beta.
+
 `scripts/summary_prepare.py NEW1 NEW2 --docs cached-docs --out requests.json` freezes full
 release inputs, the shared structured schema/policy and the Ember low setting.
 It makes no API calls, loads no keys, and does not silently truncate long releases.
