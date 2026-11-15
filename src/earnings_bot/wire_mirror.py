@@ -120,11 +120,15 @@ async def recover(fetcher: Fetcher, item: Sighting) -> SourceDocument | None:
         return None
     for url in candidates(item):
         response = await fetcher.request("GET", url, urgent=True, give_up_after=10)
+        headers = {key.lower(): value for key, value in response.headers.items()}
+        wait = headers.get("retry-after", "")
         if response.status == 403:
             pause.refused()
+            if wait:
+                pause.hold(retry_after(wait))
             return None
-        if response.status in {429, 503} or response.headers.get("Retry-After"):
-            pause.hold(retry_after(response.headers.get("Retry-After", "")))
+        if response.status in {429, 503} or wait:
+            pause.hold(retry_after(wait))
             return None
         if response.status in {404, 410}:
             continue

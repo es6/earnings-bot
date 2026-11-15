@@ -93,13 +93,15 @@ async def test_full_nested_story_survives_a_missing_date_spelling() -> None:
 
 
 @pytest.mark.parametrize("status", [403, 429, 503])
+@pytest.mark.parametrize("header", ["Retry-After", "retry-after"])
 async def test_mirror_backoff_is_shared_by_other_releases_and_spelling_fallbacks(
     status: int,
+    header: str,
 ) -> None:
     first = candidate(ITEM)
     assert first
-    fetcher = RoutedFetcher({first: (status, b"wait")}, headers={"Retry-After": "120"})
+    fetcher = RoutedFetcher({first: (status, b"wait")}, headers={header: "120"})
     assert await release_document(fetcher, FEED, ITEM) is None
-    assert fetcher.route_pause(HOST).left() > 0
+    assert fetcher.route_pause(HOST).left() > 110
     assert await release_document(fetcher, FEED, ITEM) is None
     assert len(fetcher.requests) == 1
