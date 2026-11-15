@@ -63,6 +63,8 @@ async def test_a_window_records_the_bots_use_of_the_pc(monkeypatch: pytest.Monke
 @pytest.mark.skipif(sys.platform != "win32", reason="Chrome's hidden desktop is Windows only")
 def test_chrome_runs_below_normal_priority_under_a_memory_ceiling() -> None:
     """So the owner's own programs come first, and a runaway page can't use up the PC's memory."""
+    if sys.platform != "win32":  # the marker skips it; this tells the type checker
+        pytest.skip("Windows only")
     from earnings_bot._windows_desktop import CHROME_MEMORY_LIMIT, DesktopProcess
 
     try:
