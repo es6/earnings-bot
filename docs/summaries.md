@@ -7,7 +7,8 @@ that document through the first-text/PDF-replacement path to `Summarizer.write_d
 By default the writer delegates to the existing text request and quote checker.
 `SOURCE_REFERENCED_SUMMARIES=true` separately opts into the reference request, binder
 and bound renderer. It defaults off: the evaluation below does not justify activation.
-Summaries remain beta. A number appearing in a legacy quote does not prove the metric
+Summaries remain beta, and each one says so: its footer starts "Beta · Summary by ..."
+(`pipeline.BETA`). A number appearing in a legacy quote does not prove the metric
 or period is correct.
 
 `document_from_html` uses the live HTML reader and retains its plain text. It gives each
