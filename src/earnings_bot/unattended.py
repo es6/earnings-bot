@@ -33,6 +33,7 @@ from earnings_bot.formatting import (
     stamp,
     truncate,
 )
+from earnings_bot.globe_frontier import GlobeBatch, run_batch
 from earnings_bot.investigate import wire_seen, with_wire
 from earnings_bot.issuers import Issuers
 from earnings_bot.pipeline import (
@@ -41,7 +42,7 @@ from earnings_bot.pipeline import (
     Releases,
     keep_warm,
 )
-from earnings_bot.publication_trials import TRIALS_STATE, load_plans, run_trials
+from earnings_bot.publication_trials import TRIALS_FOLDER, TRIALS_STATE, load_plans, run_trials
 from earnings_bot.recorder import (
     DEGRADED_AFTER,
     FOLLOW_UP,
@@ -360,6 +361,23 @@ class DirectoryWatcher:
                 self.trial_db = sqlite3.connect(self.directory / TRIALS_STATE)
             self.trials[plan.id] = asyncio.create_task(
                 run_trials(plan, self.fetcher, self.journal, self.trial_db)
+            )
+        # Record-only runs of the GlobeNewswire guessing over a busy minute (globe_frontier)
+        for path in sorted((self.directory / TRIALS_FOLDER / "globe").glob("*.json")):
+            try:
+                batch = GlobeBatch.model_validate_json(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as error:
+                problem = f"{path.name}: {str(error).splitlines()[0][:200]}"
+                if problem not in self.trial_problems:
+                    self.trial_problems.add(problem)
+                    self.journal.write(
+                        "publication_trial_error", error_type="invalid plan", detail=problem
+                    )
+                continue
+            if batch.id in self.trials or batch.ends_at <= now:
+                continue
+            self.trials[batch.id] = asyncio.create_task(
+                run_batch(batch, self.fetcher, self.journal)
             )
 
     async def scan(self) -> None:
