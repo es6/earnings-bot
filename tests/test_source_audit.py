@@ -14,6 +14,7 @@ from earnings_bot.source_audit import (
     release_history,
 )
 from tests.fakes import RoutedFetcher
+from tests.test_globe_history import listing, row
 
 
 def test_last_release_ranks_body_separately_from_headline(tmp_path: Path) -> None:
@@ -274,3 +275,130 @@ async def test_a_q4_time_counts_as_eastern_only_near_the_results_8k() -> None:
         datetime(2026, 10, 28, 13, 1, tzinfo=ET),
         datetime(2026, 7, 22, 12, 58, tzinfo=ET),
     ]
+
+
+def globe_page(story: str) -> bytes:
+    """A GlobeNewswire article page: the site's navigation, then the story."""
+    navigation = "".join(f"<p>Industry News {n}</p>" for n in range(46))
+    body = "<p>The company reported growth across its fleet and markets this quarter.</p>" * 30
+    return f"<html><body>{navigation}{story}{body}</body></html>".encode()
+
+
+async def test_a_globenewswire_issuers_history_reads_releases_without_results_headlines() -> None:
+    """WeRide: its IR feed reaches back only to August, and two of its last four results releases
+    had headlines like "Global Expansion Accelerates: Landmark UAE Driverless Robotaxi...". It
+    files a 6-K the same day or the next."""
+    releases = listing(
+        row(
+            "November 09, 2026 00:21",
+            "WeRide Inc.",
+            "2026/11/09/3398038",
+            "WeRide to Report Third Quarter 2026 Financial Results on Friday, November 20, 2026",
+        ),
+        row(
+            "October 27, 2026 23:27",
+            "WeRide Inc.",
+            "2026/10/27/3389839",
+            "WeRide Insurance Partnership Program to Lift Fleet Revenue",
+        ),
+        row(
+            "October 23, 2026 08:00",
+            "WeRide Inc.",
+            "2026/10/23/3387169",
+            "WeRide Named Among Top 10 Automotive AI Companies",
+        ),
+        row(
+            "August 12, 2026 07:00",
+            "WeRide Inc.",
+            "2026/08/12/3343512",
+            "Accelerating European Expansion; 2Q2026 Total Revenue Reached RMB231.7 Million, Up "
+            "82.2% Year over Year",
+        ),
+        row(
+            "May 13, 2026 05:40",
+            "WeRide Inc.",
+            "2026/05/13/3293762",
+            "WRD 3.0 Becomes Champion, WeRide Reports Record Q1 2026 Revenue, up 58%",
+        ),
+        row(
+            "March 23, 2026 07:10",
+            "WeRide Inc.",
+            "2026/03/23/3260264",
+            "WeRide Reports Record Full Year 2025 Revenue of RMB684.6 Million, Up 90%",
+        ),
+        row(
+            "November 24, 2025 04:00",
+            "WeRide Inc.",
+            "2025/11/24/3193234",
+            "Global Expansion Accelerates: UAE Permit, Record YoY Revenue Growth of 144.3%",
+        ),
+    )
+    routes = {
+        "/en/search/keyword/WeRide": (200, releases),
+        "WeRide%2520Inc%C2%A7?page=1": (200, releases),
+        "news-release/2025/11/24/3193234": (
+            200,
+            globe_page(
+                "<p>WeRide Announces Unaudited Financial Results for Q3 2025</p><p>NEW YORK, Nov. "
+                "24, 2025 (GLOBE NEWSWIRE) -- WeRide Inc. today announced its unaudited financial "
+                "results for the three months ended September 30, 2025.</p><p>Total revenue grew "
+                "144.3% year-over-year to RMB171.0 million.</p>"
+            ),
+        ),
+        "news-release/2026/03/23/3260264": (
+            200,
+            globe_page(
+                "<p>NEW YORK, March 23, 2026 (GLOBE NEWSWIRE) -- WeRide Inc. today announced its "
+                "unaudited financial results for the fourth quarter and full year 2025.</p>"
+                "<p>Total revenue grew 90% to RMB684.6 million for the full year.</p>"
+            ),
+        ),
+        "news-release/2026/10/27/3389839": (
+            200,
+            globe_page(
+                "<p>NEW YORK, Oct. 27, 2026 (GLOBE NEWSWIRE) -- WeRide today announced an "
+                "insurance partnership program. Revenue from partners grew 40%.</p>"
+            ),
+        ),
+    }
+    fetcher = RoutedFetcher(routes)
+    company = known_companies()["NVDA"].model_copy(
+        update={
+            "name": "WeRide Inc.",
+            "names": ["NASDAQ: WRD"],
+            "wire": "GlobeNewswire",
+            "sec_form": "6-K",
+            "q4_host": None,
+        }
+    )
+    sixks = [
+        datetime(2025, 11, 24, 6, tzinfo=ET),
+        datetime(2026, 3, 23, 8, tzinfo=ET),
+        datetime(2026, 5, 13, 7, tzinfo=ET),
+        datetime(2026, 8, 12, 8, tzinfo=ET),
+        datetime(2026, 10, 23, 9, tzinfo=ET),
+        datetime(2026, 10, 28, 9, tzinfo=ET),
+    ]
+
+    history = await release_history(fetcher, company, [], sixks)
+
+    assert history == [
+        datetime(2026, 8, 12, 7, tzinfo=ET),
+        datetime(2026, 5, 13, 5, 40, tzinfo=ET),
+        datetime(2026, 3, 23, 7, 10, tzinfo=ET),
+        datetime(2025, 11, 24, 4, tzinfo=ET),
+    ]
+    read = [url for _, url, _ in fetcher.requests if "/news-release/" in url]
+    # The partnership with "Revenue" in its headline was read and turned down; the award, the
+    # date notice and the results headlines weren't read
+    assert len(read) == 3 and any("3389839" in url for url in read)
+    assert not any("3387169" in url for url in read)
+
+
+def test_a_check_saved_by_an_older_release_history_reads_back_without_it() -> None:
+    """So the bot redoes it (TrackProgress): WeRide's saved history held one release of four."""
+    history = [datetime(2026, 8, 12, 7, tzinfo=ET)]
+    saved = json.loads(Speed(None, form="6-K", history=history).to_json())
+    assert Speed.from_json(json.dumps(saved)).history == history  # type: ignore[union-attr]
+    del saved["history_version"]
+    assert Speed.from_json(json.dumps(saved)).history is None  # type: ignore[union-attr]

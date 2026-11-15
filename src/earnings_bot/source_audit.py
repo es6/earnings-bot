@@ -4,6 +4,7 @@ import asyncio
 import json
 import re
 from collections.abc import Iterator
+from contextlib import suppress
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -12,16 +13,19 @@ from typing import Any
 from earnings_bot.benchmark import EarningsBenchmark
 from earnings_bot.fetch import Fetcher
 from earnings_bot.formatting import clock
+from earnings_bot.globe_history import past_releases
 from earnings_bot.ir_research import inspect_issuer, issuer_listing
 from earnings_bot.known import KnownCompany, wire_publisher, wires
 from earnings_bot.recorder import ET, PollError, Target, poll
-from earnings_bot.sec_results import SixKResults, SixKUnavailable
+from earnings_bot.sec_results import SixKResults, SixKUnavailable, announces_results
 from earnings_bot.sources import (
+    GLOBENEWSWIRE_EARNINGS,
     EdgarFilings,
     Q4PressReleases,
     RssFeed,
     Sighting,
     Source,
+    is_date_notice,
     looks_like_earnings,
     preliminary_headline,
     published_time,
@@ -54,6 +58,11 @@ def _timings(rows: object) -> list[Timing]:
     ]
 
 
+# The release history's version. 2 (v0.21.23) reads releases whose headlines don't say results
+# and GlobeNewswire's listings: WeRide's went from one release to four.
+HISTORY_VERSION = 2
+
+
 @dataclass(frozen=True)
 class Speed:
     """How fast each source had a company's most recent results."""
@@ -69,8 +78,9 @@ class Speed:
     ir_json: str = ""  # JSON routes the IR site's pages called, for finding faster sources
     watched_from: datetime | None = None  # when the bot's watch of that release began
     # When each recent quarterly release came out, newest first (see release_history). None in
-    # an audit saved before it was kept, which is then redone.
+    # an audit saved before it was kept, or by an older release_history, which is then redone.
     history: list[datetime] | None = None
+    history_version: int = HISTORY_VERSION
 
     def fastest(self) -> tuple[str, list[Timing]]:
         """The best evidence of which source was first, and its timings, earliest first. What
@@ -115,6 +125,7 @@ class Speed:
                 else None,
                 history=[datetime.fromisoformat(stamp) for stamp in data["history"]]
                 if data.get("history") is not None
+                and data.get("history_version", 1) >= HISTORY_VERSION
                 else None,
             )
         except (ValueError, KeyError, TypeError):
@@ -162,12 +173,32 @@ def site_local_time(stamp: str | None, timings: list[Timing]) -> datetime | None
 # releases at most issuers
 HISTORY_PAGE = 80
 HISTORY_LENGTH = 8  # quarterly releases kept
+# Texts read for items on filing days whose headlines don't read as results: Klarna's last two
+# results releases and two of WeRide's last four had such headlines
+HISTORY_READS = 8
+# Only headlines with a financial word are read, so a dual-listed issuer's many filing-day
+# announcements don't use up the reads: WeRide files a 6-K for most of its Hong Kong notices
+_FINANCIAL = re.compile(
+    r"\b(?:revenues?|results|quarter|full[- ]year|financial|profit|earnings|income|sales)\b",
+    re.IGNORECASE,
+)
 # A release names itself preliminary in its headline, near the top of its text
 _HEADLINE_CHARS = 600
 # How far a Q4 stamp read as Eastern may be from an 8-K filer's results 8-K. Of 173 such stamps,
 # 154 came 0 to 30 minutes before the 8-K and 12 after it; Alphabet's came exactly three hours
 # before, in Pacific time (measured Nov 14 on 31 companies)
 _Q4_FROM_8K = timedelta(hours=1)
+
+
+def _when(item: Sighting) -> datetime:
+    """When an item came out, for ordering: its zoned time, a Q4 stamp read as Eastern, or long
+    ago."""
+    if at := published_time(item.published):
+        return at
+    try:
+        return datetime.strptime(item.published or "", "%m/%d/%Y %H:%M:%S").replace(tzinfo=ET)
+    except ValueError:
+        return datetime(1970, 1, 1, tzinfo=ET)
 
 
 async def release_history(
@@ -183,20 +214,44 @@ async def release_history(
     filing confirms it as Eastern: for an 8-K filer, within _Q4_FROM_8K of its results 8-K.
     `filed` holds SEC's acceptance times: the results 8-Ks, or a 6-K filer's 6-Ks, which can come
     hours after the release."""
-    items = [item for _, listed in snapshots for item in listed]
+    items = [(source, item) for source, listed in snapshots for item in listed]
     if company.q4_host and company.reachable:
-        items += await _list(fetcher, Q4PressReleases(company.q4_host, page_size=HISTORY_PAGE))
+        q4 = Q4PressReleases(company.q4_host, page_size=HISTORY_PAGE)
+        items += [(q4, item) for item in await _list(fetcher, q4)]
+    if company.wire == "GlobeNewswire" and company.name:
+        # A year of the company's releases, which its own feed may not reach back to
+        globe = RssFeed("globenewswire", GLOBENEWSWIRE_EARNINGS, company.names)
+        with suppress(OSError, TimeoutError, ValueError):
+            items += [(globe, item) for item in await past_releases(fetcher, company.name)]
     eightk = (company.sec_form or "8-K") == "8-K"
     filings = [Timing("SEC filing", at) for at in filed]
+    filing_days = {stamp.astimezone(ET).date() for stamp in filed}
     days: dict[date, datetime] = {}
-    for item in items:
-        if not results_headline(item.title) or preliminary_headline(item.title):
+    reads = 0
+    # Newest first, so the reads go to the releases the history keeps
+    for source, item in sorted(items, key=lambda pair: _when(pair[1]), reverse=True):
+        if preliminary_headline(item.title) or is_date_notice(item.title):
             continue
         zoned = published_time(item.published)
         at = zoned or site_local_time(item.published, filings)
         if at is None:
             continue
         day = at.astimezone(ET).date()
+        if not results_headline(item.title):
+            # A headline that doesn't say "results", on a day the company filed with SEC (a 6-K
+            # can come the next day), counts if its text announces results
+            near = {day, day + timedelta(days=1)} if not eightk else {day}
+            if (
+                day in days
+                or not near & filing_days
+                or not _FINANCIAL.search(item.title)
+                or reads >= HISTORY_READS
+            ):
+                continue
+            reads += 1
+            text = await release_text(fetcher, source, item)
+            if not (text and announces_results(text, None)):
+                continue
         if eightk:
             same_day = [stamp for stamp in filed if stamp.astimezone(ET).date() == day]
             if not same_day or (

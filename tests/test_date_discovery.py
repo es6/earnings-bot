@@ -767,7 +767,9 @@ def test_a_window_covers_each_recent_release_time() -> None:
     covered = covering_release_times(target, review)
 
     assert covered.release_times == [
-        expected.replace(hour=h, minute=m) for h, m in ((4, 0), (5, 40), (7, 10))
+        # By the Eastern clock, and by Hong Kong's, which has no daylight saving time
+        expected.replace(hour=h, minute=m)
+        for h, m in ((4, 0), (4, 40), (5, 40), (6, 0), (6, 10), (7, 10))
     ]
     assert covered.window == (
         expected.replace(hour=3, minute=45),
