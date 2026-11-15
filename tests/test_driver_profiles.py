@@ -10,8 +10,8 @@ from earnings_bot.date_discovery import DateDiscovery
 from earnings_bot.delivery import DeliveryStore
 from earnings_bot.driver_profiles import DriverProfiles, ProfileReply, ProfileSource
 from earnings_bot.sec_results import SixKResults
+from tests.builders import SOURCE, TODAY, content
 from tests.fakes import RoutedFetcher
-from tests.test_driver_profile import SOURCE, TODAY, content
 
 NOW = datetime(2026, 11, 13, 15, tzinfo=UTC)
 RELEASE = "Acme Announces Results for Third Quarter 2026\n" + SOURCE
@@ -121,7 +121,7 @@ async def test_an_uncertain_profile_call_is_not_repeated_after_cancellation(
 async def test_an_incomplete_profile_does_not_replace_previous_valid_context(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stop: str
 ) -> None:
-    from tests.test_driver_profile import parsed
+    from tests.builders import parsed
 
     async def latest(*args: object) -> ProfileSource:
         return source()

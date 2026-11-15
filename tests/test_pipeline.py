@@ -2,7 +2,7 @@ import asyncio
 import io
 import json
 import time
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -16,7 +16,7 @@ from earnings_bot.browser_sources import BrowserPDF, IRSource
 from earnings_bot.delivery import DeliveryStore
 from earnings_bot.fetch import Response
 from earnings_bot.ir_research import quarter_headline
-from earnings_bot.pipeline import Poster, Release, Releases, describe_source
+from earnings_bot.pipeline import Release, Releases, describe_source
 from earnings_bot.recorder import ET, Journal, Target, Trial, Watch, watch
 from earnings_bot.source_document import SourceDocument, document_from_text
 from earnings_bot.sources import (
@@ -34,58 +34,25 @@ from earnings_bot.sources import (
     Sighting,
     Source,
 )
-from earnings_bot.summary import Summarizer, Summary, SummaryError
-from tests.fakes import RoutedFetcher, sec_filing_detail, simple_pdf
+from earnings_bot.summary import Summary, SummaryError
+from tests.builders import (
+    ACCESSION,
+    FILING,
+    FILING_INDEX,
+    FOLDER,
+    IR_PAGE,
+    MC,
+    PDF_ONLY,
+    RELEASE_LINES,
+    filing_routes,
+    ir_sighting,
+    pdf_sighting,
+    simple_pdf,
+    uber,
+)
+from tests.fakes import FakePoster, FakeSummarizer, RoutedFetcher, fetcher
 
 PDF = "https://s23.q4cdn.com/1/files/Uber-Q3-26-Earnings-Press-Release.pdf"
-MC = "https://corporate.mcdonalds.com/"
-PDF_ONLY = MC + "release.pdf"
-IR_PAGE = "https://investor.uber.com/news/uber-announces-results/default.aspx"
-FILING = "https://www.sec.gov/Archives/edgar/data/1543151/000154315126000040/uber-20261104.htm"
-
-
-class FakePoster(Poster):
-    """Records each step, and stamps it with the current time the way Discord would."""
-
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, str]] = []
-
-    async def send(self, content: str) -> datetime | None:
-        self.calls.append(("send", content))
-        return datetime.now(UTC)
-
-    async def edit(self, content: str) -> datetime | None:
-        self.calls.append(("edit", content))
-        return datetime.now(UTC)
-
-    async def attach(self, name: str, data: bytes) -> datetime | None:
-        self.calls.append(("attach", name))
-        return datetime.now(UTC)
-
-    async def set_summary(self, text: str, footer: str) -> datetime | None:
-        self.calls.append(("summary", f"{text} | {footer}"))
-        return datetime.now(UTC)
-
-
-class FakeSummarizer(Summarizer):
-    def __init__(self) -> None:
-        self.calls: list[str] = []  # the release text of each request
-        self.contexts: list[dict | None] = []
-
-    async def write(
-        self, ticker: str, release: str, seconds: float = 0.0, *, context: dict | None = None
-    ) -> Summary:
-        self.calls.append(release)
-        self.contexts.append(context)
-        return Summary("UBER $UBER Q3'26 EARNINGS HIGHLIGHTS", ["12%"], 0.0, 1000, 200)
-
-
-def uber() -> Target:
-    return Target(ticker="UBER", expected=datetime(2026, 11, 4, 6, 55, tzinfo=ET), cik=1543151)
-
-
-def fetcher() -> RoutedFetcher:
-    return RoutedFetcher({".pdf": (200, b"%PDF-1.7")})
 
 
 @pytest.fixture
@@ -170,30 +137,6 @@ async def test_both_sec_sources_give_the_filing_one_link() -> None:
 
     assert [kind for kind, _ in poster.calls] == ["send"]
     assert f"[SEC 8-K](<{index}>)" in poster.calls[0][1]
-
-
-FOLDER, PRIMARY = FILING.rsplit("/", 1)
-ACCESSION = "0001543151-26-000040"
-FILING_INDEX = f"{ACCESSION}-index.htm"
-
-
-def filing_routes(exhibit: str = "ex99-1.htm") -> dict[str, tuple[int, bytes]]:
-    """The filing's file lists, primary document and press release exhibit."""
-    items = [{"name": PRIMARY, "size": "90000"}, {"name": exhibit, "size": "50000"}]
-    paragraph = "<p>Uber Announces Results for Third Quarter 2026. Gross bookings grew 21%.</p>"
-    return {
-        FILING_INDEX: (
-            200,
-            sec_filing_detail(PRIMARY, exhibit).replace(
-                b"</table>",
-                b"<tr><td>3</td><td>Press release announcing cash dividend</td>"
-                b"<td>dividend-release.htm</td><td>EX-99.2</td><td>100000</td></tr></table>",
-            ),
-        ),
-        "index.json": (200, json.dumps({"directory": {"item": items}}).encode()),
-        PRIMARY: (200, ("<p>" + "Form 8-K cover text. " * 120 + "</p>").encode()),
-        exhibit: (200, f"<html><body>{paragraph * 40}</body></html>".encode()),
-    }
 
 
 def both_sec_sightings(release: Release) -> None:
@@ -568,12 +511,6 @@ async def test_an_alert_names_the_quarter_and_masks_each_link(
     ]
 
 
-RELEASE_LINES = [
-    "Uber Announces Results for Third Quarter 2026",
-    *["Revenue grew 20% and net income was $1.2 billion, or $0.56 per share." for _ in range(40)],
-]
-
-
 async def test_a_release_pdf_is_summarized_when_no_page_has_the_text() -> None:
     """Brookfield's Q3 2026 PDF was attached at 7:06:36 and the summary waited for the 6-K,
     4 minutes later."""
@@ -588,11 +525,6 @@ async def test_a_release_pdf_is_summarized_when_no_page_has_the_text() -> None:
     assert [kind for kind, _ in poster.calls] == ["send", "attach", "summary"]
     assert "Uber Announces Results for Third Quarter 2026" in summarizer.calls[0]
     assert "from the release.pdf text" in poster.calls[-1][1]
-
-
-def pdf_sighting() -> tuple[BrowserPDF, Sighting]:
-    source = BrowserPDF(PDF_ONLY, MC)
-    return source, source.parse(Response(PDF_ONLY, 200, {}, simple_pdf(RELEASE_LINES), 0.04))[0]
 
 
 async def test_a_pdf_is_summarized_at_once_and_a_page_replaces_it_once(
@@ -857,10 +789,6 @@ async def test_the_newsroom_watcher_waits_while_a_read_of_the_newsroom_is_refuse
     await watch(Watch("NBIS", source), fetcher, journal, journal.now() + timedelta(seconds=1))
 
     assert fetcher.listing_asked and fetcher.listing_asked[0][0] - started >= 0.29
-
-
-def ir_sighting(url: str = IR_PAGE) -> tuple[Q4PressReleases, Sighting]:
-    return Q4PressReleases("investor.uber.com"), Sighting("1700", "Results", url, earnings=True)
 
 
 async def test_a_restart_doesnt_summarize_a_delivered_release_again(

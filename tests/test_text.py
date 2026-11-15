@@ -11,7 +11,8 @@ from earnings_bot.sources import (
     Sighting,
 )
 from earnings_bot.text import html_to_text, pdf_text, pick_exhibit, release_text
-from tests.fakes import RoutedFetcher, simple_pdf
+from tests.builders import simple_pdf
+from tests.fakes import RoutedFetcher
 
 RELEASE = "<p>" + "Net revenue was $16.0 billion, up 22% from a year ago. " * 50 + "</p>"
 BROADCOM_PATH = "/company/news/financial-releases/64900"

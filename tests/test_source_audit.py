@@ -13,8 +13,8 @@ from earnings_bot.source_audit import (
     audit_sources,
     release_history,
 )
+from tests.builders import listing, row
 from tests.fakes import RoutedFetcher
-from tests.test_globe_history import listing, row
 
 
 def test_last_release_ranks_body_separately_from_headline(tmp_path: Path) -> None:

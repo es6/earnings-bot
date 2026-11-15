@@ -6,10 +6,8 @@ import io
 import json
 import sqlite3
 import time
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
 
 import pytest
 from aiohttp import web
@@ -18,10 +16,10 @@ from earnings_bot import unattended
 from earnings_bot.delivery import DeliveryStore
 from earnings_bot.fetch import Fetcher, Response, ResponseTooLarge
 from earnings_bot.pipeline import Releases
-from earnings_bot.publication_trials import TrialPlan, load_plans, run_trials
+from earnings_bot.publication_trials import load_plans, run_trials
 from earnings_bot.recorder import Journal
-from tests.fakes import RoutedFetcher
-from tests.test_unattended import FakePoster
+from tests.builders import events, plan
+from tests.fakes import FakePoster, QueuedFetcher
 
 RELEASE = (
     "Example Corp Reports Third Quarter 2026 Results\n"
@@ -35,57 +33,6 @@ RELEASE = (
     )
     * 3
 )
-
-
-class QueuedFetcher(RoutedFetcher):
-    """Answers from routes, but takes its turn in the host's queue like the real Fetcher."""
-
-    def __init__(self, routes: dict[str, list[bytes]]) -> None:
-        super().__init__({})
-        self.pages = routes
-
-    async def request(self, method: str, url: str, *args: Any, **kwargs: Any) -> Response:
-        await self.wait_turn(urlsplit(url).hostname or "")
-        for part, bodies in self.pages.items():
-            if part in url:
-                body = bodies.pop(0) if len(bodies) > 1 else bodies[0]
-                return Response(url, 200, {"age": "0"}, body, 0.01)
-        return Response(url, 404, {}, b"", 0.01)
-
-
-def plan(**changes: Any) -> TrialPlan:
-    route = {
-        "transport": "http",
-        "interval": 0.125,
-        "issuer_pattern": "Example Corp",
-        "period_pattern": "third quarter",
-        "result_pattern": "results",
-    }
-    return TrialPlan.model_validate(
-        {
-            "id": "example-q3",
-            "starts_at": datetime.now(UTC).isoformat(),
-            "duration_seconds": 8,
-            "max_requests": 4,
-            "routes": [
-                route
-                | {"name": "listing", "url": "https://ir.example.com/news", "kind": "listing"},
-                route
-                | {
-                    "name": "article",
-                    "url": "https://ir.example.com/news/q3-2026",
-                    "kind": "article",
-                },
-            ],
-        }
-        | changes
-    )
-
-
-def events(log: io.StringIO, name: str) -> list[dict[str, Any]]:
-    return [
-        row for line in log.getvalue().splitlines() if (row := json.loads(line))["event"] == name
-    ]
 
 
 async def test_a_trial_records_a_transition_and_stops_at_its_budget() -> None:

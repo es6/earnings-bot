@@ -29,10 +29,11 @@ from earnings_bot.investigate import INVESTIGATION
 from earnings_bot.ir_pages import Moment
 from earnings_bot.ir_research import IR_LISTINGS
 from earnings_bot.issuers import profile
-from earnings_bot.known import KnownCompany, SourceCheck, known_companies, to_target
+from earnings_bot.known import SourceCheck, known_companies, to_target
 from earnings_bot.recorder import ET, Target
 from earnings_bot.source_audit import Speed, Timing
 from earnings_bot.sources import is_date_notice
+from tests.builders import AMAT, AMAT_NOTICE_BODY
 from tests.fakes import RoutedFetcher, rendered
 from tests.sec_data import LCID_CIK, LCID_SUBMISSIONS
 
@@ -488,27 +489,6 @@ def test_catalog_companies_have_no_fiscal_year_end_so_fmp_leaves_them_alone() ->
 # Applied Materials' notice on its IR site, Oct 22, 2026, as Chrome reads it
 AMAT_NOTICE_TITLE = (
     "Applied Materials to Report Fourth Quarter and Fiscal 2026 Results on Nov. 12, 2026"
-)
-AMAT_NOTICE_BODY = (
-    "<h1>Applied Materials to Report Fourth Quarter and Fiscal 2026 Results on Nov. 12, 2026</h1>"
-    "<p>Oct 22, 2026 at 7:30 AM EDT</p><p>SANTA CLARA, Calif., Oct. 22, 2026 (GLOBE NEWSWIRE) "
-    "-- Applied Materials, Inc. today announced that it will hold its fourth quarter and fiscal "
-    "2026 earnings conference call on Thursday, Nov. 12, 2026, at 4:30 p.m. ET / 1:30 p.m. PT."
-    "</p><p>The call will be webcast live at: https://ir.appliedmaterials.com. A replay will be "
-    "available on the same day by 8:00 p.m. ET / 5:00 p.m. PT.</p>"
-)
-AMAT = KnownCompany(
-    name="APPLIED MATERIALS INC /DE",
-    names=["APPLIED MATERIALS", "NASDAQ: AMAT"],
-    cik=6951,
-    platform="own-site",
-    reachable=False,
-    wire="GlobeNewswire",
-    release_time="16:00",
-    fiscal_year_end="1026",
-    fastest="unknown",
-    evidence="Investigated Nov 09",
-    checked=date(2026, 11, 9),
 )
 
 

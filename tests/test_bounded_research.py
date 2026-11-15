@@ -18,9 +18,8 @@ from earnings_bot.delivery import DeliveryStore
 from earnings_bot.fetch import HostBusy
 from earnings_bot.pipeline import Releases
 from earnings_bot.recorder import Journal, Target
-from tests.fakes import RoutedFetcher
-from tests.test_ir_release_coverage import company
-from tests.test_unattended import FakePoster
+from tests.builders import company
+from tests.fakes import FakePoster, RoutedFetcher
 
 HEADLINE = r"(?i).*third quarter 2026 results.*"
 

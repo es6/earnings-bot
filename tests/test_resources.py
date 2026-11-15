@@ -10,7 +10,7 @@ import pytest
 from earnings_bot import recorder
 from earnings_bot.recorder import Journal, Target
 from earnings_bot.resources import MB, snapshot
-from tests.test_recorder import FakeFetcher
+from tests.fakes import FakeFetcher
 
 
 class Chrome:

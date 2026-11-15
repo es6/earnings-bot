@@ -12,14 +12,8 @@ from earnings_bot.source_document import SourceDocument, document_from_text
 from earnings_bot.sources import GuessedPage, RssFeed, Sighting
 from earnings_bot.summary import Summary
 from earnings_bot.text import pdf_text, release_document
-from tests.fakes import RoutedFetcher
-from tests.test_pipeline import (
-    IR_PAGE,
-    FakePoster,
-    FakeSummarizer,
-    pdf_sighting,
-    uber,
-)
+from tests.builders import IR_PAGE, pdf_sighting, uber
+from tests.fakes import FakePoster, FakeSummarizer, RoutedFetcher
 
 
 async def test_html_cell_references_reach_the_writer_and_survive_a_store_restart(

@@ -16,9 +16,8 @@ from earnings_bot.issuers import profile
 from earnings_bot.pipeline import Releases
 from earnings_bot.recorder import ET, Journal, Target, poll
 from earnings_bot.source_audit import audit_sources
-from tests.fakes import RoutedFetcher, sec_filing_detail
-from tests.test_browser_sources import BrowserFake
-from tests.test_pipeline import FakePoster
+from tests.builders import sec_filing_detail
+from tests.fakes import BrowserFake, FakePoster, RoutedFetcher
 
 CIK = 1513845
 NOW = datetime(2026, 11, 10, 2, tzinfo=ET)

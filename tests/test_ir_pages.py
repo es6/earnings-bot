@@ -22,8 +22,8 @@ from earnings_bot.ir_research import prior_period, quarter_headline
 from earnings_bot.issuers import fiscal_year_end
 from earnings_bot.recorder import ET
 from earnings_bot.sources import looks_like_earnings
+from tests.builders import AMAT
 from tests.fakes import rendered
-from tests.test_date_discovery import AMAT
 
 NOW = datetime(2026, 11, 10, 5, tzinfo=ET)
 HOME = "https://ir.weride.ai/"

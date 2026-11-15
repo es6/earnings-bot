@@ -22,8 +22,7 @@ from earnings_bot.fetch import Fetcher
 from earnings_bot.pipeline import Releases
 from earnings_bot.recorder import Journal, OnNew, Polls, Target, Watch
 from earnings_bot.sources import EdgarLatest
-from tests.fakes import RoutedFetcher
-from tests.test_pipeline import FakePoster
+from tests.fakes import FakePoster, RoutedFetcher
 
 UBER = BenchmarkPost("2117948805941223450", "UBER")
 MCD = BenchmarkPost("2117950124349374669", "MCD")

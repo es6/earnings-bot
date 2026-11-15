@@ -1,51 +1,15 @@
-import json
-from datetime import date, timedelta
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
 
 from earnings_bot.delivery import DeliveryStore
 from earnings_bot.driver_profile import (
-    parse_profile,
     profile_request,
     request_reservation_micros,
 )
 from earnings_bot.driver_profile_store import DriverProfileStore
-
-TODAY = date(2026, 11, 13)
-SOURCE = (
-    "Acme sells subscriptions to its software. Subscription revenue increased 20%. "
-    "The company expects full-year subscription revenue growth of 18% to 20%."
-)
-KPI = {"label": "Subscription revenue", "evidence": "Subscription revenue increased 20%."}
-
-
-def content(**updates: object) -> str:
-    return json.dumps(
-        {
-            "business": {
-                "label": "software",
-                "evidence": "Acme sells subscriptions to its software.",
-            },
-            "segments": [],
-            "kpis": [KPI],
-            "guidance": [],
-            "themes": [],
-        }
-        | updates
-    )
-
-
-def parsed(answer: str | None = None, published: date = TODAY):
-    return parse_profile(
-        answer or content(),
-        SOURCE,
-        source_url="https://issuer.example/results",
-        document_sha256="a" * 64,
-        source_period="FY2026Q3",
-        source_published=published,
-        today=TODAY,
-    )
+from tests.builders import KPI, SOURCE, TODAY, content, parsed
 
 
 def test_profile_keeps_evidence_for_every_category_and_dates_from_code() -> None:
