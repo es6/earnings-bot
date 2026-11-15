@@ -1,5 +1,6 @@
 """Issuer listings and PDFs read through HTTP or desktop Chrome."""
 
+import hashlib
 import json
 import os
 import re
@@ -302,6 +303,8 @@ class BrowserRelease(Source):
         self.listing_poll: tuple[Response, float] | None = None
         self.transport = "chrome"
         self.listing_transport = "chrome"
+        self.request_diagnostics: dict[str, object] = {}
+        self.listing_diagnostics: dict[str, object] = {}
 
     @property
     def matched_listing(self) -> bool:
@@ -329,6 +332,7 @@ class BrowserRelease(Source):
         self._candidate = None
         self.listing_poll = None
         listing = await self.request_page(fetcher, self.listing_url())
+        self.listing_diagnostics = self.request_diagnostics.copy()
         self.listing_transport = self.transport
         self.listing_poll = replace(listing, body=b""), time.monotonic()
         if listing.status != 200:
@@ -390,11 +394,22 @@ class HttpRelease(BrowserRelease):
         self._chrome_until = 0.0
         # Why the last direct request gave way to Chrome, for the journal
         self.http_failure: str | None = None
+        self._http_calls = 0
+        self._source_started = time.monotonic()
 
     async def request_page(self, fetcher: Fetcher, url: str, *, urgent: bool = False) -> Response:
         try_http = time.monotonic() >= self._chrome_until
         self.http_failure = None
+        started = time.monotonic()
+        self.request_diagnostics = {
+            "variant_sha256": hashlib.sha256(url.encode()).hexdigest()[:16],
+            "client_age_s": round(fetcher.client_age, 2),
+            "source_age_s": round(started - self._source_started, 2),
+            "direct_http": try_http,
+        }
         if try_http:
+            self._http_calls += 1
+            self.request_diagnostics["http_calls"] = self._http_calls
             try:
                 response = await fetcher.request(
                     "GET",
@@ -405,10 +420,23 @@ class HttpRelease(BrowserRelease):
                     allow_redirects=False,
                 )
             except (aiohttp.ClientError, TimeoutError) as error:
+                self.request_diagnostics["http_error"] = type(error).__name__
                 if not self.chrome_fallback:
                     raise
-                self.http_failure = f"{type(error).__name__} {error}".strip()
+                self.http_failure = type(error).__name__
             else:
+                self.request_diagnostics["http_status"] = response.status
+                self.request_diagnostics["http_ms"] = round((time.monotonic() - started) * 1000)
+                sample = response.body[:16384].lower()
+                self.request_diagnostics["markers"] = [
+                    label
+                    for label, marker in (
+                        ("cloudflare-challenge", b"cf-chl-"),
+                        ("akamai-reference", b"errors.edgesuite.net"),
+                        ("access-denied", b"access denied"),
+                    )
+                    if marker in sample
+                ]
                 if (
                     not self.chrome_fallback
                     or response.status == 200
@@ -419,9 +447,13 @@ class HttpRelease(BrowserRelease):
                 self.http_failure = f"HTTP {response.status}"
         try:
             response = await super().request_page(fetcher, url, urgent=urgent)
-        except (aiohttp.ClientError, BrowserError, TimeoutError):
+        except (aiohttp.ClientError, BrowserError, TimeoutError) as error:
+            self.request_diagnostics["chrome_error"] = type(error).__name__
+            self.request_diagnostics["total_ms"] = round((time.monotonic() - started) * 1000)
             self._chrome_until = 0.0
             raise
+        self.request_diagnostics["chrome_status"] = response.status
+        self.request_diagnostics["total_ms"] = round((time.monotonic() - started) * 1000)
         if response.status != 200:
             self._chrome_until = 0.0
         elif try_http:

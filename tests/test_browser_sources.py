@@ -155,6 +155,9 @@ async def test_a_refused_chrome_fallback_says_why_http_gave_way_and_http_is_trie
     assert refused.value.blocked and not refused.value.fatal
     assert pause == 30.0 and w.stopped is None
     assert source.http_failure == "HTTP 503"
+    assert source.listing_diagnostics["http_status"] == 503
+    assert source.listing_diagnostics["chrome_status"] == 403
+    assert source.listing_diagnostics["http_calls"] == 1
     lines = journal.file.getvalue().splitlines()  # type: ignore[attr-defined]
     # The listing and the error; the watchdog's progress record says nothing about transport
     records = [record for line in lines if (record := json.loads(line))["event"] != "progress"]
@@ -165,6 +168,26 @@ async def test_a_refused_chrome_fallback_says_why_http_gave_way_and_http_is_trie
 
     assert source.listing_transport == "http" and source.http_failure is None
     assert len(fetcher.browser_calls) == 1
+
+
+async def test_listing_diagnostics_survive_the_article_request_without_saving_body_or_secrets() -> (
+    None
+):
+    listing = f'<a href="{ARTICLE}">{TITLE}</a>'.encode()
+    article = f"<h1>{TITLE}</h1><p>{'Revenue and earnings per share. ' * 120}</p>".encode()
+    fetcher = BrowserFake([(200, listing), (200, article)])
+    fetcher.routes = {FICO: (403, b"access denied secret cookie cf-chl-test")}
+    source = HttpRelease(FICO, PATTERN, chrome_fallback=True)
+    _, items = await poll(source, fetcher)
+    assert items
+    assert source.listing_diagnostics["direct_http"] is True
+    assert source.listing_diagnostics["http_status"] == 403
+    assert source.listing_diagnostics["markers"] == ["cloudflare-challenge", "access-denied"]
+    assert source.request_diagnostics["direct_http"] is False
+    age = source.listing_diagnostics["client_age_s"]
+    assert isinstance(age, float) and age >= 0
+    encoded = json.dumps(source.listing_diagnostics)
+    assert "secret" not in encoded and "cookie" not in encoded and FICO not in encoded
 
 
 async def test_pdf_ignores_missing_files_and_html_and_reuses_valid_bytes() -> None:
