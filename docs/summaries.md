@@ -215,7 +215,8 @@ EPS between", and groups such as "MCO" or "guidance" required as if they were se
 The question before removing "Beta": how often do the live summaries show a fact whose
 measure, period or basis is wrong, and does the verifier catch those facts without
 dropping right ones? `scripts/verify_replay.py` replays the 36 saved Ember-low answers of
-November 12 (15 releases, two runs each of the first set's 9 and the second set's 6).
+November 12 (15 releases: two runs each of the first set's 9 releases and three each
+of the second set's 6).
 Each fact the live checker keeps is handed to the verifier with every paragraph and table
 cell of the release that holds its number. No model calls. SPOT's release was a PDF, so it
 is read from its text, as the live bot reads a PDF; the others from their HTML.
