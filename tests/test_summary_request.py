@@ -19,5 +19,5 @@ def test_shared_request_is_ember_only_with_schema_and_no_word_cap() -> None:
 
 @pytest.mark.parametrize("release", ["", " " * 30, "x" * 200001])
 def test_no_silent_input_truncation(release: str) -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="no truncation"):
         structured_request("NOW", release)

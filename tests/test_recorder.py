@@ -4,8 +4,6 @@ import itertools
 import json
 import sys
 import time
-from collections import deque
-from collections.abc import Hashable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
@@ -30,48 +28,7 @@ from earnings_bot.recorder import (
     watch,
 )
 from earnings_bot.sources import GuessedFile, GuessedPage, RssFeed, Sighting, Source, published_time
-from tests.fakes import PinnedClock, RoutedFetcher
-
-
-class ListSource(Source):
-    """Lists the keys in the response body, one per line."""
-
-    name = "list"
-    interval = 0.01
-
-    def url(self) -> str:
-        return "https://example.com/list"
-
-    def parse(self, response: Response) -> list[Sighting]:
-        keys = response.body.decode().split()
-        return [Sighting(key, f"Item {key}", "", earnings=True) for key in keys]
-
-
-class FakeFetcher(Fetcher):
-    """Serves canned responses in order, then repeats the last one."""
-
-    def __init__(self, *responses: tuple[int, str], queued: float = 0.0) -> None:
-        super().__init__("Test Person test@example.com")
-        self.responses = deque(responses)
-        self.queued = queued  # how long each request waits for its host's turn
-        self.sent = 0
-
-    async def request(
-        self,
-        method: str,
-        url: str,
-        headers: dict[str, str] | None = None,
-        give_up_after: float | None = None,
-        urgent: bool = False,
-        *,
-        allow_redirects: bool = True,
-        encoded_url: bool = False,
-    ) -> Response:
-        self.sent += 1
-        status, body = self.responses[0] if len(self.responses) == 1 else self.responses.popleft()
-        if status == 0:
-            raise TimeoutError
-        return Response(url, status, {"age": "3"}, body.encode(), 0.02, self.queued)
+from tests.fakes import CompanyFeed, FakeFetcher, ListSource, PinnedClock, RoutedFetcher
 
 
 def events(log: io.StringIO) -> list[dict[str, object]]:
@@ -137,8 +94,11 @@ async def test_watch_keeps_polling_after_a_timeout() -> None:
 
 
 async def test_fetcher_gives_up_on_a_server_that_never_answers() -> None:
-    async def accept_and_say_nothing(reader: asyncio.StreamReader, _: asyncio.StreamWriter) -> None:
+    async def accept_and_say_nothing(
+        reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
         await reader.read()  # until the client gives up and closes the connection
+        writer.close()
 
     server = await asyncio.start_server(accept_and_say_nothing, "127.0.0.1", 0)
     port = server.sockets[0].getsockname()[1]
@@ -171,7 +131,8 @@ async def test_fetcher_reads_a_header_longer_than_aiohttps_default() -> None:
     assert len(response.headers["content-security-policy-report-only"]) > 13_000
 
 
-async def test_fetcher_doesnt_send_cookies_back() -> None:
+async def test_fetcher_doesnt_send_cookies_back(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(fetch, "_DEFAULT_GAP", 0.0)
     # cloudflare.com answers 500 to requests that carry the cookies it set
     requests: list[bytes] = []
 
@@ -479,27 +440,6 @@ async def test_a_poll_that_downloads_the_release_logs_its_text_arriving() -> Non
     assert (body["key"], body["via"], body["bytes"]) == ("page", "poll", 24)
 
 
-class CompanyFeed(Source):
-    """One feed for every company, listing "TICKER:key" items, read for one company."""
-
-    name = "feed"
-    interval = 0.01
-
-    def __init__(self, ticker: str) -> None:
-        self.ticker = ticker
-
-    @property
-    def share_key(self) -> Hashable:
-        return self.name
-
-    def url(self) -> str:
-        return "https://example.com/feed"
-
-    def parse(self, response: Response) -> list[Sighting]:
-        items = response.body.decode().split()
-        return [Sighting(i, i, "", earnings=True) for i in items if i.startswith(self.ticker)]
-
-
 async def test_overlapping_windows_share_one_poll_of_a_feed() -> None:
     log = io.StringIO()
     journal = Journal(log)
@@ -741,7 +681,7 @@ async def test_after_the_window_a_source_that_hadnt_shown_the_release_still_link
         FakeFetcher((200, json.dumps([later]))),
         journal,
         lambda t, source, item: seen.append((t.ticker, item.key)),
-        longest=timedelta(seconds=1),
+        longest=timedelta(milliseconds=50),
     )
 
     # Only the source that hadn't shown it is checked, and its link joins the alert
@@ -854,8 +794,7 @@ async def test_repeated_timeouts_as_a_release_goes_live_dont_delay_it() -> None:
     log = io.StringIO()
     journal = Journal(log)
     w = Watch("NVDA", ListSource())
-    seen: list[float] = []
-    started = time.monotonic()
+    seen: list[int] = []
     timeouts = [(0, "")] * 6
     fetcher = FakeFetcher((200, "old"), *timeouts, (200, "old results"))
 
@@ -864,10 +803,11 @@ async def test_repeated_timeouts_as_a_release_goes_live_dont_delay_it() -> None:
         fetcher,
         journal,
         end=journal.now() + timedelta(seconds=0.5),
-        on_new=lambda source, item: seen.append(time.monotonic() - started),
+        on_new=lambda source, item: seen.append(w.polls),
     )
 
-    assert seen and seen[0] < 0.2  # eight polls at 0.01 s apart, not a backoff
+    # One old answer, six timeouts, then the release on the very next poll: no backoff between
+    assert seen == [8]
     assert (w.timeouts, w.errors, w.problem, w.first_title) == (6, 0, None, "Item results")
     reports = [r for r in events(log) if r["event"] == "progress"]
     assert [bool(r["problem"]) for r in reports] == [False, True, False]

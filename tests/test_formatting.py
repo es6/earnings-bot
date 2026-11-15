@@ -15,26 +15,35 @@ from earnings_bot.recorder import ET
 from earnings_bot.sources import PR_NEWSWIRE_EARNINGS, EdgarFilings, EdgarLatest, RssFeed
 
 
-def test_a_fiscal_period_reads_like_a_quarter() -> None:
-    assert period_label("FY2026Q3") == "Q3 FY26"
-    assert period_label("FY2027Q1") == "Q1 FY27"
-    assert period_label(None) == ""
+@pytest.mark.parametrize(
+    ("period", "text"),
+    [("FY2026Q3", "Q3 FY26"), ("FY2027Q1", "Q1 FY27"), (None, "")],
+)
+def test_a_fiscal_period_reads_like_a_quarter(period: str | None, text: str) -> None:
+    assert period_label(period) == text
 
 
 @pytest.mark.parametrize(
-    ("hour", "minute", "text"),
-    [(0, 5, "12:05 AM ET"), (9, 30, "9:30 AM ET"), (12, 0, "12:00 PM ET"), (16, 5, "4:05 PM ET")],
+    ("moment", "options", "text"),
+    [
+        (datetime(2026, 11, 9, 0, 5, tzinfo=ET), {}, "12:05 AM ET"),
+        (datetime(2026, 11, 9, 9, 30, tzinfo=ET), {}, "9:30 AM ET"),
+        (datetime(2026, 11, 9, 12, 0, tzinfo=ET), {}, "12:00 PM ET"),
+        (datetime(2026, 11, 9, 16, 5, tzinfo=ET), {}, "4:05 PM ET"),
+        (datetime(2026, 11, 9, 16, 6, 2, 708_400, tzinfo=ET), {"seconds": True}, "4:06:02 PM ET"),
+        (
+            datetime(2026, 11, 9, 16, 6, 2, 708_400, tzinfo=ET),
+            {"millis": True},
+            "4:06:02.708 PM ET",
+        ),
+        (datetime.fromisoformat("2026-11-09T21:06:02+00:00"), {}, "4:06 PM ET"),  # another zone
+    ],
+    ids=["after-midnight", "morning", "noon", "afternoon", "seconds", "milliseconds", "from-utc"],
 )
-def test_times_are_eastern_on_a_12_hour_clock(hour: int, minute: int, text: str) -> None:
-    assert clock(datetime(2026, 11, 9, hour, minute, tzinfo=ET)) == text
-
-
-def test_alert_times_keep_their_milliseconds() -> None:
-    moment = datetime(2026, 11, 9, 16, 6, 2, 708_400, tzinfo=ET)
-    assert clock(moment, seconds=True) == "4:06:02 PM ET"
-    assert clock(moment, millis=True) == "4:06:02.708 PM ET"
-    # Another zone's time is shown in Eastern
-    assert clock(datetime.fromisoformat("2026-11-09T21:06:02+00:00")) == "4:06 PM ET"
+def test_times_are_eastern_on_a_12_hour_clock(
+    moment: datetime, options: dict[str, bool], text: str
+) -> None:
+    assert clock(moment, **options) == text
 
 
 @pytest.mark.parametrize(

@@ -9,8 +9,6 @@ from earnings_bot.summary_policy import (
 )
 from earnings_bot.summary_request import structured_request
 
-# Fictional/unseen metrics and businesses: these cases must not need ticker switches.
-
 
 def test_default_writer_and_comparison_follow_the_selected_models() -> None:
     assert [s.name for s in DEFAULT_COMPARISON] == ["Muse Ember low"]

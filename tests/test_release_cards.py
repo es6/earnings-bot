@@ -4,14 +4,13 @@ from pathlib import Path
 from typing import cast
 
 import discord
-import pytest
 
 from earnings_bot.delivery import DeliveryStore
 from earnings_bot.formatting import GREEN
 from earnings_bot.pipeline import DurableDiscordPoster
 from earnings_bot.recorder import ET
 from earnings_bot.release_cards import HIGHLIGHTS, RELEASE, release_cards, release_content
-from tests.test_unattended import FakeDiscord, FakeMessage
+from tests.fakes import FakeDiscord, FakeMessage
 
 SEEN = datetime(2026, 11, 9, 16, 5, 2, 708000, tzinfo=ET)
 HEADER = "🚨 **$LCID Q3 FY26 earnings are out**"
@@ -71,21 +70,6 @@ async def test_late_links_and_files_keep_the_summary_and_first_seen_after_restar
     assert sources.title == "Sources & documents" and sources.timestamp == SEEN
     assert release_content(message) == f"{CONTENT}\n{IR}"
     assert [a.filename for a in message.attachments] == ["release.pdf"]
-
-
-async def test_a_card_accepted_before_a_crash_is_recovered_without_another_send(
-    tmp_path: Path,
-) -> None:
-    channel = FakeDiscord()
-    channel.lose_response = True
-    db = tmp_path / "state.db"
-    with DeliveryStore(db, 7) as store, pytest.raises(TimeoutError):
-        await poster(channel, store).send(CONTENT)
-    with DeliveryStore(db, 7) as store:
-        restarted = poster(channel, store)
-        await restarted.send(CONTENT)
-        assert restarted.resumed and not store.pending()
-    assert channel.attempts == 1
 
 
 async def test_a_legacy_alert_keeps_its_summary_when_the_next_link_upgrades_it(
@@ -170,11 +154,14 @@ def test_a_later_link_keeps_a_continued_summary_whole() -> None:
     assert shown[0].footer.text == FOOTER
 
 
-def test_catchup_and_replay_labels_stay_visible_and_legacy_content_is_untouched() -> None:
+def test_catchup_and_replay_labels_stay_visible() -> None:
     content = CONTENT.replace(HEADER, HEADER + " (replay)").replace(
         "First seen", "Already out when the bot started watching · First seen"
     )
     cards = release_cards(content)
     assert cards and "Already out" in (cards[0].description or "")
     assert release_content(FakeMessage(1, HEADER + " (replay)", extra_embeds=cards)) == content
+
+
+def test_legacy_content_is_untouched() -> None:
     assert release_cards("Old alert\nTimestamp\nIssuer: <https://issuer.example/>") is None

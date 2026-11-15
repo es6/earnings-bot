@@ -10,9 +10,8 @@ from earnings_bot.pipeline import Release
 from earnings_bot.recorder import Journal
 from earnings_bot.source_document import document_from_text
 from earnings_bot.summary import SummaryError, summarizer_from
-from tests.test_pipeline import FakePoster, fetcher, ir_sighting, uber
-from tests.test_summary import summarizer_answering
-from tests.test_summary_evidence import fact, value
+from tests.builders import fact, ir_sighting, uber, value
+from tests.fakes import FakePoster, fetcher, summarizer_answering
 
 DOCUMENT = document_from_text("Uber Reports Third Quarter 2026 Results\nRevenue was $10 billion.")
 

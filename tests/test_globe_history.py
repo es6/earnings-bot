@@ -2,22 +2,8 @@ from datetime import datetime
 
 from earnings_bot.globe_history import listed, past_releases
 from earnings_bot.recorder import ET
+from tests.builders import listing, row
 from tests.fakes import RoutedFetcher
-
-WERIDE = "/en/search/organization/WeRide%2520Inc&#167;"
-
-
-def row(when: str, organization: str, link: str, title: str, page: str = WERIDE) -> str:
-    """One release as GlobeNewswire's listing pages show it."""
-    return f"""<li class="row"><div class="col-lg-10"><div class="newsLink pl-0">
-<div class="date-source"> <span>{when} ET</span> <span>|</span>
-<span>Source: <a href="{page}?page=1" class="sourceLink">{organization}</a></span> </div>
-<div class="mainLink"> <a href="/news-release/{link}/0/en/x.html">{title}</a> </div>
-<div class="newsTxt"><p>NEW YORK (GLOBE NEWSWIRE) -- ...</p></div></div></div></li>"""
-
-
-def listing(*rows: str) -> bytes:
-    return f"<ul>{''.join(rows)}</ul>".encode()
 
 
 def test_a_listing_gives_each_release_its_minute_organization_and_link() -> None:
@@ -52,7 +38,11 @@ async def test_a_companys_releases_come_from_its_own_organization_page() -> None
         row("May 13, 2026 05:40", "WeRide Inc.", "2026/05/13/3293762", "WeRide Q1"),
         row("March 23, 2026 07:10", "WeRide Inc.", "2026/03/23/3260264", "WeRide FY"),
     )
-    first = listing(row("May 13, 2026 05:40", "WeRide Inc.", "2026/05/13/3293762", "WeRide Q1"))
+    first = listing(
+        row("May 13, 2026 05:40", "WeRide Inc.", "2026/05/13/3293762", "WeRide Q1"),
+        # An organization page can list another organization's release among its rows
+        row("May 19, 2026 05:00", "Hesai Group", "2026/05/19/3297198", "Hesai results", hesai),
+    )
     second = listing(
         row("November 24, 2025 04:00", "WeRide Inc.", "2025/11/24/3193234", "WeRide Q3")
     )
@@ -67,6 +57,9 @@ async def test_a_companys_releases_come_from_its_own_organization_page() -> None
     releases = await past_releases(fetcher, "WeRide Inc.")
 
     assert [item.key for item in releases] == ["3293762", "3193234"]
+
+
+async def test_a_company_with_no_search_results_has_no_past_releases() -> None:
     assert await past_releases(RoutedFetcher({}), "WeRide Inc.") == []
 
 

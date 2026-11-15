@@ -54,7 +54,8 @@ from earnings_bot.fetch import Response
 from earnings_bot.pipeline import Poster, Releases
 from earnings_bot.recorder import ET, Journal, Plan, Target, record
 from earnings_bot.sources import PR_NEWSWIRE_EARNINGS, EdgarFilings, Source
-from tests.fakes import FakeSession, SessionFetcher, sec_filing_detail
+from tests.builders import sec_filing_detail
+from tests.fakes import FakeSession, SessionFetcher
 
 # Simulated response times in seconds, before the random factor
 LATENCY = {
@@ -472,7 +473,7 @@ class ReplayFetcher(SessionFetcher):
         return response
 
 
-class FakePoster(Poster):
+class JournalPoster(Poster):
     """Discord, answering at once with the time of each change."""
 
     def __init__(self, journal: Journal) -> None:
@@ -594,7 +595,7 @@ class Run:
     events: list[dict[str, Any]]
     exchanges: list[Exchange]
     sent: list[tuple[float, str, str]]
-    posters: list[FakePoster]
+    posters: list[JournalPoster]
     usage: dict[str, float]
     memory: tuple[float, float] | None
     memory_before: tuple[float, float] | None
@@ -605,7 +606,9 @@ async def replay(settings: Settings) -> dict[str, Any]:
     """Runs the scenario and returns its measurements."""
     shared = fetch._SHARED_QUEUES
     # main kept one queue per host, so www.sec.gov and data.sec.gov each got 8 a second
-    fetch._SHARED_QUEUES = () if settings.sec == "per-host" else ("sec.gov",)
+    # the shared setting is the shipped default; only the per-host comparison overrides it
+    if settings.sec == "per-host":
+        fetch._SHARED_QUEUES = ()
     try:
         return await _replay(settings)
     finally:
@@ -627,7 +630,7 @@ async def _replay(settings: Settings) -> dict[str, Any]:
     )
     world = World(companies, released_at, released, settings.seed)
     log, console = io.StringIO(), io.StringIO()
-    posters: list[FakePoster] = []
+    posters: list[JournalPoster] = []
     lag: list[float] = []
     memory_before = memory_mb()
     usage = Usage()
@@ -635,7 +638,7 @@ async def _replay(settings: Settings) -> dict[str, Any]:
     journal = Journal(log, clock)
 
     def new_poster() -> Poster:
-        posters.append(FakePoster(journal))
+        posters.append(JournalPoster(journal))
         return posters[-1]
 
     lag_task = asyncio.create_task(loop_lag(lag))

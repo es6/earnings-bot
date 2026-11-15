@@ -1,138 +1,34 @@
 import asyncio
 import io
-import itertools
 import json
-from collections.abc import AsyncIterator
-from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any, cast
 
 import discord
 import pytest
 
-from earnings_bot import unattended
+from earnings_bot import delivery, pipeline, unattended
 from earnings_bot.delivery import DeliveryStore
 from earnings_bot.fetch import Fetcher
-from earnings_bot.pipeline import DurableDiscordPoster, Release, Releases
-from earnings_bot.recorder import ET, Journal, OnNew, Polls, Target, Trial, Watch
+from earnings_bot.pipeline import Release, Releases
+from earnings_bot.recorder import ET, Journal, OnNew, Polls, Target, Watch
 from earnings_bot.release_cards import release_content
 from earnings_bot.sources import EdgarFilings, EdgarLatest, GuessedFile, RssFeed, Sighting
 from earnings_bot.track_progress import TrackProgress
-from tests.fakes import PinnedClock, RoutedFetcher
-from tests.test_pipeline import FakePoster, uber
+from tests.builders import uber
+from tests.fakes import (
+    FakeDiscord,
+    FakePoster,
+    PinnedClock,
+    RoutedFetcher,
+)
 
 
-def unknown_message() -> discord.NotFound:
-    response = SimpleNamespace(status=404, reason="Not Found")
-    return discord.NotFound(cast(Any, response), {"message": "Unknown Message", "code": 10008})
-
-
-@dataclass
-class FakeMessage:
-    id: int
-    content: str
-    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
-    edited_at: datetime | None = None
-    author: SimpleNamespace = field(default_factory=lambda: SimpleNamespace(id=42))
-    attachments: list[Any] = field(default_factory=list)
-    embed: discord.Embed | None = None
-    extra_embeds: list[discord.Embed] = field(default_factory=list)
-    deleted: bool = False
-
-    @property
-    def embeds(self) -> list[discord.Embed]:
-        return self.extra_embeds or ([self.embed] if self.embed else [])
-
-    async def edit(
-        self,
-        *,
-        content: str | None = None,
-        attachments: list[Any] | None = None,
-        embed: discord.Embed | None = None,
-        embeds: list[discord.Embed] | None = None,
-    ) -> "FakeMessage":
-        if self.deleted:
-            raise unknown_message()
-        if embed is not None:
-            self.embed = embed
-            self.extra_embeds = []
-        if embeds is not None:
-            self.extra_embeds = embeds
-            self.embed = embeds[0] if embeds else None
-        if content is not None:
-            self.content = content
-        if attachments is not None:
-            # As Discord stores them: it drops "%" from a filename ("Nebius%20Q3...pdf" came
-            # back as "Nebius20Q3...pdf" on Nov 12)
-            self.attachments = [
-                SimpleNamespace(filename=a.filename.replace("%", "")) for a in attachments
-            ]
-        self.edited_at = datetime.now(UTC)
-        return self
-
-    async def delete(self) -> None:
-        if self.deleted:
-            raise unknown_message()
-        self.deleted = True
-
-
-class FakeDiscord:
-    def __init__(self) -> None:
-        self.messages: dict[int, FakeMessage] = {}
-        self.ids = itertools.count(1)  # never reused, like Discord's
-        self.nonces: dict[str, FakeMessage] = {}
-        self.attempts = 0
-        self.fail_before_send = False
-        self.lose_response = False
-
-    async def send(
-        self,
-        content: str = "",
-        *,
-        nonce: str | None = None,
-        embed: discord.Embed | None = None,
-        embeds: list[discord.Embed] | None = None,
-        allowed_mentions: object = None,
-    ) -> FakeMessage:
-        self.attempts += 1
-        if self.fail_before_send:
-            self.fail_before_send = False
-            raise TimeoutError("request timed out before delivery")
-        if nonce is not None and nonce in self.nonces:
-            return self.nonces[nonce]
-        message = FakeMessage(next(self.ids), content, embed=embed, extra_embeds=embeds or [])
-        self.messages[message.id] = message
-        if nonce is not None:
-            self.nonces[nonce] = message
-        if self.lose_response:
-            self.lose_response = False
-            raise TimeoutError("Discord accepted the message but the response was lost")
-        return message
-
-    async def fetch_message(self, message_id: int) -> FakeMessage:
-        if message_id not in self.messages:
-            raise unknown_message()
-        return self.messages[message_id]
-
-    def delete(self, message_id: int) -> None:
-        self.messages.pop(message_id).deleted = True
-
-    async def history(
-        self, *, limit: int | None, after: datetime | None = None
-    ) -> AsyncIterator[FakeMessage]:
-        for message in self.messages.values():
-            if after is None or message.created_at > after:
-                yield message
-
-    def poster(self, store: DeliveryStore, target: Target) -> DurableDiscordPoster:
-        return DurableDiscordPoster(
-            cast(discord.abc.Messageable, self), store, target.release_key, 42
-        )
-
-
-async def test_an_alert_retries_then_resumes_after_restart(tmp_path: Path) -> None:
+async def test_an_alert_retries_then_resumes_after_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(delivery, "RETRY_DELAYS", (0.0, 0.0))
     target = uber()
     channel = FakeDiscord()
     channel.fail_before_send = True
@@ -304,96 +200,82 @@ async def test_a_window_that_keeps_failing_is_reported_once(
     ]
 
 
-async def test_both_globenewswire_copies_post_one_alert_from_one_article_read(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+FOLDER = "https://www.sec.gov/Archives/edgar/data/1543151/000154315126000040"
+PRN = "https://www.prnewswire.com/news-releases/example-earnings-"
+
+
+@pytest.mark.parametrize(
+    ("first", "later", "added"),
+    [
+        pytest.param(
+            [
+                "Alert",
+                "Seen",
+                "IR site: <https://ir.example/q3>",
+                f"SEC 8-K: <{FOLDER}/index.htm>",
+                f"PR Newswire: <{PRN}302934228.html>",
+            ],
+            [
+                "Alert",
+                "Seen",
+                "IR site: <https://ir.example/q3>",
+                # The other SEC source links the same filing's main document
+                f"SEC 8-K: <{FOLDER}/uber-20261104.htm>",
+                f"PR Newswire: <{PRN}302934067.html>",
+                "Business Wire: <https://bw.example/q3>",
+            ],
+            ["Business Wire: <https://bw.example/q3>"],
+            id="same-layout",
+        ),
+        pytest.param(
+            # Posted by the bot before links were masked
+            ["Alert", "Seen", "IR site: <https://ir.example/q3>", f"SEC 8-K: <{FOLDER}/index.htm>"],
+            [
+                "Alert",
+                "Seen",
+                "🌐 [IR site](<https://ir.example/q3>)",
+                f"🏛️ [SEC 8-K](<{FOLDER}/uber-20261104.htm>)",
+                "📰 [Business Wire](<https://bw.example/q3>)",
+            ],
+            ["📰 [Business Wire](<https://bw.example/q3>)"],
+            id="before-the-masked-layout",
+        ),
+    ],
+)
+async def test_a_resumed_alert_adds_only_the_links_it_lacks(
+    tmp_path: Path, first: list[str], later: list[str], added: list[str]
 ) -> None:
-    url = "https://www.globenewswire.com/news-release/2026/11/18/3400000/0/en/nvidia.html"
-    article = url.replace("www.", "rss.", 1)
-    sighting = Sighting(url, "NVIDIA Reports Third Quarter Results", url, earnings=True)
-
-    async def record(
-        target: Target,
-        fetcher: Fetcher,
-        journal: Journal,
-        on_new: OnNew,
-        polls: Polls,
-        **kwargs: object,
-    ) -> list[Watch]:
-        for source in target.trial.sources():
-            on_new(target, source, sighting)
-        return []
-
-    monkeypatch.setattr(unattended, "record_target", record)
-    fetcher = RoutedFetcher({article: (200, b"<p>Revenue and earnings per share. </p>" * 100)})
-    log, poster = io.StringIO(), FakePoster()
-    journal = Journal(log)
-    with DeliveryStore(tmp_path / "state.db", 7) as store:
-        runner = unattended.DirectoryWatcher(
-            tmp_path,
-            fetcher,
-            journal,
-            Releases(lambda: poster, fetcher, journal, None),
-            store,
-            lambda _: None,
-        )
-        row, _ = runner.calendar.add("NVDA")
-        target = Target(
-            ticker="NVDA",
-            cik=row.cik,
-            expected=journal.now(),
-            trial=Trial(globenewswire=["NVIDIA"]),
-        )
-        await runner._watch(target)
-
-    # Both copies of the feed had it: one alert, from one read of the article
-    sends = [content for kind, content in poster.calls if kind == "send"]
-    assert len(sends) == 1 and "[GlobeNewswire](<" in sends[0]
-    assert fetcher.requests == [("GET", article, None)]
-
-
-async def test_a_resumed_alert_doesnt_attach_a_file_it_already_has(tmp_path: Path) -> None:
     target = uber()
     channel = FakeDiscord()
-    alert = "Earnings alert\nTimestamp\nIssuer: <https://issuer.example/earnings>"
-    with DeliveryStore(tmp_path / "state.db", 7) as store:
-        await channel.poster(store, target).send(alert)
-        channel.messages[1].attachments = [SimpleNamespace(filename="release.pdf")]
-
-        resumed = channel.poster(store, target)  # after a restart
-        await resumed.send(alert)
-        await resumed.attach("release.pdf", b"%PDF-1.7")
-
-    assert resumed.resumed
-    assert channel.messages[1].edited_at is None
-
-
-async def test_a_resumed_alert_adds_only_the_links_it_lacks(tmp_path: Path) -> None:
-    target = uber()
-    channel = FakeDiscord()
-    folder = "https://www.sec.gov/Archives/edgar/data/1543151/000154315126000040"
-    first = ["Alert", "Seen", "IR site: <https://ir.example/q3>", f"SEC 8-K: <{folder}/index.htm>"]
-    wire = "Business Wire: <https://bw.example/q3>"
-    prn = "https://www.prnewswire.com/news-releases/example-earnings-"
-    first.append(f"PR Newswire: <{prn}302934228.html>")
-    # The other SEC source links the same filing's main document
-    later = [
-        *first[:3],
-        f"SEC 8-K: <{folder}/uber-20261104.htm>",
-        f"PR Newswire: <{prn}302934067.html>",
-        wire,
-    ]
     with DeliveryStore(tmp_path / "state.db", 7) as store:
         await channel.poster(store, target).send("\n".join(first))
         resumed = channel.poster(store, target)  # after a restart
         await resumed.send("\n".join(first))
         await resumed.edit("\n".join(later))
 
-    assert channel.messages[1].content.splitlines() == [*first, wire]
+    assert channel.messages[1].content.splitlines() == [*first, *added]
+
+
+async def test_links_merged_into_a_resumed_alert_are_cut_to_discords_limit(tmp_path: Path) -> None:
+    target = uber()
+    channel = FakeDiscord()
+    first = ["Alert", "Seen", "IR site: <https://ir.example/q3>"]
+    many = [*first, *(f"Wire {n}: <https://wire.example/{n}/{'x' * 60}>" for n in range(40))]
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        await channel.poster(store, target).send("\n".join(first))
+        resumed = channel.poster(store, target)  # after a restart
+        await resumed.send("\n".join(first))
+        await resumed.edit("\n".join(many))
+
+    merged = channel.messages[1].content
+    assert len(merged) == pipeline.MAX_CONTENT
+    assert merged.endswith("…")
 
 
 def test_the_store_commits_without_syncing_the_disk_each_time(tmp_path: Path) -> None:
     with DeliveryStore(tmp_path / "state.db", 7) as store:
         assert store.db.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+        assert store.db.execute("PRAGMA synchronous").fetchone()[0] == 1  # NORMAL
 
 
 def _plan(ticker: str, cik: int, when: datetime) -> str:
@@ -515,6 +397,7 @@ async def test_calendar_updates_edit_one_card_and_keep_their_log(
             journal.now,
             runner.busy,
             audit,
+            card_spacing=0.0,
         )
         runner.progress = progress
         try:
@@ -555,8 +438,9 @@ async def test_calendar_updates_edit_one_card_and_keep_their_log(
 
 
 async def test_a_twenty_release_burst_keeps_one_message_per_release_after_restart(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr(delivery, "RETRY_DELAYS", (0.0, 0.0))
     channel = FakeDiscord()
     channel.lose_response = True
     db = tmp_path / "state.db"
@@ -658,50 +542,27 @@ async def test_a_finished_window_isnt_watched_again_after_a_restart(
     assert started == ["AAA"]
 
 
-async def test_an_alert_from_before_the_new_layout_still_takes_only_new_links(
-    tmp_path: Path,
-) -> None:
-    target = uber()
-    channel = FakeDiscord()
-    folder = "https://www.sec.gov/Archives/edgar/data/1543151/000154315126000040"
-    # Posted by the bot before links were masked
-    old = ["Alert", "Seen", "IR site: <https://ir.example/q3>", f"SEC 8-K: <{folder}/index.htm>"]
-    wire = "📰 [Business Wire](<https://bw.example/q3>)"
-    new = [
-        "Alert",
-        "Seen",
-        "🌐 [IR site](<https://ir.example/q3>)",
-        f"🏛️ [SEC 8-K](<{folder}/uber-20261104.htm>)",
-        wire,
-    ]
-    with DeliveryStore(tmp_path / "state.db", 7) as store:
-        await channel.poster(store, target).send("\n".join(old))
-        resumed = channel.poster(store, target)  # after a restart into the new layout
-        await resumed.send("\n".join(old))
-        await resumed.edit("\n".join(new))
-
-    assert channel.messages[1].content.splitlines() == [*old, wire]
+LCID = Target(
+    ticker="LCID",
+    expected=datetime(2026, 11, 9, 16, 5, tzinfo=ET),
+    cik=1811210,
+    period="FY2026Q3",
+)
+FIRST_LCID = datetime(2026, 11, 9, 16, 6, 2, 708_000, tzinfo=ET)
+FRESH_FEED = RssFeed("prnewswire_busted", "https://www.prnewswire.com/rss/x.rss")
 
 
 def test_a_window_report_names_the_winner_then_how_far_behind_the_rest_were() -> None:
-    target = Target(
-        ticker="LCID",
-        expected=datetime(2026, 11, 9, 16, 5, tzinfo=ET),
-        cik=1811210,
-        period="FY2026Q3",
-    )
-    first = datetime(2026, 11, 9, 16, 6, 2, 708_000, tzinfo=ET)
-    fresh = RssFeed("prnewswire_busted", "https://www.prnewswire.com/rss/x.rss")
     cached = RssFeed("prnewswire", "https://www.prnewswire.com/rss/x.rss")
-    window = target.window
+    window = LCID.window
     watches = [
-        Watch("LCID", fresh, window, first=first),
-        Watch("LCID", cached, window, first=first + timedelta(seconds=0.4)),
-        Watch("LCID", EdgarLatest(1811210), window, first=first + timedelta(seconds=171.31)),
+        Watch("LCID", FRESH_FEED, window, first=FIRST_LCID),
+        Watch("LCID", cached, window, first=FIRST_LCID + timedelta(seconds=0.4)),
+        Watch("LCID", EdgarLatest(1811210), window, first=FIRST_LCID + timedelta(seconds=171.31)),
         Watch("LCID", EdgarFilings(1811210), window, stopped="HTTP 403"),
     ]
 
-    report = unattended._window_report(target, watches, "@earnings_guy: no post found")
+    report = unattended._window_report(LCID, watches, "@earnings_guy: no post found")
 
     assert report.splitlines() == [
         "🏁 **LCID Q3 FY26 window closed** · ⚠️ degraded",
@@ -710,17 +571,28 @@ def test_a_window_report_names_the_winner_then_how_far_behind_the_rest_were() ->
         "⚠️ Stopped early: SEC 8-K filings",
         "-# @earnings_guy: no post found",
     ]
-    # A route the site refused at times kept retrying, and is named unless it found the release
-    watches[3] = Watch("LCID", EdgarFilings(1811210), window, blocked=3)
-    watches[1].blocked = 1
-    assert unattended._window_report(target, watches).splitlines()[-1] == (
-        "⚠️ Refused at times (HTTP 403), retried: SEC 8-K filings"
-    )
-    caught = [Watch("LCID", fresh, window, caught_up="lucid-q3")]
-    assert unattended._window_report(target, caught).splitlines()[1] == (
-        "Already out when the window opened: PR Newswire earnings feed"
-    )
-    assert unattended._window_report(target, []).splitlines()[1] == "No release seen"
+
+
+def test_a_route_the_site_refused_at_times_is_named_unless_it_found_the_release() -> None:
+    window = LCID.window
+    refused_sec = Watch("LCID", EdgarFilings(1811210), window, blocked=3)
+    refused_wire = Watch("LCID", FRESH_FEED, window, blocked=1, first=FIRST_LCID)
+
+    report = unattended._window_report(LCID, [refused_wire, refused_sec])
+
+    assert report.splitlines()[-1] == "⚠️ Refused at times (HTTP 403), retried: SEC 8-K filings"
+
+
+def test_a_window_report_says_which_sources_had_the_release_already_out() -> None:
+    caught = [Watch("LCID", FRESH_FEED, LCID.window, caught_up="lucid-q3")]
+
+    report = unattended._window_report(LCID, caught)
+
+    assert report.splitlines()[1] == "Already out when the window opened: PR Newswire earnings feed"
+
+
+def test_a_window_report_with_no_release_says_so() -> None:
+    assert unattended._window_report(LCID, []).splitlines()[1] == "No release seen"
 
 
 async def test_a_restart_resumes_later_links_without_a_second_alert(

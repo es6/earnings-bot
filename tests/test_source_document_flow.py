@@ -3,6 +3,7 @@
 import asyncio
 import io
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 from earnings_bot.delivery import DeliveryStore
@@ -12,14 +13,8 @@ from earnings_bot.source_document import SourceDocument, document_from_text
 from earnings_bot.sources import GuessedPage, RssFeed, Sighting
 from earnings_bot.summary import Summary
 from earnings_bot.text import pdf_text, release_document
-from tests.fakes import RoutedFetcher
-from tests.test_pipeline import (
-    IR_PAGE,
-    FakePoster,
-    FakeSummarizer,
-    pdf_sighting,
-    uber,
-)
+from tests.builders import IR_PAGE, pdf_sighting, uber
+from tests.fakes import FakePoster, FakeSummarizer, RoutedFetcher
 
 
 async def test_html_cell_references_reach_the_writer_and_survive_a_store_restart(
@@ -110,7 +105,7 @@ def test_evidence_versions_are_immutable_and_scoped_to_channel_and_release(tmp_p
 
 def test_legacy_summary_schema_upgrades_without_discarding_a_written_result(tmp_path: Path) -> None:
     path = tmp_path / "state.db"
-    with sqlite3.connect(path) as db:
+    with closing(sqlite3.connect(path)) as db, db:
         db.execute("""
             CREATE TABLE summaries (
                 channel_id INTEGER, release_key TEXT, document TEXT, source TEXT,

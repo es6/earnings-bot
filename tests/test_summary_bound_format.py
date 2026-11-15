@@ -9,16 +9,7 @@ from earnings_bot.source_document import document_from_html
 from earnings_bot.summary_binding import BindingReport, BoundFact, bind_brief
 from earnings_bot.summary_bound_format import display_facts, render_bound, value_text
 from earnings_bot.summary_evidence import ReferencedFact, parse_referenced_brief
-from tests.test_summary_binding import TABLE
-from tests.test_summary_evidence import fact, value
-
-
-@pytest.mark.parametrize("months", [3, 6, 9, 12])
-def test_a_window_ending_on_a_date_is_not_a_point_in_time(months: int) -> None:
-    from earnings_bot.binding_text import duration
-
-    assert duration(f"{months} months ending December 31, 2026") == months
-    assert duration("as of December 31, 2026") == 0
+from tests.builders import TABLE, fact, value
 
 
 def test_a_growth_rate_keeps_its_rolling_observation_window() -> None:
@@ -119,6 +110,25 @@ def test_qualified_counts_keep_units_and_do_not_get_precise_growth_from_approxim
     )
     assert "nearly 200 square feet" in shown and "$" not in shown
     assert "100 square feet a year ago" in shown and "%" not in shown
+
+
+@pytest.mark.parametrize(("qualifier", "plus"), [("exact", True), ("nearly", False)])
+def test_only_an_exact_positive_growth_rate_gets_a_plus_sign(qualifier: str, plus: bool) -> None:
+    shown = render_bound(
+        trusted(
+            reported_growth=value(
+                amount="39",
+                scale="one",
+                unit="%",
+                currency="",
+                comparison="YoY",
+                value_qualifier=qualifier,
+            )
+        )
+    )
+    assert ("+" in shown) is plus
+    assert "39% YoY" in shown
+    assert ("nearly 39%" in shown) is (not plus)
 
 
 def test_guidance_ranges_and_quarter_actuals_keep_their_own_periods() -> None:

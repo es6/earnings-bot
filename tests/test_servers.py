@@ -3,7 +3,6 @@ once, and its alert goes to each of them at once."""
 
 import asyncio
 import io
-import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import cast
@@ -11,7 +10,6 @@ from typing import cast
 import discord
 import pytest
 
-from earnings_bot import recorder
 from earnings_bot.config import Settings
 from earnings_bot.delivery import DeliveryStore
 from earnings_bot.pipeline import FanOutPoster, Releases, fan_out
@@ -19,9 +17,16 @@ from earnings_bot.recorder import ET, Journal, Target
 from earnings_bot.release_cards import release_content
 from earnings_bot.tracking_commands import NOT_CONNECTED, TrackingCommands
 from earnings_bot.unattended import DirectoryWatcher, Server, _Window, durable_posters
-from tests.test_pipeline import FakePoster
-from tests.test_tracking_commands import GUILD, ReleaseDay, ShiftedClock, call
-from tests.test_unattended import FakeDiscord
+from tests.builders import GUILD
+from tests.clocks import ShiftedClock
+from tests.fakes import (
+    FakePoster,
+    PolledReleaseDay,
+    ReleaseDay,
+    WatchedDiscord,
+    call,
+    quick_windows,
+)
 
 OTHER_GUILD = 777
 
@@ -69,12 +74,12 @@ async def test_every_server_gets_each_step_and_one_refusal_doesnt_stop_the_other
 async def test_a_company_other_servers_track_is_watched_once_and_alerted_in_each(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(recorder, "pace", lambda at, times, own: (own, None))
+    quick_windows(monkeypatch)
     clock = ShiftedClock()
     clock.sync()
     journal = Journal(io.StringIO(), clock)
-    fetcher = ReleaseDay()
-    channels = [FakeDiscord() for _ in range(4)]
+    fetcher = PolledReleaseDay()
+    channels = [WatchedDiscord() for _ in range(4)]
     guilds = [GUILD, OTHER_GUILD, 888, 999]
     with (
         DeliveryStore(tmp_path / "state.db", 7) as mine,
@@ -114,10 +119,13 @@ async def test_a_company_other_servers_track_is_watched_once_and_alerted_in_each
         [row] = servers[1].calendar.entries()
         assert row.target is not None
 
-        clock.shift = row.target.window[1] - clock.now() - timedelta(seconds=3)
-        fetcher.released_at = time.monotonic() + 0.8
         await bot.scan()
         assert len(bot.windows) == 1  # one window, however many servers track it
+        # The results come out after the first poll; once both servers have their alert, skip
+        # to the end of the window
+        for channel in channels[1:3]:
+            await asyncio.wait_for(channel.sent.wait(), 10)
+        clock.shift = row.target.window[1] - clock.now() + timedelta(seconds=1)
         await asyncio.gather(*(window.task for window in bot.windows.values()))
 
         for channel in channels[1:3]:
@@ -371,7 +379,9 @@ async def test_each_companys_speed_audit_runs_once_for_every_server(
     from dataclasses import replace
 
     from earnings_bot.track_progress import TrackProgress
-    from tests.test_track_progress import INVESTIGATED, NOW, SPEED, WatchedDiscord
+    from tests.builders import INVESTIGATED, SPEED
+    from tests.builders import PROGRESS_NOW as NOW
+    from tests.fakes import WatchedDiscord
 
     audits: list[str] = []
     done = asyncio.Event()
@@ -379,7 +389,7 @@ async def test_each_companys_speed_audit_runs_once_for_every_server(
 
     async def audit(ticker: str, company: object, when: datetime) -> object:
         audits.append(ticker)
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(0)
         done.set()
         if fails:
             raise OSError("temporary source failure")
@@ -430,7 +440,8 @@ async def test_each_companys_speed_audit_runs_once_for_every_server(
             await asyncio.wait_for(done.wait(), 5)
             for tracker in trackers:
                 tracker.changed.set()
-            await asyncio.sleep(0.3)
+            for channel in channels:
+                await asyncio.wait_for(channel.sent.wait(), 5)
         finally:
             for task in tasks:
                 task.cancel()
@@ -457,8 +468,8 @@ async def borrowing(
     from dataclasses import replace
 
     from earnings_bot.known import to_target
+    from tests.builders import INVESTIGATED, SPEED
     from tests.fakes import RoutedFetcher
-    from tests.test_track_progress import INVESTIGATED, SPEED
 
     fetcher = RoutedFetcher({EVIDENCE_PAGE: (page_status, b"<html>Lucid call</html>")})
     journal = Journal(io.StringIO())
@@ -559,7 +570,8 @@ async def test_primary_server_commands_are_registered_without_a_test_guild_setti
 async def test_debug_managers_are_scoped_to_configured_servers_and_owner_stays_global(
     tmp_path: Path,
 ) -> None:
-    from tests.test_tracking_commands import OWNER, client
+    from tests.builders import OWNER
+    from tests.fakes import client
 
     fetcher = ReleaseDay()
     journal = Journal(io.StringIO())

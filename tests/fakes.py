@@ -1,21 +1,36 @@
 import asyncio
+import itertools
+import json
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections import deque
+from collections.abc import AsyncIterator, Awaitable, Callable, Hashable, Iterable
 from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from html.parser import HTMLParser
-from types import TracebackType
+from types import SimpleNamespace, TracebackType
 from typing import Any, Self, cast
-from urllib.parse import unquote, urljoin
+from urllib.parse import unquote, urljoin, urlsplit
 
 import aiohttp
 import discord
+import pytest
 from yarl import URL
 
-from earnings_bot.browser import DesktopChrome, RenderedPage
+from earnings_bot import recorder
+from earnings_bot.browser import _SETTLED, DesktopChrome, RenderedPage
 from earnings_bot.clock import TrustedClock
+from earnings_bot.delivery import DeliveryStore
 from earnings_bot.fetch import Fetcher, Response
+from earnings_bot.pipeline import DurableDiscordPoster, Poster
+from earnings_bot.recorder import Target
+from earnings_bot.sources import Sighting, Source
+from earnings_bot.summary import (
+    Summarizer,
+    Summary,
+)
 from earnings_bot.text import html_to_text
+from tests.builders import GUILD, OWNER, PLTR_FEED, TRACKING_RESULTS
 
 
 class PinnedClock(TrustedClock):
@@ -102,8 +117,8 @@ def embed_text(embed: discord.Embed | None) -> str:
     if embed is None:
         return ""
     parts = [embed.title or "", embed.description or ""]
-    for field in embed.fields:
-        parts += [field.name or "", field.value or ""]
+    for embed_field in embed.fields:
+        parts += [embed_field.name or "", embed_field.value or ""]
     return "\n".join(parts)
 
 
@@ -188,17 +203,6 @@ class RoutedFetcher(Fetcher):
 Answer = Callable[[str, str], Awaitable[tuple[int, dict[str, str], bytes]]]
 
 
-def sec_filing_detail(primary: str, exhibit: str) -> bytes:
-    return f'''
-<table summary="Document Format Files">
-<tr><th>Seq</th><th>Description</th><th>Document</th><th>Type</th><th>Size</th></tr>
-<tr><td>1</td><td>Current report</td><td><a href="/ix?doc={primary}">{primary}</a>
-    <span>iXBRL</span></td><td>8-K</td><td>90000</td></tr>
-<tr><td>2</td><td></td><td><a href="{exhibit}">{exhibit}</a></td><td>EX-99.1</td>
-    <td>50000</td></tr>
-</table>'''.encode()
-
-
 class FakeSession:
     """Stands in for aiohttp's ClientSession under a real Fetcher, so a test goes through the
     Fetcher's pacing and priorities but never touches the network. It returns fixture responses
@@ -262,33 +266,483 @@ class SessionFetcher(Fetcher):
         return self
 
 
-def simple_pdf(lines: list[str]) -> bytes:
-    """A one-page PDF with these lines of text, built by hand so tests need no PDF writer."""
-    shown = " T* ".join(
-        "(" + line.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)") + ") Tj"
-        for line in lines
+class FakeTabSocket:
+    """Answers DevTools commands the way a tab does, and remembers what it was asked."""
+
+    def __init__(self) -> None:
+        self.sent: list[dict[str, Any]] = []
+        self.replies: list[dict[str, Any]] = []
+        self.value: Any = None  # what the next in-page fetch answers, when set
+
+    async def send_json(self, message: dict[str, Any]) -> None:
+        self.sent.append(message)
+        result: dict[str, Any] = {}
+        if message["method"] == "Runtime.evaluate":
+            if message["params"]["expression"] == _SETTLED:
+                value: Any = ["complete", 1, 10]
+            elif self.value is not None:
+                value = self.value
+            else:
+                value = {
+                    "url": "https://ir.example.com/results",
+                    "status": 200,
+                    "title": "Results",
+                    "text": "Q3 2026 Earnings Release",
+                    "links": [["https://ir.example.com/q3.pdf", "Earnings Release", "card"]],
+                    "frames": [],
+                }
+            result = {"result": {"value": value}}
+        # A tab sends events between replies, which the reader must skip
+        self.replies += [
+            {"method": "Network.requestWillBeSent", "params": {}},
+            {"id": 1, "result": result},
+        ]
+
+    async def receive_json(self) -> dict[str, Any]:
+        return self.replies.pop(0)
+
+    async def close(self) -> None:
+        return None
+
+
+class BrowserFake(RoutedFetcher):
+    def __init__(self, responses: Iterable[tuple[int, bytes] | Exception]) -> None:
+        super().__init__({})
+        self._responses = iter(responses)
+        self.browser_calls: list[tuple[str, str, bool]] = []
+
+    async def browser_request(
+        self, url: str, warmup: str, give_up_after: float, *, urgent: bool = False
+    ) -> Response:
+        self.browser_calls.append((url, warmup, urgent))
+        reply = next(self._responses)
+        if isinstance(reply, Exception):
+            raise reply
+        status, body = reply
+        return Response(url, status, {"x-cache": f"cache for {url}"}, body, 0.015)
+
+
+class FakePoster(Poster):
+    """Records each step, and stamps it with the current time the way Discord would."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    async def send(self, content: str) -> datetime | None:
+        self.calls.append(("send", content))
+        return datetime.now(UTC)
+
+    async def edit(self, content: str) -> datetime | None:
+        self.calls.append(("edit", content))
+        return datetime.now(UTC)
+
+    async def attach(self, name: str, data: bytes) -> datetime | None:
+        self.calls.append(("attach", name))
+        return datetime.now(UTC)
+
+    async def set_summary(self, text: str, footer: str) -> datetime | None:
+        self.calls.append(("summary", f"{text} | {footer}"))
+        return datetime.now(UTC)
+
+
+class FakeSummarizer(Summarizer):
+    def __init__(self) -> None:
+        self.references = False
+        self.calls: list[str] = []  # the release text of each request
+        self.contexts: list[dict | None] = []
+
+    async def write(
+        self, ticker: str, release: str, seconds: float = 0.0, *, context: dict | None = None
+    ) -> Summary:
+        self.calls.append(release)
+        self.contexts.append(context)
+        return Summary("UBER $UBER Q3'26 EARNINGS HIGHLIGHTS", ["12%"], 0.0, 1000, 200)
+
+
+def fetcher() -> RoutedFetcher:
+    return RoutedFetcher({".pdf": (200, b"%PDF-1.7")})
+
+
+class QueuedFetcher(RoutedFetcher):
+    """Answers from routes, but takes its turn in the host's queue like the real Fetcher."""
+
+    def __init__(self, routes: dict[str, list[bytes]]) -> None:
+        super().__init__({})
+        self.pages = routes
+
+    async def request(self, method: str, url: str, *args: Any, **kwargs: Any) -> Response:
+        await self.wait_turn(urlsplit(url).hostname or "")
+        for part, bodies in self.pages.items():
+            if part in url:
+                body = bodies.pop(0) if len(bodies) > 1 else bodies[0]
+                return Response(url, 200, {"age": "0"}, body, 0.01)
+        return Response(url, 404, {}, b"", 0.01)
+
+
+class ListSource(Source):
+    """Lists the keys in the response body, one per line."""
+
+    name = "list"
+    interval = 0.01
+
+    def url(self) -> str:
+        return "https://example.com/list"
+
+    def parse(self, response: Response) -> list[Sighting]:
+        keys = response.body.decode().split()
+        return [Sighting(key, f"Item {key}", "", earnings=True) for key in keys]
+
+
+class FakeFetcher(Fetcher):
+    """Serves canned responses in order, then repeats the last one."""
+
+    def __init__(self, *responses: tuple[int, str], queued: float = 0.0) -> None:
+        super().__init__("Test Person test@example.com")
+        self.responses = deque(responses)
+        self.queued = queued  # how long each request waits for its host's turn
+        self.sent = 0
+
+    async def request(
+        self,
+        method: str,
+        url: str,
+        headers: dict[str, str] | None = None,
+        give_up_after: float | None = None,
+        urgent: bool = False,
+        *,
+        allow_redirects: bool = True,
+        encoded_url: bool = False,
+    ) -> Response:
+        self.sent += 1
+        status, body = self.responses[0] if len(self.responses) == 1 else self.responses.popleft()
+        if status == 0:
+            raise TimeoutError
+        return Response(url, status, {"age": "3"}, body.encode(), 0.02, self.queued)
+
+
+class CompanyFeed(Source):
+    """One feed for every company, listing "TICKER:key" items, read for one company."""
+
+    name = "feed"
+    interval = 0.01
+
+    def __init__(self, ticker: str) -> None:
+        self.ticker = ticker
+
+    @property
+    def share_key(self) -> Hashable:
+        return self.name
+
+    def url(self) -> str:
+        return "https://example.com/feed"
+
+    def parse(self, response: Response) -> list[Sighting]:
+        items = response.body.decode().split()
+        return [Sighting(i, i, "", earnings=True) for i in items if i.startswith(self.ticker)]
+
+
+class FakeStream:
+    def __init__(self, message: SimpleNamespace) -> None:
+        self.message = message
+
+    async def __aenter__(self) -> "FakeStream":
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        pass
+
+    async def get_final_message(self) -> SimpleNamespace:
+        return self.message
+
+
+def summarizer_answering(stop_reason: str, *texts: str) -> tuple[Summarizer, list[dict[str, Any]]]:
+    """A Summarizer whose model answers with these text blocks, and the requests it gets."""
+    asked: list[dict[str, Any]] = []
+    message = SimpleNamespace(
+        stop_reason=stop_reason,
+        content=[SimpleNamespace(type="redacted_thinking")]
+        + [SimpleNamespace(type="text", text=text) for text in texts],
+        usage=SimpleNamespace(input_tokens=9000, output_tokens=700),
     )
-    stream = f"BT /F1 10 Tf 12 TL 40 760 Td {shown} ET".encode("latin-1")
-    objects = [
-        b"<< /Type /Catalog /Pages 2 0 R >>",
-        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-        (
-            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R "
-            b"/Resources << /Font << /F1 5 0 R >> >> >>"
-        ),
-        b"<< /Length %d >>\nstream\n" % len(stream) + stream + b"\nendstream",
-        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
-    ]
-    data = b"%PDF-1.4\n"
-    offsets = []
-    for number, body in enumerate(objects, 1):
-        offsets.append(len(data))
-        data += b"%d 0 obj\n" % number + body + b"\nendobj\n"
-    xref = len(data)
-    data += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objects) + 1)
-    data += b"".join(b"%010d 00000 n \n" % offset for offset in offsets)
-    data += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (
-        len(objects) + 1,
-        xref,
+
+    def stream(**request: Any) -> FakeStream:
+        asked.append(request)
+        return FakeStream(message)
+
+    summarizer = Summarizer("not-a-real-key")
+    summarizer.client = cast(Any, SimpleNamespace(messages=SimpleNamespace(stream=stream)))
+    return summarizer, asked
+
+
+def unknown_message() -> discord.NotFound:
+    response = SimpleNamespace(status=404, reason="Not Found")
+    return discord.NotFound(cast(Any, response), {"message": "Unknown Message", "code": 10008})
+
+
+@dataclass
+class FakeMessage:
+    id: int
+    content: str
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    edited_at: datetime | None = None
+    author: SimpleNamespace = field(default_factory=lambda: SimpleNamespace(id=42))
+    attachments: list[Any] = field(default_factory=list)
+    embed: discord.Embed | None = None
+    extra_embeds: list[discord.Embed] = field(default_factory=list)
+    deleted: bool = False
+
+    @property
+    def embeds(self) -> list[discord.Embed]:
+        return self.extra_embeds or ([self.embed] if self.embed else [])
+
+    async def edit(
+        self,
+        *,
+        content: str | None = None,
+        attachments: list[Any] | None = None,
+        embed: discord.Embed | None = None,
+        embeds: list[discord.Embed] | None = None,
+    ) -> "FakeMessage":
+        if self.deleted:
+            raise unknown_message()
+        if embed is not None:
+            self.embed = embed
+            self.extra_embeds = []
+        if embeds is not None:
+            self.extra_embeds = embeds
+            self.embed = embeds[0] if embeds else None
+        if content is not None:
+            self.content = content
+        if attachments is not None:
+            # As Discord stores them: it drops "%" from a filename ("Nebius%20Q3...pdf" came
+            # back as "Nebius20Q3...pdf" on Nov 12)
+            self.attachments = [
+                SimpleNamespace(filename=a.filename.replace("%", "")) for a in attachments
+            ]
+        self.edited_at = datetime.now(UTC)
+        return self
+
+    async def delete(self) -> None:
+        if self.deleted:
+            raise unknown_message()
+        self.deleted = True
+
+
+class FakeDiscord:
+    def __init__(self) -> None:
+        self.messages: dict[int, FakeMessage] = {}
+        self.ids = itertools.count(1)  # never reused, like Discord's
+        self.nonces: dict[str, FakeMessage] = {}
+        self.attempts = 0
+        self.fail_before_send = False
+        self.lose_response = False
+
+    async def send(
+        self,
+        content: str = "",
+        *,
+        nonce: str | None = None,
+        embed: discord.Embed | None = None,
+        embeds: list[discord.Embed] | None = None,
+        allowed_mentions: object = None,
+    ) -> FakeMessage:
+        self.attempts += 1
+        if self.fail_before_send:
+            self.fail_before_send = False
+            raise TimeoutError("request timed out before delivery")
+        if nonce is not None and nonce in self.nonces:
+            return self.nonces[nonce]
+        message = FakeMessage(next(self.ids), content, embed=embed, extra_embeds=embeds or [])
+        self.messages[message.id] = message
+        if nonce is not None:
+            self.nonces[nonce] = message
+        if self.lose_response:
+            self.lose_response = False
+            raise TimeoutError("Discord accepted the message but the response was lost")
+        return message
+
+    async def fetch_message(self, message_id: int) -> FakeMessage:
+        if message_id not in self.messages:
+            raise unknown_message()
+        return self.messages[message_id]
+
+    def delete(self, message_id: int) -> None:
+        self.messages.pop(message_id).deleted = True
+
+    async def history(
+        self, *, limit: int | None, after: datetime | None = None
+    ) -> AsyncIterator[FakeMessage]:
+        for message in self.messages.values():
+            if after is None or message.created_at > after:
+                yield message
+
+    def poster(self, store: DeliveryStore, target: Target) -> DurableDiscordPoster:
+        return DurableDiscordPoster(
+            cast(discord.abc.Messageable, self), store, target.release_key, 42
+        )
+
+
+class WatchedDiscord(FakeDiscord):
+    """Sets `sent` when a message goes out."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.sent = asyncio.Event()
+
+    async def send(
+        self,
+        content: str = "",
+        *,
+        nonce: str | None = None,
+        embed: discord.Embed | None = None,
+        embeds: list[discord.Embed] | None = None,
+        allowed_mentions: object = None,
+    ) -> FakeMessage:
+        message = await super().send(content, nonce=nonce, embed=embed, embeds=embeds)
+        self.sent.set()
+        return message
+
+
+async def call(
+    handler: Callable[..., Awaitable[None]],
+    *args: str,
+    user: int = 1,
+    admin: bool = False,
+    guild: int = GUILD,
+    events: list[str] | None = None,
+    app: discord.Client | None = None,
+    **options: str | bool | None,
+) -> str:
+    """Runs a command handler as one server member and returns its one reply, sent at once or
+    after deferring. `events` records "defer" and "reply" in order. `app` is the bot's client."""
+    replies: list[str] = []
+    events = [] if events is None else events
+
+    async def send_message(
+        content: str | None = None, *, embed: discord.Embed | None = None, ephemeral: bool = False
+    ) -> None:
+        assert ephemeral, "calendar replies are only for the member who asked"
+        assert "defer" not in events, "Discord refuses a second response"
+        events.append("reply")
+        replies.append(embed_text(embed) if embed is not None else content or "")
+
+    async def defer(*, ephemeral: bool = False, thinking: bool = False) -> None:
+        assert ephemeral and thinking, "only the member who asked sees the bot thinking"
+        assert not events, "Discord refuses a second response"
+        events.append("defer")
+
+    async def follow_up(
+        content: str | None = None, *, embed: discord.Embed | None = None, ephemeral: bool = False
+    ) -> None:
+        assert ephemeral, "calendar replies are only for the member who asked"
+        assert "defer" in events, "a follow-up needs a deferred response"
+        events.append("reply")
+        replies.append(embed_text(embed) if embed is not None else content or "")
+
+    interaction = SimpleNamespace(
+        guild_id=guild,
+        user=SimpleNamespace(id=user),
+        permissions=discord.Permissions(manage_guild=admin),
+        response=SimpleNamespace(send_message=send_message, defer=defer),
+        followup=SimpleNamespace(send=follow_up),
+        client=app,
     )
-    return data
+    await handler(cast(discord.Interaction, interaction), *args, **options)
+    [reply] = replies
+    return reply
+
+
+class ReleaseDay(RoutedFetcher):
+    """Palantir's IR site, whose press release list shows its results from `released_at`
+    (time.monotonic()) on. Everything else answers 404."""
+
+    def __init__(self) -> None:
+        super().__init__({})
+        self.released_at = float("inf")
+
+    async def request(
+        self,
+        method: str,
+        url: str,
+        headers: dict[str, str] | None = None,
+        give_up_after: float | None = None,
+        urgent: bool = False,
+        *,
+        allow_redirects: bool = True,
+        encoded_url: bool = False,
+    ) -> Response:
+        listed: list[dict[str, Any]] = (
+            [TRACKING_RESULTS] if time.monotonic() >= self.released_at else []
+        )
+        self.routes = {PLTR_FEED: (200, json.dumps({"GetPressReleaseListResult": listed}).encode())}
+        return await super().request(
+            method,
+            url,
+            headers,
+            give_up_after,
+            urgent,
+            allow_redirects=allow_redirects,
+            encoded_url=encoded_url,
+        )
+
+
+def client(owner: int = OWNER, team: list[int] | None = None) -> discord.Client:
+    members = [SimpleNamespace(id=member) for member in team or []]
+    application = SimpleNamespace(
+        owner=SimpleNamespace(id=owner), team=SimpleNamespace(members=members) if team else None
+    )
+    return cast(discord.Client, SimpleNamespace(application=application))
+
+
+class ScanFinished(Exception):
+    """Raised in place of DateDiscovery's wait for a change, to end one `run()` scan."""
+
+
+async def scan_finished() -> None:
+    raise ScanFinished
+
+
+class PolledReleaseDay(ReleaseDay):
+    """ReleaseDay whose list shows the results once it has been read `polls_before_release`
+    times, so a test needs no clock to put the release after a first poll without it.
+    """
+
+    def __init__(self, polls_before_release: int = 1) -> None:
+        super().__init__()
+        self.polls_before_release = polls_before_release
+        self.polls = 0
+
+    async def request(
+        self,
+        method: str,
+        url: str,
+        headers: dict[str, str] | None = None,
+        give_up_after: float | None = None,
+        urgent: bool = False,
+        *,
+        allow_redirects: bool = True,
+        encoded_url: bool = False,
+    ) -> Response:
+        if PLTR_FEED in url:
+            self.polls += 1
+            if self.polls > self.polls_before_release:
+                self.released_at = 0.0
+        return await super().request(
+            method,
+            url,
+            headers,
+            give_up_after,
+            urgent,
+            allow_redirects=allow_redirects,
+            encoded_url=encoded_url,
+        )
+
+
+def quick_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Makes a recorder window react within milliseconds: every route polls every 20 ms, and the
+    housekeeping tasks that sleep minutes between rounds look at the clock every 50 ms, so a test
+    that moves the clock to the end of a window sees it close at once. The real cadence is
+    test_release_band's."""
+    monkeypatch.setattr(recorder, "pace", lambda at, times, own: (0.02, None))
+    monkeypatch.setattr(recorder, "RESOURCES_EVERY", 0.05)
+    monkeypatch.setattr(recorder, "CLOCK_RESYNC", 0.05)

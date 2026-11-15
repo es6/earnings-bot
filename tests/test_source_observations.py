@@ -2,21 +2,40 @@ import io
 import json
 import re
 import sqlite3
-from datetime import UTC, datetime, timedelta
-from email.utils import format_datetime
+from contextlib import closing
+from datetime import UTC, datetime, tzinfo
+from typing import Self
 
 import pytest
 
+from earnings_bot import fetch as fetch_module
+from earnings_bot import http_policy
+from earnings_bot.fetch import Response
 from earnings_bot.http_policy import retry_after
 from earnings_bot.publication_trials import run_trials
 from earnings_bot.recorder import Journal, PollError, fetch
 from earnings_bot.trial_matching import candidates
-from tests.test_publication_trials import QueuedFetcher, events, plan
+from tests.builders import events, plan
+from tests.fakes import QueuedFetcher
+
+
+@pytest.fixture(autouse=True)
+def quick_host_turns(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Hosts hand out a turn every second; shrink that so tests don't wait in real time."""
+    monkeypatch.setattr(fetch_module, "_DEFAULT_GAP", 0.02)
+
+
+class FrozenDatetime(datetime):
+    @classmethod
+    def now(cls, tz: tzinfo | None = None) -> Self:
+        return cls(2026, 11, 15, 12, tzinfo=tz)
 
 
 @pytest.mark.parametrize("status", [429, 503])
-async def test_recorder_honors_http_date_retry_after(status: int) -> None:
-    from earnings_bot.fetch import Response
+async def test_recorder_honors_http_date_retry_after(
+    status: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(http_policy, "datetime", FrozenDatetime)
 
     class Source:
         timeout = 3
@@ -25,18 +44,14 @@ async def test_recorder_honors_http_date_retry_after(status: int) -> None:
             return Response(
                 "https://example.com",
                 status,
-                {
-                    "retry-after": format_datetime(
-                        datetime.now(UTC) + timedelta(hours=1), usegmt=True
-                    )
-                },
+                {"retry-after": "Sun, 15 Nov 2026 13:00:00 GMT"},
                 b"",
                 0,
             )
 
     with pytest.raises(PollError) as refused:
         await fetch(Source(), None)  # type: ignore[arg-type]
-    assert 3595 <= refused.value.pause <= 3600
+    assert refused.value.pause == 3600
 
 
 def test_retry_dates_are_utc_past_dates_are_zero_and_bad_values_fall_back() -> None:
@@ -68,6 +83,7 @@ def test_retry_dates_are_utc_past_dates_are_zero_and_bad_values_fall_back() -> N
             }
         ),
     ],
+    ids=["rss", "html", "json"],
 )
 async def test_trial_never_stitches_a_candidate_from_different_entries(markup: str) -> None:
     fetcher = QueuedFetcher({"example.com": [markup.encode()]})
@@ -75,9 +91,11 @@ async def test_trial_never_stitches_a_candidate_from_different_entries(markup: s
     config = plan(max_requests=2)
     for route in config.routes:
         route.kind = "listing"
-    with sqlite3.connect(":memory:") as db:
+    with closing(sqlite3.connect(":memory:")) as db, db:
         await run_trials(config, fetcher, Journal(log), db)
-    assert not any(e["candidate_visible"] for e in events(log, "publication_trial"))
+    seen = events(log, "publication_trial")
+    assert len(seen) == 2  # both polls happened, so "no candidate" isn't just "no observation"
+    assert not any(e["candidate_visible"] for e in seen)
 
 
 def test_feed_and_html_candidates_keep_the_matching_entry_identity() -> None:
@@ -116,7 +134,7 @@ async def test_trial_positive_records_the_matching_link_not_unrelated_page_links
     config = plan(max_requests=2)
     for route in config.routes:
         route.kind = "listing"
-    with sqlite3.connect(":memory:") as db:
+    with closing(sqlite3.connect(":memory:")) as db, db:
         await run_trials(config, fetcher, Journal(log), db)
     for event in events(log, "publication_trial"):
         assert event["candidate_scope"] == "entry"

@@ -77,24 +77,60 @@ async def test_history_follows_only_bounded_linked_pages_and_same_host() -> None
     assert len(await listing_history(fetcher, ROAD)) == 1  # duplicate release is one identity
 
 
-async def test_release_history_reads_a_feed_that_requires_the_owned_browser() -> None:
-    class BrowserFetcher(RoutedFetcher):
-        async def browser_request(
-            self, url: str, warmup: str, *args: Any, **kwargs: Any
-        ) -> Response:
-            return Response(
-                url,
-                200,
-                {},
-                (
-                    b"<rss><channel><item><title>Lucid reports third quarter 2026 "
-                    b"financial results</title>"
-                    b"<link>https://ir.lucidmotors.com/q3</link><guid>q3</guid>"
-                    b"<pubDate>Thu, 05 Nov 2026 16:05:00 -0500</pubDate></item></channel></rss>"
-                ),
-                0,
-            )
+async def test_history_reads_at_most_three_linked_pages() -> None:
+    days = ["2026-02-05", "2026-05-07", "2026-08-06", "2026-11-05"]
+    pages = {}
+    for n, day in enumerate(days):
+        url = ROAD + (f"?page={n}" if n else "")
+        row = (
+            f'<article><time datetime="{day}T07:30:00-05:00">{day}</time>'
+            f'<a href="/q{n}">Example announces quarter {n} results</a></article>'
+        )
+        link = f'<a rel="next" href="?page={n + 1}">Next</a>' if n + 1 < len(days) else ""
+        pages[url] = (200, (row + link).encode())
+    fetcher = RoutedFetcher(dict(reversed(pages.items())))  # a route matches by substring
 
+    history = await listing_history(fetcher, ROAD)
+
+    assert len(history) == 3
+    assert [url for _, url, _ in fetcher.requests] == [ROAD, ROAD + "?page=1", ROAD + "?page=2"]
+
+
+LUCID_FEED = (
+    b"<rss><channel><item><title>Lucid reports third quarter 2026 "
+    b"financial results</title>"
+    b"<link>https://ir.lucidmotors.com/q3</link><guid>q3</guid>"
+    b"<pubDate>Thu, 05 Nov 2026 16:05:00 -0500</pubDate></item></channel></rss>"
+)
+
+
+class BrowserFetcher(RoutedFetcher):
+    """A fetcher whose owned browser answers `reply`, counting how often it is asked."""
+
+    def __init__(self, status: int, body: bytes) -> None:
+        super().__init__({})
+        self.reply = (status, body)
+        self.browser_asked = 0
+
+    async def browser_request(self, url: str, warmup: str, *args: Any, **kwargs: Any) -> Response:
+        self.browser_asked += 1
+        return Response(url, self.reply[0], {}, self.reply[1], 0)
+
+
+@pytest.mark.parametrize(
+    ("status", "body", "chrome", "history", "asked"),
+    [
+        pytest.param(
+            200, LUCID_FEED, True, [datetime(2026, 11, 5, 16, 5, tzinfo=ET)], 1, id="readable"
+        ),
+        pytest.param(403, b"Access Denied", True, [], 1, id="refused"),
+        pytest.param(200, b"<rss><channel><item><title>", True, [], 1, id="malformed"),
+        pytest.param(200, LUCID_FEED, False, [], 0, id="browser-held-for-live-windows"),
+    ],
+)
+async def test_release_history_reads_a_feed_that_requires_the_owned_browser(
+    status: int, body: bytes, chrome: bool, history: list[datetime], asked: int
+) -> None:
     company = known_companies()["NVDA"].model_copy(
         update={
             "ir_listing": None,
@@ -105,10 +141,13 @@ async def test_release_history_reads_a_feed_that_requires_the_owned_browser() ->
             "cik": 1811210,
         }
     )
-    history = await release_history(
-        BrowserFetcher({}), company, [], [datetime(2026, 11, 5, 17, tzinfo=ET)]
-    )
-    assert history == [datetime(2026, 11, 5, 16, 5, tzinfo=ET)]
+    fetcher = BrowserFetcher(status, body)
+
+    with fetcher.background(chrome=chrome):
+        result = await release_history(fetcher, company, [], [datetime(2026, 11, 5, 17, tzinfo=ET)])
+
+    assert result == history
+    assert fetcher.browser_asked == asked
 
 
 async def test_exact_publisher_listing_identifies_a_wire_missing_from_the_exhibit(
@@ -196,3 +235,26 @@ async def test_manifest_discovery_requires_the_pages_declaration_and_linked_scri
         {page: (200, html.replace('data-feedtype="quarterly-earnings"', "").encode())}
     )
     assert await discover_manifest(missing, page) is None
+
+
+@pytest.mark.parametrize(
+    ("declaring", "found"),
+    [
+        pytest.param("/second.js", True, id="declared-by-the-second-script"),
+        pytest.param("/third.js", False, id="declared-only-by-a-third-script"),
+    ],
+)
+async def test_manifest_discovery_reads_at_most_two_scripts(declaring: str, found: bool) -> None:
+    page = JPM + "/ir/quarterly-earnings"
+    scripts = ["/first.js", "/second.js", "/third.js"]
+    html = '<div class="ir-feed-main" data-feedtype="quarterly-earnings"></div>' + "".join(
+        f'<script src="{src}"></script>' for src in scripts
+    )
+    routes = {page: (200, html.encode()), API: (200, (FIX / "jpm-quarterly.json").read_bytes())}
+    for src in scripts:
+        code = (
+            b'fetch("/services/json/v1/investor-relations/"+t+".json")' if src == declaring else b""
+        )
+        routes[JPM + src] = (200, code)
+
+    assert (await discover_manifest(RoutedFetcher(routes), page) == API) is found

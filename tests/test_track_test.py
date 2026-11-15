@@ -5,10 +5,8 @@ import json
 import tomllib
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any
 
-import discord
 import pytest
 
 from earnings_bot import track_test
@@ -30,10 +28,10 @@ from earnings_bot.track_test import (
     run_track_test,
     save,
 )
-from earnings_bot.tracking_commands import is_owner
+from tests.builders import NVDA_CIK
+from tests.builders import TRACKING_NOW as NOW
 from tests.fakes import RoutedFetcher
 from tests.sec_data import LCID_SUBMISSIONS, sec_routes
-from tests.test_tracking_commands import NOW, NVDA_CIK, OWNER, client
 
 NVDA_ROUTE = f"data.sec.gov/submissions/CIK{NVDA_CIK:010d}.json"
 RELEASE = datetime(2026, 11, 18, 16, 20, tzinfo=ET)
@@ -179,16 +177,6 @@ def test_saved_reports_keep_the_last_twenty_per_symbol(tmp_path: Path) -> None:
     assert len(list(folder.glob("LCID-*"))) == 2
 
 
-async def test_the_owner_is_whoever_owns_the_bots_application_or_its_team() -> None:
-    def user(id: int) -> discord.abc.User:
-        return cast(discord.abc.User, SimpleNamespace(id=id))
-
-    assert await is_owner(client(), user(OWNER))
-    assert not await is_owner(client(), user(1))
-    assert await is_owner(client(team=[7, OWNER]), user(7))
-    assert not await is_owner(client(owner=7, team=[OWNER]), user(8))
-
-
 @pytest.mark.parametrize("catalog", [True, False])
 async def test_research_investigates_a_catalog_company_only_in_a_test_calendar(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, catalog: bool
@@ -209,7 +197,7 @@ async def test_research_investigates_a_catalog_company_only_in_a_test_calendar(
         row, _ = calendar.add("NVDA", sec)
         dates = DateDiscovery(calendar, RoutedFetcher({}), lambda: NOW, lambda: False, print)
 
-        await dates._investigate(row)
+        await dates.run_once(row)
 
     # The live calendar keeps the catalog's researched sources; a test looks for them afresh
     assert investigated == ([] if catalog else ["NVIDIA CORP"])
@@ -224,7 +212,7 @@ async def test_a_run_past_its_limit_stops_and_reports_what_it_found(
     monkeypatch.setattr(DateDiscovery, "run_once", stuck)
     fetcher = RoutedFetcher(nvda_routes())
 
-    run = run_track_test("NVDA", fetcher, tmp_path, lambda: NOW, limit=0.2)
+    run = run_track_test("NVDA", fetcher, tmp_path, lambda: NOW, limit=0.02)
     report = await asyncio.wait_for(run, 5)
 
     assert report.error == "Stopped at its 0 s limit; the facts are what it found by then"

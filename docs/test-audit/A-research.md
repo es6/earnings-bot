@@ -235,3 +235,17 @@ Only one over 0.5 s: test_bounded_research::test_date_discovery_researches_other
 - `assert asyncio  # keeps the import` hack; `# type: ignore` fakes (SpellingFetcher) instead of a typed fake.
 - Brittle pinned UI strings in investigate (check descriptions); wording changes break tests with no behavior change.
 - 1360-line test_investigate.py: split by theme (wire/IR hosts, Chrome reading, discovery integration, fiscal naming); move large inline HTML fixtures to files like fixtures/ir_misses.json.
+
+## Fix status (branch tests-fix-a)
+
+Survivors, each checked against the whole suite (measured):
+- M12 (drop `_defer_if_busy` before save_profile): real gap. New param `live-host-busy-without-chrome-research` in test_an_interrupted_investigation_does_not_save_a_partial_profile fails with the mutation.
+- M24 (drop the 12-hour early-release clause): already caught elsewhere by tests/test_recorder.py::test_a_release_out_before_the_window_opened_is_already_out. Also added test_an_early_release_with_a_clock_time_is_caught_up_only_inside_its_day_and_12_hours (5 params), which fails with the mutation.
+- M26 (drop `existing_ir.http_first` from the keep-clause): real gap. New test_a_plan_already_polled_by_direct_http_is_not_verified_again (asserts no requests) fails with the mutation.
+- M27 (`research_chrome` ignores `chrome_allowed()`): real gap. New test_research_opens_its_own_chrome_only_when_live_windows_leave_it_free fails with the mutation.
+
+Slow test: test_date_discovery_researches_other_companies_behind_the_polls 2.02 s to 0.02 s (measured). The wait was the 1 s per-host queue gap (`fetch._DEFAULT_GAP`), not the SEC gap the audit inferred; the test patches it to 0.
+
+Verdicts applied: pause test split into a parametrized test plus one; skip-on-Linux test now patches `chrome_available`; `asyncio` import hack removed; results-API test split into four over a fixture (no in-test branches); Nebius test split into four; live-Chrome-source params assert the expected IRSource; ir_hosts, moments, "no IR site" and planner-spelling tests merged; Q4/source-report assertions loosened to sources, flags and key reasons; `_check` replaced by `run_once` in two investigate tests; Spellings `.positions` assertion replaced by public `next()` behavior; Broadcom test no longer pins the whole source list; ScanFinished moved to tests/fakes.py.
+
+Skipped, with reason: test_templates_rebuild_the_hand_written_schedules MERGE (it asserts guess equality, the schedule-entries test only a subset, so it is not subsumed); test_schedule_entries_match_the_database synthetic fixtures (it exists to pin the catalog to the historical schedules); moving the `looks_like_earnings` and `fiscal_year_end` tests (target files test_sources.py and test_issuers.py belong to other fixers); splitting test_investigate.py and making `_last_releases` public (cosmetic); the untested-behavior list (new coverage, not a verdict).

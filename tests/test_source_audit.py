@@ -3,7 +3,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 
 from earnings_bot.issuers import profile, usual_release_time
-from earnings_bot.known import known_companies
+from earnings_bot.known import KnownCompany, known_companies
 from earnings_bot.recorder import ET
 from earnings_bot.source_audit import (
     Speed,
@@ -13,8 +13,8 @@ from earnings_bot.source_audit import (
     audit_sources,
     release_history,
 )
+from tests.builders import listing, row
 from tests.fakes import RoutedFetcher
-from tests.test_globe_history import listing, row
 
 
 def test_last_release_ranks_body_separately_from_headline(tmp_path: Path) -> None:
@@ -61,8 +61,19 @@ def test_last_release_ranks_body_separately_from_headline(tmp_path: Path) -> Non
 
 def test_the_archive_reads_one_copy_of_each_feed() -> None:
     now = datetime(2026, 11, 9, 16, tzinfo=ET)
-    names = [source.name for source in _archived_sources("LLY", known_companies()["LLY"], now)]
-    assert names == ["prnewswire"]
+    company = KnownCompany(
+        name="Acme Pharma",
+        names=["Acme Pharma"],
+        cik=1,
+        platform="own-site",
+        reachable=False,
+        wire="PR Newswire",
+        fastest="newswire",
+        evidence="a made-up issuer",
+        checked=date(2026, 11, 1),
+    )
+    names = [source.name for source in _archived_sources("ACME", company, now)]
+    assert names == ["prnewswire"]  # not its cache-busted copy as well
 
 
 def _at(clock: str) -> datetime:

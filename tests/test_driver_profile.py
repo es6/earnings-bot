@@ -1,51 +1,19 @@
-import json
-from datetime import date, timedelta
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
 
 from earnings_bot.delivery import DeliveryStore
 from earnings_bot.driver_profile import (
-    parse_profile,
     profile_request,
     request_reservation_micros,
 )
-from earnings_bot.driver_profile_store import DriverProfileStore
-
-TODAY = date(2026, 11, 13)
-SOURCE = (
-    "Acme sells subscriptions to its software. Subscription revenue increased 20%. "
-    "The company expects full-year subscription revenue growth of 18% to 20%."
+from earnings_bot.driver_profile_store import (
+    DAILY_PROFILE_CALLS,
+    DAILY_PROFILE_MICROS,
+    DriverProfileStore,
 )
-KPI = {"label": "Subscription revenue", "evidence": "Subscription revenue increased 20%."}
-
-
-def content(**updates: object) -> str:
-    return json.dumps(
-        {
-            "business": {
-                "label": "software",
-                "evidence": "Acme sells subscriptions to its software.",
-            },
-            "segments": [],
-            "kpis": [KPI],
-            "guidance": [],
-            "themes": [],
-        }
-        | updates
-    )
-
-
-def parsed(answer: str | None = None, published: date = TODAY):
-    return parse_profile(
-        answer or content(),
-        SOURCE,
-        source_url="https://issuer.example/results",
-        document_sha256="a" * 64,
-        source_period="FY2026Q3",
-        source_published=published,
-        today=TODAY,
-    )
+from tests.builders import KPI, SOURCE, TODAY, content, parsed
 
 
 def test_profile_keeps_evidence_for_every_category_and_dates_from_code() -> None:
@@ -118,13 +86,14 @@ def test_a_sent_profile_call_is_not_repeated_after_a_restart(tmp_path: Path) -> 
 
 
 def test_profile_reservations_bound_both_money_and_call_count(tmp_path: Path) -> None:
+    half = DAILY_PROFILE_MICROS // 2
     with DeliveryStore(tmp_path / "state.db", 7) as store:
         profiles = DriverProfileStore(store)
-        assert profiles.claim(1, "a", TODAY, 250_000)
-        assert profiles.claim(2, "b", TODAY, 250_000)
+        assert profiles.claim(1, "a", TODAY, half)
+        assert profiles.claim(2, "b", TODAY, half)
         assert not profiles.claim(3, "c", TODAY, 1)
         next_day = TODAY + timedelta(days=1)
-        for cik in range(5):
+        for cik in range(DAILY_PROFILE_CALLS):
             assert profiles.claim(cik, "new", next_day, 1000)
         assert not profiles.claim(99, "new", next_day, 1)
         profiles.finish(0, "new", 0, None)  # rejection still consumes a call

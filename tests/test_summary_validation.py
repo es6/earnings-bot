@@ -110,7 +110,29 @@ def test_count_currency_and_empty_display_fields_are_rejected() -> None:
     )
 
 
-def test_unknown_quote_period_units_and_reference_are_not_repaired() -> None:
+@pytest.mark.parametrize(
+    ("changes", "reason"),
+    [
+        pytest.param({"source": "invented"}, "source passage is empty or not exact", id="quote"),
+        pytest.param({"period": ""}, "missing fiscal period", id="no-period"),
+        pytest.param({"unit": "%"}, "money value has percent unit", id="percent-unit"),
+        pytest.param({"unit": "$822 million"}, "unit contains a numeric value", id="numeric-unit"),
+        pytest.param(
+            {"period": "Q3 2026 and FY2026"}, "mixed quarter and full-year periods", id="mixed"
+        ),
+        pytest.param(
+            {"comparison": ""}, "numeric change lacks a comparison reference", id="no-reference"
+        ),
+    ],
+)
+def test_unknown_quote_period_units_and_reference_are_not_repaired(
+    changes: dict[str, str], reason: str
+) -> None:
+    fact = replace(cash(), **changes)
+    assert reason in validate_fact(fact, NOW)
+
+
+def test_only_the_unlabeled_change_is_optional_when_a_fact_is_rejected() -> None:
     valid = cash()
     mutations = [
         replace(valid, source="invented"),
@@ -120,8 +142,6 @@ def test_unknown_quote_period_units_and_reference_are_not_repaired() -> None:
         replace(valid, period="Q3 2026 and FY2026"),
         replace(valid, comparison=""),
     ]
-    for fact in mutations:
-        assert validate_fact(fact, NOW)
     accepted, rejected = validate_facts([valid, *mutations], NOW)
     # Only the unlabeled change is optional: its sourced value stays, without the change
     assert accepted == [valid, replace(valid, prior="", change="", comparison="")]

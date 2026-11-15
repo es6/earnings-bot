@@ -3,8 +3,7 @@
 import asyncio
 import io
 import json
-import time
-from collections.abc import Awaitable, Callable, Iterator
+from collections.abc import Iterator
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -38,17 +37,23 @@ from earnings_bot.tracking_commands import (
     upcoming_embed,
 )
 from earnings_bot.unattended import DirectoryWatcher, _Window
-from tests.burst_replay import LocalClock
-from tests.fakes import RoutedFetcher, embed_text
+from tests.builders import GUILD, NVDA_CIK, OWNER
+from tests.builders import TRACKING_NOW as NOW
+from tests.clocks import ShiftedClock
+from tests.fakes import (
+    FakeDiscord,
+    FakePoster,
+    PolledReleaseDay,
+    RoutedFetcher,
+    WatchedDiscord,
+    call,
+    client,
+    embed_text,
+    quick_windows,
+)
 from tests.sec_data import LCID_CIK, LCID_ROUTE, LCID_SUBMISSIONS, sec_routes
-from tests.test_pipeline import FakePoster
-from tests.test_unattended import FakeDiscord
 
-GUILD = 555
 PROGRESS_CHANNEL = 99
-NOW = datetime(2026, 11, 12, 12, tzinfo=ET)
-NVDA_CIK = 1045810
-OWNER = 4242  # owns the bot's Discord application
 
 
 class FixedClock(TrustedClock):
@@ -58,55 +63,6 @@ class FixedClock(TrustedClock):
 
     def now(self) -> datetime:
         return self.moment
-
-
-async def call(
-    handler: Callable[..., Awaitable[None]],
-    *args: str,
-    user: int = 1,
-    admin: bool = False,
-    guild: int = GUILD,
-    events: list[str] | None = None,
-    app: discord.Client | None = None,
-    **options: str | bool | None,
-) -> str:
-    """Runs a command handler as one server member and returns its one reply, sent at once or
-    after deferring. `events` records "defer" and "reply" in order. `app` is the bot's client."""
-    replies: list[str] = []
-    events = [] if events is None else events
-
-    async def send_message(
-        content: str | None = None, *, embed: discord.Embed | None = None, ephemeral: bool = False
-    ) -> None:
-        assert ephemeral, "calendar replies are only for the member who asked"
-        assert "defer" not in events, "Discord refuses a second response"
-        events.append("reply")
-        replies.append(embed_text(embed) if embed is not None else content or "")
-
-    async def defer(*, ephemeral: bool = False, thinking: bool = False) -> None:
-        assert ephemeral and thinking, "only the member who asked sees the bot thinking"
-        assert not events, "Discord refuses a second response"
-        events.append("defer")
-
-    async def follow_up(
-        content: str | None = None, *, embed: discord.Embed | None = None, ephemeral: bool = False
-    ) -> None:
-        assert ephemeral, "calendar replies are only for the member who asked"
-        assert "defer" in events, "a follow-up needs a deferred response"
-        events.append("reply")
-        replies.append(embed_text(embed) if embed is not None else content or "")
-
-    interaction = SimpleNamespace(
-        guild_id=guild,
-        user=SimpleNamespace(id=user),
-        permissions=discord.Permissions(manage_guild=admin),
-        response=SimpleNamespace(send_message=send_message, defer=defer),
-        followup=SimpleNamespace(send=follow_up),
-        client=app,
-    )
-    await handler(cast(discord.Interaction, interaction), *args, **options)
-    [reply] = replies
-    return reply
 
 
 async def never_audit(ticker: str, company: KnownCompany, when: datetime) -> Speed:
@@ -361,18 +317,18 @@ async def test_an_admin_can_pin_a_ticker_outside_the_catalog(
     ]
 
 
-async def test_one_member_can_track_six_tickers_in_one_day(
+async def test_the_calendar_refuses_a_company_past_its_cap_whoever_asks(
     watcher: DirectoryWatcher, commands: TrackingCommands, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    for ticker in ("AAPL", "AMD", "AMZN", "META", "MSFT", "NVDA"):
+    # Lower the cap rather than track 50 companies
+    monkeypatch.setattr(tracking_calendar, "MAX_TRACKED", 2)
+    for ticker in ("AAPL", "AMD"):
         assert (await call(commands.track, ticker)).startswith(f"✅ Now tracking **{ticker}**")
 
-    # Lower the cap rather than track 50 companies
-    monkeypatch.setattr(tracking_calendar, "MAX_TRACKED", 6)
     assert await call(commands.track, "TSLA", user=3) == (
-        "⚠️ This calendar already tracks 6 companies."
+        "⚠️ This calendar already tracks 2 companies."
     )
-    assert len(tracked(watcher)) == 6
+    assert tracked(watcher) == ["AAPL", "AMD"]
 
 
 async def test_commands_from_another_server_or_with_the_watcher_off_answer_offline(
@@ -480,7 +436,7 @@ async def test_a_long_upcoming_list_stops_at_a_whole_line(
     watcher: DirectoryWatcher, commands: TrackingCommands
 ) -> None:
     targets = [
-        to_target(ticker, NOW + timedelta(hours=i + 1), 2027, 1)
+        to_target(ticker, NOW + timedelta(minutes=i + 1), 2027, 1)
         for i, ticker in enumerate(known_companies())
     ]
     watcher.planned = {t.release_key: t for t in targets}
@@ -499,8 +455,18 @@ async def test_a_long_upcoming_list_stops_at_a_whole_line(
         for line in (field.value or "").splitlines()
         if line.startswith("-# …and")
     )
+    # Every release this week is shown, or counted in a full field's note, or on a day dropped
+    # whole, and the footer counts the dropped days exactly
+    week = [t for t in targets if t.expected < NOW + timedelta(days=7)]
+    day_fields = [f for f in embed.fields if not (f.name or "").startswith("⚠️")]
+    dropped_days = len({t.expected.astimezone(ET).date() for t in week}) - len(day_fields)
     footer = embed.footer.text or ""
-    assert shown + more == len(targets) or "didn't fit" in footer
+    assert more > 0, "the list should be long enough that a field cuts lines"
+    if dropped_days:
+        assert footer.startswith(f"{dropped_days} later day(s) didn't fit")
+    else:
+        assert "didn't fit" not in footer
+        assert shown + more == len(week)
 
 
 async def test_upcoming_shows_each_scorecards_readiness(
@@ -519,68 +485,15 @@ async def test_upcoming_shows_each_scorecards_readiness(
     assert "🔴 **HD**" in reply
 
 
-PLTR_FEED = "investors.palantir.com/feed/PressRelease.svc/GetPressReleaseList"
-RESULTS = {
-    "PressReleaseId": 9001,
-    "Headline": "Palantir Reports Q4 2026 Financial Results",
-    "LinkToDetailPage": "/news-details/2027/palantir-reports-q4-2026",
-    "PressReleaseDate": "02/02/2027 16:05:00",
-    "Body": "<p>" + "Revenue grew 70% year over year to $1.4 billion. " * 40 + "</p>",
-}
-
-
-class ReleaseDay(RoutedFetcher):
-    """Palantir's IR site, whose press release list shows its results from `released_at`
-    (time.monotonic()) on. Everything else answers 404."""
-
-    def __init__(self) -> None:
-        super().__init__({})
-        self.released_at = float("inf")
-
-    async def request(
-        self,
-        method: str,
-        url: str,
-        headers: dict[str, str] | None = None,
-        give_up_after: float | None = None,
-        urgent: bool = False,
-        *,
-        allow_redirects: bool = True,
-        encoded_url: bool = False,
-    ) -> Response:
-        listed: list[dict[str, Any]] = [RESULTS] if time.monotonic() >= self.released_at else []
-        self.routes = {PLTR_FEED: (200, json.dumps({"GetPressReleaseListResult": listed}).encode())}
-        return await super().request(
-            method,
-            url,
-            headers,
-            give_up_after,
-            urgent,
-            allow_redirects=allow_redirects,
-            encoded_url=encoded_url,
-        )
-
-
-class ShiftedClock(LocalClock):
-    """This PC's clock moved forward by `shift`, so a test can skip to the end of a window."""
-
-    shift = timedelta()
-
-    def now(self) -> datetime:
-        return super().now() + self.shift
-
-
 async def test_a_tracked_issuer_with_no_schedule_file_gets_one_alert(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Full speed to the end: the jump to the window's last seconds lands where routes poll every
-    # 5 s (test_release_band), and this test is about the alert
-    monkeypatch.setattr(recorder, "pace", lambda at, times, own: (own, None))
+    quick_windows(monkeypatch)  # this test is about the alert, not the polling cadence
     clock = ShiftedClock()
     clock.sync()
     journal = Journal(io.StringIO(), clock)
-    fetcher = ReleaseDay()
-    channel = FakeDiscord()
+    fetcher = PolledReleaseDay()
+    channel = WatchedDiscord()
     status: list[str] = []
     with DeliveryStore(tmp_path / "state.db", 7) as store:
 
@@ -606,12 +519,13 @@ async def test_a_tracked_issuer_with_no_schedule_file_gets_one_alert(
         [row] = bot.calendar.entries()
         assert row.target is not None
 
-        # Skip to 3 seconds before the window closes. The results come out 0.8 s in, after the
-        # first poll has seen the list without them.
-        clock.shift = row.target.window[1] - clock.now() - timedelta(seconds=3)
-        fetcher.released_at = time.monotonic() + 0.8
+        # The results come out after the first poll has seen the list without them. Once the
+        # alert is out, skip to the end of the window
         await bot.scan()
         assert [window.target for window in bot.windows.values()] == [row.target]
+        await asyncio.wait_for(channel.sent.wait(), 10)
+        assert fetcher.polls > 1
+        clock.shift = row.target.window[1] - clock.now() + timedelta(seconds=1)
         await asyncio.gather(*(window.task for window in bot.windows.values()))
 
         [alert] = channel.messages.values()
@@ -647,13 +561,14 @@ def _wire_item(title: str, lead: str, link: str) -> str:
 
 
 class WireDay(RoutedFetcher):
-    """SEC, and PR Newswire's earnings feed. Its server lists Lucid's results from `released_at`
-    (time.monotonic()) on, but its CDN's copy at the usual URL still predates them, as on
-    Nov 9. Another company's results are listed throughout."""
+    """SEC, and PR Newswire's earnings feed. Its server lists Lucid's results once it has been
+    asked `polls_before_release` times for a fresh copy, but its CDN's copy at the usual URL
+    still predates them, as on Nov 9. Another company's results are listed throughout."""
 
-    def __init__(self) -> None:
+    def __init__(self, polls_before_release: int = 1) -> None:
         super().__init__(sec_routes())
-        self.released_at = float("inf")
+        self.polls_before_release = polls_before_release
+        self.fresh_polls = 0
 
     async def request(
         self,
@@ -673,8 +588,9 @@ class WireDay(RoutedFetcher):
                 "https://www.prnewswire.com/news-releases/acme-q3-302600000.html",
             )
         ]
-        fresh = url != PR_NEWSWIRE_EARNINGS
-        if fresh and time.monotonic() >= self.released_at:
+        fresh = unquote(url) == PR_NEWSWIRE_EARNINGS and url != PR_NEWSWIRE_EARNINGS
+        self.fresh_polls += fresh
+        if fresh and self.fresh_polls > self.polls_before_release:
             items.insert(
                 0,
                 _wire_item(
@@ -703,13 +619,14 @@ class WireDay(RoutedFetcher):
 
 
 async def test_a_ticker_outside_the_catalog_gets_its_alert_from_the_wire(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    quick_windows(monkeypatch)
     clock = ShiftedClock()
     clock.sync()
     journal = Journal(io.StringIO(), clock)
     fetcher = WireDay()
-    channel = FakeDiscord()
+    channel = WatchedDiscord()
     status: list[str] = []
     with DeliveryStore(tmp_path / "state.db", 7) as store:
         releases = Releases(FakePoster, fetcher, journal, None, lambda t: channel.poster(store, t))
@@ -728,11 +645,12 @@ async def test_a_ticker_outside_the_catalog_gets_its_alert_from_the_wire(
         [row] = bot.calendar.entries()
         assert row.target is not None
 
-        # PR Newswire is polled every 2 seconds. Skip to 6 seconds before the window closes, with
-        # the results out a second in, after the first poll has seen the list without them.
-        clock.shift = row.target.window[1] - clock.now() - timedelta(seconds=6)
-        fetcher.released_at = time.monotonic() + 1
+        # The results come out after the first fresh poll has seen the list without them. Once
+        # the alert is out, skip to the end of the window
         await bot.scan()
+        await asyncio.wait_for(channel.sent.wait(), 10)
+        assert fetcher.fresh_polls > 1
+        clock.shift = row.target.window[1] - clock.now() + timedelta(seconds=1)
         await asyncio.gather(*(window.task for window in bot.windows.values()))
 
         [alert] = channel.messages.values()
@@ -818,14 +736,6 @@ async def test_status_names_a_degraded_route_while_its_window_is_open(
     assert embed.color is not None and embed.color.value == AMBER
 
 
-def client(owner: int = OWNER, team: list[int] | None = None) -> discord.Client:
-    members = [SimpleNamespace(id=member) for member in team or []]
-    application = SimpleNamespace(
-        owner=SimpleNamespace(id=owner), team=SimpleNamespace(members=members) if team else None
-    )
-    return cast(discord.Client, SimpleNamespace(application=application))
-
-
 @pytest.fixture
 def ran(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """Test runs that finish at once. Returns the symbols run."""
@@ -880,3 +790,13 @@ async def test_a_test_waits_for_a_release_due_soon_and_runs_one_at_a_time(
         reply = await asyncio.wait_for(run, 1)
     assert reply == "⏳ Another /track debug run is going. Try again when it's done."
     assert ran == []
+
+
+async def test_the_owner_is_whoever_owns_the_bots_application_or_its_team() -> None:
+    def user(id: int) -> discord.abc.User:
+        return cast(discord.abc.User, SimpleNamespace(id=id))
+
+    assert await tracking_commands.is_owner(client(), user(OWNER))
+    assert not await tracking_commands.is_owner(client(), user(1))
+    assert await tracking_commands.is_owner(client(team=[7, OWNER]), user(7))
+    assert not await tracking_commands.is_owner(client(owner=7, team=[OWNER]), user(8))

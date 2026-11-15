@@ -22,8 +22,7 @@ from earnings_bot.fetch import Fetcher
 from earnings_bot.pipeline import Releases
 from earnings_bot.recorder import Journal, OnNew, Polls, Target, Watch
 from earnings_bot.sources import EdgarLatest
-from tests.fakes import RoutedFetcher
-from tests.test_pipeline import FakePoster
+from tests.fakes import FakePoster, RoutedFetcher
 
 UBER = BenchmarkPost("2117948805941223450", "UBER")
 MCD = BenchmarkPost("2117950124349374669", "MCD")
@@ -59,15 +58,29 @@ async def test_tickers_share_one_timeline_lookup_with_a_fallback() -> None:
 async def test_matches_the_window_and_verifies_x_author_and_earnings_text() -> None:
     preview = BenchmarkPost(str(int(UBER.id) - (1 << 22)), "UBER")
     bad_author = BenchmarkPost(str(int(UBER.id) - (2 << 22)), "UBER")
+    bad_text = BenchmarkPost(str(int(UBER.id) - (3 << 22)), "UBER")
+    too_early = BenchmarkPost(str(int(UBER.id) - (240_000 << 22)), "UBER")  # 4 minutes before
     feed = _feed(
         (UBER, UBER_TITLE),
         (preview, "$UBER (Uber Technologies) chart review before earnings"),
         (bad_author, UBER_TITLE),
+        (bad_text, UBER_TITLE),
+        (too_early, UBER_TITLE),
         (MCD, MCD_TITLE),
     )
     url, body = _embed(UBER, "<p>$UBER (Uber Technologies) <a>#earnings</a> are out:</p>")
     bad_url, bad_body = _embed(bad_author, UBER_TITLE, "someone_else")
-    fetcher = RoutedFetcher({TIMELINES[0]: (200, feed), url: (200, body), bad_url: (200, bad_body)})
+    text_url, text_body = _embed(bad_text, "<p>$UBER (Uber Technologies) chart review</p>")
+    early_url, early_body = _embed(too_early, "<p>$UBER (Uber Technologies) #earnings are out:</p>")
+    fetcher = RoutedFetcher(
+        {
+            TIMELINES[0]: (200, feed),
+            url: (200, body),
+            bad_url: (200, bad_body),
+            text_url: (200, text_body),
+            early_url: (200, early_body),
+        }
+    )
     end = UBER.posted + timedelta(minutes=2)
     benchmark = EarningsBenchmark(fetcher, lambda: end)
 
@@ -76,7 +89,9 @@ async def test_matches_the_window_and_verifies_x_author_and_earnings_text() -> N
     assert result.state == "matched"
     assert result.post == UBER
     assert UBER.posted.isoformat(timespec="milliseconds") == "2026-11-04T11:55:19.579+00:00"
-    assert [seen for _, seen, _ in fetcher.requests] == [TIMELINES[0], bad_url, url]
+    # Oldest first: the wrong author and the non-earnings text are each looked up and rejected;
+    # the valid post from before the window is never looked up
+    assert [seen for _, seen, _ in fetcher.requests] == [TIMELINES[0], text_url, bad_url, url]
 
 
 @pytest.mark.parametrize(

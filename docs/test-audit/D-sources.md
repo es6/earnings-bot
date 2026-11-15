@@ -270,3 +270,51 @@ Coverage of my area: sources.py 94%, fetch.py 81%, browser.py 52%, browser_sourc
 - DeprecationWarning noise from discord/utils.py: filter in pyproject `filterwarnings` so real warnings stay visible.
 - Several long tests assert many unrelated behaviors (schedule migration, Broadcom, fresh PR Newswire, Klarna); prefer one rule per test or parametrization.
 - No `@pytest.mark` split for slow/loopback-network tests (the real-socket test in test_fetch).
+
+## Fix results (branch tests-fix-d)
+
+Measured in this worktree on Windows against the current suite; each mutation was applied by hand, the named test run, and the source restored with `git checkout -- src`.
+
+### Surviving mutations, reproduced against the whole suite
+
+| # | whole-suite result with the mutation | outcome |
+|---|---|---|
+| M26 (remove `or (response.status == 404 and urgent)` in `HttpRelease.request_page`) | 1251 passed, nothing failed | real gap. The README's caveat holds: current code intentionally returns an urgent HTTP 404 to the caller instead of falling back to Chrome; the mutation makes it fall back, and no test noticed. Added `test_an_article_that_is_not_up_yet_is_an_answer_only_for_an_urgent_http_read` (urgent and listing ids): fails with the mutation (urgent case), passes without. |
+| M27 (don't reset `_chrome_until` on a Chrome error) | whole suite had no failure | real gap. Added `test_http_is_tried_again_after_chrome_fails_during_a_block`; fails with the mutation. |
+| M32 (`HttpRelease` `allow_redirects=True`) | not failing | real gap. `test_issuer_http_watch_...` now asserts `fetcher.no_redirect` equals every direct request; fails on both params with the mutation. |
+| M40 (`FreshPrNewswire.fetch` allows redirects) | not failing | real gap. `test_fetch_preserves_the_encoded_spelling_on_the_wire` now uses a `FakeSession` subclass that records `allow_redirects`; fails with the mutation. |
+| M14 (drop `listed_by == organization`) | not failing | real gap. The first archive page of `test_a_companys_releases_come_from_its_own_organization_page` now carries another organization's row; fails with the mutation. |
+| M15 (re-guess opened numbers) | not failing | real gap. Added `test_a_number_that_opened_ahead_of_an_earlier_one_is_not_guessed_again` (102 opens at once, 101 opens on the fourth ask; 102 must be asked once); fails with the mutation. |
+| M1 (drop `is_date_notice`) | caught elsewhere before (results_headline test) | added the isolating case "Acme to Report Third Quarter 2026 Results on November 5" to `test_looks_like_earnings`; both it and `test_a_results_headline_...` now fail. |
+| M18/M18b | equivalent | unchanged: `_dispatch` enforces the same block, so no observable change. |
+
+Other whole-suite runs during this work showed failures outside area D that are not caused by these changes: `tests/test_release_band.py` (different test each run, also fails with the source unmodified and when run alone), `tests/test_recorder.py::test_repeated_timeouts...` and `tests/test_pipeline.py::test_the_newsroom_read_waits_out_a_refusal` once each under `-n auto`. They are wall-clock sensitive and belong to other areas.
+
+Not holding: the audit's REWRITE of `test_backup_and_cached_feeds...` asked for a host-budget assertion for the Q4 pair. Measured: Q4 press releases (1/s) plus the reports feed (1 per 10 s) is 1.1 requests a second against a 1.0 s host gap, so that invariant is false for the current design. The test keeps the relation `EdgarFilings.interval > EdgarLatest.interval` and the reports-feed cache interval, and no longer pins `EdgarLatest.interval == 1.0`.
+
+The README's "Chrome test skipped on Linux CI" is `tests/test_bounded_research.py::test_research_that_needs_chrome_waits_without_retrying_every_scan` (area A's file, `pytest.skip` when `_chrome_waits()` is false). None of my eight files skips on platform.
+
+### Real waiting removed (measured, serial, `-p no:randomly`, before = audit/baseline run, after = this branch)
+
+| test | before | after |
+|---|---|---|
+| test_fetch polls of both SEC hosts ... 8 requests a second | 1.55 s | 0.03 s |
+| test_browser render_only_skips_settling x3 slow params | 1.22-1.34 s each | each under 0.005 s |
+| test_browser render turns off cache | 1.22 s | under 0.005 s |
+| test_fetch background research gives way to a host | 1.01 s | under 0.005 s |
+| test_browser urgent read does not wait for a slow listing | 1.01 s | under 0.005 s |
+| test_fetch background research waits behind every poll | 1.00 s | under 0.005 s |
+| test_fetch urgent exhibit goes ahead | 0.56 s | under 0.005 s |
+| test_fetch queued background turn x2 | 0.14 s each | under 0.005 s |
+
+The eight files: 18.38 s before, 8.65 s after (measured, one serial run each). The remaining slowest test is the real loopback server test (0.39 s). Method: a `VirtualClock` fixture in `tests/test_fetch.py` jumps `fetch.time.monotonic` and `fetch.asyncio.sleep` to the next wake-up once every task is idle (wall-clock thresholds became exact virtual-time assertions, e.g. gaps equal the SEC gap); `test_browser.py` skips the 0.3 s settle pause with a fixture and gates the urgent-lane test with `asyncio.Event`s instead of a 1 s sleep and `< 0.5` threshold. The `most_in_one_second == 8` check is now `<= 8` plus an exact span.
+
+### Verdicts applied
+
+- STRENGTHEN/new assertions: looks_like_earnings, FreshPrNewswire redirect, HttpRelease redirect, org-page filter, frontier re-guess, frontier real URL pattern (replaced the self-comparison), batch "posts nothing" (asserts no `globe_found`), dropped `BUDGET == 540`.
+- Split: edgar_latest (XML error duplicate removed), broadcom (3 tests), Tesla (2), organization page (empty-search test separate), browser-start rename.
+- MERGE: `test_host_gaps` moved to test_fetch as a parametrized host-gap test (removed from test_sources); the two queued-background-turn tests merged into one parametrized (`active`, `paused`).
+- REWRITE: archive test uses an inline `KnownCompany` instead of `known_companies()["LLY"]`; fails if `_busted` copies are archived.
+- test_browser: the four stub closures became `chrome`/`render_in` helpers, local imports moved to the top.
+- Not applied (reason in the verdict still valid but low value or cross-file): moving misfiled tests into other modules' files (those files belong to other areas), the Lucid/AMAT listing merge, `test_one_feed...polled_once` through `Polls`, splitting the schedule-migration test, the BN rss alert rename.
+- Counts: tests deleted 0, merged 2 (host-gap moved, queued turns), strengthened 9, rewritten 2 (archive, backup-feed), split 4, added 6 test functions (+1 parametrized id set).

@@ -102,3 +102,45 @@ now being caught.
    - CI with `pytest-xdist` (3.2x faster: 29 s against 94 s) and random order;
    - coverage reported in CI;
    - property tests for the pure parsers, and a scheduled mutation-testing run.
+
+## Results of the fixes (Nov 15, v0.21.43)
+
+All six steps were applied. Each area's report has a fix section with the test names. Numbers
+are measured unless marked.
+
+| Area | Survivors closed by a new or stronger test | Already caught elsewhere | Equivalent | Tests deleted | Groups merged |
+|---|---|---|---|---|---|
+| A | 3 (M12, M26, M27) | 1 (M24) | 0 | 0 | 4 |
+| B | 3 (M4, M10's morning-call branch, M12) | 1 (M22) | 0 | 3 | 1 |
+| C | 2 (resumed-alert cut, `synchronous=NORMAL`) | 1 (`_SHARED_QUEUES`) | 0 | 4 | 1 |
+| D | 6 (urgent 404, M27, M32, M40, M14, M15) | 0 | 0 | 0 | 2 |
+| E | 4 (M8, M14, M30/M35, M38) | 0 | 0 (M11, M34 were already marked) | 9 | 2 |
+| F | 9 (P2, TX2, W3, W5, MAIN1, MAIN2, CMD2, B2, B3) | 2 (CF1, CF4) | 1 (W4) | 0 | about 5 (hand count) |
+
+Every new or strengthened test was confirmed to fail with its mutation in place and pass
+without it. B's two "redundant code" findings are live guards, not dead code, and stay.
+
+- **Speed:** the whole suite runs in 34.0 s serially (1,331 tests), down from 93.8 s (1,216
+  tests), and 23.5 s in parallel. The real waits were replaced with virtual clocks, patched
+  host gaps, poll counts and events: the card-update test went from 5.0 s to 0.09 s, the wire
+  alert from 6.0 s to 0.06 s, and the publication trials from about 3 s each to 0.3 s. Two
+  remain slow on purpose: the burst replay (4.2 s, as shortening it let a mutation survive) and
+  a Chrome priority test (2.0 s, a real subprocess).
+- **Flakes:** wall-clock assertions became counts or exact virtual times. Three parallel runs
+  in random order and two suites run at once (double load) all passed.
+- **Warnings:** pytest now treats warnings as errors, except discord.py's own `re.sub`
+  deprecation. The run with ResourceWarnings as errors found 4 leaks, all fixed: SQLite
+  connections opened with `with sqlite3.connect(...)` (which commits but doesn't close) in 3
+  test files and the trials command line, a test server's writer, and a test's pipes.
+- **Shared fakes:** no test module imports another. Fakes are in `tests/fakes.py`, data in
+  `tests/builders.py`, `tests/brookfield_data.py` and `tests/clocks.py`. No `conftest.py`: no
+  identical fixture was repeated in 3 or more files.
+- **Tooling:** strict markers and config, `xfail_strict`, a 120 s per-test timeout, importlib
+  import mode, pytest-xdist and pytest-randomly in CI, coverage reported on Linux, property
+  tests (hypothesis) for Retry-After and amount parsing, and a weekly mutmut run on the pure
+  parsers (`.github/workflows/mutation.yml`).
+
+Left for later, with reasons in each report: tests still calling private methods where no
+public path exists yet (`TrackProgress._check`, `_facts`), a few tests in another module's
+file, the "untested behavior" lists (new coverage rather than fixes), and the
+`test_summary_binding.py` merges, deferred while that module is being changed on main.

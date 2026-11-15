@@ -205,14 +205,10 @@ def test_broadcom_is_matched_on_pr_newswire_and_tried_on_its_newsroom() -> None:
     avgo = to_target("AVGO", datetime(2026, 12, 10, 16, 15), 2026, 4)
 
     assert avgo.prnewswire == ["Broadcom Inc"]
-    assert [s.name for s in avgo.sources()] == [
-        "edgar",
-        "edgar_latest",
-        "prnewswire_busted",
-        "prnewswire",
-        "broadcom_newsroom",
-        "prnewswire_semiconductors",
-    ]
+    names = [s.name for s in avgo.sources()]
+    # The wire it is matched on comes before the newsroom it is only tried on
+    assert names.index("prnewswire") < names.index("broadcom_newsroom")
+    assert {"edgar", "prnewswire_busted", "prnewswire_semiconductors"} <= set(names)
 
 
 @pytest.mark.parametrize(

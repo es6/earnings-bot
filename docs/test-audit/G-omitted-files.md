@@ -13,11 +13,11 @@ Counts: KEEP 25, STRENGTHEN 8.
 | Test function | Verdict | Evidence / next action |
 |---|---|---|
 | `test_public_pagination_recovers_road_history_without_a_fixed_clock_exception` | KEEP | Real linked pages assert six regular releases, both clock slots and exclusion of preliminary results. |
-| `test_history_follows_only_bounded_linked_pages_and_same_host` | STRENGTHEN | Covers wrong zone, external next link and duplicate identity; add a four-page chain to isolate the three-page cap. |
-| `test_release_history_reads_a_feed_that_requires_the_owned_browser` | STRENGTHEN | Positive owned-browser feed is valuable; add refused/malformed responses and disabled-browser controls. |
+| `test_history_follows_only_bounded_linked_pages_and_same_host` | STRENGTHEN | Covers wrong zone, external next link and duplicate identity; add a four-page chain to isolate the three-page cap. Done: `test_history_reads_at_most_three_linked_pages` (fails with the cap at 4). |
+| `test_release_history_reads_a_feed_that_requires_the_owned_browser` | STRENGTHEN | Positive owned-browser feed is valuable; add refused/malformed responses and disabled-browser controls. Done: parametrized readable/refused/malformed/browser-held (browser-held fails without the `chrome_allowed()` guard). |
 | `test_exact_publisher_listing_identifies_a_wire_missing_from_the_exhibit` | KEEP | Matches issuer/quarter and nearby verified filing; rejects wrong period and distant dates. |
 | `test_jpm_manifest_discovers_and_verifies_the_real_random_pdf` | KEEP | Real manifest/PDF plus role, host and period controls exercise acquisition, not a fixed URL. |
-| `test_manifest_discovery_requires_the_pages_declaration_and_linked_script` | STRENGTHEN | Keeps discovery provenance explicit; add a third-script case to isolate the script-read ceiling. |
+| `test_manifest_discovery_requires_the_pages_declaration_and_linked_script` | STRENGTHEN | Keeps discovery provenance explicit; add a third-script case to isolate the script-read ceiling. Done: `test_manifest_discovery_reads_at_most_two_scripts` (fails with the limit at 3). |
 
 ## tests/test_servers.py
 
@@ -25,14 +25,14 @@ Counts: KEEP 25, STRENGTHEN 8.
 |---|---|---|
 | `test_other_servers_alert_channels_come_from_one_comma_separated_setting` | KEEP | Checks parsing, deduplication, primary precedence and absence. Newly kills the config-parser mutant reported as CF4. |
 | `test_every_server_gets_each_step_and_one_refusal_doesnt_stop_the_others` | KEEP | Checks both send/summary steps, first-seen propagation, partial refusal and the single-server path. |
-| `test_a_company_other_servers_track_is_watched_once_and_alerted_in_each` | STRENGTHEN | Four-server delivery isolation and one shared watch are useful; replace elapsed waits with completion events. Newly kills subscriber removal. |
+| `test_a_company_other_servers_track_is_watched_once_and_alerted_in_each` | STRENGTHEN | Four-server delivery isolation and one shared watch are useful; replace elapsed waits with completion events. Newly kills subscriber removal. FIXED: release is poll-count driven (PolledReleaseDay) and the clock jumps after both alerts; 3.05 s to under 0.1 s (measured). |
 | `test_a_command_works_with_the_list_of_the_server_its_used_in` | KEEP | Exercises command output and tracked-list isolation across guilds. |
 | `test_a_schedule_files_release_goes_to_the_deployments_own_server` | KEEP | Preserves file-only releases and the primary-server fallback. |
 | `test_the_watcher_gives_each_configured_server_its_own_list_and_scorecards` | KEEP | Checks state separation and own scorecard stores through watcher construction. |
 | `test_the_bot_registers_its_commands_in_every_configured_server` | KEEP | Checks actual command synchronization calls for every configured guild. |
 | `test_the_shared_calendar_reads_each_company_once_and_writes_to_every_server` | KEEP | Checks deduplication, finding propagation only to trackers and prohibition of shared add/remove. |
 | `test_a_company_two_servers_track_is_researched_once_for_both` | KEEP | Runs date research through the shared calendar and checks both persisted targets. |
-| `test_each_companys_speed_audit_runs_once_for_every_server` | STRENGTHEN | Success/failure controls check shared claims, cooldown and both cards; replace short real sleeps with barriers. |
+| `test_each_companys_speed_audit_runs_once_for_every_server` | STRENGTHEN | Success/failure controls check shared claims, cooldown and both cards; replace short real sleeps with barriers. FIXED: waits on each channel's sent event instead of sleeps; 0.49 s and 0.42 s to 0.11 s (measured). |
 | `test_a_server_takes_research_another_did_after_a_quick_check` | KEEP | Verifies copied profile/date/review and exactly one evidence check rather than fresh SEC investigation. |
 | `test_what_fails_the_check_is_researched_again` | KEEP | Parametrized block, gone, throttle and outage responses cannot validate a borrowed date. |
 | `test_manual_dates_are_not_borrowed_and_future_audits_are_not_current` | KEEP | Prevents cross-server manual overrides and future-dated review reuse. |
@@ -61,3 +61,11 @@ Counts: KEEP 25, STRENGTHEN 8.
 | `test_full_nested_story_survives_a_missing_date_spelling` | KEEP | Real nested article ensures complete report/tables and at most the documented fallback. |
 | `test_mirror_backoff_is_shared_by_other_releases_and_spelling_fallbacks` | KEEP | Checks 403/429/503, case-insensitive headers, server wait and no second transfer during pause. |
 
+
+## Fix results for tests/test_wire_mirror.py (branch tests-fix-d)
+
+All six rows stay KEEP. Measured: the file passes in 0.24 s at most per test (the slowest is `test_full_nested_story_survives_a_missing_date_spelling`), uses no real waiting, and was passed unchanged in two random-order serial runs and in the whole-suite `-n auto` run. Nothing was changed in it. The server-wait case in `test_mirror_backoff_is_shared_by_other_releases_and_spelling_fallbacks` is already driven by response headers, not by sleeping.
+
+### Fix pass: tests/test_source_observations.py
+Retry-After test now freezes UTC and asserts exactly 3600; the module shrinks the host turn gap
+(trial tests 1.2 s -> 0.15 s each); the stitching test asserts both polls were observed.

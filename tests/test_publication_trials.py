@@ -5,23 +5,21 @@ import asyncio
 import io
 import json
 import sqlite3
-import time
-from datetime import UTC, datetime
+from contextlib import closing
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
 
 import pytest
 from aiohttp import web
 
-from earnings_bot import unattended
+from earnings_bot import fetch, unattended
 from earnings_bot.delivery import DeliveryStore
 from earnings_bot.fetch import Fetcher, Response, ResponseTooLarge
 from earnings_bot.pipeline import Releases
-from earnings_bot.publication_trials import TrialPlan, load_plans, run_trials
+from earnings_bot.publication_trials import load_plans, run_trials
 from earnings_bot.recorder import Journal
-from tests.fakes import RoutedFetcher
-from tests.test_unattended import FakePoster
+from tests.builders import events, plan
+from tests.fakes import FakePoster, QueuedFetcher
 
 RELEASE = (
     "Example Corp Reports Third Quarter 2026 Results\n"
@@ -37,55 +35,10 @@ RELEASE = (
 )
 
 
-class QueuedFetcher(RoutedFetcher):
-    """Answers from routes, but takes its turn in the host's queue like the real Fetcher."""
-
-    def __init__(self, routes: dict[str, list[bytes]]) -> None:
-        super().__init__({})
-        self.pages = routes
-
-    async def request(self, method: str, url: str, *args: Any, **kwargs: Any) -> Response:
-        await self.wait_turn(urlsplit(url).hostname or "")
-        for part, bodies in self.pages.items():
-            if part in url:
-                body = bodies.pop(0) if len(bodies) > 1 else bodies[0]
-                return Response(url, 200, {"age": "0"}, body, 0.01)
-        return Response(url, 404, {}, b"", 0.01)
-
-
-def plan(**changes: Any) -> TrialPlan:
-    route = {
-        "transport": "http",
-        "interval": 0.125,
-        "issuer_pattern": "Example Corp",
-        "period_pattern": "third quarter",
-        "result_pattern": "results",
-    }
-    return TrialPlan.model_validate(
-        {
-            "id": "example-q3",
-            "starts_at": datetime.now(UTC).isoformat(),
-            "duration_seconds": 8,
-            "max_requests": 4,
-            "routes": [
-                route
-                | {"name": "listing", "url": "https://ir.example.com/news", "kind": "listing"},
-                route
-                | {
-                    "name": "article",
-                    "url": "https://ir.example.com/news/q3-2026",
-                    "kind": "article",
-                },
-            ],
-        }
-        | changes
-    )
-
-
-def events(log: io.StringIO, name: str) -> list[dict[str, Any]]:
-    return [
-        row for line in log.getvalue().splitlines() if (row := json.loads(line))["event"] == name
-    ]
+@pytest.fixture(autouse=True)
+def quick_host_turns(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Hosts hand out a turn every second; shrink that so tests don't wait in real time."""
+    monkeypatch.setattr(fetch, "_DEFAULT_GAP", 0.02)
 
 
 async def test_a_trial_records_a_transition_and_stops_at_its_budget() -> None:
@@ -96,7 +49,7 @@ async def test_a_trial_records_a_transition_and_stops_at_its_budget() -> None:
         }
     )
     log = io.StringIO()
-    with sqlite3.connect(":memory:") as db:
+    with closing(sqlite3.connect(":memory:")) as db, db:
         await run_trials(plan(), fetcher, Journal(log), db)
 
     seen = events(log, "publication_trial")
@@ -109,13 +62,24 @@ async def test_a_trial_records_a_transition_and_stops_at_its_budget() -> None:
     assert all("queued_ms" in row and "network_ms" in row for row in seen)
 
 
+async def test_a_release_already_up_at_the_first_poll_is_not_a_measured_transition() -> None:
+    fetcher = QueuedFetcher({"example.com": [RELEASE.encode()]})
+    log = io.StringIO()
+    with closing(sqlite3.connect(":memory:")) as db, db:
+        await run_trials(plan(), fetcher, Journal(log), db)
+    seen = events(log, "publication_trial")
+    article = [row for row in seen if row["route"] == "article"]
+    assert len(article) >= 1 and all(row["usable_report"] for row in article)
+    assert not any(row["transition_observed"] for row in seen)
+
+
 async def test_a_trial_budget_survives_a_restart_and_its_id_cant_be_reused(tmp_path: Path) -> None:
     fetcher = QueuedFetcher({"example.com": [RELEASE.encode()]})
     path = tmp_path / "trials.sqlite3"
-    with sqlite3.connect(path) as db:
+    with closing(sqlite3.connect(path)) as db, db:
         await run_trials(plan(max_requests=3), fetcher, Journal(io.StringIO()), db)
     log = io.StringIO()
-    with sqlite3.connect(path) as db:
+    with closing(sqlite3.connect(path)) as db, db:
         await run_trials(plan(max_requests=3), fetcher, Journal(log), db)
         assert events(log, "publication_trial") == []  # the budget was already spent
         other = io.StringIO()
@@ -123,7 +87,7 @@ async def test_a_trial_budget_survives_a_restart_and_its_id_cant_be_reused(tmp_p
         assert events(other, "publication_trial_error")  # same ID, different plan
 
 
-async def test_trial_turns_wait_behind_monitoring_polls(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_trial_turns_wait_behind_monitoring_polls() -> None:
     fetcher = Fetcher("Test Person test@example.com")
     turns: list[str] = []
 
@@ -139,10 +103,8 @@ async def test_trial_turns_wait_behind_monitoring_polls(monkeypatch: pytest.Monk
     trial = asyncio.create_task(take("trial", True))
     await asyncio.sleep(0)
     polls = [asyncio.create_task(take(f"poll {i}", False)) for i in range(2)]
-    started = time.monotonic()
     await asyncio.gather(trial, *polls)
     assert turns == ["first poll", "poll 0", "poll 1", "trial"]
-    assert time.monotonic() - started >= 2.9  # one turn a second on this host
 
 
 async def test_the_bot_runs_trial_plans_from_its_schedule_folder(tmp_path: Path) -> None:

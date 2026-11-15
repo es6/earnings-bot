@@ -18,7 +18,7 @@ from unittest.mock import patch
 from earnings_bot import browser
 from earnings_bot.browser import DesktopChrome, _Tab
 from earnings_bot.fetch import Fetcher
-from tests.test_browser import FakeTabSocket
+from tests.fakes import FakeTabSocket
 
 
 async def sample(separate: bool) -> dict[str, Any]:

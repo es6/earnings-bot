@@ -2,15 +2,15 @@
 capacity. It stops in the minutes a release is most likely, never touches a company whose
 own window is open, runs behind the polls, and leaves Chrome to live windows that use it."""
 
-import asyncio
 import io
 import time
+from collections.abc import AsyncIterator
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
-from earnings_bot import unattended
+from earnings_bot import date_discovery, fetch, unattended
 from earnings_bot.browser_sources import IRSource
 from earnings_bot.calendar import Calendar
 from earnings_bot.date_discovery import DateDiscovery
@@ -18,9 +18,8 @@ from earnings_bot.delivery import DeliveryStore
 from earnings_bot.fetch import HostBusy
 from earnings_bot.pipeline import Releases
 from earnings_bot.recorder import Journal, Target
-from tests.fakes import RoutedFetcher
-from tests.test_ir_release_coverage import company
-from tests.test_unattended import FakePoster
+from tests.builders import company
+from tests.fakes import FakePoster, RoutedFetcher, ScanFinished, scan_finished
 
 HEADLINE = r"(?i).*third quarter 2026 results.*"
 
@@ -42,68 +41,91 @@ def target(ticker: str, cik: int, expected: datetime, *, chrome: bool = False) -
     )
 
 
-async def test_research_pauses_only_in_the_minutes_around_a_release(tmp_path: Path) -> None:
+@pytest.fixture
+async def watcher(
+    tmp_path: Path,
+) -> AsyncIterator[tuple[unattended.DirectoryWatcher, RoutedFetcher]]:
     fetcher = RoutedFetcher({})
     journal = Journal(io.StringIO())
-    now = journal.now()
     with DeliveryStore(tmp_path / "state.db", 7) as store:
-        runner = unattended.DirectoryWatcher(
-            tmp_path, fetcher, journal, Releases(FakePoster, fetcher, journal, None), store, print
+        yield (
+            unattended.DirectoryWatcher(
+                tmp_path,
+                fetcher,
+                journal,
+                Releases(FakePoster, fetcher, journal, None),
+                store,
+                print,
+            ),
+            fetcher,
         )
-        # A window opened 30 minutes ago; its release is expected in 30 minutes
-        runner.planned = {"a": target("AAA", 1, now + timedelta(minutes=30))}
-        assert runner.busy() and not runner.research_paused()
-        assert runner.in_window(1) and not runner.in_window(2)
-        assert not runner.chrome_live()
-        # Its release is expected in 5 minutes: research stops
-        runner.planned = {"a": target("AAA", 1, now + timedelta(minutes=5))}
-        assert runner.research_paused()
-        # 40 minutes after the expected time, the rest of the window is research time again
-        runner.planned = {"a": target("AAA", 1, now - timedelta(minutes=40))}
-        assert runner.busy() and not runner.research_paused()
-        # A window that reads an IR listing in Chrome keeps Chrome to itself
-        runner.planned = {"a": target("AAA", 1, now + timedelta(minutes=30), chrome=True)}
-        assert runner.chrome_live()
-        with runner.research_mode():
-            assert not fetcher.chrome_allowed()
+
+
+@pytest.mark.parametrize(
+    ("minutes_to_release", "chrome", "paused"),
+    [
+        pytest.param(30, False, False, id="open-window-release-in-30-minutes"),
+        pytest.param(5, False, True, id="release-in-5-minutes-pauses-research"),
+        pytest.param(-40, False, False, id="40-minutes-after-the-rest-is-research-time"),
+        pytest.param(30, True, False, id="chrome-window-release-in-30-minutes"),
+    ],
+)
+async def test_research_pauses_only_in_the_minutes_around_a_release(
+    watcher: tuple[unattended.DirectoryWatcher, RoutedFetcher],
+    minutes_to_release: int,
+    chrome: bool,
+    paused: bool,
+) -> None:
+    runner, fetcher = watcher
+    expected = runner.journal.now() + timedelta(minutes=minutes_to_release)
+    runner.planned = {"a": target("AAA", 1, expected, chrome=chrome)}
+
+    assert runner.busy()
+    assert runner.research_paused() is paused
+    assert runner.in_window(1) and not runner.in_window(2)
+    assert runner.chrome_live() is chrome
+    with runner.research_mode():
+        assert fetcher.chrome_allowed() is (not chrome and not paused)
+        if not paused:
             await fetcher.wait_turn("www.sec.gov")  # SEC still answers research, slowly
-        runner.planned = {}
-        assert not runner.busy()
-        with runner.research_mode():
-            assert fetcher.chrome_allowed()
+
+
+async def test_research_has_chrome_again_once_no_window_is_open(
+    watcher: tuple[unattended.DirectoryWatcher, RoutedFetcher],
+) -> None:
+    runner, fetcher = watcher
+    expected = runner.journal.now() + timedelta(minutes=30)
+    runner.planned = {"a": target("AAA", 1, expected, chrome=True)}
+    with runner.research_mode():
+        assert not fetcher.chrome_allowed()
+    runner.planned = {}
+    assert not runner.busy()
+    with runner.research_mode():
+        assert fetcher.chrome_allowed()
 
 
 async def test_research_permissions_follow_a_window_that_opens_after_the_task_started(
-    tmp_path: Path,
+    watcher: tuple[unattended.DirectoryWatcher, RoutedFetcher],
 ) -> None:
-    fetcher = RoutedFetcher({})
-    journal = Journal(io.StringIO())
-    now = journal.now()
-    with DeliveryStore(tmp_path / "state.db", 7) as store:
-        runner = unattended.DirectoryWatcher(
-            tmp_path, fetcher, journal, Releases(FakePoster, fetcher, journal, None), store, print
-        )
-        with runner.research_mode():
-            assert fetcher.chrome_allowed()
-            runner.planned = {"a": target("AAA", 1, now + timedelta(minutes=30), chrome=True)}
-            assert not fetcher.chrome_allowed()
-            runner.planned = {"a": target("AAA", 1, now + timedelta(minutes=5), chrome=True)}
-            with pytest.raises(HostBusy):
-                await fetcher.wait_turn("www.sec.gov")
-            runner.planned = {}
-            assert fetcher.research_deferred() and not fetcher.chrome_allowed()
-        assert fetcher.chrome_allowed() and not fetcher.research_deferred()
+    runner, fetcher = watcher
+    now = runner.journal.now()
+    with runner.research_mode():
+        assert fetcher.chrome_allowed()
+        runner.planned = {"a": target("AAA", 1, now + timedelta(minutes=30), chrome=True)}
+        assert not fetcher.chrome_allowed()
+        runner.planned = {"a": target("AAA", 1, now + timedelta(minutes=5), chrome=True)}
+        with pytest.raises(HostBusy):
+            await fetcher.wait_turn("www.sec.gov")
+        runner.planned = {}
+        assert fetcher.research_deferred() and not fetcher.chrome_allowed()
+    assert fetcher.chrome_allowed() and not fetcher.research_deferred()
 
 
 async def test_date_discovery_researches_other_companies_behind_the_polls(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    class ScanFinished(Exception):
-        pass
-
-    async def finished() -> None:
-        raise ScanFinished
-
+    # The one-second pause the queue puts between two turns at a host is not what this tests
+    monkeypatch.setattr(fetch, "_DEFAULT_GAP", 0.0)
     with DeliveryStore(tmp_path / "state.db", 7) as store:
         calendar = Calendar(store)
         onon, _ = calendar.add("ONON", company("ONON"))
@@ -133,14 +155,15 @@ async def test_date_discovery_researches_other_companies_behind_the_polls(
             checked.append((ticker, fetcher.chrome_allowed(), live_host_answered))
 
         monkeypatch.setattr(dates, "run_once", run_once)
-        monkeypatch.setattr(dates.changed, "wait", finished)
+        monkeypatch.setattr(dates.changed, "wait", scan_finished)
+
+        # Sea is researched during ONON's window, without Chrome and away from the live host
         with pytest.raises(ScanFinished):
             await dates.run()
-        # Sea is researched during ONON's window, without Chrome and away from the live host
         assert checked == [("SE", False, False)]
         assert dates.phases.get(onon.cik) == "Waiting for its own release window to close"
 
-        # In the minutes around a release nothing is researched at all
+        # In the minutes around a release nothing more is researched at all
         state["paused"] = True
         dates.checked.clear()
         with pytest.raises(ScanFinished):
@@ -158,8 +181,9 @@ async def test_date_discovery_researches_other_companies_behind_the_polls(
 
 
 async def test_research_that_needs_chrome_waits_without_retrying_every_scan(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr(date_discovery, "chrome_available", lambda: True)
     with DeliveryStore(tmp_path / "state.db", 7) as store:
         calendar = Calendar(store)
         # Last investigated months ago, so an investigation is due
@@ -171,8 +195,6 @@ async def test_research_that_needs_chrome_waits_without_retrying_every_scan(
         )
         dates.checked[row.cik] = time.monotonic() + 3600
         with fetcher.background(chrome=False):
-            if not dates._chrome_waits():
-                pytest.skip("Desktop Chrome research only runs on Windows")
             assert await dates._investigate(row) == row
         # Retried in 10 minutes, not on the next 60-second scan, and not in an hour either
         wait = dates.checked[row.cik] - time.monotonic()
@@ -180,15 +202,21 @@ async def test_research_that_needs_chrome_waits_without_retrying_every_scan(
         assert dates.phases[row.cik] == "Investigation waits for live Chrome windows to close"
 
 
-@pytest.mark.parametrize("interruption", ["chrome", "http"])
+@pytest.mark.parametrize(
+    ("interruption", "chrome_research"),
+    [
+        pytest.param("chrome", True, id="chrome-closed-to-research"),
+        pytest.param("http", True, id="live-host-busy-with-chrome-research"),
+        pytest.param("http", False, id="live-host-busy-without-chrome-research"),
+    ],
+)
 async def test_an_interrupted_investigation_does_not_save_a_partial_profile(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     interruption: str,
+    chrome_research: bool,
 ) -> None:
-    from earnings_bot import date_discovery
-
-    monkeypatch.setattr(date_discovery, "chrome_available", lambda: True)
+    monkeypatch.setattr(date_discovery, "chrome_available", lambda: chrome_research)
     state = {"live": False}
     with DeliveryStore(tmp_path / "state.db", 7) as store:
         calendar = Calendar(store)
@@ -226,4 +254,3 @@ def test_a_window_whose_routes_use_chrome_is_recognized() -> None:
     when = datetime(2026, 11, 17, 7, tzinfo=UTC)
     assert unattended.uses_chrome(target("AAA", 1, when, chrome=True))
     assert not unattended.uses_chrome(target("AAA", 1, when))
-    assert asyncio  # keeps the import for the async tests above

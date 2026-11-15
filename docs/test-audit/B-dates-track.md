@@ -258,3 +258,17 @@ Everything else under 0.1 s.
 - Platform: no skip markers in these files; Chrome is stubbed everywhere, so the suite runs on Linux CI
   (one test monkeypatches `chrome_available` to True for this reason).
 - DeprecationWarning from discord.utils (count positional) appears in 5 tests; third-party, ignorable.
+
+## Fix pass (branch tests-fix-b)
+
+Survivors (each reproduced, whole suite run with the mutation, new tests deselected):
+- M4 (calendar.plan 6-K sec_form copy): whole suite passed with the mutation, a real gap. Fixed by test_a_schedule_file_for_a_6k_filer_is_told_to_watch_6k; fails with the mutation, passes without.
+- M10 (event_target 6-K condition): the second condition (call-based branch) was already caught by test_ir_pages::test_without_a_notice_the_events_list_gives_the_call_and_so_the_release. The first (morning call after an evening filing time) was a gap, fixed by test_a_6k_filers_evening_filing_time_doesnt_place_the_release_before_a_morning_call.
+- M12 (remembered FMP date kept when FMP gives nothing): a real gap, fixed by test_a_remembered_fmp_date_is_kept_when_the_next_fmp_check_gives_nothing (error and empty answers).
+- M22 (6-K exhibit notices in _issuer_date): already caught by test_sec_results::test_an_issuer_notice_filed_on_6k_can_schedule_but_never_alert (4 failures with the mutation).
+- M5 (publish() last_sent early return) and M13 (first untrack guard): not removed. Both are used: M5 also skips a store lookup and the release-priority wait, and M13 stops issuer-route and cache preparation for a company just untracked. They are redundant in outcome only, not dead code.
+
+Slow tests, measured before to after: wire alert 6.02 s to 0.06 s; no-schedule-file alert 3.01 s to 0.08 s; test_servers fan-out alert 3.05 s to under 0.1 s; speed audits 0.49 and 0.42 s to 0.11 s; card spacing 0.45 s and old-card spacing 0.37 s to virtual time (about 0 s); run-limit 0.23 s to 0.03 s. Source untouched: tests patch recorder.pace and its housekeeping intervals (quick_windows in tests/fakes.py) and track_progress time/sleep (VirtualTime).
+
+Verdicts applied: DateDiscovery tests moved out of test_sec_results (shared data in tests/brookfield_data.py); _check calls replaced by run_once; is_owner test moved to test_tracking_commands; wire-publisher test moved to test_calendar and made non-vacuous; stale-review pair merged; version-only test deleted; override and refusal tests parametrized; long-upcoming list now really truncates and its counts are exact; event-card test split; cap test renamed.
+Skipped: registration merge (the two tests cover different layers, EarningsBot wiring vs TrackingCommands.register); status/_window_report tests are in files I do not own; _facts and TrackProgress._check privacy, the _listing_date and track_test CLI gaps, and cards-wait/background-audit wall-clock waits were left.

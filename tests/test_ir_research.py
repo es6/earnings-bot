@@ -4,6 +4,7 @@ from datetime import date
 import pytest
 
 from earnings_bot import ir_research
+from earnings_bot.browser_sources import IRSource
 from earnings_bot.ir_research import (
     issuer_links,
     matches_release,
@@ -71,28 +72,34 @@ def chrome(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(ir_research, "chrome_available", lambda: True)
 
 
+VERIFIED_SOURCE = IRSource(listing=LISTING, headline=quarter_headline(2026, 3), verify_text=True)
+
+
 @pytest.mark.usefixtures("chrome")
 @pytest.mark.parametrize(
-    ("routes", "why"),
+    ("routes", "why", "expected"),
     [
         (
             {LISTING: (200, f'<a href="{Q2}">{Q2_TITLE}</a>'), Q2: (200, REPORT)},
             f"Last quarter's results, “{Q2_TITLE}”, read in Chrome",
+            VERIFIED_SOURCE,
         ),
-        ({LISTING: (403, "Access Denied")}, f"Chrome got HTTP 403 from <{LISTING}>"),
+        ({LISTING: (403, "Access Denied")}, f"Chrome got HTTP 403 from <{LISTING}>", None),
         (
             {LISTING: (200, '<a href="/news/day">Lucid to Host Investor Day</a>')},
             f"No Q2 2026 results headline on <{LISTING}> to check the pattern against",
+            None,
         ),
         (
             {LISTING: (200, f'<a href="{Q2}">{Q2_TITLE}</a>'), Q2: (200, "<p>Coming soon</p>")},
             f"Last quarter's article “{Q2_TITLE}” didn't read as a results report",
+            None,
         ),
     ],
     ids=["verified", "blocked", "no-headline", "not-a-report"],
 )
 async def test_a_live_chrome_source_is_verified_or_says_why_not(
-    routes: dict[str, tuple[int, str]], why: str
+    routes: dict[str, tuple[int, str]], why: str, expected: IRSource | None
 ) -> None:
     fetcher = RoutedFetcher(
         {url: (status, body.encode()) for url, (status, body) in routes.items()}
@@ -101,9 +108,23 @@ async def test_a_live_chrome_source_is_verified_or_says_why_not(
     source, reason = await verified_browser_source(fetcher, LISTING, "FY2026Q3")
 
     assert reason == why
-    assert (source is not None) == why.endswith("read in Chrome")
-    if source:
-        assert (source.listing, source.verify_text) == (LISTING, True)
+    assert source == expected
+
+
+@pytest.mark.usefixtures("chrome")
+@pytest.mark.parametrize("chrome_allowed", [True, False], ids=["allowed", "kept-for-live-windows"])
+async def test_research_opens_its_own_chrome_only_when_live_windows_leave_it_free(
+    chrome_allowed: bool,
+) -> None:
+    fetcher = RoutedFetcher({})
+
+    with fetcher.background(chrome=chrome_allowed):
+        inspected = await ir_research.inspect_issuer(fetcher, LISTING, date(2026, 8, 26), set())
+        table = await ir_research.verified_results_table(fetcher, LISTING, "FY2026Q3")
+
+    assert table == {}
+    assert fetcher.chrome_opened == (2 if chrome_allowed else 0)
+    assert bool(inspected) is chrome_allowed
 
 
 async def test_no_chrome_or_no_page_says_so(monkeypatch: pytest.MonkeyPatch) -> None:
