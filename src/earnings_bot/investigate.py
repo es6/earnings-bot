@@ -43,19 +43,7 @@ from earnings_bot.text import html_to_text, release_text, verified_report
 
 log = logging.getLogger(__name__)
 REINVESTIGATE = timedelta(days=30)
-# Raised when the investigation learns to find more, so companies get looked at again:
-# 1 kept what it checked, 2 reads the wire from any release, skips date notices, looks a few
-# pages back for the latest results and keeps when the IR site says they were posted,
-# 3 follows corporate navigation and embedded listings, 4 reads newsroom cards and archives,
-# 5 finds results behind ordinary filings, 6 checks named RSS indexes and listing HTTP,
-# 7 checks Q4 feeds independently of the issuer homepage, 8 verifies newsroom JSON,
-# 9 recognizes more 6-K results language and looks further back for Q4 wire datelines,
-# 10 reads the IR site as Chrome renders it, finds IR hosts behind www. and brand domains, and
-# keeps the IR home page for reading dates, 11 reads the IR site from the last three results
-# releases and keeps earlier research when none names one, 12 finds results pages behind
-# investor landing pages and feeds only Chrome can read, 13 learns how the company names
-# its fiscal years from its results releases, 14 checks feeds advertised on the actual IR
-# listing even when the homepage is blocked or names a separate corporate host.
+# Bump when discovery rules change so persisted issuer research is rechecked.
 INVESTIGATION = 15
 _HOST = re.compile(r"\b((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,})\b", re.IGNORECASE)
 _WEB_HOST = re.compile(r"\b(?:https?://|(?=www\.))" + _HOST.pattern, re.IGNORECASE)

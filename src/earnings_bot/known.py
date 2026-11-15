@@ -262,7 +262,7 @@ def target_toml(target: Target) -> str:
             for key, value in target.ir.model_dump(exclude_defaults=True).items()
         ]
     trial = target.trial
-    if trial != Trial(post=trial.post):
+    if trial != Trial():
         lines += ["", "# Additional live sources", "[target.trial]"]
         if trial.broadcom_newsroom:
             lines.append("broadcom_newsroom = true")

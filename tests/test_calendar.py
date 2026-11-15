@@ -87,27 +87,37 @@ def test_auto_browser_source_preserves_existing_schedule_choices(tmp_path: Path)
         [effective] = calendar.plan({file.release_key: file}).values()
         assert effective.ir == target.ir
         assert effective.trial.globenewswire == ["NVIDIA"]
-        assert not effective.trial.post
-        file.trial.post = True
+        file.trial = Trial.model_validate({"post": True, "globenewswire": ["NVIDIA"]})
         [effective] = calendar.plan({file.release_key: file}).values()
         assert effective.ir == target.ir
-        assert effective.trial.post
+        assert effective.trial.globenewswire == ["NVIDIA"]
+        assert "post" not in effective.trial.model_dump()
 
 
-def test_saved_automatic_browser_headline_is_repaired_after_restart(tmp_path: Path) -> None:
+@pytest.mark.parametrize("kind", ["automatic", "manual-pattern", "custom-listing", "unverified"])
+def test_only_saved_automatic_browser_headline_is_repaired_after_restart(
+    tmp_path: Path, kind: str
+) -> None:
     db = tmp_path / "state.db"
     target = to_target("CRWD", datetime(2026, 12, 1, 16, 5, tzinfo=ET), 2027, 3)
     headline = quarter_headline(2027, 3)
     target.ir = IRSource(
         listing=IR_LISTINGS["CRWD"], headline=headline.removesuffix(".*"), verify_text=True
     )
+    if kind == "manual-pattern":
+        target.ir.headline = "CrowdStrike custom results.*"
+    elif kind == "custom-listing":
+        target.ir.listing = "https://ir.example.com/news"
+    elif kind == "unverified":
+        target.ir.verify_text = False
+    expected = headline if kind == "automatic" else target.ir.headline
     with DeliveryStore(db, 7) as store:
         calendar = Calendar(store)
         calendar.add("CRWD")
         calendar.set_target(target, "Issuer notice")
     with DeliveryStore(db, 7) as store:
         [effective] = Calendar(store).plan({}).values()
-        assert effective.ir and effective.ir.headline == headline
+        assert effective.ir and effective.ir.headline == expected
 
 
 def test_a_calendar_saved_before_profiles_is_upgraded_in_place(tmp_path: Path) -> None:

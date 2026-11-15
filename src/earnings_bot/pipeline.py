@@ -41,6 +41,7 @@ from earnings_bot.delivery import (
 )
 from earnings_bot.edit_priority import EditPriority, release_step
 from earnings_bot.fetch import Fetcher, Response
+from earnings_bot.file_downloads import FileDownloads
 from earnings_bot.formatting import clock, period_label
 from earnings_bot.issuer_news import IssuerNews
 from earnings_bot.recorder import ET, Journal, Plan, PollError, Target, poll, record
@@ -507,10 +508,9 @@ class Release:
         self.priority = priority
         self.links: dict[str, str] = {}  # url -> label, in the order they turned up
         self.files: set[str] = set()
-        self._downloading: set[str] = set()
+        self._downloads = FileDownloads()
         self.attach_retry = ATTACH_RETRY_SECONDS
         self.issuer_text_seconds, self.issuer_text_every = ISSUER_TEXT_SECONDS, ISSUER_TEXT_EVERY
-        self._pdfs: dict[str, bytes] = {}  # attached PDFs by name, for reading their text
         self._pdf_read: set[str] = set()
         self._asked_issuer = False
         self.first_seen: datetime | None = None
@@ -582,8 +582,13 @@ class Release:
 
     async def finish(self) -> None:
         """Waits for every pending step."""
-        while self.tasks:
-            await asyncio.gather(*self.tasks)
+        try:
+            while self.tasks:
+                await asyncio.gather(*self.tasks)
+            await self._downloads.finish()
+        except asyncio.CancelledError:
+            await self._downloads.cancel()
+            raise
 
     def _since_first_seen(self) -> float:
         return round(time.monotonic() - self.first_seen_at, 2)
@@ -798,34 +803,30 @@ class Release:
         if url is None:
             return
         name = self._attachment_name(url)
-        if name in self.files or name in self._downloading:
+        if name in self.files:
             return
-        self._downloading.add(name)
-        try:
-            warmup = source.warmup if isinstance(source, BrowserRss) else source.listing
-            if urlsplit(url).netloc == urlsplit(warmup).netloc:
-                if isinstance(source, BrowserRelease):
-                    get = partial(source.request_page, self.fetcher, url, urgent=True)
-                else:
-                    get = partial(
-                        self.fetcher.browser_request, url, warmup, source.timeout, urgent=True
-                    )
+        warmup = source.warmup if isinstance(source, BrowserRss) else source.listing
+        if urlsplit(url).netloc == urlsplit(warmup).netloc:
+            if isinstance(source, BrowserRelease):
+                get = partial(source.request_page, self.fetcher, url, urgent=True)
             else:
                 get = partial(
-                    self.fetcher.request,
-                    "GET",
-                    url,
-                    give_up_after=source.timeout,
-                    urgent=True,
-                    allow_redirects=False,
+                    self.fetcher.browser_request, url, warmup, source.timeout, urgent=True
                 )
-            response = await self._download(
-                name,
-                get,
-                pending_statuses=(0, 404),  # Chrome stops at an opaque redirect with status 0.
+        else:
+            get = partial(
+                self.fetcher.request,
+                "GET",
+                url,
+                give_up_after=source.timeout,
+                urgent=True,
+                allow_redirects=False,
             )
-        finally:
-            self._downloading.discard(name)
+        response = await self._file_response(
+            url,
+            request=get,
+            pending_statuses=(0, 404),  # Chrome's manual redirects have status zero.
+        )
         if response.status == 200 and response.body.startswith(b"%PDF-"):
             if measure and not sighting.caught_up:
                 self.journal.write(
@@ -850,18 +851,8 @@ class Release:
         name = self._attachment_name(url)
         if name in self.files:
             return
-        status = 200
-        if body is None:
-            if name in self._downloading:
-                return
-            self._downloading.add(name)
-            try:
-                response = await self._download(name, partial(self.fetcher.request, "GET", url))
-                status, body = response.status, response.body
-            finally:
-                self._downloading.discard(name)
-        if status == 200 and body.startswith(b"%PDF-"):
-            self._pdfs.setdefault(name, body)
+        response = await self._file_response(url, body)
+        status, body = response.status, response.body
         if status != 200 or len(body) > MAX_FILE_BYTES:
             self.journal.say(
                 f"{self.target.ticker}: couldn't attach {name} (HTTP {status}, {len(body):,} bytes)"
@@ -881,6 +872,22 @@ class Release:
             visible=stamp,
         )
         self.journal.say(f"{self.target.ticker}: attached {name}")
+
+    async def _file_response(
+        self,
+        url: str,
+        body: bytes | None = None,
+        *,
+        request: Callable[[], Awaitable[Response]] | None = None,
+        pending_statuses: tuple[int, ...] = (404,),
+    ) -> Response:
+        name = self._attachment_name(url)
+        get = request or partial(self.fetcher.request, "GET", url)
+        return await self._downloads.get(
+            name,
+            partial(self._download, name, get, pending_statuses=pending_statuses),
+            ready=Response(url, 200, {}, body, 0.0) if body is not None else None,
+        )
 
     async def _download(
         self,
@@ -957,16 +964,13 @@ class Release:
                 )
 
     async def _read_pdf(self, source: Source, sighting: Sighting, label: str) -> None:
-        """Reads the release from its PDF as soon as it's downloaded. Brookfield's Q3 2026
-        summary waited 4 minutes for the 6-K with the PDF already posted, and the 10 s grace
-        for a page that followed cost every PDF-first release 10 s."""
+        """Read the downloaded PDF immediately; a later page may replace its summary."""
         name = self._attachment_name(sighting.url)
         if name in self._pdf_read:
             return
         self._pdf_read.add(name)
-        while name in self._downloading:  # noqa: ASYNC110
-            await asyncio.sleep(0.2)
-        body = sighting.body or self._pdfs.get(name)
+        response = await self._file_response(sighting.url, sighting.body)
+        body = response.body if response.status == 200 else None
         done = self.has_text and (self.summarizer is None or self.summarizing)
         if done or body is None or not body.startswith(b"%PDF-"):
             return  # a page's summary is never replaced by a PDF's
@@ -980,9 +984,7 @@ class Release:
         self._spawn(self._issuer_article())
 
     async def _issuer_article(self) -> None:
-        """A wire's own article page can be closed to us, as Business Wire's is. The issuer's
-        newsroom carries the same release, so it is read from there, whatever that route's own
-        watcher is doing: Nebius's Q3 2026 summary waited 2h 7m for the 6-K."""
+        """Recover a blocked wire's body from the issuer, sharing the watcher's backoff."""
         assert self.target.ir is not None
         day = self.target.expected.astimezone(ET).date()
         source = next(

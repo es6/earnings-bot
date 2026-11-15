@@ -1,7 +1,7 @@
-"""Version-scoped text/table references for the next summary evidence schema.
+"""Version-scoped text/table references for source-bound summary evidence.
 
 Coordinates and header tags are observed structure, not inferred metric/period labels.
-Plain text never gains invented table geometry. The current live writer is unchanged.
+Plain text never gains invented table geometry.
 """
 
 import hashlib
@@ -12,7 +12,7 @@ from typing import Literal
 
 from pydantic import TypeAdapter
 
-from earnings_bot.text import _clean, _Table, _table_lines, _TextParser
+from earnings_bot.html_text import HTMLTable, HTMLTextParser, clean_text
 
 DOCUMENT_VERSION = 1
 
@@ -120,7 +120,7 @@ def _digest(source: str, kind: str) -> str:
 
 def document_from_text(text: str) -> SourceDocument:
     """For an already extracted PDF/text: retain lines, without pretending they are cells."""
-    lines = [_clean(line) for line in text.splitlines() if _clean(line)]
+    lines = [clean_text(line) for line in text.splitlines() if clean_text(line)]
     if not lines:
         raise ValueError("No source text")
     return SourceDocument(
@@ -131,9 +131,8 @@ def document_from_text(text: str) -> SourceDocument:
     )
 
 
-def _snapshot(table: _Table, name: str, nested: bool) -> SourceTable:
-    table.end_row()
-    table._flush_loose()
+def _snapshot(table: HTMLTable, name: str, nested: bool) -> SourceTable:
+    lines = table.close()
     cells: list[SourceCell] = []
     active: list[SourceCell] = []
     row = 0
@@ -164,19 +163,19 @@ def _snapshot(table: _Table, name: str, nested: bool) -> SourceTable:
             active.append(cell)
             column += raw.span
         row += 1
-    text = "\n".join(_clean(line) for line in _table_lines(table.items) if _clean(line))
+    text = "\n".join(clean_text(line) for line in lines if clean_text(line))
     return SourceTable(name, text, tuple(cells), row, nested)
 
 
-class _DocumentParser(_TextParser):
+class _DocumentParser(HTMLTextParser):
     def __init__(self) -> None:
         super().__init__()
-        self.names: dict[_Table, str] = {}
-        self.nested: set[_Table] = set()
+        self.names: dict[HTMLTable, str] = {}
+        self.nested: set[HTMLTable] = set()
         self.captured: list[SourceTable] = []
         self.positions: dict[int, SourceTable] = {}
 
-    def _identify(self, table: _Table) -> str:
+    def _identify(self, table: HTMLTable) -> str:
         if table not in self.names:
             self.names[table] = f"t{len(self.names) + 1}"
         return self.names[table]
@@ -212,7 +211,7 @@ def document_from_html(html: str) -> SourceDocument:
     def flush() -> None:
         nonlocal paragraphs
         for line in "".join(pending).splitlines():
-            if text := _clean(line):
+            if text := clean_text(line):
                 paragraphs += 1
                 blocks.append(SourceBlock(f"p{paragraphs}", "paragraph", text))
         pending.clear()

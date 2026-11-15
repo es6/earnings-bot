@@ -42,15 +42,12 @@ from earnings_bot.version import release_version
 
 log = logging.getLogger(__name__)
 REFRESH = timedelta(days=1)
-# Scorecards share a channel's edit budget (Discord allows about 5 edits per 5 s) with release
-# links and summaries. Spacing card edits leaves most of it free: on Nov 11 the logs had 283
-# rate-limited edits, nearly all scorecards re-sent together after a restart or a window opening.
+# Scorecards share the channel's edit budget with alerts and summaries; leave them headroom.
 CARD_EDIT_SPACING = 2.5  # seconds
 # Discord caps edits to messages more than an hour old (error 30046), across the channel, and a
 # resumed alert's links and summary count against the same cap. A card older than this is edited
-# only to show a settled result, one card at a time, OLD_CARD_SPACING apart. After the Nov 12
-# restart, old cards edited 2.5 s apart got 429 with a retry time of about 5.5 s for minutes.
-# The spacing is about five times that; Discord doesn't publish the cap, so it isn't measured.
+# only to show a settled result, one card at a time, OLD_CARD_SPACING apart. The unpublished
+# old-message cap needs its own spacing; incident measurements are in docs/architecture.md.
 OLD_MESSAGE = timedelta(minutes=55)
 OLD_CARD_SPACING = 30.0  # seconds
 # After an old card's edit is refused or times out, old cards wait this long, doubling with each

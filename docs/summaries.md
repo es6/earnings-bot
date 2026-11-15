@@ -460,8 +460,8 @@ blind evaluation, not an automatic failover that changes the quality or cost sil
 | EPS versus operating profit/EBITDA | Choose the relevant profit measure from business context; no blanket EPS | Shared prompt; selection still needs evaluation |
 | Missing segments, subscription/fee streams, growth engines | Material revenue taxonomies and recurring streams; preserve scope | Shared prompt; never complete segments by finding any table ending in a total |
 | Missing volume, backlog, flagship growth | Preserve the leading operating KPI even without a revenue level | Shared prompt; annotated coverage evaluation |
-| Software capex missed; retailer cash overemphasized | Use capital intensity/cash burn as context for this quarter's story | `cash_priority` is an advisory signal, never an automatic deletion gate |
-| Missing/computed YoY | Same metric, currency, unit, basis, scope and prior-year fiscal period | `yoy`; zero/negative priors omitted, margins use bps |
+| Software capex missed; retailer cash overemphasized | Use capital intensity/cash burn as context for this quarter's story | Shared selection prompt; no automatic deletion gate |
+| Missing/computed YoY | Same metric, currency, unit, basis, scope and prior-year fiscal period | Bound renderer arithmetic; zero/negative priors omitted, margins use bps |
 | Reported versus adjusted comps; profit versus margin | Preserve table columns, exact exclusions and accounting basis | Table-parser regression; identity and arithmetic tests |
 | Q and FY outlooks looking identical | Guidance period must be explicit; previous guide differs from prior-year actual | Prompt and `evidence_issues`; no year/number-based inference |
 | Bare initiative names; material news omitted | Status/change/scale required; prioritize growth and cash-burn milestones | Prompt and bare-update check; importance requires review |

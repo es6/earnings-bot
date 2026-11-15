@@ -1,4 +1,4 @@
-"""Shared selection policy and conservative arithmetic for summary experiments.
+"""Shared selection policy and traceability checks for summaries and offline evaluations.
 
 No ticker exceptions. Evidence checks establish traceability, not semantic correctness.
 The offline evaluator uses these helpers; the live writer shares the selection prompt.
@@ -6,7 +6,6 @@ The offline evaluator uses these helpers; the live writer shares the selection p
 
 import re
 from dataclasses import dataclass
-from decimal import Decimal
 from typing import Literal
 
 POLICY_VERSION = "2026-11-12.1"
@@ -101,71 +100,6 @@ Evidence and arithmetic:
   Missing information is missing, not zero. Omit an ambiguous fact or flag it for review.
 """
 
-TEXT_SYSTEM = (
-    SELECTION_RULES
-    + """
-Output only the brief. Start with COMPANY $TICKER and the issuer's reported fiscal period.
-Use short 🔹 fact lines and 🔸 business updates, without sections or executive quotes.
-Name guidance periods explicitly. Keep the language brief while preserving important coverage.
-"""
-)
-
-
-@dataclass(frozen=True)
-class MetricKey:
-    name: str
-    basis: str
-    unit: str
-    currency: str = ""
-    scope: str = "quarter"
-    group: str = "consolidated"
-
-
-@dataclass(frozen=True)
-class Observation:
-    key: MetricKey
-    value: Decimal
-    year: int
-    quarter: int | None
-
-
-def yoy(current: Observation, prior: Observation) -> Decimal | None:
-    """A verified year-ago pair only; the caller must establish table/metric provenance."""
-    if (
-        current.key != prior.key
-        or current.year != prior.year + 1
-        or current.quarter != prior.quarter
-        or not current.value.is_finite()
-        or not prior.value.is_finite()
-        or prior.value <= 0
-        or not all((current.key.name, current.key.basis, current.key.unit, current.key.scope))
-        or (current.key.unit == "money" and not current.key.currency)
-        or current.key.basis.casefold() == "unknown"
-        or (current.key.scope == "annual" and current.quarter is not None)
-        or (current.key.scope != "annual" and current.quarter not in (1, 2, 3, 4))
-    ):
-        return None
-    if current.key.unit == "%":
-        return (current.value - prior.value) * 100  # bps, not percentage growth
-    return (current.value / prior.value - 1) * 100
-
-
-def cash_priority(
-    revenue: Decimal | None, capex: Decimal | None, operating_cash: Decimal | None
-) -> Literal["high", "normal", "unknown"]:
-    """Inputs must be comparable annual amounts; no sector-name overrides."""
-    if operating_cash is not None and operating_cash.is_finite() and operating_cash < 0:
-        return "high"  # Works even when capex or revenue is unavailable.
-    if (
-        revenue is None
-        or capex is None
-        or not revenue.is_finite()
-        or not capex.is_finite()
-        or revenue <= 0
-    ):
-        return "unknown"
-    return "high" if abs(capex) / revenue >= Decimal("0.15") else "normal"
-
 
 def normalized(text: str) -> str:
     return " ".join(text.casefold().split())
@@ -187,21 +121,6 @@ class SummaryFact:
     role: str = ""
     relevance: str = ""
     comparison: str = ""
-
-    @property
-    def identity(self) -> tuple[str, ...]:
-        return tuple(
-            normalized(value)
-            for value in (
-                self.metric,
-                self.kind,
-                self.period,
-                self.basis,
-                self.unit,
-                self.currency,
-                self.group,
-            )
-        )
 
 
 _PERIOD = re.compile(

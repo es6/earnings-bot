@@ -487,6 +487,36 @@ async def test_a_release_pdf_is_summarized_when_no_page_has_the_text() -> None:
     assert "from the release.pdf text" in poster.calls[-1][1]
 
 
+async def test_cancelling_release_finish_reaps_the_shared_file_fetch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async with asyncio.timeout(5):
+        started, cancelled = asyncio.Event(), asyncio.Event()
+        raw = RoutedFetcher({})
+        calls = 0
+
+        async def stalled(*args: Any, **kwargs: Any) -> Response:
+            nonlocal calls
+            calls += 1
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+            return Response(PDF, 200, {}, b"%PDF-", 0.01)
+
+        monkeypatch.setattr(raw, "request", stalled)
+        release = Release(uber(), FakePoster(), raw, Journal(io.StringIO()), None)
+        release.add(GuessedFile(PDF), Sighting(PDF, "Results", PDF))
+        await asyncio.wait_for(started.wait(), 1)
+        finish = asyncio.create_task(release.finish())
+        await asyncio.sleep(0)
+        finish.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await finish
+        assert cancelled.is_set() and calls == 1
+
+
 async def test_a_pdf_is_summarized_at_once_and_a_page_replaces_it_once(
     release_texts: dict[str, str], tmp_path: Path
 ) -> None:
