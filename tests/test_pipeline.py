@@ -69,6 +69,7 @@ class FakePoster(Poster):
 
 class FakeSummarizer(Summarizer):
     def __init__(self) -> None:
+        self.references = False
         self.calls: list[str] = []  # the release text of each request
         self.contexts: list[dict | None] = []
 

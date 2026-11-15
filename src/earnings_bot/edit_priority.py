@@ -1,9 +1,8 @@
 """Release alerts go before scorecards in Discord.
 
 Both live in one channel and share its edit limits. Discord also caps edits to messages more
-than an hour old (error 30046), and days-old scorecards count against that cap. On Nov 12 a
-restart's scorecard edits got 429 every few seconds for minutes, and NBIS's summary edit on its
-resumed alert failed once with 30046 and landed 72 s late."""
+than an hour old (error 30046), and days-old scorecards count against that cap.
+Incident measurements are in docs/architecture.md."""
 
 import asyncio
 from collections.abc import AsyncIterator, Coroutine

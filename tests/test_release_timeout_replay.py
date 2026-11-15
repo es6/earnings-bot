@@ -57,6 +57,7 @@ class RecordingPoster(Poster):
 
 class RecordingWriter(Summarizer):
     def __init__(self) -> None:
+        self.references = False
         self.texts: list[str] = []
 
     async def write(

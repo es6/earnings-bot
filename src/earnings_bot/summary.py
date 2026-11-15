@@ -79,7 +79,7 @@ class Summarizer:
         context: dict[str, Any] | None = None,
     ) -> Summary:
         """Reference binding is separately opt-in; default requests remain unchanged."""
-        if getattr(self, "references", False):
+        if self.references:
             return await self._write_referenced(ticker, document, seconds, context)
         return (
             await self.write(ticker, document.text, seconds, context=context)
@@ -95,7 +95,7 @@ class Summarizer:
         *,
         context: dict[str, Any] | None = None,
     ) -> Summary:
-        if getattr(self, "references", False):
+        if self.references:
             try:
                 document = document_from_text(release)
             except ValueError as error:

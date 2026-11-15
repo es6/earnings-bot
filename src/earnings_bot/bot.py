@@ -57,7 +57,6 @@ class EarningsBot(discord.Client):
         return self.directory_watcher
 
     async def setup_hook(self) -> None:
-        # Runs once after login, before the Gateway connection opens
         guild_ids = await self._server_guilds()
         if guild_ids:
             # Each configured server gets the commands at once; a global sync takes up to an hour
@@ -70,7 +69,6 @@ class EarningsBot(discord.Client):
             synced = await self.tree.sync()
             log.info("Synced %d command(s) globally", len(synced))
         if self.schedule is not None:
-            # Before this run opens a Chrome of its own
             try:
                 ended, removed = await asyncio.to_thread(sweep_leftover_chrome)
                 if ended or removed:
@@ -125,7 +123,6 @@ class EarningsBot(discord.Client):
 
     async def _watch(self, schedule: Path) -> None:
         settings = self.settings
-        # main() checks both before starting the bot
         if settings.discord_channel_id is None or settings.sec_user_agent is None:
             raise RuntimeError("DISCORD_CHANNEL_ID and SEC_USER_AGENT are required")
         await self.wait_until_ready()

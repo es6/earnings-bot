@@ -1,7 +1,4 @@
-"""How much of the PC the bot is using, for the journal during release windows: its own memory and
-CPU, its Chrome's (from Chrome's job object), and the memory the PC has left. Five windows at
-once used 1.6 GB and 1.4 cores of Chrome at their peak, and the bot itself under 130 MB (measured
-Nov 15); these records show the same on every live release."""
+"""Journal bot/Chrome resource use and free system memory during release windows."""
 
 import ctypes
 import sys
