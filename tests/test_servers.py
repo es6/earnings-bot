@@ -187,9 +187,8 @@ async def test_the_watcher_gives_each_configured_server_its_own_list_and_scoreca
 ) -> None:
     from types import SimpleNamespace
 
-    from earnings_bot.unattended import watch_directory
-
     from earnings_bot.calendar import Calendar
+    from earnings_bot.unattended import watch_directory
 
     # The deployment's own server already tracks NVIDIA; the other server is new
     with DeliveryStore(tmp_path / ".earnings-state.sqlite3", 7) as before:
