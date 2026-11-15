@@ -36,11 +36,12 @@ _CHANNEL_COLUMNS = (
 
 
 class Calendar:
-    def __init__(self, store: DeliveryStore, *, follow: bool = True) -> None:
+    def __init__(self, store: DeliveryStore, *, follow: bool = True, catalog: bool = True) -> None:
         """`follow`: move the calendar here from the channel the bot posted to before
         (_follow_channel). Only the deployment's own server's calendar does; another server's
         starts empty, and following would take the deployment's whole calendar."""
         self.store = store
+        self.catalog = catalog
         self.db = store.db
         self.channel = store.channel_id
         self.db.executescript("""
@@ -103,7 +104,7 @@ class Calendar:
                 row["cik"],
                 _read_target(row["target"]),
                 row["evidence"],
-                _company(row["ticker"], row["cik"], row["profile"]),
+                _company(row["ticker"], row["cik"], row["profile"], self.catalog),
             )
             for row in self.db.execute(
                 "SELECT * FROM tracked WHERE channel = ? ORDER BY ticker", (self.channel,)
@@ -131,7 +132,8 @@ class Calendar:
         if len(entries) >= MAX_TRACKED:
             raise ValueError(f"This calendar already tracks {MAX_TRACKED} companies.")
         # The catalog's entry is read fresh each time, so only other companies' facts are saved
-        profile = None if ticker in known_companies() else company.model_dump_json()
+        catalog = self.catalog and ticker in known_companies()
+        profile = None if catalog else company.model_dump_json()
         with self.db:
             self.db.execute(
                 "INSERT INTO tracked (channel, cik, ticker, profile) VALUES (?, ?, ?, ?)",
@@ -272,8 +274,8 @@ def same_release(first: Target, second: Target) -> bool:
     return first.expected.astimezone(ET).date() == second.expected.astimezone(ET).date()
 
 
-def _company(ticker: str, cik: int, profile: str | None) -> KnownCompany:
-    if known := known_companies().get(ticker):
+def _company(ticker: str, cik: int, profile: str | None, catalog: bool = True) -> KnownCompany:
+    if catalog and (known := known_companies().get(ticker)):
         return known
     if profile:
         return KnownCompany.model_validate_json(profile)
@@ -418,6 +420,7 @@ class SharedCalendar(Calendar):
     def __init__(self, calendars: Callable[[], Sequence[Calendar]]) -> None:
         self._calendars = calendars
         first = calendars()[0]
+        self.catalog = first.catalog
         self.store, self.db, self.channel, self.moved_from = (
             first.store,
             first.db,

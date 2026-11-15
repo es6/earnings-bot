@@ -90,7 +90,12 @@ class EarningsBot(discord.Client):
         guild_ids = (
             [self.settings.discord_guild_id] if self.settings.discord_guild_id is not None else []
         )
-        for channel_id in self.settings.discord_server_channel_ids:
+        channel_ids = (
+            self.settings.alert_channel_ids
+            if self.settings.discord_guild_id is None
+            else self.settings.discord_server_channel_ids
+        )
+        for channel_id in channel_ids:
             try:
                 channel = await self.fetch_channel(channel_id)
             except discord.HTTPException:

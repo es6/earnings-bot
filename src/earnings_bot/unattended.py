@@ -166,7 +166,12 @@ class ServerDesk:
 
     @property
     def planned(self) -> dict[str, Target]:
-        return self.watcher.planned
+        return {
+            key: target
+            for key, target in self.watcher.planned.items()
+            if self.calendar.contains(target.cik)
+            or (self._own and not self.watcher.tracks(target.cik))
+        }
 
     def others_record(self, ticker: str) -> tuple[Server, Tracked] | None:
         """Another server's record of a company, if one tracks it: the deployment's own first."""
@@ -194,7 +199,13 @@ class ServerDesk:
                 again.append("its release date, whose source didn't answer")
         checked, review = source.calendar.review(record.cik)
         speed = Speed.from_json(review)
-        if checked and review and now - checked < REFRESH and speed and speed.history is not None:
+        if (
+            checked
+            and review
+            and timedelta(0) <= now - checked < REFRESH
+            and speed
+            and speed.history is not None
+        ):
             self.calendar.save_review(record.cik, checked, review)
             took.append("its speed audit")
         lines = []
@@ -205,17 +216,20 @@ class ServerDesk:
         return "\n".join(lines)
 
     async def _source_answers(self, evidence: str) -> bool:
-        """Whether the page a release date came from still answers: anything but gone (404,
-        410) or no answer. A page that blocks the bot (403) is still there. Evidence naming no
-        page has nothing more to check."""
+        """Require a successful source response before reusing another server's date.
+
+        Missing links, challenges, throttles and outages leave the date for research rather
+        than treating an unavailable source or another server's manual override as checked.
+        This is an availability check, not a new content verification of the saved date.
+        """
         found = _EVIDENCE_SOURCE.search(evidence)
         if found is None:
-            return True
+            return False
         try:
             response = await self.watcher.fetcher.request("GET", found[1], give_up_after=5)
         except (aiohttp.ClientError, OSError, TimeoutError, ValueError):
             return False
-        return response.status not in (404, 410)
+        return 200 <= response.status < 300 and bool(response.body)
 
 
 class DirectoryWatcher:
@@ -246,6 +260,7 @@ class DirectoryWatcher:
         self.shared = SharedCalendar(lambda: [server.calendar for server in self.servers])
         # Companies a server's scorecard tracker is auditing now, so no other audits them too
         self.auditing: set[int] = set()
+        self.audit_next_attempts: dict[int, datetime] = {}
         self.planned: dict[str, Target] = {}
         # Record-only publication trials (publication_trials.py), by plan ID
         self.trials: dict[str, asyncio.Task[None]] = {}
@@ -393,6 +408,8 @@ class DirectoryWatcher:
         scorecards' readiness, summaries and problems. The calendar itself is /upcoming."""
         now = self.journal.now()
         running = [w.target for w in self.windows.values() if not w.task.done()]
+        server = server or self.servers[0]
+        running = [target for target in running if server in self.subscribers(target)]
         live = sorted((t for t in running if t.window[0] <= now < t.window[1]), key=_expected)
         coming = sorted((t for t in running if t.window[0] > now), key=lambda t: t.window[0])
         color = AMBER if self.problems else GREEN
@@ -407,7 +424,6 @@ class DirectoryWatcher:
             )
         else:
             lines.append("⏭️ No watch scheduled")
-        server = server or self.servers[0]
         if server.progress:
             dots = [server.progress.readiness(row.cik) for row in server.calendar.entries()]
             counts = " · ".join(f"{dot} {dots.count(dot)}" for dot in dict.fromkeys(dots) if dot)
@@ -1011,6 +1027,7 @@ async def watch_directory(
                     reviews=watcher.shared if len(servers) > 1 else None,
                     claim=watcher.claim_audit,
                     release=watcher.auditing.discard,
+                    next_attempt=watcher.audit_next_attempts,
                 )
                 server.progress.follow_calendar()
 

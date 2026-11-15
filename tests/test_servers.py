@@ -18,7 +18,7 @@ from earnings_bot.pipeline import FanOutPoster, Releases, fan_out
 from earnings_bot.recorder import ET, Journal, Target
 from earnings_bot.release_cards import release_content
 from earnings_bot.tracking_commands import NOT_CONNECTED, TrackingCommands
-from earnings_bot.unattended import DirectoryWatcher, Server, durable_posters
+from earnings_bot.unattended import DirectoryWatcher, Server, _Window, durable_posters
 from tests.test_pipeline import FakePoster
 from tests.test_tracking_commands import GUILD, ReleaseDay, ShiftedClock, call
 from tests.test_unattended import FakeDiscord
@@ -153,7 +153,25 @@ async def test_a_command_works_with_the_list_of_the_server_its_used_in(tmp_path:
         assert "Now tracking **NVDA**" in reply
         assert [r.ticker for r in servers[1].calendar.entries()] == ["NVDA"]
         assert servers[0].calendar.entries() == []
+        # A shared scheduler's populated plan must not appear as another server's schedule.
+        [tracked] = servers[1].calendar.entries()
+        target = Target(ticker="NVDA", cik=tracked.cik, expected=journal.now() + timedelta(days=1))
+        bot.planned = {target.release_key: target}
+        assert not bot.desk(GUILD).planned  # type: ignore[union-attr]
+        assert bot.desk(OTHER_GUILD).planned == bot.planned  # type: ignore[union-attr]
         assert "NVDA" not in await call(commands.upcoming, guild=GUILD)
+
+        async def idle() -> None:
+            await asyncio.Event().wait()
+
+        task = asyncio.create_task(idle())
+        try:
+            bot.windows = {target.release_key: _Window(target, task)}
+            assert "NVDA" not in str(bot.health_embed("test", None, servers[0]).to_dict())
+            assert "NVDA" in str(bot.health_embed("test", None, servers[1]).to_dict())
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
         # A server the bot doesn't post to has no list
         assert await call(commands.track, "NVDA", guild=999) == NOT_CONNECTED
         assert await call(commands.upcoming, guild=999) == NOT_CONNECTED
@@ -346,7 +364,10 @@ async def test_a_company_two_servers_track_is_researched_once_for_both(tmp_path:
             assert entry.target is not None and entry.target.expected == found.expected
 
 
-async def test_each_companys_speed_audit_runs_once_for_every_server(tmp_path: Path) -> None:
+@pytest.mark.parametrize("fails", [False, True])
+async def test_each_companys_speed_audit_runs_once_for_every_server(
+    tmp_path: Path, fails: bool
+) -> None:
     from dataclasses import replace
 
     from earnings_bot.track_progress import TrackProgress
@@ -360,6 +381,8 @@ async def test_each_companys_speed_audit_runs_once_for_every_server(tmp_path: Pa
         audits.append(ticker)
         await asyncio.sleep(0.05)
         done.set()
+        if fails:
+            raise OSError("temporary source failure")
         return speed
 
     journal = Journal(io.StringIO())
@@ -396,6 +419,7 @@ async def test_each_companys_speed_audit_runs_once_for_every_server(tmp_path: Pa
                 reviews=bot.shared,
                 claim=bot.claim_audit,
                 release=bot.auditing.discard,
+                next_attempt=bot.audit_next_attempts,
             )
             for server, cards, channel in zip(
                 servers, (my_cards, their_cards), channels, strict=True
@@ -413,8 +437,10 @@ async def test_each_companys_speed_audit_runs_once_for_every_server(tmp_path: Pa
             await asyncio.gather(*tasks, return_exceptions=True)
 
         assert audits == ["LCID"]  # once, not once per server
+        assert bot.auditing == set()
+        assert bot.audit_next_attempts[INVESTIGATED.cik] > NOW
         for server in servers:
-            assert server.calendar.review(INVESTIGATED.cik)[1] is not None
+            assert (server.calendar.review(INVESTIGATED.cik)[1] is None) == fails
         # Each server still gets its own scorecard
         assert all(channel.messages for channel in channels)
 
@@ -423,7 +449,7 @@ EVIDENCE_PAGE = "https://ir.lucidmotors.com/news-releases/lucid-to-report-third-
 
 
 async def borrowing(
-    tmp_path: Path, page_status: int, audited_ago: timedelta
+    tmp_path: Path, page_status: int, audited_ago: timedelta, *, linked: bool = True
 ) -> tuple[str, Server, Server, list[str]]:
     """Server A tracks Lucid, a company outside the catalog, with its research done; server B
     then tracks it. Returns B's reply, both servers and the URLs requested. Looking Lucid up at
@@ -452,7 +478,9 @@ async def borrowing(
     company = INVESTIGATED.model_copy(update={"investigated": now.date()})
     servers[0].calendar.add("LCID", company)
     found = to_target("LCID", now + timedelta(days=2), 2026, 3, company)
-    servers[0].calendar.set_target(found, f"Issuer confirmed release time <{EVIDENCE_PAGE}>")
+    servers[0].calendar.set_target(
+        found, f"Issuer confirmed release time <{EVIDENCE_PAGE}>" if linked else "Manual override"
+    )
     speed = replace(SPEED, history=[datetime(2026, 8, 5, 16, 5, tzinfo=ET)])
     servers[0].calendar.save_review(found.cik, now - audited_ago, speed.to_json())
 
@@ -476,8 +504,9 @@ async def test_a_server_takes_research_another_did_after_a_quick_check(tmp_path:
         server.store.db.close()
 
 
-async def test_what_fails_the_check_is_researched_again(tmp_path: Path) -> None:
-    reply, mine, theirs, _ = await borrowing(tmp_path, 404, timedelta(days=2))
+@pytest.mark.parametrize("status", [403, 404, 410, 429, 500, 503])
+async def test_what_fails_the_check_is_researched_again(tmp_path: Path, status: int) -> None:
+    reply, mine, theirs, _ = await borrowing(tmp_path, status, timedelta(days=2))
 
     assert "🔁 Researching its release date, whose source didn't answer." in reply
     assert "📥" not in reply  # the two-day-old audit didn't come either
@@ -486,3 +515,78 @@ async def test_what_fails_the_check_is_researched_again(tmp_path: Path) -> None:
     assert theirs.calendar.review(taken.cik) == (None, None)
     for server in (mine, theirs):
         server.store.db.close()
+
+
+async def test_manual_dates_are_not_borrowed_and_future_audits_are_not_current(
+    tmp_path: Path,
+) -> None:
+    reply, mine, theirs, requested = await borrowing(
+        tmp_path, 200, timedelta(hours=-1), linked=False
+    )
+    assert "📥" not in reply
+    [taken] = theirs.calendar.entries()
+    assert taken.target is None
+    assert theirs.calendar.review(taken.cik) == (None, None)
+    assert requested == []
+    for server in (mine, theirs):
+        server.store.db.close()
+
+
+async def test_primary_server_commands_are_registered_without_a_test_guild_setting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from unittest.mock import AsyncMock, Mock
+
+    from earnings_bot.bot import EarningsBot
+
+    settings = Settings.model_validate(
+        {
+            "discord_token": "test",
+            "discord_channel_id": 7,
+            "discord_guild_id": None,
+            "discord_server_channel_ids": [8],
+        }
+    )
+    bot = EarningsBot(settings)
+    channels = {
+        7: Mock(spec=discord.TextChannel, guild=Mock(id=GUILD)),
+        8: Mock(spec=discord.TextChannel, guild=Mock(id=OTHER_GUILD)),
+    }
+    monkeypatch.setattr(bot, "fetch_channel", AsyncMock(side_effect=channels.__getitem__))
+    assert await bot._server_guilds() == [GUILD, OTHER_GUILD]
+
+
+async def test_debug_managers_are_scoped_to_configured_servers_and_owner_stays_global(
+    tmp_path: Path,
+) -> None:
+    from tests.test_tracking_commands import OWNER, client
+
+    fetcher = ReleaseDay()
+    journal = Journal(io.StringIO())
+    with (
+        DeliveryStore(tmp_path / "state.db", 7) as first,
+        DeliveryStore(tmp_path / "state.db", 8) as other,
+    ):
+        servers = [Server(first, None, GUILD), Server(other, None, OTHER_GUILD)]
+        watcher = DirectoryWatcher(
+            tmp_path,
+            fetcher,
+            journal,
+            Releases(FakePoster, fetcher, journal, None),
+            first,
+            lambda _: None,
+            servers=servers,
+        )
+        watcher.research_paused = lambda: True
+        commands = TrackingCommands(lambda: watcher)
+        pause = "⏳ A release is due in the next few minutes. Run the test after it."
+        assert (
+            await call(
+                commands.track, "NVDA", debug=True, admin=True, guild=OTHER_GUILD, app=client()
+            )
+            == pause
+        )
+        assert (
+            await call(commands.track, "NVDA", debug=True, user=OWNER, guild=9999, app=client())
+            == pause
+        )

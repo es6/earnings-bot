@@ -249,6 +249,7 @@ class TrackProgress:
         reviews: Calendar | None = None,
         claim: Callable[[int], bool] = lambda cik: True,
         release: Callable[[int], None] = lambda cik: None,
+        next_attempt: dict[int, datetime] | None = None,
     ) -> None:
         self.calendar, self.store, self.channel = calendar, store, channel
         # Where speed audits are read and saved: this server's calendar, or every server's
@@ -285,7 +286,7 @@ class TrackProgress:
         self.changed = asyncio.Event()
         self.last_sent: dict[int, object] = {}
         self.removed: dict[int, str] = {}
-        self.next_attempt: dict[int, datetime] = {}
+        self.next_attempt = next_attempt if next_attempt is not None else {}
         self.audit_failed: set[int] = set()
         self.active: tuple[int, asyncio.Task[None]] | None = None
 

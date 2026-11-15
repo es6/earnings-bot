@@ -714,3 +714,31 @@ def test_a_heading_row_above_a_segment_names_its_measure() -> None:
     # The nearest heading decides: these service costs are no service revenue
     assert not bound(document, "Service revenue", amount="46")
     assert bound(document, "Service cost of revenue", amount="46")
+
+
+def test_a_count_of_people_or_things_is_never_bound_as_money() -> None:
+    """Duolingo's Q3 2026 users and subscribers were once claimed in USD (Nov 12 study), and the
+    binder kept them: a dollar sign elsewhere in their table read as their currency."""
+    document = document_from_html(
+        "<p>Third quarter 2026 results. Revenue was $271.7 million.</p>"
+        "<p>Daily active users (DAUs) grew 29% year-over-year to 64.9 million, and paid "
+        "subscribers grew 14% to 13.1 million.</p>"
+    )
+    per_user = document_from_html(
+        "<p>Third quarter 2026 results.</p>"
+        "<p>Average revenue per user was $4.19 in the third quarter of 2026.</p>"
+    )
+    users = {"amount": "64.9", "scale": "million"}
+    subscribers = {"amount": "13.1", "scale": "million"}
+
+    assert bound(document, "Daily active users", **users) is None
+    assert bound(document, "Paid subscribers", **subscribers) is None
+    # The same numbers as what they are
+    assert bound(document, "Daily active users", **users, unit="DAUs", currency="")
+    assert bound(document, "Paid subscribers", **subscribers, unit="paid subscribers", currency="")
+    # And money about users stays money, as do Interactive Brokers' customer credits
+    assert bound(per_user, "Average revenue per user", amount="4.19", scale="one")
+    credits = document_from_html(
+        "<p>Third quarter 2026 results.</p><p>Customer credits were $186.2 billion.</p>"
+    )
+    assert bound(credits, "Customer credits", amount="186.2", scale="billion")

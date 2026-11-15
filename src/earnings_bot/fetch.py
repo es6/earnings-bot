@@ -208,6 +208,7 @@ class Fetcher:
         self._queues: dict[str, _HostQueue] = {}  # by queue_key
         self._arrivals = itertools.count()
         self._browser: DesktopChrome | None = None
+        self._research: set[DesktopChrome] = set()  # research Chromes open now
         self._research_lock = asyncio.Lock()
         self._route_pauses: dict[str, RoutePause] = {}
         self._live: dict[str, float] = {}  # by queue_key: when a poll last took a turn
@@ -315,10 +316,16 @@ class Fetcher:
             self._check_chrome()
             browser = DesktopChrome()
             browser.allowed = self._browser_allowed
+            self._research.add(browser)
             try:
                 yield browser
             finally:
+                self._research.discard(browser)
                 await browser.close()
+
+    def chromes(self) -> list[DesktopChrome]:
+        """Every Chrome this fetcher has open: the live one and any research one."""
+        return [*([self._browser] if self._browser else []), *self._research]
 
     async def close_browser(self) -> None:
         if self._browser is not None:
