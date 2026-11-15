@@ -1,92 +1,82 @@
-"""When a company usually releases its results, so a window polls the issuer's own routes at
-full speed only from just before then.
+"""How often a window polls each route: slowly far from the times a company releases at, and at
+full speed only close to them.
 
 Nebius's newsroom refused us on Nov 12 after an hour of one request a second from one address.
-Most companies release at the same time every quarter: across 50 US filers, 88% of their last
-eight results 8-Ks were accepted within 10 minutes of that company's usual time (measured Nov 12
-from SEC acceptance times). Before the usual time, issuer routes are polled every SLOW_INTERVAL;
-from LEAD before it, at their own speed. SEC filings and newswires are polled as before.
+Releases come at the time we expect them, or a little later: of 149 past quarterly releases
+placed by the company's own earlier ones, 146 came no sooner than a minute before that time, two
+came three and four minutes early, and one switched to the other side of the trading day; 90%
+came within five minutes after it and three more than 30 minutes after it (measured Nov 14,
+scratchpad `early_margin.py`). So every route but SEC polls
 
-SEC's acceptance time is a proxy: it usually trails the press release by a minute or a few. The
-expected time, which comes from an issuer's notice or our own timing of the last release, wins
-when it is earlier.
+- every SLOW seconds from the window's start,
+- every NEAR seconds from RAMP before each release time,
+- at its own speed from LEAD before it to HOLD after it,
+- every NEAR seconds after the last release time's full-speed stretch, until the window closes.
+
+SEC is the exception: its fair-access limit is ten requests a second, a window uses about one,
+and its filings are the fallback when an issuer's site refuses us.
 """
 
-import json
-import math
-from datetime import datetime, timedelta
+from collections.abc import Sequence
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from earnings_bot.fetch import Fetcher
 from earnings_bot.sources import EdgarFilings, EdgarLatest, Source
 
 # Defined here as well as in recorder, which imports this module
 ET = ZoneInfo("America/New_York")
-SEC_SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik:010d}.json"
 
-SLOW_INTERVAL = 15.0  # seconds between issuer-route polls before the usual time
-LEAD = timedelta(minutes=1)  # full speed from this long before the earliest usual time
-QUARTERS = 8  # the most recent results filings considered
-KEEP = 6 / 8  # the usual time covers six of the last eight releases
-FEWEST = 4  # with fewer results filings in the session, there is no usual time
-WIDEST = 30  # minutes; a wider spread means no usual time
-WIRES = ("businesswire", "prnewswire", "globenewswire")
-
-
-def issuer_route(source: Source) -> bool:
-    """A route on the company's own site, as opposed to SEC or a newswire's shared feed."""
-    return not isinstance(source, EdgarFilings | EdgarLatest) and not source.name.startswith(WIRES)
+SLOW = 15.0  # seconds between polls far from any release time
+NEAR = 5.0  # seconds between polls just before a release time, and after the last one
+RAMP = timedelta(minutes=5)  # NEAR from this long before a release time
+LEAD = timedelta(minutes=2)  # full speed from this long before a release time
+HOLD = timedelta(minutes=10)  # and until this long after it
+# A window opens at least this long before the earliest release time and stays open at least
+# this long after the latest
+OPEN_BEFORE = timedelta(minutes=15)
+OPEN_AFTER = timedelta(minutes=30)
+RECENT = 4  # the most recent releases whose times a window covers
+_OPEN, _CLOSE = (9, 30), (16, 0)  # the regular trading session, US Eastern
 
 
-def results_minutes(submissions: dict, afternoon: bool) -> list[int]:
-    """Minutes after midnight ET at which SEC accepted the latest results 8-Ks (Item 2.02),
-    newest first, from the same half of the day as the coming release."""
-    recent = submissions["filings"]["recent"]
-    minutes = []
-    for form, items, accepted in zip(
-        recent["form"], recent.get("items", []), recent["acceptanceDateTime"], strict=False
-    ):
-        if form != "8-K" or "2.02" not in (items or ""):
-            continue
-        local = datetime.fromisoformat(accepted).astimezone(ET)
-        if (local.hour >= 12) == afternoon:
-            minutes.append(local.hour * 60 + local.minute)
-        if len(minutes) == QUARTERS:
-            break
-    return minutes
+def paced(source: Source) -> bool:
+    """Whether a route follows the release times: every route but SEC's."""
+    return not isinstance(source, EdgarFilings | EdgarLatest)
 
 
-def usual_start(minutes: list[int]) -> int | None:
-    """The earliest minute of the tightest span holding six of the last eight releases, or None
-    without enough of them close together."""
-    if len(minutes) < FEWEST:
-        return None
-    keep = math.ceil(len(minutes) * KEEP)
-    ordered = sorted(minutes)
-    start, width = min(
-        ((ordered[i], ordered[i + keep - 1] - ordered[i]) for i in range(len(ordered) - keep + 1)),
-        key=lambda span: span[1],
-    )
-    return start if width <= WIDEST else None
+def pace(at: datetime, times: Sequence[datetime], own: float) -> tuple[float, float | None]:
+    """Seconds between polls at `at` for a route whose own speed is `own`, and seconds until
+    that changes (None when it won't). Without release times, the route's own speed. A route
+    never polls faster than its own speed."""
+    if not times:
+        return own, None
+    every = NEAR if at >= max(times) + HOLD else SLOW
+    edges: list[datetime] = []
+    for moment in times:
+        if moment - LEAD <= at < moment + HOLD:
+            every = min(every, own)
+        elif moment - RAMP <= at < moment - LEAD:
+            every = min(every, NEAR)
+        edges += [moment - RAMP, moment - LEAD, moment + HOLD]
+    later = [edge for edge in edges if edge > at]
+    change = (min(later) - at).total_seconds() if later else None
+    return max(every, own), change
 
 
-async def full_speed_from(
-    fetcher: Fetcher, cik: int, sec_form: str, expected: datetime
-) -> datetime | None:
-    """When the issuer's routes go to full speed for a release expected at `expected`. None
-    keeps them at full speed for the whole window: a 6-K filer (its 6-K comes hours after the
-    release), a spread-out history, or no answer from SEC."""
-    if sec_form != "8-K":
-        return None
-    response = await fetcher.request("GET", SEC_SUBMISSIONS_URL.format(cik=cik), give_up_after=5)
-    if response.status != 200:
-        return None
-    local = expected.astimezone(ET)
-    try:
-        start = usual_start(results_minutes(json.loads(response.body), local.hour >= 12))
-    except (ValueError, KeyError, TypeError):
-        return None
-    if start is None:
-        return None
-    usual = local.replace(hour=start // 60, minute=start % 60, second=0, microsecond=0)
-    return min(usual, expected) - LEAD
+def _session(moment: datetime) -> int:
+    clock = moment.astimezone(ET)
+    hhmm = (clock.hour, clock.minute)
+    return 0 if hhmm < _OPEN else (1 if hhmm < _CLOSE else 2)
+
+
+def release_times(history: Sequence[datetime], expected: datetime) -> list[datetime]:
+    """The times on `expected`'s day that the company's recent releases (newest first) came out
+    at, US Eastern, in the same part of the trading day as `expected`, with `expected` itself."""
+    day: date = expected.astimezone(ET).date()
+    times = {expected}
+    for moment in history[:RECENT]:
+        clock = moment.astimezone(ET)
+        placed = datetime(day.year, day.month, day.day, clock.hour, clock.minute, tzinfo=ET)
+        if _session(placed) == _session(expected):
+            times.add(placed)
+    return sorted(times)

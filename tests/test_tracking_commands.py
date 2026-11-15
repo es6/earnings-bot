@@ -558,7 +558,12 @@ class ShiftedClock(LocalClock):
         return super().now() + self.shift
 
 
-async def test_a_tracked_issuer_with_no_schedule_file_gets_one_alert(tmp_path: Path) -> None:
+async def test_a_tracked_issuer_with_no_schedule_file_gets_one_alert(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Full speed to the end: the jump to the window's last seconds lands where routes poll every
+    # 5 s (test_release_band), and this test is about the alert
+    monkeypatch.setattr(recorder, "pace", lambda at, times, own: (own, None))
     clock = ShiftedClock()
     clock.sync()
     journal = Journal(io.StringIO(), clock)

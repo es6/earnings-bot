@@ -33,7 +33,7 @@ from earnings_bot.clock import TrustedClock
 from earnings_bot.config import RecorderSettings
 from earnings_bot.fetch import Fetcher, Response, RoutePause
 from earnings_bot.periods import agrees_with_period
-from earnings_bot.release_band import SLOW_INTERVAL, full_speed_from, issuer_route
+from earnings_bot.release_band import SLOW, pace, paced
 from earnings_bot.sec_results import SixKResults, SixKUnavailable, is_results_release
 from earnings_bot.sources import (
     BUSINESS_WIRE_EARNINGS,
@@ -178,6 +178,9 @@ class Target(BaseModel):
     trial: Trial = Trial()
     before_minutes: float = 10
     after_minutes: float = 30
+    # Other times on the release day that the company's recent releases came out at, which the
+    # window covers and polls at full speed around (release_band)
+    release_times: list[datetime] = []
 
     @model_validator(mode="before")
     @classmethod
@@ -199,6 +202,16 @@ class Target(BaseModel):
     @classmethod
     def _eastern(cls, value: datetime) -> datetime:
         return value if value.tzinfo else value.replace(tzinfo=ET)
+
+    @field_validator("release_times")
+    @classmethod
+    def _eastern_times(cls, values: list[datetime]) -> list[datetime]:
+        return [value if value.tzinfo else value.replace(tzinfo=ET) for value in values]
+
+    @property
+    def times(self) -> list[datetime]:
+        """Every time this release may come out at: the expected one and the company's others."""
+        return sorted({self.expected, *self.release_times})
 
     @property
     def release_key(self) -> str:
@@ -344,8 +357,9 @@ class Watch:
     blocked: int = 0  # polls the site refused in all
     reported: float | None = None  # time.monotonic() of the last progress event
     longest_quiet: float = 0.0  # the longest stretch in seconds between answered polls
-    # Polled every SLOW_INTERVAL before this, at its own speed after (release_band)
-    slow_until: datetime | None = None
+    # The times the company's releases come out at, which set how often the route polls
+    # (release_band.pace); none for SEC's routes, which poll at their own speed
+    times: list[datetime] = field(default_factory=list)
     stopped: str | None = None
     period: str | None = None
 
@@ -769,12 +783,11 @@ async def watch(
             # Another loop reading this route was refused or asked to wait
             await asyncio.sleep(min(wait, (end - sent).total_seconds()))
             continue
-        # An issuer route before the company's usual release time (release_band)
-        slow = w.slow_until is not None and sent < w.slow_until
-        next_poll = time.monotonic() + (SLOW_INTERVAL if slow else interval or w.source.interval)
-        if slow and w.slow_until is not None:
-            # Go to full speed on time, not up to SLOW_INTERVAL late
-            next_poll = min(next_poll, time.monotonic() + (w.slow_until - sent).total_seconds())
+        every, change = (interval, None) if interval else pace(sent, w.times, w.source.interval)
+        next_poll = time.monotonic() + every
+        if change is not None:
+            # Speed up on time, not up to SLOW seconds late
+            next_poll = min(next_poll, time.monotonic() + change)
         outcome = await _poll_once(w.source, fetcher)
         items = None
         if sixk and isinstance(outcome, Response):
@@ -835,6 +848,14 @@ class SharedPoll:
                 self.task.cancel()
                 self.task = None
 
+    def _every(self, sent: datetime) -> float:
+        """Seconds to the next poll: as soon as any member's release times ask for one."""
+        waits = []
+        for member in self.members:
+            every, change = pace(sent, member.watch.times, self.source.interval)
+            waits.append(min(every, change) if change is not None else every)
+        return min(waits, default=self.source.interval)
+
     def _leave(self, member: _Member) -> None:
         if member in self.members:
             self.members.remove(member)
@@ -852,7 +873,7 @@ class SharedPoll:
                     self._leave(member)
                 if not self.members:
                     return
-                self._next_poll = time.monotonic() + self.source.interval
+                self._next_poll = time.monotonic() + self._every(sent)
                 outcome = await _poll_once(self.source, self.fetcher)
                 pause = 0.0
                 for member in list(self.members):
@@ -997,32 +1018,23 @@ async def keep_clock_synced(journal: Journal, end: datetime) -> None:
         await sync_clock(journal, periodic=True)
 
 
-async def slow_until_usual_time(
-    target: Target, watches: list[Watch], fetcher: Fetcher, journal: Journal
-) -> None:
-    """Polls the issuer's own routes every SLOW_INTERVAL until LEAD before the company's usual
-    release time (release_band), and at full speed from then. Runs beside the window's polls, so
-    the lookup never delays them, and never raises: on any failure every route stays at full
-    speed."""
-    try:
-        fast = await full_speed_from(fetcher, target.cik, target.sec_form, target.expected)
-    except Exception as error:
-        journal.write("polling_band_error", ticker=target.ticker, message=repr(error))
-        return
-    routes = [w for w in watches if issuer_route(w.source)]
+def pace_routes(target: Target, watches: list[Watch], journal: Journal) -> None:
+    """Gives every route but SEC's the release's times, so it polls slowly far from them and at
+    full speed close to them (release_band)."""
+    times = target.times
+    routes = [w for w in watches if paced(w.source)]
+    for w in routes:
+        w.times = times
     journal.write(
         "polling_band",
         ticker=target.ticker,
-        full_speed_from=fast,
-        slow_routes=[w.source.name for w in routes] if fast else [],
+        times=times,
+        paced_routes=[w.source.name for w in routes],
     )
-    if fast is None or fast <= journal.now() or not routes:
-        return
-    for w in routes:
-        w.slow_until = fast
     journal.say(
-        f"{target.ticker}: polling its own site every {SLOW_INTERVAL:g}s until "
-        f"{_clock(fast)} ET, a minute before its usual release time, then at full speed"
+        f"{target.ticker}: polling every {SLOW:g}s, and at full speed from 2 minutes before "
+        + ", ".join(f"{moment.astimezone(ET):%H:%M}" for moment in times)
+        + " ET"
     )
 
 
@@ -1057,6 +1069,7 @@ async def record_target(
         Watch(target.ticker, source, (start, end), period=target.period)
         for source in target.sources()
     ]
+    pace_routes(target, watches, journal)
     if on_watches:
         on_watches(watches)
     notify = (lambda source, item: on_new(target, source, item)) if on_new else None
@@ -1072,7 +1085,6 @@ async def record_target(
     try:
         async with asyncio.TaskGroup() as group:
             group.create_task(keep_clock_synced(journal, end))
-            group.create_task(slow_until_usual_time(target, watches, fetcher, journal))
             for w in watches:
                 group.create_task(polls.watch(w, end, notify))
     finally:
