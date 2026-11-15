@@ -10,7 +10,7 @@ from earnings_bot.date_discovery import DateDiscovery
 from earnings_bot.delivery import DeliveryStore
 from earnings_bot.driver_profiles import DriverProfiles, ProfileReply, ProfileSource
 from earnings_bot.sec_results import SixKResults
-from tests.builders import SOURCE, TODAY, content
+from tests.builders import SOURCE, TODAY, content, parsed
 from tests.fakes import RoutedFetcher
 
 NOW = datetime(2026, 11, 13, 15, tzinfo=UTC)
@@ -117,17 +117,23 @@ async def test_an_uncertain_profile_call_is_not_repeated_after_cancellation(
         assert call["status"] == "sent" and call["reserved_micros"] > 6000
 
 
-@pytest.mark.parametrize("stop", ["refusal", "max_tokens", "end_turn"])
+@pytest.mark.parametrize(
+    ("stop", "answer"),
+    [
+        # A complete, evidenced answer is still refused when the model did not finish normally.
+        ("refusal", content()),
+        ("max_tokens", content()),
+        ("end_turn", "{}"),
+    ],
+)
 async def test_an_incomplete_profile_does_not_replace_previous_valid_context(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stop: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stop: str, answer: str
 ) -> None:
-    from tests.builders import parsed
-
     async def latest(*args: object) -> ProfileSource:
         return source()
 
     async def write(request: dict) -> ProfileReply:
-        return ProfileReply("{}", 1000, 300, stop=stop)
+        return ProfileReply(answer, 1000, 300, stop=stop)
 
     monkeypatch.setattr(driver_profiles, "latest_profile_source", latest)
     with DeliveryStore(tmp_path / "state.db", 7) as store:
@@ -153,3 +159,22 @@ async def test_deferred_research_cannot_start_profile_source_retrieval(tmp_path:
             fetcher.defer_research()
             await profiles.ensure(row, NOW)
         assert fetcher.requests == [] and row.cik not in profiles.checked
+
+
+async def test_an_old_release_is_not_paid_for_just_because_it_was_fetched_today(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def latest(*args: object) -> ProfileSource:
+        return ProfileSource(RELEASE, "https://issuer.example/old", NOW - timedelta(days=121))
+
+    async def write(request: dict) -> ProfileReply:
+        raise AssertionError("Paid to profile a release older than 120 days")
+
+    monkeypatch.setattr(driver_profiles, "latest_profile_source", latest)
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        row, _ = Calendar(store).add("UBER")
+        fetcher = RoutedFetcher({})
+        profiles = DriverProfiles(store, fetcher, SixKResults(fetcher), write, lambda cik: False)
+        await profiles.ensure(row, NOW)
+        assert profiles.notes[row.cik] == "Awaiting a recent verified results release"
+        assert store.db.execute("SELECT COUNT(*) FROM driver_profile_calls").fetchone()[0] == 0

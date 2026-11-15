@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from earnings_bot.summary_evaluation import common_cases, coverage, metric_match, replay_row
+from scripts.summary_prepare import prepare
 
 
 @pytest.mark.parametrize(
@@ -147,8 +148,7 @@ def test_offline_cli_uses_default_pair_and_code_baseline_and_writes_blind_key(
 
 
 def test_future_requests_share_policy_schema_and_default_pair(tmp_path: Path) -> None:
-    document = tmp_path / "NEW.json"
-    document.write_text(
+    (tmp_path / "NEW.json").write_text(
         json.dumps(
             {
                 "release": "Unseen issuer revenue was $123M.",
@@ -157,50 +157,21 @@ def test_future_requests_share_policy_schema_and_default_pair(tmp_path: Path) ->
         ),
         encoding="utf-8",
     )
-    out = tmp_path / "requests.json"
-    command = [
-        sys.executable,
-        "scripts/summary_prepare.py",
-        "NEW",
-        "--docs",
-        str(tmp_path),
-        "--out",
-        str(out),
-    ]
-    subprocess.run(command, check=True, capture_output=True)
-    plan = json.loads(out.read_text(encoding="utf-8"))
+    plan = prepare(["NEW"], tmp_path)
     assert [r["setting"] for r in plan["requests"]] == ["Muse Ember low"]
     [first] = (r["request"] for r in plan["requests"])
     assert "EPS is optional" in first["system"]
-    assert (
-        "period"
-        in first["output_config"]["format"]["schema"]["properties"]["lines"]["items"]["required"]
-    )
     schema = first["output_config"]["format"]["schema"]["properties"]["lines"]["items"]
+    assert "period" in schema["required"]
     assert "role" in schema["required"] and "relevance" in schema["required"]
     assert "driver" in schema["properties"]["role"]["enum"]
     assert "does not trim to a word count" in first["system"]
     assert "Unseen issuer revenue" in first["messages"][0]["content"]
     assert '"annual_capex_share": 0.014' in first["messages"][0]["content"]
-    subprocess.run([*command, "--include-haiku"], check=True, capture_output=True)
-    assert len(json.loads(out.read_text(encoding="utf-8"))["requests"]) == 2
+    assert len(prepare(["NEW"], tmp_path, include_haiku=True)["requests"]) == 2
 
 
 def test_future_requests_never_silently_truncate_a_release(tmp_path: Path) -> None:
     (tmp_path / "LONG.json").write_text(json.dumps({"release": "x" * 200_001}), encoding="utf-8")
-    result = subprocess.run(
-        [
-            sys.executable,
-            "scripts/summary_prepare.py",
-            "LONG",
-            "--docs",
-            str(tmp_path),
-            "--out",
-            str(tmp_path / "out.json"),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode != 0
-    assert "no truncation" in result.stderr
+    with pytest.raises(ValueError, match="no truncation"):
+        prepare(["LONG"], tmp_path)

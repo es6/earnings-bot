@@ -50,6 +50,20 @@ from earnings_bot.summary_policy import SummaryFact
         ("€5M to €6M", "EUR million", "USD", "€5M to €6M"),
         ("164; 1.54", "EUR bn; ratio", "EUR", "164; 1.54"),
         ("Profit $5B; margin 15%", "USD", "USD", "Profit $5B; margin 15%"),
+        # Accounting negatives keep their currency and scale, with the sign in front
+        ("(37.5)", "USD millions", "USD", "-$37.5M"),
+        ("$(2,047) million", "$ million", "USD", "-$2.05B"),
+        ("$-37.5", "USD millions", "USD", "-$37.5M"),
+        ("-$7,300.4 million", "", "", "-$7.3B"),
+        ("(18)% to (16)%", "percent", "", "-18%–-16%"),
+        # A scaled amount shows at most four significant digits; ranges and per-share keep all
+        ("$7,963.7 million", "USD millions", "USD", "$7.96B"),
+        ("980.8", "USD millions", "USD", "$980.8M"),
+        ("$1.234", "USD per share", "USD", "$1.234"),
+        ("$2,365-$2,395 million", "USD millions", "USD", "$2.365B–$2.395B"),
+        # Approximate amounts are formatted too
+        ("Nearly $200 billion", "USD billions", "USD", "Nearly $200B"),
+        ("more than 5,000 million", "USD millions", "USD", "more than $5B"),
     ],
 )
 def test_units_and_ranges_keep_their_meaning(
@@ -79,6 +93,14 @@ def test_units_and_ranges_keep_their_meaning(
         ("First half FY2026", "First half FY2026"),
         ("Trailing twelve months ended Q3 2026", "Trailing twelve months ended Q3 2026"),
         ("TTM Q3 2026", "TTM Q3 2026"),
+        ("3Q'26", "Q3 2026"),
+        ("FQ1'27", "Q1 FY2027"),
+        ("Q3 FY27", "Q3 FY2027"),
+        ("FY'27", "FY2027"),
+        ("third quarter 2026", "Q3 2026"),
+        ("fourth quarter of fiscal 2026", "Q4 FY2026"),
+        ("Q3 2026 (three months ended Sept 30, 2026)", "Q3 2026"),
+        ("Q4 FY2026 (three months ending October 31, 2026)", "Q4 FY2026"),
     ],
 )
 def test_fiscal_periods_are_explicit_without_duplicate_prefixes(value: str, expected: str) -> None:
@@ -248,48 +270,6 @@ def test_the_card_groups_facts_by_period_and_kind() -> None:
         "**Business updates**\n"
         "🔸 **Robotaxi program**: All Q3 milestones met"
     )
-
-
-@pytest.mark.parametrize(
-    ("value", "unit", "currency", "expected"),
-    [
-        # Accounting negatives keep their currency and scale, with the sign in front
-        ("(37.5)", "USD millions", "USD", "-$37.5M"),
-        ("$(2,047) million", "$ million", "USD", "-$2.05B"),
-        ("$-37.5", "USD millions", "USD", "-$37.5M"),
-        ("-$7,300.4 million", "", "", "-$7.3B"),
-        ("(18)% to (16)%", "percent", "", "-18%–-16%"),
-        # A scaled amount shows at most four significant digits; ranges and per-share keep all
-        ("$7,963.7 million", "USD millions", "USD", "$7.96B"),
-        ("980.8", "USD millions", "USD", "$980.8M"),
-        ("$1.234", "USD per share", "USD", "$1.234"),
-        ("$2,365-$2,395 million", "USD millions", "USD", "$2.365B–$2.395B"),
-        # Approximate amounts are formatted too
-        ("Nearly $200 billion", "USD billions", "USD", "Nearly $200B"),
-        ("more than 5,000 million", "USD millions", "USD", "more than $5B"),
-    ],
-)
-def test_negative_rounded_and_approximate_amounts_read_cleanly(
-    value: str, unit: str, currency: str, expected: str
-) -> None:
-    assert format_value(value, unit, currency) == expected
-
-
-@pytest.mark.parametrize(
-    ("value", "expected"),
-    [
-        ("3Q'26", "Q3 2026"),
-        ("FQ1'27", "Q1 FY2027"),
-        ("Q3 FY27", "Q3 FY2027"),
-        ("FY'27", "FY2027"),
-        ("third quarter 2026", "Q3 2026"),
-        ("fourth quarter of fiscal 2026", "Q4 FY2026"),
-        ("Q3 2026 (three months ended Sept 30, 2026)", "Q3 2026"),
-        ("Q4 FY2026 (three months ending October 31, 2026)", "Q4 FY2026"),
-    ],
-)
-def test_one_quarter_has_one_label(value: str, expected: str) -> None:
-    assert format_period(value) == expected
 
 
 def test_a_count_keeps_what_it_counts_and_a_margin_its_unusual_base() -> None:
