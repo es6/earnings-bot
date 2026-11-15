@@ -131,6 +131,19 @@ def results_headline(headline: str) -> bool:
     )
 
 
+# Results put out ahead of the full release, at a time of their own: Construction Partners'
+# "Announces Preliminary Fiscal 2026 Financial Results and Introduces Fiscal 2027 Outlook" came
+# at 8:30 AM on Nov 5, two weeks before full results it had released at 7:00 or 7:30 AM for six
+# quarters; Starbucks' "Reports Preliminary Q4 and Full Fiscal Year 2024 Results" came eight days
+# before its full ones
+_PRELIMINARY = re.compile(r"\bpreliminary\b|\bpre-?announce", re.IGNORECASE)
+
+
+def preliminary_headline(headline: str) -> bool:
+    """Results that come ahead of the full release, so their time isn't the usual one."""
+    return bool(_PRELIMINARY.search(headline))
+
+
 class Spellings:
     """Equivalent spellings of one URL, with a few letters of its path percent-encoded. Sites
     decode them back to the same page, but a cache keyed on the URL as written has none of them

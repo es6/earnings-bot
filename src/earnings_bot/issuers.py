@@ -36,23 +36,52 @@ def wire_names(title: str, ticker: str) -> list[str]:
     return ([name] if len(name.split()) > 1 else []) + tags
 
 
-def release_time(accepted: list[datetime]) -> str | None:
-    """Estimate time from verified filings, favoring the most common market session."""
-    times = [moment.astimezone(ET).time() for moment in accepted]
+def _busiest_session(moments: list[datetime]) -> list[clock_time]:
+    """The times of day, sorted, in the market session most of the moments fall in: before the
+    open, during it or after the close. Ties go to the session of the newest, which comes first."""
+    times = [moment.astimezone(ET).time() for moment in moments]
     if not times:
-        return None
+        return []
     opens, closes = _REGULAR_HOURS
     sessions = [
         [t for t in times if t < opens],
         [t for t in times if opens <= t < closes],
         [t for t in times if t >= closes],
     ]
-    # Ties go to the session of the newest filing
     newest = next(i for i, session in enumerate(sessions) if times[0] in session)
     busiest = max(range(3), key=lambda i: (len(sessions[i]), i == newest))
-    chosen = sorted(sessions[busiest])
-    middle = chosen[(len(chosen) - 1) // 2]
-    return f"{middle.hour:02d}:{middle.minute - middle.minute % 5:02d}"
+    return sorted(sessions[busiest])
+
+
+def _five_minutes(moment: clock_time) -> str:
+    return f"{moment.hour:02d}:{moment.minute - moment.minute % 5:02d}"
+
+
+def release_time(accepted: list[datetime]) -> str | None:
+    """Estimate time from verified filings, favoring the most common market session."""
+    chosen = _busiest_session(accepted)
+    return _five_minutes(chosen[(len(chosen) - 1) // 2]) if chosen else None
+
+
+# How many recent quarterly releases a company's usual time comes from, and the fewest it needs:
+# with one, the last release places the window as before
+USUAL_RELEASES = 4
+USUAL_FEWEST = 2
+
+
+def usual_release_time(published: list[datetime]) -> str | None:
+    """The earliest time of day among the company's last USUAL_RELEASES quarterly releases,
+    newest first, in the session most of them came out in, or None with fewer than USUAL_FEWEST.
+    An early estimate costs some slow polling before the release; a late one can leave its own
+    site slow, or the window shut, when it comes out. Backtested Nov 14 on 199 past quarterly
+    releases of 31 companies, timed by their IR archives, each placed from the releases before
+    it: 189 on time, against 182 by the last release alone, and 5 late inside the window against
+    11 (scratchpad timing_rescore.py)."""
+    recent = published[:USUAL_RELEASES]
+    if len(recent) < USUAL_FEWEST:
+        return None
+    chosen = _busiest_session(recent)
+    return _five_minutes(chosen[0]) if chosen else None
 
 
 def filing_form(submissions: dict) -> SecForm:

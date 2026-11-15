@@ -641,7 +641,10 @@ persistent and deduplicated by issuer CIK in the earnings channel. For a company
 wire names, URL patterns and typical release times. For any other, `issuers.py` builds the same
 kind of entry from SEC's data when it's added, and the calendar saves it: the CIK, the name
 without its legal ending (when it's more than one word) and the exchange-and-ticker tag for
-wire matching, and the release time from its last four results 8-Ks. Then `investigate.py`
+wire matching, and the release time from its last four results 8-Ks, until the speed audit
+replaces it with the earliest of its last four quarterly releases as the IR site or a wire timed
+them (`usual_release_time`, from `Speed.history`; preliminary results are left out). Then
+`investigate.py`
 looks for its sources outside release windows: IR links and matching corporate sites in its
 last results release, including corporate newsrooms and embedded listings. It checks Q4, RSS,
 and the press release list in Chrome. Listing cards can supply a headline through their nested

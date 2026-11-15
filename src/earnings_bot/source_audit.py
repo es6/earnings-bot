@@ -18,11 +18,14 @@ from earnings_bot.recorder import ET, PollError, Target, poll
 from earnings_bot.sec_results import SixKResults, SixKUnavailable
 from earnings_bot.sources import (
     EdgarFilings,
+    Q4PressReleases,
     RssFeed,
     Sighting,
     Source,
     looks_like_earnings,
+    preliminary_headline,
     published_time,
+    results_headline,
 )
 from earnings_bot.text import release_text, verified_report
 
@@ -65,6 +68,9 @@ class Speed:
     benchmark: str = ""  # markdown about @earnings_guy's post, if one was found
     ir_json: str = ""  # JSON routes the IR site's pages called, for finding faster sources
     watched_from: datetime | None = None  # when the bot's watch of that release began
+    # When each recent quarterly release came out, newest first (see release_history). None in
+    # an audit saved before it was kept, which is then redone.
+    history: list[datetime] | None = None
 
     def fastest(self) -> tuple[str, list[Timing]]:
         """The best evidence of which source was first, and its timings, earliest first. What
@@ -107,6 +113,9 @@ class Speed:
                 watched_from=datetime.fromisoformat(data["watched_from"])
                 if data.get("watched_from")
                 else None,
+                history=[datetime.fromisoformat(stamp) for stamp in data["history"]]
+                if data.get("history") is not None
+                else None,
             )
         except (ValueError, KeyError, TypeError):
             return None
@@ -147,6 +156,57 @@ def site_local_time(stamp: str | None, timings: list[Timing]) -> datetime | None
     if any(timedelta(hours=-1) <= filed - at <= timedelta(hours=6) for filed in sec):
         return at
     return None
+
+
+# How many of a Q4 site's newest press releases its release history reads: a year or more of
+# releases at most issuers
+HISTORY_PAGE = 80
+HISTORY_LENGTH = 8  # quarterly releases kept
+# A release names itself preliminary in its headline, near the top of its text
+_HEADLINE_CHARS = 600
+# How far a Q4 stamp read as Eastern may be from an 8-K filer's results 8-K. Of 173 such stamps,
+# 154 came 0 to 30 minutes before the 8-K and 12 after it; Alphabet's came exactly three hours
+# before, in Pacific time (measured Nov 14 on 31 companies)
+_Q4_FROM_8K = timedelta(hours=1)
+
+
+async def release_history(
+    fetcher: Fetcher,
+    company: KnownCompany,
+    snapshots: list[tuple[Source, list[Sighting]]],
+    filed: list[datetime],
+) -> list[datetime]:
+    """When each recent quarterly results release came out, newest first, one a day: the IR
+    site's or a wire's own time, or SEC's acceptance of its results 8-K when that came sooner.
+    Preliminary results are left out (see preliminary_headline), and for an 8-K filer so is a
+    day without a results 8-K. A Q4 site's stamps name no time zone, so one counts only when a
+    filing confirms it as Eastern: for an 8-K filer, within _Q4_FROM_8K of its results 8-K.
+    `filed` holds SEC's acceptance times: the results 8-Ks, or a 6-K filer's 6-Ks, which can come
+    hours after the release."""
+    items = [item for _, listed in snapshots for item in listed]
+    if company.q4_host and company.reachable:
+        items += await _list(fetcher, Q4PressReleases(company.q4_host, page_size=HISTORY_PAGE))
+    eightk = (company.sec_form or "8-K") == "8-K"
+    filings = [Timing("SEC filing", at) for at in filed]
+    days: dict[date, datetime] = {}
+    for item in items:
+        if not results_headline(item.title) or preliminary_headline(item.title):
+            continue
+        zoned = published_time(item.published)
+        at = zoned or site_local_time(item.published, filings)
+        if at is None:
+            continue
+        day = at.astimezone(ET).date()
+        if eightk:
+            same_day = [stamp for stamp in filed if stamp.astimezone(ET).date() == day]
+            if not same_day or (
+                not zoned and all(abs(stamp - at) > _Q4_FROM_8K for stamp in same_day)
+            ):
+                continue
+            at = min(at, *same_day)
+        if day not in days or at < days[day]:
+            days[day] = at
+    return sorted(days.values(), reverse=True)[:HISTORY_LENGTH]
 
 
 def _events(directory: Path, ticker: str) -> Iterator[dict[str, Any]]:
@@ -253,8 +313,15 @@ async def audit_sources(
 ) -> Speed:
     """Use the latest dated results. Publisher times are estimates of availability."""
     form = company.sec_form or "8-K"
-    sec = EdgarFilings(company.cik, limit=500 if form == "6-K" else 150, form=form)
+    # An 8-K filer's every filing SEC lists in one answer, so its history reaches back two years
+    # even past many insider filings
+    sec = EdgarFilings(company.cik, limit=500 if form == "6-K" else 1000, form=form)
     recent = await _list(fetcher, sec)
+    sixks = [
+        at
+        for item in recent
+        if item.title.startswith("6-K") and (at := published_time(item.published))
+    ]
     if sec.form == "6-K":
         try:
             # The latest release can have two results 6-Ks, as when a Hong Kong listing files
@@ -283,6 +350,8 @@ async def audit_sources(
     for candidate in sorted(filings, key=lambda pair: pair[0], reverse=True)[:4]:
         accepted, filing = candidate
         exhibit = await release_text(fetcher, sec, filing)
+        if exhibit is not None and preliminary_headline(exhibit[:_HEADLINE_CHARS]):
+            continue  # its time isn't the usual one, and full results follow
         if exhibit is None or verified_report(exhibit):
             anchor = accepted.astimezone(ET).date()
             if exhibit is not None:
@@ -303,6 +372,7 @@ async def audit_sources(
             for source, items in snapshots
             for item in items
             if item.earnings
+            and not preliminary_headline(item.title)
             and (day := local_day(item.published))
             and day <= now.astimezone(ET).date()
             and (anchor is None or day >= anchor)
@@ -333,8 +403,14 @@ async def audit_sources(
             # Shown to the minute: Q4's seconds are usually :00
             estimates.append(Timing(source.name, at, item.url, resolution_seconds=60))
 
+    history = await release_history(
+        fetcher,
+        company,
+        snapshots,
+        sixks if sec.form == "6-K" else [at for at, _ in filings],
+    )
     if anchor is None:
-        return Speed(day=None, form=sec.form)
+        return Speed(day=None, form=sec.form, history=history)
     day = anchor
     posted = company.ir_posted
     if posted and posted.astimezone(ET).date() == day:
@@ -369,4 +445,5 @@ async def audit_sources(
         benchmark=comparison,
         ir_json=browser,
         watched_from=watched,
+        history=history,
     )

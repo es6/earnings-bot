@@ -10,7 +10,14 @@ from earnings_bot import issuers
 from earnings_bot.calendar import Calendar
 from earnings_bot.delivery import DeliveryStore
 from earnings_bot.fetch import Response
-from earnings_bot.issuers import Issuers, profile, release_time, symbol, wire_names
+from earnings_bot.issuers import (
+    Issuers,
+    profile,
+    release_time,
+    symbol,
+    usual_release_time,
+    wire_names,
+)
 from earnings_bot.known import known_companies, to_target
 from earnings_bot.recorder import ET
 from earnings_bot.sources import PR_NEWSWIRE_EARNINGS, RssFeed
@@ -130,6 +137,60 @@ def test_release_time_comes_from_when_results_8ks_were_accepted(
     accepted: list[datetime], expected: str | None
 ) -> None:
     assert release_time(accepted) == expected
+
+
+def _published(*stamps: str) -> list[datetime]:
+    return [datetime.fromisoformat(stamp) for stamp in stamps]
+
+
+@pytest.mark.parametrize(
+    ("published", "expected"),
+    [
+        # The earliest of the recent releases, not their median (7:30)
+        (
+            _published(
+                "2026-08-07T07:30:00-04:00",
+                "2026-05-08T07:30:00-04:00",
+                "2026-02-05T07:00:00-05:00",
+                "2025-11-20T07:30:00-05:00",
+            ),
+            "07:00",
+        ),
+        # From the session most of them came out in: Starbucks' one morning release among
+        # afternoon ones isn't the usual time
+        (
+            _published(
+                "2026-10-29T16:05:00-04:00",
+                "2026-07-29T16:05:00-04:00",
+                "2026-04-28T16:05:00-04:00",
+                "2026-01-28T07:45:00-05:00",
+            ),
+            "16:05",
+        ),
+        # Only the last four count
+        (
+            _published(
+                "2026-08-07T07:30:00-04:00",
+                "2026-05-08T07:30:00-04:00",
+                "2026-02-05T07:30:00-05:00",
+                "2025-11-20T07:30:00-05:00",
+                "2025-08-07T06:00:00-04:00",
+            ),
+            "07:30",
+        ),
+        # Rounded down to five minutes
+        (_published("2026-07-23T16:01:30-04:00", "2026-04-23T16:06:00-04:00"), "16:00"),
+        # One release isn't enough: Klarna's only timed quarterly release came at 7:33 AM, and its
+        # full-year results came after the close
+        (_published("2026-08-18T07:33:00-04:00"), None),
+        ([], None),
+    ],
+    ids=["earliest", "session", "last-four", "rounded", "one", "none"],
+)
+def test_the_usual_time_is_the_earliest_recent_release_in_their_session(
+    published: list[datetime], expected: str | None
+) -> None:
+    assert usual_release_time(published) == expected
 
 
 def test_a_profile_watches_edgar_and_all_three_wires() -> None:

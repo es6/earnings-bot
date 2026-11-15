@@ -49,6 +49,7 @@ from earnings_bot.ir_research import (
     verified_results_table,
 )
 from earnings_bot.issuer_news import news_records, read_news
+from earnings_bot.issuers import usual_release_time
 from earnings_bot.known import (
     KnownCompany,
     known_companies,
@@ -511,10 +512,13 @@ async def _wire_date(
 
 
 def timed_by_publishers(company: KnownCompany, review: str | None) -> KnownCompany:
-    """The company with its usual release time taken from when its IR site or wire had the
-    last release, when that was before SEC had it. Before the audit, use the timestamp
-    investigation already verified on its results article."""
+    """The company with its usual release time taken from when its recent quarterly releases
+    came out (Speed.history, see usual_release_time). Without that history, from when its IR site
+    or wire had the last release, when that was before SEC had it. Before the audit, use the
+    timestamp investigation already verified on its results article."""
     speed = Speed.from_json(review)
+    if speed and speed.history and (usual := usual_release_time(speed.history)):
+        return company.model_copy(update={"release_time": usual, "release_published": True})
     first = published_first(speed) if speed else company.ir_posted
     if first is None:
         return company

@@ -627,7 +627,8 @@ class TrackProgress:
                 for row in rows:
                     now = self.now()
                     checked, review = self.calendar.review(row.cik)
-                    if Speed.from_json(review) is None:
+                    speed = Speed.from_json(review)
+                    if speed is None or speed.history is None:
                         checked = None  # never checked, or saved in an older format
                     if (
                         not paused
