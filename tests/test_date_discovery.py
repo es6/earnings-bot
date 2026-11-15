@@ -1174,8 +1174,13 @@ async def test_a_company_is_settled_once_its_check_finishes_outside_a_window(
 
 
 async def test_saved_bn_profile_is_enriched_and_scheduled_from_issuer_notice(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    async def no_trial(*args: object) -> tuple[None, str]:
+        return None, "Not checked in tests"
+
+    # Chrome's verification would otherwise run, or not, by platform
+    monkeypatch.setattr(date_discovery, "verified_browser_source", no_trial)
     data = filings()
     company = profile("BN", CIK, "Brookfield Corporation", data, BN_NOW.date())
     assert company.sec_form == "6-K"

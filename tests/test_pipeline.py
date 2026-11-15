@@ -720,7 +720,10 @@ async def test_the_newsroom_read_waits_out_a_refusal(monkeypatch: pytest.MonkeyP
         for line in log.getvalue().splitlines()
         if (record := json.loads(line))["event"] == "issuer_text_error"
     ]
-    assert [(error["message"][:8], error["retry_in"]) for error in errors] == [("HTTP 403", 0.1)]
+    # One read tries HTTP and then Chrome, where there is one, so the two refusals are one
+    # error or two depending on the platform; each waits at least the refusal pause
+    assert errors and all(error["message"].startswith("HTTP 403") for error in errors)
+    assert errors[0]["retry_in"] == 0.1 and all(error["retry_in"] >= 0.1 for error in errors)
 
 
 async def test_the_newsroom_read_waits_while_the_newsrooms_watcher_is_refused(
