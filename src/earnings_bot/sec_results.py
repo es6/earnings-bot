@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 import aiohttp
 
 from earnings_bot.fetch import Fetcher, Response
-from earnings_bot.periods import title_period
+from earnings_bot.periods import agrees_with_period, title_period
 from earnings_bot.sources import EdgarFilings, Sighting, needs_exhibit_check, published_time
 from earnings_bot.text import filing_exhibits, html_to_text, verified_report
 
@@ -96,6 +96,50 @@ def is_results_release(text: str, description: str) -> bool:
             and verified_report(text)
             and (_FIGURE.search(text) or _REVENUE_ROW.search(text))
         ):
+            return True
+    return False
+
+
+# A wire article read from its web page can open with the site's navigation: 46 lines of it on
+# GlobeNewswire's page for WeRide's Q3 2025 results. The story starts at the dateline.
+_DATELINE = re.compile(r"\((?:GLOBE NEWSWIRE|BUSINESS WIRE|PR ?NEWSWIRE)\)\s*--", re.IGNORECASE)
+_REVENUE = re.compile(r"\b(?:revenues?|net sales)\b", re.IGNORECASE)
+_STORY_SEARCH = 300  # lines in which to look for the dateline
+
+
+def _story_lines(text: str) -> list[str]:
+    """The release's own opening lines: from just above its dateline (a subheadline can sit
+    there, as WeRide's "WeRide Announces Unaudited Financial Results for Q3 2025" does), or from
+    the top without one."""
+    lines = [line for line in text.splitlines() if line.strip()]
+    for number, line in enumerate(lines[:_STORY_SEARCH]):
+        if _DATELINE.search(line):
+            return lines[max(0, number - 3) :]
+    return lines
+
+
+def announces_results(text: str, period: str | None) -> bool:
+    """Whether a release whose headline doesn't read as earnings announces `period`'s results
+    near its start, with revenue figures. Klarna's "Klarna Accelerates U.S. Growth and Delivers
+    $1bn Revenue…" (Feb 19) "today reported fourth quarter 2025 results"; WeRide's "Global
+    Expansion Accelerates: Landmark UAE Driverless Robotaxi…" (Nov 24, 2025) "today announced its
+    unaudited financial results for the three months ended September 30, 2025". Unlike
+    is_results_release it doesn't ask for net income or EPS: Klarna's IR page carries a short
+    version of the release with neither."""
+    lines = _story_lines(text)
+    if any(_NOTICE.search(line) for line in lines[:4]):
+        return False
+    introduction = " ".join(" ".join(lines[:12]).split())[:INTRODUCTION]
+    if not (_REVENUE.search(introduction) and _FIGURE.search(introduction)):
+        return False
+    # "results for the three months ended September 30" names no quarter; a subheadline or
+    # another claim nearby may name one, and it must be this one
+    named = reported_period("\n".join(lines[:12]))
+    if named and period and not agrees_with_period(f"Q{named[1]} {named[0]}", period):
+        return False
+    for announcement in _ANNOUNCES_RESULTS.finditer(introduction):
+        context = introduction[max(0, announcement.start() - 75) : announcement.end() + 160]
+        if _PERIOD.search(context) and agrees_with_period(context, period):
             return True
     return False
 

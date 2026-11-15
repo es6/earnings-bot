@@ -104,6 +104,10 @@ hour old (error 30046) much harder. Release alerts go first:
    one. A shared wire feed polls as often as its busiest window needs. SEC keeps its speed
    throughout: its limit is ten requests a second, and it's the fallback when an IR site
    refuses us.
+   A new item on the company's own route, or a wire item naming it, whose headline
+   doesn't read as earnings is read once (up to six a window): if its text announces
+   this quarter's results with revenue figures, it counts as the release. Klarna's last
+   two results headlines didn't say "results".
    The first verified release sighting
    starts the Discord post, which is edited as links, files and any summary arrive.
    Release posts have a green earnings card, separate from research scorecards.
