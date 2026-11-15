@@ -596,6 +596,8 @@ def _failed(w: Watch, error: PollError, journal: Journal) -> float:
         w.pause.hold(pause)
     if http_failure := getattr(w.source, "http_failure", None):
         extra["http_failure"] = http_failure  # why the direct request gave way to Chrome
+    if diagnostics := getattr(w.source, "request_diagnostics", None):
+        extra["request_diagnostics"] = diagnostics
     journal.write("error", ticker=w.ticker, source=w.source.name, message=str(error), **extra)
     if str(error) != w.problem:
         journal.say(f"{w.ticker} {w.source.name}: {error}")
@@ -676,6 +678,7 @@ def _take(
             queued_ms=round(listing.queued * 1000),
             **listing.waits,  # Chrome: tab lock, first navigation, pacing
             headers=_cache_headers(listing),
+            request_diagnostics=w.source.listing_diagnostics,
             **(
                 {"http_failure": failure}
                 if (failure := getattr(w.source, "http_failure", None))

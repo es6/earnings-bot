@@ -94,8 +94,10 @@ async def past_releases(fetcher: Fetcher, name: str) -> list[Sighting]:
     name lists most among those with the same name, suffixes aside ("WeRide Inc." for WeRide
     Inc.). A search for Brookfield Corporation listed Brookfield Asset Management, a different
     company, which mustn't count."""
-    # Punctuation spoils the search: "WeRide Inc." finds nothing, "WeRide Inc" 46 of its releases
-    words = _words(name)
+    # SEC legal suffixes can spoil keyword search: "NVIDIA CORP" returned no items while
+    # "NVIDIA" found its own publisher history. The exact normalized publisher check below
+    # still rejects similarly named companies; shortening the query does not widen identity.
+    words = [word for word in _words(name) if word.lower() not in _SUFFIXES]
     wanted = _significant(name)
     if not wanted:
         return []
