@@ -37,7 +37,7 @@ _CHANNEL_COLUMNS = (
 class Calendar:
     def __init__(self, store: DeliveryStore, *, catalog: bool = True) -> None:
         """`catalog=False` treats catalog companies like any other, keeping the facts research
-        found for them (/track test mode)."""
+        found for them (/track debug mode)."""
         self.store = store
         self.catalog = catalog
         self.db = store.db

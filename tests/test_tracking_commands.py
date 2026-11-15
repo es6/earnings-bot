@@ -839,18 +839,18 @@ async def test_the_owner_can_test_in_any_server_and_managers_only_in_the_bots_ow
     watcher: DirectoryWatcher, commands: TrackingCommands, ran: list[str]
 ) -> None:
     other = GUILD + 1
-    refused = "⚠️ Test mode is for members with Manage Server and the bot's owner."
+    refused = "⚠️ Debug mode is for members with Manage Server and the bot's owner."
     owner = client()
 
-    assert await call(commands.track, "NVDA", test=True, app=owner) == refused
-    assert await call(commands.track, "NVDA", test=True, admin=True, guild=other, app=owner) == (
+    assert await call(commands.track, "NVDA", debug=True, app=owner) == refused
+    assert await call(commands.track, "NVDA", debug=True, admin=True, guild=other, app=owner) == (
         refused
     )
     assert ran == []
 
-    reply = await call(commands.track, "nvda", test=True, user=OWNER, guild=other, app=owner)
-    assert "🧪 /track test · NVDA" in reply and "Next release**: 2026-11-18 16:20 ET" in reply
-    assert await call(commands.track, "NVDA", test=True, admin=True, app=owner) != refused
+    reply = await call(commands.track, "nvda", debug=True, user=OWNER, guild=other, app=owner)
+    assert "🔍 /track debug · NVDA" in reply and "Next release**: 2026-11-18 16:20 ET" in reply
+    assert await call(commands.track, "NVDA", debug=True, admin=True, app=owner) != refused
     assert ran == ["NVDA", "NVDA"]
     # Saved for Claude to read, and nothing added to the calendar
     assert len(list((watcher.directory / track_test.FOLDER).glob("NVDA-*.md"))) == 1
@@ -864,13 +864,13 @@ async def test_a_test_waits_for_a_release_due_soon_and_runs_one_at_a_time(
     ran: list[str],
 ) -> None:
     monkeypatch.setattr(watcher, "research_paused", lambda: True)
-    reply = await call(commands.track, "NVDA", test=True, admin=True, app=client())
+    reply = await call(commands.track, "NVDA", debug=True, admin=True, app=client())
     assert reply == "⏳ A release is due in the next few minutes. Run the test after it."
     monkeypatch.setattr(watcher, "research_paused", lambda: False)
 
-    async with commands.testing:
+    async with commands.debugging:
         # Answered at once, never queued behind the run that holds the lock
-        test = call(commands.track, "LCID", test=True, admin=True, app=client())
-        reply = await asyncio.wait_for(test, 1)
-    assert reply == "⏳ Another /track test is running. Try again when it's done."
+        run = call(commands.track, "LCID", debug=True, admin=True, app=client())
+        reply = await asyncio.wait_for(run, 1)
+    assert reply == "⏳ Another /track debug run is going. Try again when it's done."
     assert ran == []

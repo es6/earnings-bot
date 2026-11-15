@@ -30,7 +30,7 @@ from earnings_bot.track_test import (
 from earnings_bot.unattended import DirectoryWatcher
 
 OFFLINE = "⚠️ The earnings calendar is available when the directory watcher is running."
-# A test stops in time to reply: Discord takes follow-ups for 15 minutes
+# A debug run stops in time to reply: Discord takes follow-ups for 15 minutes
 TEST_SECONDS = 600
 SCHEDULED = "📄"  # from a schedule file, not tracked with a scorecard
 LEGEND = (
@@ -83,7 +83,7 @@ def checklist_embed(report: TrackReport, saved: Path) -> discord.Embed:
     is."""
     failed = bool(report.error) or any(mark == MISSING for mark, _, _ in report.checklist())
     color = AMBER if failed else GREEN
-    embed = discord.Embed(title=f"🧪 /track test · {report.symbol}", color=color)
+    embed = discord.Embed(title=f"🔍 /track debug · {report.symbol}", color=color)
     lines = [f"{mark} **{label}**: {value}" for mark, label, value in report.checklist()]
     if report.error:
         lines.insert(0, f"🛑 Stopped: {report.error}")
@@ -112,7 +112,7 @@ async def is_owner(client: discord.Client, user: discord.abc.User) -> bool:
 class TrackingCommands:
     def __init__(self, get_watcher: Callable[[], DirectoryWatcher | None]) -> None:
         self.get_watcher = get_watcher
-        self.testing = asyncio.Lock()  # one /track test at a time
+        self.debugging = asyncio.Lock()  # one /track debug run at a time
 
     def register(self, tree: app_commands.CommandTree) -> None:
         tree.add_command(
@@ -148,7 +148,7 @@ class TrackingCommands:
         ticker="Stock symbol of a company that files with SEC",
         when="Admin override. ISO date and time, Eastern by default",
         period="Fiscal period of an override, such as FY2027Q3",
-        test="Run all of /track's research from scratch as a test, saving nothing",
+        debug="Run all of /track's research from scratch to see what it finds, saving nothing",
     )
     async def track(
         self,
@@ -156,12 +156,12 @@ class TrackingCommands:
         ticker: str,
         when: str | None = None,
         period: str | None = None,
-        test: bool = False,
+        debug: bool = False,
     ) -> None:
         # Looking up a company outside the catalog can take longer than Discord's 3 seconds
         await interaction.response.defer(ephemeral=True, thinking=True)
-        if test:
-            reply = await self._test(interaction, symbol(ticker))
+        if debug:
+            reply = await self._debug(interaction, symbol(ticker))
             if isinstance(reply, discord.Embed):
                 await interaction.followup.send(embed=reply, ephemeral=True)
             else:
@@ -170,8 +170,8 @@ class TrackingCommands:
         message = await self._track(interaction, symbol(ticker), when, period)
         await interaction.followup.send(message, ephemeral=True)
 
-    async def _test(self, interaction: discord.Interaction, ticker: str) -> discord.Embed | str:
-        """/track test mode (track_test): for members with Manage Server, and for the bot's
+    async def _debug(self, interaction: discord.Interaction, ticker: str) -> discord.Embed | str:
+        """/track debug mode (track_test): for members with Manage Server, and for the bot's
         owner in any server whatever their roles there (the owner's decision)."""
         watcher = self.get_watcher()
         if watcher is None:
@@ -179,12 +179,12 @@ class TrackingCommands:
         # Manage Server counts in the bot's own server; the owner counts in any server
         admin = watcher.guild_id == interaction.guild_id and interaction.permissions.manage_guild
         if not admin and not await is_owner(interaction.client, interaction.user):
-            return "⚠️ Test mode is for members with Manage Server and the bot's owner."
+            return "⚠️ Debug mode is for members with Manage Server and the bot's owner."
         if watcher.research_paused():
             return "⏳ A release is due in the next few minutes. Run the test after it."
-        if self.testing.locked():
-            return "⏳ Another /track test is running. Try again when it's done."
-        async with self.testing:
+        if self.debugging.locked():
+            return "⏳ Another /track debug run is going. Try again when it's done."
+        async with self.debugging:
             # Behind the live windows' polls, like any research
             with watcher.research_mode():
                 report = await run_track_test(

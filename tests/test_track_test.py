@@ -1,4 +1,4 @@
-"""/track test mode: all of /track's research from scratch, saving nothing live."""
+"""/track debug mode: all of /track's research from scratch, saving nothing live."""
 
 import asyncio
 import json

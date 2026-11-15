@@ -132,7 +132,7 @@ OpenChrome = Callable[[], AbstractAsyncContextManager[Chrome]]
 
 def due(ticker: str, company: KnownCompany, today: date, catalog: bool = True) -> bool:
     """Whether to look for a company's sources: one outside the catalog, not looked at lately.
-    `catalog=False` looks at a catalog company's too (/track test mode)."""
+    `catalog=False` looks at a catalog company's too (/track debug mode)."""
     if catalog and ticker in known_companies():
         return False
     return (

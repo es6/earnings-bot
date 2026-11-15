@@ -1,4 +1,4 @@
-# Testing `/track`
+# Debugging `/track`
 
 The owner's requirement (Nov 15, 2026): run the whole `/track` process over and over, fixing
 what it gets wrong in a feedback loop with Claude, until a fresh run gets every needed fact
@@ -8,7 +8,7 @@ facts to the report and its answer keys.
 
 ## The command
 
-`/track ticker:NVDA test:true`, for members with Manage Server in the bot's server, and for
+`/track ticker:NVDA debug:true`, for members with Manage Server in the bot's server, and for
 the bot's owner in any server the bot is in, whatever roles they have there (the owner's
 decision). The owner is whoever owns the bot's Discord application, or any member of the
 team that owns it. The bot reads that from Discord, so no setting is needed and no role can
@@ -17,7 +17,7 @@ take it away.
 It runs everything `/track` does, from scratch, as for a company the bot has never seen:
 
 1. **Identify:** SEC's ticker list and the company's filings. A company in the catalog
-   (`companies.toml`) is looked up on SEC like any other, so the test shows what research
+   (`companies.toml`) is looked up on SEC like any other, so the run shows what research
    finds, not what a person wrote down.
 2. **Research:** the investigation (IR site, newswire, release routes, Chrome where a site
    blocks plain requests) and date discovery (the next release, its time, the period and the
@@ -80,7 +80,7 @@ when the key gives one. **One-shot** means a fresh run matches every field of th
 
 ## The feedback loop
 
-1. The owner runs `/track SYMBOL test:true` and tells Claude what's wrong: "the IR site is X",
+1. The owner runs `/track SYMBOL debug:true` and tells Claude what's wrong: "the IR site is X",
    "the date is Y".
 2. Claude writes or corrects the answer key and reads the saved report to find where the run
    went wrong.
@@ -94,5 +94,5 @@ market goes live once its keys pass one-shot on a batch of at least ten companie
 
 ## Still open
 
-- Whether a test run should also poll each route it finds once, to show it answers now.
+- Whether a debug run should also poll each route it finds once, to show it answers now.
 - The card the scorecard would show, beside the checklist.

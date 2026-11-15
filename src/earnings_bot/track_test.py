@@ -1,4 +1,4 @@
-"""/track test mode: everything /track does for a company, from scratch, changing nothing live.
+"""/track debug mode: everything /track does for a company, from scratch, changing nothing live.
 
 The owner runs it over and over with Claude, fixing what /track gets wrong, until a fresh run
 gets every fact right on the first try (docs/track-testing.md). A run identifies the company,
@@ -82,7 +82,7 @@ class TrackReport:
 
     def to_markdown(self) -> str:
         lines = [
-            f"# /track test · {self.symbol}",
+            f"# /track debug · {self.symbol}",
             "",
             f"Run {self.started}, {self.seconds:.0f} s.",
             "",

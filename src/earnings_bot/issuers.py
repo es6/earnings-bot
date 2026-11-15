@@ -139,7 +139,7 @@ class Issuers:
 
     async def company(self, ticker: str, today: date, *, catalog: bool = True) -> KnownCompany:
         """Raises ValueError, with a reply for the member, when there's no such company.
-        `catalog=False` looks a catalog company up as if it weren't there (/track test mode)."""
+        `catalog=False` looks a catalog company up as if it weren't there (/track debug mode)."""
         if catalog and (known := known_companies().get(ticker)):
             return known
         if not _SYMBOL.fullmatch(ticker):
