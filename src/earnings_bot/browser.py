@@ -566,9 +566,8 @@ class DesktopChrome:
                 self._check_allowed()
                 started = time.monotonic()
                 cache_arg = "" if cache_mode == "no-store" else f", {json.dumps(cache_mode)}"
-                # The page gives up first and keeps its tab. Dropping the tab on every slow
-                # answer cost a fresh navigation each time: Brookfield's page timed out twice as
-                # its Q3 2026 release went up, and each retry took 5 s instead of 3.
+                # Let the page's fetch time out first so the next poll reuses its warm tab
+                # instead of paying for another navigation.
                 async with asyncio.timeout(give_up_after + 1):
                     result = await _evaluate(
                         tab.socket,

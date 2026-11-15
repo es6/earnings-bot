@@ -82,7 +82,6 @@ class ResponseTooLarge(ValueError):
     """A bounded trial exceeded its response-byte allowance; it is not usable content."""
 
 
-# Says who we are, in the same form search engine crawlers use
 USER_AGENT = "Mozilla/5.0 (compatible; earnings-bot/0.1; +https://github.com/es6/earnings-bot)"
 
 # Minimum seconds between requests to one host, or to one site whose hosts share a queue. SEC
@@ -111,9 +110,7 @@ _SHARED_QUEUES: tuple[str, ...] = ("sec.gov",)
 MAX_HEADER_BYTES = 64 * 1024
 
 
-# A site that answers 403 is tried again after 30 s, then 60 s, up to every 5 minutes. Nebius
-# refused one poll 12 minutes before its Q3 2026 release and answered normally afterwards, but
-# the route had been stopped for the rest of the window.
+# Retry refused routes with bounded backoff; a transient 403 must not end the window.
 BLOCK_PAUSE, BLOCK_PAUSE_MAX = 30.0, 300.0
 
 
@@ -231,8 +228,7 @@ class Fetcher:
             timeout=self._timeout,
             max_line_size=MAX_HEADER_BYTES,
             max_field_size=MAX_HEADER_BYTES,
-            # Each request stands alone, like curl's. cloudflare.com answered 500 to every request
-            # that sent back the analytics cookies its first answer set.
+            # Cloudflare rejects replayed analytics cookies on some public routes.
             cookie_jar=aiohttp.DummyCookieJar(),
         )
         return self

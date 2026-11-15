@@ -1,7 +1,7 @@
-"""Version-scoped text/table references for the next summary evidence schema.
+"""Version-scoped text/table references for source-bound summary evidence.
 
 Coordinates and header tags are observed structure, not inferred metric/period labels.
-Plain text never gains invented table geometry. The current live writer is unchanged.
+Plain text never gains invented table geometry.
 """
 
 import hashlib

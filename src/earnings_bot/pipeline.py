@@ -957,9 +957,7 @@ class Release:
                 )
 
     async def _read_pdf(self, source: Source, sighting: Sighting, label: str) -> None:
-        """Reads the release from its PDF as soon as it's downloaded. Brookfield's Q3 2026
-        summary waited 4 minutes for the 6-K with the PDF already posted, and the 10 s grace
-        for a page that followed cost every PDF-first release 10 s."""
+        """Read the downloaded PDF immediately; a later page may replace its summary."""
         name = self._attachment_name(sighting.url)
         if name in self._pdf_read:
             return
@@ -980,9 +978,7 @@ class Release:
         self._spawn(self._issuer_article())
 
     async def _issuer_article(self) -> None:
-        """A wire's own article page can be closed to us, as Business Wire's is. The issuer's
-        newsroom carries the same release, so it is read from there, whatever that route's own
-        watcher is doing: Nebius's Q3 2026 summary waited 2h 7m for the 6-K."""
+        """Recover a blocked wire's body from the issuer, sharing the watcher's backoff."""
         assert self.target.ir is not None
         day = self.target.expected.astimezone(ET).date()
         source = next(

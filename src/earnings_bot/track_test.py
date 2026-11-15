@@ -1,11 +1,10 @@
 """/track debug mode: everything /track does for a company, from scratch, changing nothing live.
 
-The owner runs it over and over with Claude, fixing what /track gets wrong, until a fresh run
-gets every fact right on the first try (docs/track-testing.md). A run identifies the company,
+A run identifies the company,
 investigates its sources, finds its next release date, and audits its release history and
 speed, against a throwaway calendar. It opens no window, posts no scorecard and makes no paid
 model call. Its report lists every fact as found, unsure or missing, with how long each step
-took, and is saved as JSON and Markdown for Claude to read. When a company has an answer key
+took, and is saved as JSON and Markdown. When a company has an answer key
 (tests/track_cases/<SYMBOL>.toml), the run also lists every fact that differs from it.
 
     uv run python -m earnings_bot.track_test NVDA LCID --out schedules/track-tests
