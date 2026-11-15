@@ -16,7 +16,7 @@ import pytest
 from discord import app_commands
 
 from earnings_bot import calendar as tracking_calendar
-from earnings_bot import recorder, unattended
+from earnings_bot import recorder, track_test, tracking_commands, unattended
 from earnings_bot.browser_sources import BrowserRelease
 from earnings_bot.calendar import describe
 from earnings_bot.clock import TrustedClock
@@ -30,6 +30,7 @@ from earnings_bot.release_cards import release_content
 from earnings_bot.source_audit import Speed
 from earnings_bot.sources import PR_NEWSWIRE_EARNINGS, EdgarFilings
 from earnings_bot.track_progress import TrackProgress
+from earnings_bot.track_test import TrackReport
 from earnings_bot.tracking_commands import OFFLINE, TrackingCommands, upcoming_embed
 from earnings_bot.unattended import DirectoryWatcher, _Window
 from tests.burst_replay import LocalClock
@@ -42,6 +43,7 @@ GUILD = 555
 PROGRESS_CHANNEL = 99
 NOW = datetime(2026, 11, 12, 12, tzinfo=ET)
 NVDA_CIK = 1045810
+OWNER = 4242  # owns the bot's Discord application
 
 
 class FixedClock(TrustedClock):
@@ -60,10 +62,11 @@ async def call(
     admin: bool = False,
     guild: int = GUILD,
     events: list[str] | None = None,
-    **options: str | None,
+    app: discord.Client | None = None,
+    **options: str | bool | None,
 ) -> str:
     """Runs a command handler as one server member and returns its one reply, sent at once or
-    after deferring. `events` records "defer" and "reply" in order."""
+    after deferring. `events` records "defer" and "reply" in order. `app` is the bot's client."""
     replies: list[str] = []
     events = [] if events is None else events
 
@@ -80,11 +83,13 @@ async def call(
         assert not events, "Discord refuses a second response"
         events.append("defer")
 
-    async def follow_up(content: str, *, ephemeral: bool = False) -> None:
+    async def follow_up(
+        content: str | None = None, *, embed: discord.Embed | None = None, ephemeral: bool = False
+    ) -> None:
         assert ephemeral, "calendar replies are only for the member who asked"
         assert "defer" in events, "a follow-up needs a deferred response"
         events.append("reply")
-        replies.append(content)
+        replies.append(embed_text(embed) if embed is not None else content or "")
 
     interaction = SimpleNamespace(
         guild_id=guild,
@@ -92,6 +97,7 @@ async def call(
         permissions=discord.Permissions(manage_guild=admin),
         response=SimpleNamespace(send_message=send_message, defer=defer),
         followup=SimpleNamespace(send=follow_up),
+        client=app,
     )
     await handler(cast(discord.Interaction, interaction), *args, **options)
     [reply] = replies
@@ -804,3 +810,67 @@ async def test_status_names_a_degraded_route_while_its_window_is_open(
     assert refused in text
     assert "Degraded: SEC" not in text
     assert embed.color is not None and embed.color.value == AMBER
+
+
+def client(owner: int = OWNER, team: list[int] | None = None) -> discord.Client:
+    members = [SimpleNamespace(id=member) for member in team or []]
+    application = SimpleNamespace(
+        owner=SimpleNamespace(id=owner), team=SimpleNamespace(members=members) if team else None
+    )
+    return cast(discord.Client, SimpleNamespace(application=application))
+
+
+@pytest.fixture
+def ran(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Test runs that finish at once. Returns the symbols run."""
+    symbols: list[str] = []
+
+    async def run(symbol: str, *args: Any, **options: Any) -> TrackReport:
+        symbols.append(symbol)
+        report = TrackReport(symbol, "2026-11-15T12:00:00+00:00")
+        report.facts = {"name": "NVIDIA", "next_release": "2026-11-18 16:20 ET"}
+        return report
+
+    monkeypatch.setattr(tracking_commands, "run_track_test", run)
+    return symbols
+
+
+async def test_the_owner_can_test_in_any_server_and_managers_only_in_the_bots_own(
+    watcher: DirectoryWatcher, commands: TrackingCommands, ran: list[str]
+) -> None:
+    other = GUILD + 1
+    refused = "⚠️ Debug mode is for members with Manage Server and the bot's owner."
+    owner = client()
+
+    assert await call(commands.track, "NVDA", debug=True, app=owner) == refused
+    assert await call(commands.track, "NVDA", debug=True, admin=True, guild=other, app=owner) == (
+        refused
+    )
+    assert ran == []
+
+    reply = await call(commands.track, "nvda", debug=True, user=OWNER, guild=other, app=owner)
+    assert "🔍 /track debug · NVDA" in reply and "Next release**: 2026-11-18 16:20 ET" in reply
+    assert await call(commands.track, "NVDA", debug=True, admin=True, app=owner) != refused
+    assert ran == ["NVDA", "NVDA"]
+    # Saved for Claude to read, and nothing added to the calendar
+    assert len(list((watcher.directory / track_test.FOLDER).glob("NVDA-*.md"))) == 1
+    assert tracked(watcher) == []
+
+
+async def test_a_test_waits_for_a_release_due_soon_and_runs_one_at_a_time(
+    watcher: DirectoryWatcher,
+    commands: TrackingCommands,
+    monkeypatch: pytest.MonkeyPatch,
+    ran: list[str],
+) -> None:
+    monkeypatch.setattr(watcher, "research_paused", lambda: True)
+    reply = await call(commands.track, "NVDA", debug=True, admin=True, app=client())
+    assert reply == "⏳ A release is due in the next few minutes. Run the test after it."
+    monkeypatch.setattr(watcher, "research_paused", lambda: False)
+
+    async with commands.debugging:
+        # Answered at once, never queued behind the run that holds the lock
+        run = call(commands.track, "LCID", debug=True, admin=True, app=client())
+        reply = await asyncio.wait_for(run, 1)
+    assert reply == "⏳ Another /track debug run is going. Try again when it's done."
+    assert ran == []

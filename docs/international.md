@@ -132,9 +132,9 @@ on a batch of companies.
 About 15 to 20 PRs. The identity change waits until the live streak ends (Nov 20) and the
 multiple-servers PRs (#136 to #138) are merged, since they touch the same code.
 
-**Phase 0: test mode**
-1. `/track ... test:true` and its saved reports (track-testing.md). The rest is built and
-   checked with it.
+**Phase 0: debug mode**
+1. `/track ... debug:true` and its saved reports (track-testing.md), built in v0.21.28 for
+   US tickers. The rest is built and checked with it.
 
 **Phase A: foundations**
 1. Symbol parsing and the exchange table (this document's table), with `exchange_calendars`.
@@ -177,4 +177,4 @@ multiple-servers PRs (#136 to #138) are merged, since they touch the same code.
 5. New exchanges learned automatically once two sources agree.
 6. The international logic runs only for symbols that name a non-US exchange, or plain
    symbols that aren't on SEC's list.
-7. A `/track` test mode, proposed in track-testing.md.
+7. A `/track` debug mode (track-testing.md), built first.

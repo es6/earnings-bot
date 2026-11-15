@@ -1178,7 +1178,7 @@ class DateDiscovery:
     async def _investigate(self, row: Tracked) -> Tracked:
         """Looks for the sources of a company outside the catalog, once and then monthly."""
         today = self.now().astimezone(ET).date()
-        if not due(row.ticker, row.company, today):
+        if not due(row.ticker, row.company, today, self.calendar.catalog):
             return row
         if self._chrome_waits():
             # Without Chrome it would be marked done for a month with half its checks
