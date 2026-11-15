@@ -268,7 +268,8 @@ instead of a precise growth calculation. Previous guidance is never treated as a
 actual; old and new ranges retain their target period. Unsupported optional comparisons
 are absent from the display. Exact supported business clauses are shown without relying
 on a model-selected topic label as evidence. The existing relevance/ranking layout has
-no editorial fact/word/line cap. Client integration and evaluation are still pending.
+no editorial fact/word/line cap. Client integration and saved-output evaluations are complete
+behind the reference-mode opt-in; the measured activation gate above is still unmet.
 
 The bot posts the release immediately; the summary is a separate follow-up that never delays
 the alert. When the release text arrives, `summary.py` sends Muse Ember low (Meta's Model API,

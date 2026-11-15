@@ -3,6 +3,9 @@
 What's left before 1.0 and what comes after, as agreed with the owner. Status as of
 November 15, 2026. Times are US Eastern.
 
+See the [implementation handoff](completion-2026-11-15.md) for the completed work,
+preserved evidence and remaining release-time gates. International implementation is held.
+
 ## The 1.0 gate (agreed November 12)
 
 | # | Item | Status |
@@ -19,9 +22,9 @@ From the earlier 1.0 list:
 |---|---|
 | Crash cleanup | Done: Chrome ends with the bot, and the bot clears Chrome and profiles a previous run left (#133) |
 | Load and failure replay | Done: a 20-release burst replay and the failure replays above |
-| Soak | Open. Nothing yet runs the bot for hours to check memory, handles and processes over time |
-| Chrome limits, telemetry | Partly there: Chrome reads have byte caps, and every window is journaled. What more is wanted isn't defined yet |
-| Whether the first missed IR page had the same cause as Nebius's | With the source-research agent |
+| Soak | Done for fixture replay and passive monitoring: 6,660 replay alerts and four hours of live-process counters. No sustained Chrome or real Discord claim; see [scope and results](soak-2026-11-15.md) |
+| Chrome limits, telemetry | Implemented: byte caps, shared pacing, below-normal priority, an 8 GiB job memory ceiling and per-window resource records (#135). Sustained real-browser evidence remains open |
+| Whether the first missed IR page had the same cause as Nebius's | Investigated: On/Sea had no HTTP refusal/timeout or route retirement. Missing historical bodies limit attribution; [architecture](architecture.md) records evidence and existing fixes. Nebius now has direct/fallback diagnostics (#146) |
 
 ## Added before 1.0 (November 15)
 
@@ -57,16 +60,16 @@ Decided Nov 15: each server tracks its own companies; only the owner adds a serv
 config; each server sees scorecards for its own companies; a server tracking a company
 another already researched may import that research after a quick check.
 
-1. Several alert channels from config, own lists, alerts fanned out (in review, not deployed
-   until the streak ends Nov 20). `DISCORD_SERVER_CHANNEL_IDS`; commands registered in each
+1. Several alert channels from config, own lists, alerts fanned out (merged #136; deployment
+   held through the streak). `DISCORD_SERVER_CHANNEL_IDS`; commands registered in each
    server; one window, one set of polls and one summary per release; the alert goes to every
    server tracking the company at once.
-2. Research once per company across servers, written to each server that tracks it (in
-   review, stacked on step 1). A server that starts tracking a company another already
+2. Research once per company across servers, written to each server that tracks it (merged
+   #137, including a shared retry cooldown). A server tracking a company another already
    researched gets its findings at the next research pass, within about an hour, or at
    once with step 3.
 3. Importing another server's research at `/track`, after a quick check that it's current
-   (in review, stacked on step 2).
+   (merged #138, with current-profile, successful-response and date checks).
 
 Open: Discord's rate limits with many servers posting the same release (one send per server,
 then its edits), to be measured.
@@ -95,7 +98,8 @@ Done:
 
 Open:
 - Read the `resources` records from the live streak (Nov 17 to 20).
-- A soak test: hours of windows, to catch slow growth in memory, handles or processes.
+- Sustained real-Chrome release-window behavior. The completed fixture/passive soaks and
+  reusable runners are in [soak results](soak-2026-11-15.md); neither substitutes for this.
 - When many releases land at once, one release's text can wait seconds behind the others'
   parsing (a PDF read took 0.3 s alone and up to 4 s among 40). That costs summary speed, not
   responsiveness. A separate process for parsing would fix it at some memory cost.
@@ -106,10 +110,12 @@ Agreed with the owner on Nov 15:
 
 1. **`/track` debug mode** ([track-testing.md](track-testing.md)). Built in v0.21.28 for US
    tickers; it adds an option to `/track` and changes nothing else live.
-2. **Verified summaries:** plan and test the summary checker that verifies each number's
-   measure and period, aiming to remove the "Beta" label (plan item 6).
-3. **After the streak (Nov 20):** merge and deploy multiple servers (#136 to #138), then
-   measure Discord's rate limits with several servers.
+2. **Verified summaries:** integration, offline studies and temporal-binding improvements
+   are merged (#141, #149). The quality gate is unmet; reference mode and driver profiles
+   remain off and summaries remain Beta. See [the measured limits](summaries.md).
+3. **After the streak (Nov 20), with deployment authorization:** deploy the reviewed main
+   changes, including merged multiple-server work (#136 to #138), then measure Discord's
+   rate limits with several servers. No live restart or configuration change was made here.
 4. **International tickers:** the foundations, identification, then a dedicated source
    per market ([international.md](international.md)), each going live once its answer
    keys pass one-shot.
@@ -120,10 +126,17 @@ Agreed with the owner on Nov 15:
 - Mon Nov 16: review GlobeNewswire's two record-only batch runs (06:58 and 15:58) before NVDA's
   first live article guessing at 16:18 on Tue Nov 17. NVDA's SEC directory trial runs at
   16:19:30 that day.
-- Summary quality, plan items 6 and 7. The reference-bound writer keeps 42% of correct values,
-  and driver profiles showed no gain, so both stay off and summaries stay beta.
-- Source problems (Business Wire's feed delay, Notified IR sites, Intel's and AMD's feeds,
-  ROAD's release history and others) are with the source-research agent.
+- Summary quality: the reference-bound writer retains 790/1,869 selected values (42%) in
+  the frozen corpus; this is retention, not an accuracy score. Driver profiles showed no
+  gain. Both remain off pending independently audited improvement on new releases.
+- Source follow-up: ROAD pagination/JPM manifests (#143), provenance-bound BW mirrors
+  (#144), bounded profile diagnostics (#146) and publisher timestamp recovery (#148) are
+  merged. HubSpot profile-dependent access is verified; no new publication-speed lead is
+  proven. See [diagnostics](source-diagnostics.md) and [inert event drafts](trial-plans/README.md).
+- [Test audit](test-audit/README.md) completed and corrected (#147): 737 functions at its
+  dated base, including 33 omitted from the original groups. Candidate mutation survivors
+  need suite-wide confirmation before remediation; they are not 32 established bugs.
+- [Astra task priorities](astra-tasks.md) record the next bounded reasoning/research jobs.
 - Owner: pause Windows Update before Nov 17, and decide on Dependabot #119 (Docker
   Python 3.15).
 
