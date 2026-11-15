@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import re
 import sqlite3
 import tomllib
 from collections.abc import Awaitable, Callable, Iterator, Sequence
@@ -16,7 +17,7 @@ from pydantic import ValidationError
 
 from earnings_bot.benchmark import BenchmarkResult, EarningsBenchmark
 from earnings_bot.browser_sources import BrowserRelease, BrowserRss
-from earnings_bot.calendar import Calendar, SharedCalendar
+from earnings_bot.calendar import Calendar, SharedCalendar, Tracked
 from earnings_bot.date_discovery import DateDiscovery
 from earnings_bot.delivery import DeliveryStore, retry_delivery
 from earnings_bot.driver_profiles import DriverProfiles, ProfileWriter
@@ -60,10 +61,10 @@ from earnings_bot.recorder import (
     route_trouble,
 )
 from earnings_bot.sec_results import SixKResults
-from earnings_bot.source_audit import audit_sources
+from earnings_bot.source_audit import Speed, audit_sources
 from earnings_bot.sources import EdgarFilings, Sighting, Source
 from earnings_bot.summary import Summarizer
-from earnings_bot.track_progress import TrackProgress
+from earnings_bot.track_progress import REFRESH, TrackProgress
 from earnings_bot.version import release_version
 
 SCAN_SECONDS = 3.0
@@ -123,6 +124,10 @@ class Server:
         return self.store.channel_id
 
 
+# A release date's source, as its evidence names it: "... <https://...>"
+_EVIDENCE_SOURCE = re.compile(r"<(https://[^>\s]+)>")
+
+
 class ServerDesk:
     """What a command in one server works with: that server's tracked companies, research and
     scorecards, and the schedule and journal every server shares."""
@@ -167,6 +172,64 @@ class ServerDesk:
             if self.calendar.contains(target.cik)
             or (self._own and not self.watcher.tracks(target.cik))
         }
+
+    def others_record(self, ticker: str) -> tuple[Server, Tracked] | None:
+        """Another server's record of a company, if one tracks it: the deployment's own first."""
+        for server in self.watcher.servers:
+            if server is not self.server and (row := server.calendar.find(ticker)):
+                return server, row
+        return None
+
+    async def import_record(
+        self, source: Server, record: Tracked, now: datetime, *, date: bool = True
+    ) -> str:
+        """Copies another server's release date and speed audit for a company this server has
+        just started tracking, after a quick check that each is still current, and says what it
+        took. The release date counts if its window hasn't closed and the source its evidence
+        names still answers; the speed audit if it's under a day old (REFRESH). Whatever doesn't
+        pass is researched again, as for any newly tracked company."""
+        took: list[str] = []
+        again: list[str] = []
+        target = record.target
+        if date and target and record.evidence and target.window[1] > now:
+            if await self._source_answers(record.evidence):
+                self.calendar.set_target(target, record.evidence)
+                took.append("its release date")
+            else:
+                again.append("its release date, whose source didn't answer")
+        checked, review = source.calendar.review(record.cik)
+        speed = Speed.from_json(review)
+        if (
+            checked
+            and review
+            and timedelta(0) <= now - checked < REFRESH
+            and speed
+            and speed.history is not None
+        ):
+            self.calendar.save_review(record.cik, checked, review)
+            took.append("its speed audit")
+        lines = []
+        if took:
+            lines.append(f"📥 Took another server's research: {' and '.join(took)}.")
+        if again:
+            lines.append(f"🔁 Researching {'; '.join(again)}.")
+        return "\n".join(lines)
+
+    async def _source_answers(self, evidence: str) -> bool:
+        """Require a successful source response before reusing another server's date.
+
+        Missing links, challenges, throttles and outages leave the date for research rather
+        than treating an unavailable source or another server's manual override as checked.
+        This is an availability check, not a new content verification of the saved date.
+        """
+        found = _EVIDENCE_SOURCE.search(evidence)
+        if found is None:
+            return False
+        try:
+            response = await self.watcher.fetcher.request("GET", found[1], give_up_after=5)
+        except (aiohttp.ClientError, OSError, TimeoutError, ValueError):
+            return False
+        return 200 <= response.status < 300 and bool(response.body)
 
 
 class DirectoryWatcher:

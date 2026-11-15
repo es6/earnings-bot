@@ -153,7 +153,13 @@ for per-release schedule settings.
   looks into each company once, writes what it finds (release date, profile, speed
   audit) to every server tracking it, and a company's speed audit never runs for two
   servers at once. A manual override in one server sets the window for every server
-  tracking the company, since it's the same release. A command in a server that
+  tracking the company, since it's the same release. When a server tracks a company
+  another already researched, `/track` takes that research after a quick check:
+  the profile if its investigation isn't due again, the release date if its window
+  hasn't closed and its linked evidence page returns a nonempty successful response,
+  and the speed audit if it's under a day old and not future-dated. Blocks, outages
+  and unlinked manual overrides leave the date for fresh research. What doesn't pass is researched
+  again, and the reply says which. A command in a server that
   isn't configured says so.
 - Changing `DISCORD_CHANNEL_ID` moves the calendar with it at the next start: the
   tracked companies, their research, the alerts and windows already done, and the
