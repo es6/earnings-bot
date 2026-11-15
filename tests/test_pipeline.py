@@ -1113,3 +1113,53 @@ async def test_redelivery_stops_after_its_last_wait_and_says_so(
     [failed] = [e for e in events if e["event"] == "delivery_failed"]
     assert failed["links"] == ["SEC 8-K"]
     assert sum(e["event"] == "delivery_refused" for e in events) == 4  # first, then 3 retries
+
+
+async def test_a_new_item_whose_headline_isnt_earnings_posts_if_its_text_announces_the_results(
+    release_texts: dict[str, str],
+) -> None:
+    """Klarna's last two results releases came under headlines like "Klarna Delivers Strong Start
+    to 2026 With $1Bn Revenue and $68M Adj. Operating Profit"."""
+    posters: list[FakePoster] = []
+
+    def new_poster() -> FakePoster:
+        posters.append(FakePoster())
+        return posters[-1]
+
+    log = io.StringIO()
+    releases = Releases(new_poster, fetcher(), Journal(log), None)
+    klarna = Target(
+        ticker="KLAR",
+        expected=datetime(2026, 11, 17, 7, tzinfo=ET),
+        cik=2003292,
+        sec_form="6-K",
+        period="FY2026Q3",
+    )
+    feed = Q4PressReleases("investors.klarna.com")
+    page = "https://investors.klarna.com/news/klarna-q3"
+    partnership = "https://investors.klarna.com/news/partnership"
+    release_texts[page] = (
+        "NEW YORK--(BUSINESS WIRE)-- Klarna today reported third quarter 2026 results. "
+        "Revenue grew 30% to $1.2 billion."
+    )
+    release_texts[partnership] = (
+        "NEW YORK--(BUSINESS WIRE)-- Klarna today announced a partnership with a retailer."
+    )
+
+    releases.on_new(klarna, feed, Sighting("1", "Klarna Partners With a Retailer", partnership))
+    releases.on_new(klarna, feed, Sighting("2", "Klarna Delivers Record Growth", page))
+    # SEC's filings have their own checks, and a date notice is never the results
+    releases.on_new(klarna, EdgarFilings(2003292, form="6-K"), Sighting("3", "6-K", page))
+    releases.on_new(klarna, feed, Sighting("4", "Klarna to Publish Q3 2026 Earnings", page))
+    await asyncio.sleep(0.05)
+    await releases.finish()
+
+    [poster] = posters
+    assert [kind for kind, _ in poster.calls][:1] == ["send"]
+    assert page in poster.calls[0][1]
+    checks = [json.loads(line) for line in log.getvalue().splitlines()]
+    checks = [(e["title"], e["results"]) for e in checks if e["event"] == "headline_check"]
+    assert checks == [
+        ("Klarna Partners With a Retailer", False),
+        ("Klarna Delivers Record Growth", True),
+    ]

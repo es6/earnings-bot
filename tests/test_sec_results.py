@@ -16,7 +16,12 @@ from earnings_bot.investigate import INVESTIGATION
 from earnings_bot.issuers import profile
 from earnings_bot.known import SourceCheck
 from earnings_bot.recorder import ET, Journal, Polls, Target, Watch, follow_up
-from earnings_bot.sec_results import SixKResults, is_results_release, reported_period
+from earnings_bot.sec_results import (
+    SixKResults,
+    announces_results,
+    is_results_release,
+    reported_period,
+)
 from earnings_bot.source_audit import Speed, Timing, audit_sources, site_local_time
 from earnings_bot.sources import EdgarFilings, EdgarLatest, Sighting, _filing_type
 from earnings_bot.track_progress import TrackProgress
@@ -678,3 +683,58 @@ def test_an_8k_under_results_of_operations_needs_no_exhibit_check() -> None:
     assert _filing_type("8-K", "2.02,9.01") == (True, {})
     assert _filing_type("8-K", "8.01") == (False, {})  # no exhibit: nothing to read
     assert _filing_type("8-K", "5.02") == (False, {})
+
+
+# The opening of Klarna's Feb 19 release as its IR site carries it: a short version, with no net
+# income or EPS, under a headline that doesn't read as earnings
+KLARNA_Q4 = (
+    "Klarna Accelerates U.S. Growth and Delivers $1bn Revenue Driven by Rapid Banking Service "
+    "Adoption\n"
+    "NEW YORK--(BUSINESS WIRE)-- Klarna, the global digital bank and flexible payments provider, "
+    "today reported fourth quarter 2025 results that demonstrate accelerating momentum. The "
+    "company delivered its first billion-dollar revenue quarter, with GMV reaching $38.7 billion, "
+    "while revenue grew 38% to $1.082 billion, also beating guidance.\n"
+    '"We\'ve been executing on a clear plan," said the chief executive.\n'
+)
+# GlobeNewswire's page for WeRide's Nov 24, 2025 release, read as text: the site's navigation
+# first, then the story
+WERIDE_Q3 = (
+    "Accessibility: Skip TopNav\n"
+    + "".join(f"Industry News {n}\n" for n in range(46))
+    + "Global Expansion Accelerates: Landmark UAE Driverless Robotaxi Commercial Permit, Record "
+    "YoY Revenue Growth of 144.3%\n"
+    "WeRide Announces Unaudited Financial Results for Q3 2025\n"
+    "November 24, 2025 04:00 ET | Source: WeRide Inc.\n"
+    "NEW YORK, Nov. 24, 2025 (GLOBE NEWSWIRE) -- WeRide Inc. (Nasdaq: WRD, HKEX:0800) today "
+    "announced its unaudited financial results for the three months ended September 30, 2025.\n"
+    "Financial and Operational Highlights\n"
+    "Total revenue grew 144.3% year-over-year to RMB171.0 million (US$24.0 million) in 3Q2025.\n"
+)
+
+
+def test_a_release_under_a_headline_that_isnt_earnings_is_known_by_its_text() -> None:
+    assert announces_results(KLARNA_Q4, "FY2025Q4")
+    assert not is_results_release(KLARNA_Q4, "")  # it asks for net income or EPS
+    assert announces_results(WERIDE_Q3, "FY2025Q3")
+    assert not is_results_release(WERIDE_Q3, "")  # the navigation hides the announcement
+
+
+def test_a_text_check_wants_this_quarters_results_with_revenue_figures() -> None:
+    assert not announces_results(KLARNA_Q4, "FY2026Q1")  # another quarter
+    # Its main sentence names no quarter ("the three months ended September 30, 2025"); its
+    # subheadline does
+    assert not announces_results(WERIDE_Q3, "FY2024Q2")
+    notice = (
+        "Klarna to Publish Q3 2026 Earnings on November 17, 2026\n"
+        "NEW YORK--(BUSINESS WIRE)-- Klarna will report third quarter 2026 results, with revenue, "
+        "on November 17."
+    )
+    assert not announces_results(notice, "FY2026Q3")
+    news = (
+        "WeRide and Uber Expand Robotaxi Partnership\n"
+        "NEW YORK, Oct. 27, 2026 (GLOBE NEWSWIRE) -- WeRide today announced a partnership. "
+        "Revenue from the service grew 40%."
+    )
+    assert not announces_results(news, "FY2026Q3")
+    figures_only = KLARNA_Q4.replace("revenue", "volume").replace("Revenue", "Volume")
+    assert not announces_results(figures_only, "FY2025Q4")

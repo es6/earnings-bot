@@ -45,16 +45,19 @@ from earnings_bot.formatting import clock, period_label
 from earnings_bot.issuer_news import IssuerNews
 from earnings_bot.recorder import ET, Journal, Plan, PollError, Target, poll, record
 from earnings_bot.release_cards import release_cards, release_content
+from earnings_bot.sec_results import announces_results
 from earnings_bot.source_document import SourceDocument
 from earnings_bot.sources import (
     BroadcomNewsroom,
     EdgarFilings,
+    GuessedFile,
     GuessedPage,
     Q4FinancialReports,
     Q4PressReleases,
     RssFeed,
     Sighting,
     Source,
+    is_date_notice,
 )
 from earnings_bot.summary import MODEL, WRITER, Summarizer, SummaryError
 from earnings_bot.text import release_document, verified_report
@@ -1165,6 +1168,10 @@ async def watch_schedule(
                     warm.cancel()
 
 
+# Text reads per window for new items whose headlines don't read as earnings (Releases)
+HEADLINE_CHECKS = 6
+
+
 class Releases:
     """The releases posted while schedules are active."""
 
@@ -1188,12 +1195,16 @@ class Releases:
         self.model_calls = asyncio.Semaphore(MAX_MODEL_CALLS)
         self.active: dict[str, Release] = {}
         self.issuer_context: Callable[[Target], dict[str, Any]] = lambda target: {}
+        # Reads of items whose headlines didn't read as earnings, per release
+        self.checks: dict[str, set[asyncio.Task[None]]] = {}
+        self.checked: dict[str, set[str]] = {}
 
     def on_new(
         self, target: Target, source: Source, sighting: Sighting, *, measure: bool = False
     ) -> None:
         """Called by the recorder for each new item any source lists."""
         if not sighting.earnings:
+            self._check_headline(target, source, sighting, measure)
             return
         key = target.release_key
         release = self.active.get(key)
@@ -1211,7 +1222,58 @@ class Releases:
             )
         release.add(source, sighting, measure=measure)
 
+    def _check_headline(
+        self, target: Target, source: Source, sighting: Sighting, measure: bool
+    ) -> None:
+        """Reads a new item from the company's own route, or a wire item naming it, whose headline
+        doesn't read as earnings, and posts it if its text announces this quarter's results.
+        Klarna's last two results releases had headlines like "Klarna Delivers Strong Start to
+        2026 With $1Bn Revenue and $68M Adj. Operating Profit"; two of WeRide's last four and two
+        of Costco's had such headlines too (measured Nov 14, scratchpad `headline_eval.py`). SEC
+        is left out: its filings have their own exhibit checks."""
+        if isinstance(source, EdgarFilings | Q4FinancialReports | GuessedFile):
+            return
+        if sighting.caught_up or is_date_notice(sighting.title) or not sighting.url:
+            return
+        key = target.release_key
+        checked = self.checked.setdefault(key, set())
+        if sighting.key in checked or len(checked) >= HEADLINE_CHECKS:
+            return
+        checked.add(sighting.key)
+        task = asyncio.create_task(self._read_headline(target, source, sighting, measure))
+        tasks = self.checks.setdefault(key, set())
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
+
+    async def _read_headline(
+        self, target: Target, source: Source, sighting: Sighting, measure: bool
+    ) -> None:
+        try:
+            document = await release_document(self.fetcher, source, sighting)
+        except Exception as error:  # a failed read mustn't stop the window
+            self.journal.write(
+                "headline_check", ticker=target.ticker, source=source.name, error=repr(error)
+            )
+            return
+        results = bool(document and announces_results(document.text, target.period))
+        self.journal.write(
+            "headline_check",
+            ticker=target.ticker,
+            source=source.name,
+            title=sighting.title,
+            read=document is not None,
+            results=results,
+        )
+        if results:
+            self.journal.say(
+                f"{target.ticker} {source.name}: its text announces the results: {sighting.title}"
+            )
+            self.on_new(target, source, replace(sighting, earnings=True), measure=measure)
+
     async def finish_target(self, target: Target) -> None:
+        for task in self.checks.pop(target.release_key, set()):
+            task.cancel()
+        self.checked.pop(target.release_key, None)
         if release := self.active.get(target.release_key):
             await release.finish()
             del self.active[target.release_key]
