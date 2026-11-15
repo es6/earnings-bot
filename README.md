@@ -3,151 +3,96 @@
 [![CI](https://github.com/es6/earnings-bot/actions/workflows/ci.yml/badge.svg)](https://github.com/es6/earnings-bot/actions/workflows/ci.yml)
 [![Docker](https://github.com/es6/earnings-bot/actions/workflows/docker.yml/badge.svg)](https://github.com/es6/earnings-bot/actions/workflows/docker.yml)
 
-A Discord bot that posts company earnings the moment they're released, pulled straight from
-investor relations pages and SEC filings, along with a summary of the numbers and KPIs that
-matter for each company.
+A Discord bot that posts a company's earnings release the moment it's public, from whichever
+source has it first, then edits in a short summary of the numbers that move the stock.
 
-In directory mode, `/track` adds any company with a ticker on SEC's list to the
-earnings calendar. The bot finds the next release date, prepares the sources, and keeps an editable Discord
-scorecard. See the [calendar guide](docs/unattended.md) and [architecture](docs/architecture.md).
-The optional summary writer uses a compact, business-aware policy. See
-[summary research](docs/summaries.md) for the feedback rules, offline evaluation commands
-and the Sonnet/Ember comparison; these research tools make no API calls.
+Type `/track NVDA`. The bot works out where the company publishes (its investor relations
+site, its newswire, its SEC filings), when its next results come out and at what time of day,
+and watches every one of those routes at once around that time. The first route to show the
+release wins. Speed is the whole point: first the time from release to alert, then the time
+to a summary.
 
-## Features
+## What it does
 
-- Races configured IR, newswire and SEC sources in parallel and alerts on the first eligible
-  release. Trial sources can record separate timing.
-- Attaches the release files (press release, supplemental data) as they appear
-- Edits in a summary of results, guidance and the KPIs that matter for that company
-- Tracks the latest release timing by source and compares Discord alerts with @earnings_guy
+**Finds the sources and the date by itself.**
+- `/track` takes any ticker on SEC's list. For a company it hasn't seen, it reads the last
+  results release from EDGAR, follows the IR site it names, and checks for a Q4 press release
+  feed, an RSS feed or a press release page. Sites that block automated requests are read in
+  a hidden Chrome.
+- It names the company's wire (Business Wire, PR Newswire or GlobeNewswire) from its past
+  releases, or watches all three.
+- It finds the next release date from the company's own notices first, then an earnings
+  calendar. The time of day comes from when its recent releases actually came out: IR
+  timestamps, wire times and SEC acceptance times.
+- A scorecard in the channel follows the research and turns green only when every watched
+  route has been checked fresh.
 
-### Earnings calendar commands
+**Watches the release window closely, and only then.**
+- The window covers the expected time and any other time of day the company has released
+  at. Polling is every 15 s far from those times, every 5 s from 5 minutes before, and at full
+  speed from 2 minutes before to 10 minutes after.
+- All routes race. Before an alert goes out, the bot checks that the headline or text
+  actually announces results, so a date notice or an unrelated filing doesn't set it off.
+- It gets past slow caches where it can: CDN-cached feeds are requested under fresh path
+  spellings, and GlobeNewswire article numbers are guessed around the release time. A wire
+  report it can't read directly is recovered from mirrors that are checked to be the same
+  report.
 
-Use `/track ticker:NVDA` in directory mode. `/upcoming` is a compact calendar of the next
-seven days: one line per release by day and market session, with its scorecard's readiness,
-and what needs attention (problems, issuers awaiting a date) first. Members with Manage Server can set a release time or remove a subscription
-with `/untrack`. See the [command reference](docs/unattended.md#commands) for exact syntax.
-The `/track` scorecard updates in place and marks research complete once source checks and
-date discovery finish. It shows whether a watch is scheduled or still awaiting a date. It
-turns green only when every watched issuer route was also verified fresh by the cache
-preflight; otherwise it stays amber and names the routes that may show the release late.
+**Posts and summarizes.**
+- The alert links the release and attaches its files (press release, PDF, supplementary
+  data) as they appear.
+- When summaries are on, a summary written by Muse Ember (low effort) is edited into the
+  alert from the first readable text: headline results, guidance and the KPIs that matter for
+  that company. Every number must appear in a quoted passage of the release. Summaries are
+  labeled **Beta** until each number's measure and period are verified too
+  ([summaries.md](docs/summaries.md)).
+- Several Discord servers can each keep their own tracked list. A company that several of
+  them track is watched once and posted to each.
 
-### Run continuously on Windows
+**Keeps score and stays honest.**
+- Every window is journaled: which route saw the release first, when, and how long the alert
+  and summary took. Window reports compare the alert with the
+  [@earnings_guy](https://x.com/earnings_guy) post on X.
+- A separate watchdog alarms when a window's polling stops or a route is refused.
+- `/track NVDA debug:true` reruns all of `/track`'s research from scratch, saving nothing,
+  and reports every fact found, unsure or missing. It's how research gets fixed
+  ([track-testing.md](docs/track-testing.md)).
 
-Run `uv run earnings-bot schedules` to watch every TOML in the directory. Edits and new files
-are picked up within a few seconds. A malformed edit keeps the last valid version active.
-Use `/status` (formerly `/watch_status`, which still works) for health: the running release
-version and Git build, the last schedule scan, the next watch start, how many scorecards are
-ready, whether live summaries are on, and problems. The release version also appears on scorecards, at startup, and in
-`uv run earnings-bot --version`. Set `DISCORD_STATUS_CHANNEL_ID` to receive window reports in
-a channel, which can be the alerts' own. Reports are also written to `schedules/watch.jsonl`.
+## Commands
 
-Window reports use **@earnings_guy** as the main external speed benchmark. The runner
-checks a shared public RSS timeline during release windows and verifies candidate results
-posts through X's public embed service. It compares the X post's creation time with the
-actual Discord alert time. The most recent comparison is in `/status`. The journal
-records the X link, first sighting and when usable release text arrived. The status distinguishes
-an unmatched post from an unavailable lookup or an unverified candidate. Benchmark requests
-run alongside the release watchers.
+Replies are private to the member who ran the command.
 
-Give the bot **Read Message History** in the earnings and status channels. Keep
-`schedules/.earnings-state.sqlite3` and `schedules/.tracking-progress.sqlite3` with the
-schedules so a restart resumes alerts and scorecards. New TOML entries should specify
-`period = "FY2027Q3"` (using
-the issuer's fiscal year and quarter) so moving a window to another day keeps the same
-identity. Older entries use the issuer's CIK and Eastern release date.
+| Command | Who | What it does |
+|---|---|---|
+| `/track ticker:NVDA` | Everyone | Adds a company and starts research and its scorecard |
+| `/track ticker:NVDA when:2026-11-17T16:20 period:FY2027Q3` | Manage Server | Pins a release time for a fiscal period |
+| `/track ticker:NVDA debug:true` | Manage Server, or the bot's owner anywhere | Researches from scratch and reports what it found, saving nothing |
+| `/upcoming` | Everyone | The next seven days of releases, with each scorecard's readiness |
+| `/untrack ticker:NVDA` | Manage Server | Removes a company |
+| `/status` | Everyone | Watcher health: what's live, what's next, problems, the latest benchmark |
+| `/ping` | Everyone | Discord connection latency |
 
-To run the bot and its watchdog from Task Scheduler, run `.\scripts\install-tasks.ps1` as the
-Windows user that owns the checkout, its `.env` and `uv`. Add `-WhatIf` to see what it would
-register. It registers two tasks:
+Details: [command reference](docs/unattended.md#commands).
 
-- **"Earnings Bot"** runs `scripts/run-bot.ps1`.
-- **"Earnings Bot Watchdog"** runs `scripts/run-watchdog.ps1`.
+## Status
 
-Each task:
-
-- runs only while that user is signed in, which Chrome needs;
-- starts at logon and again every 5 minutes. A copy that's already running ignores the extra
-  start, since each script holds a lock;
-- runs without a window, through `conhost.exe --headless`.
-
-The repeating start covers a logon that starts nothing: on Nov 13, 2026, the logon after a
-restart left the bot down for 13 hours. The hidden window means a Windows Terminal tab can't be
-closed by mistake, which stopped the bot twice on Nov 9.
-
-The script refuses to change the tasks while a release window is open. A bot already running
-keeps its old task definition until `.\scripts\update-bot.ps1 -Restart`. The scripts restart a
-bot or watchdog that exits, and write their console output to `recordings/`.
-
-To put the latest `main` on the running bot, run `.\scripts\update-bot.ps1`. It refuses if
-the checkout isn't a clean `main`, or if a release window is open, or opens within 5 minutes,
-with its alert not posted yet. Otherwise it stops the bot, fast-forwards to `main`, starts the
-scheduled task again, waits until the bot says monitoring has started, then restarts the
-watchdog task so it runs the new code too. Add `-Wait` to
-restart as soon as the window allows, `-Restart` to restart with nothing new, or `-Force` to
-restart during a window.
-
-[Chrome IR sources](docs/browser-ir.md) can be prepared by the planner or configured per release.
-They record timing by default. Chrome needs the signed-in session the tasks above run in.
-Other sources keep running if Chrome cannot start.
-
-## Development
-
-```bash
-uv sync                  # install dependencies into .venv
-uv run ruff check .      # lint
-uv run ruff format .     # format
-uv run pyright           # type check
-uv run pytest            # test
-```
-
-CI runs the same checks on every pull request. See [CONTRIBUTING.md](CONTRIBUTING.md).
-
-### Latency recorder
-
-To measure which source shows a release first, the recorder polls every source around a
-scheduled release and logs when each one first lists it:
-
-```bash
-uv run earnings-bot-record schedules/2026-11-02.toml
-```
-
-The plan file lists each release's expected time (US Eastern) and where to look. The recorder
-waits for each window, prints new items as they appear, and prints a summary table when the window
-closes. Every event is appended to a JSON Lines log next to the plan (`schedules/*.jsonl`, not
-committed). It needs `SEC_USER_AGENT` in `.env`.
-
-Times don't come from your computer's clock, which can be seconds off. The recorder asks NTP time
-servers (Cloudflare, Google and NIST) when it starts, when each window opens and every five
-minutes during a window, and counts forward from their answer in between.
-
-## Release versions
-
-Run one version bump for each PR that changes what gets deployed. `uv version` updates both
-`pyproject.toml` and `uv.lock` so the package, Discord and CLI use the same version.
-
-| Change | Command | Example |
-| --- | --- | --- |
-| Breaking change | `uv version --bump major` | `0.2.1` → `1.0.0` |
-| New feature or major bug fix | `uv version --bump minor` | `0.2.1` → `0.3.0` |
-| Routine fix, maintenance, or dependency update | `uv version --bump patch` | `0.2.1` → `0.2.2` |
-
-CI checks the bump against the PR's base. If another release lands first, update from `main` and
-pick the next version. Docs and tests can change on their own without a version bump.
+Before 1.0. The polling, failure handling and crash cleanup are done. What's left is a live
+streak of releases, verified summaries, then tickers outside the US (ASX, Hong Kong, Tokyo,
+Toronto and Europe). See the [roadmap](docs/roadmap.md).
 
 ## Run your own copy
 
-Every copy of the bot runs under its own Discord application. You'll need
+Every copy runs under its own Discord application. You need
 [uv](https://docs.astral.sh/uv/getting-started/installation/), which installs the right Python
-version for you.
+for you.
 
-1. **Create the Discord application.** Go to the
-   [Developer Portal](https://discord.com/developers/applications) and click **New Application**.
-   On the **Bot** tab, click **Reset Token** and copy the token. Leave the privileged intents off.
-2. **Invite the bot to your server.** Under **OAuth2 → URL Generator**, pick the scopes `bot` and
-   `applications.commands` and the permissions *View Channels*, *Send Messages*, *Embed Links* and
-   *Attach Files*. Open the generated URL.
+1. **Create the application.** In the
+   [Developer Portal](https://discord.com/developers/applications), click **New Application**.
+   On the **Bot** tab, click **Reset Token** and copy the token. Leave the privileged intents
+   off.
+2. **Invite it.** Under **OAuth2 → URL Generator**, pick the scopes `bot` and
+   `applications.commands` and the permissions *View Channels*, *Send Messages*, *Embed
+   Links*, *Attach Files* and *Read Message History*. Open the generated URL.
 3. **Configure it.**
 
    ```bash
@@ -156,37 +101,63 @@ version for you.
    cp .env.example .env
    ```
 
-   Put your token in `.env`. Setting `DISCORD_GUILD_ID` to your test server's ID makes slash
-   commands show up there instantly.
+   In `.env`, set `DISCORD_TOKEN`, `DISCORD_CHANNEL_ID` (where alerts go) and
+   `SEC_USER_AGENT` (your name and email, which SEC requires). Optional:
+   - `DISCORD_GUILD_ID`, so slash commands show up in your test server at once;
+   - `DISCORD_STATUS_CHANNEL_ID` for window reports;
+   - `LIVE_SUMMARIES=true` with `META_MODEL_API_KEY` for summaries (a key alone never starts
+     paid calls);
+   - `FMP_API_KEY` for earnings-calendar dates;
+   - `WATCHDOG_WEBHOOK_URL` for the watchdog's alarms.
+
+   `.env.example` explains each one.
 4. **Run it.**
 
    ```bash
-   uv run earnings-bot
+   uv run earnings-bot schedules
    ```
 
-   Or with Docker:
+   It watches the companies tracked with `/track`, plus any schedule files in `schedules/`.
+   Keep the `schedules/*.sqlite3` files: they let a restart resume alerts and scorecards
+   without posting anything twice. Docker works too: `docker build -t earnings-bot .` then
+   `docker run --env-file .env earnings-bot`. The Chrome routes for sites that block
+   automated requests run only on Windows, in a signed-in session, so a Docker copy works
+   without them.
 
-   ```bash
-   docker build -t earnings-bot .
-   docker run --env-file .env earnings-bot
-   ```
-5. **Watch a day's releases.** Fill in `DISCORD_CHANNEL_ID`, `SEC_USER_AGENT`,
-   `ANTHROPIC_API_KEY` and `FMP_API_KEY` in `.env` (see `.env.example`), then give the bot a
-   schedule file:
+### Running it all the time on Windows
 
-   ```bash
-   uv run earnings-bot schedules/2026-11-04.toml
-   ```
+`.\scripts\install-tasks.ps1` registers the bot and its watchdog as Task Scheduler tasks.
+They run hidden, start at logon and again every 5 minutes, and won't start a second copy.
+`.\scripts\update-bot.ps1` deploys the latest `main`, refusing while a release window is
+open. Details: [running continuously on Windows](docs/unattended.md#run-continuously-on-windows).
 
-   It waits for each release's window and posts to the channel. Without the Anthropic key, posts
-   have no summary. Every step is logged to
-   `schedules/*.jsonl`, the same log the latency recorder writes.
+## How it works
 
-   To test the whole flow on a past release, replay it:
+[Architecture](docs/architecture.md) covers release detection: what was measured for each
+source, the IR platforms, how fresh each feed is, the live runs, scheduling, and the path
+from detection to Discord. The [IR access playbook](docs/ir-access-playbook.md) records how
+each kind of IR site is reached, [browser IR](docs/browser-ir.md) the Chrome routes, and
+[wire recovery](docs/wire-recovery.md) the verified mirrors.
 
-   ```bash
-   uv run earnings-bot-replay schedules/2026-11-04.toml UBER --date 2026-08-05 --q4-release 1585 --edgar 0001543151-26-000027
-   ```
+Two command-line tools come with it:
+- `uv run earnings-bot-record schedules/<day>.toml` polls every source around a release and
+  logs when each one first listed it, to measure which is fastest
+  ([latency recorder](docs/unattended.md#latency-recorder)).
+- `uv run earnings-bot-replay` replays a past release through the whole flow.
+
+## Development
+
+```bash
+uv sync               # install
+uv run ruff check .   # lint
+uv run ruff format .  # format
+uv run pyright        # type check
+uv run pytest         # test
+```
+
+For every pull request, CI lints, type checks and tests on Linux, and tests on Windows. Each PR that changes what gets
+deployed bumps the version once (`uv version --bump patch|minor|major`), and CI checks the
+bump against the PR's base. See [CONTRIBUTING.md](CONTRIBUTING.md#release-versions).
 
 ## License
 
