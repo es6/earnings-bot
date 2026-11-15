@@ -4,8 +4,11 @@ Six reviewers each read one area of `tests/` and the source it exercises, at `ma
 (v0.21.35). For every test function they judged whether it checks observable behavior with
 meaningful assertions, whether it would fail if its feature were removed, and whether it is
 redundant, slow, nondeterministic or obsolete. They checked the "would fail" question by
-mutation: neutering a feature in the source, running its tests, and reverting. All numbers are
-measured. The per-test tables are in the six reports:
+mutation: neutering a feature in the source, running selected tests, and reverting. Verdicts
+are reviewer judgments; counts and command results are measurements. The original per-test
+tables are in A–F. [The verification supplement](G-omitted-files.md) adds 33 omitted functions,
+completing the original base's 737-function inventory. Later PR tests are outside this dated
+snapshot and are reviewed with their changes.
 
 | Report | Area | Functions | Keep | Strengthen | Merge | Rewrite | Delete | Mutations survived |
 |---|---|---|---|---|---|---|---|---|
@@ -17,15 +20,25 @@ measured. The per-test tables are in the six reports:
 | [F](F-ops-suite.md) | Ops tests, plus suite-wide practice | 74 | 58 | 12 | 1 | 3 | 0 | 12 of 39 |
 | | **Total** | **704** | **563 (80%)** | **91** | **26** | **14** | **10** | **32 of 187** |
 
+The original totals above describe 704 functions. G adds 25 KEEP and 8 STRENGTHEN judgments;
+the completed inventory is 737 functions: 588 KEEP, 99 STRENGTHEN, 26 MERGE, 14 REWRITE and
+10 DELETE. These percentages describe review decisions, not measured defect-detection rates.
+
 ## What it found
 
-**The suite is mostly sound.** 80% of tests are worth keeping as they are, and 155 of 187
-mutations were caught. It is order-independent (two random orders, 1,216 of 1,216 passed) and
-passes in parallel.
+**The suite is mostly sound.** About 80% of the completed inventory received KEEP judgments.
+A–F report 187 mutation checks and 32 actionable surviving variants in their selected scopes;
+equivalent variants and repeat checks mean `187 - 32` is not a valid killed-mutant count.
+The measured full suite passed in two randomized orders (1,216 cases) and in parallel; that
+does not prove order independence under every seed or runner.
 
-**32 features can be removed without a test failing.** Each report lists them. The most
-important:
-- The fetcher: an HTTP 404 accepted on an urgent read, redirects re-enabled on two routes, and
+**32 candidate gaps were reported in selected test scopes.** They are not 32 confirmed
+whole-suite gaps. G's new mutation check proves the comma-parser change is caught outside
+F's assigned files. Confirm remaining survivors against all tests before adding duplicate
+coverage. Each original report retains its observations. Important candidates include:
+- The fetcher: the urgent-404 transport branch (the current code intentionally returns an
+  urgent HTTP 404 rather than falling back to Chrome; D's mutation description needs its
+  exact patch reproduced), redirects re-enabled on two routes, and
   Chrome's back-off not reset after an error (D).
 - 6-K handling: copying the form into a plan, and the 6-K condition in `event_target` (B).
 - GlobeNewswire: re-guessing article numbers already opened, and history rows from another
@@ -42,9 +55,10 @@ pacing (5.0 s for one card-update test, 6.0 s for an end-to-end wire alert, 13.5
 publication-trial tests). Several tests assert on wall-clock thresholds (`< 0.05 s`,
 `most_in_one_second == 8`, 0.02 s deadlines), the most likely flakes on a loaded CI runner.
 
-**Warnings hide our own leaks.** All 1,039 warnings are one third-party deprecation in
+**Warnings hide our own leaks.** The ordinary run's 1,039 warnings are one third-party deprecation in
 discord.py, triggered from `pipeline.py:615`. Behind them are 11 `ResourceWarning`s that are
-ours: 8 unclosed SQLite connections, a stream writer and 2 subprocess pipes.
+ours in the recorded warning-enabled run: 8 unclosed SQLite connections, a stream writer and
+2 subprocess pipes. This is a measured run's count, not an exhaustive leak inventory.
 
 **Shared test code isn't shared.** 24 test modules import fakes from other test modules, there
 are two different `FakePoster`s and two fake fetchers, and there is no `conftest.py`. Dozens of
@@ -73,8 +87,9 @@ now being caught.
 1. **Shared fakes:** move `FakePoster`, `FakeDiscord`, the fake fetchers and the builders into
    `tests/fakes.py` and a `conftest.py`, and end the test-to-test imports. Everything after
    builds on this.
-2. **Catch the 32 surviving mutations:** a test, or a stronger assertion, for each one, written
-   to fail with the mutation in place.
+2. **Reproduce surviving mutations suite-wide:** preserve the exact patch and test selection,
+   exclude equivalent changes and coverage already provided elsewhere, then strengthen each
+   remaining real gap with a regression that fails when the feature is removed.
 3. **Remove real waiting:** inject a clock or patch the delays in the slowest tests, and replace
    wall-clock assertions and sleep-ordering with events. Expected: most of the 60 s goes, along
    with the flake risk.
