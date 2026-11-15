@@ -80,7 +80,8 @@ another already researched may import that research after a quick check.
    review, stacked on step 1). A server that starts tracking a company another already
    researched gets its findings at the next research pass, within about an hour, or at
    once with step 3.
-3. Importing another server's research at `/track`, after a quick check that it's current.
+3. Importing another server's research at `/track`, after a quick check that it's current
+   (in review, stacked on step 2).
 
 Open: Discord's rate limits with many servers posting the same release (one send per server,
 then its edits), to be measured.

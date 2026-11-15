@@ -417,3 +417,72 @@ async def test_each_companys_speed_audit_runs_once_for_every_server(tmp_path: Pa
             assert server.calendar.review(INVESTIGATED.cik)[1] is not None
         # Each server still gets its own scorecard
         assert all(channel.messages for channel in channels)
+
+
+EVIDENCE_PAGE = "https://ir.lucidmotors.com/news-releases/lucid-to-report-third-quarter"
+
+
+async def borrowing(
+    tmp_path: Path, page_status: int, audited_ago: timedelta
+) -> tuple[str, Server, Server, list[str]]:
+    """Server A tracks Lucid, a company outside the catalog, with its research done; server B
+    then tracks it. Returns B's reply, both servers and the URLs requested. Looking Lucid up at
+    SEC would fail here: every other URL answers 404."""
+    from dataclasses import replace
+
+    from earnings_bot.known import to_target
+    from tests.fakes import RoutedFetcher
+    from tests.test_track_progress import INVESTIGATED, SPEED
+
+    fetcher = RoutedFetcher({EVIDENCE_PAGE: (page_status, b"<html>Lucid call</html>")})
+    journal = Journal(io.StringIO())
+    now = journal.now()
+    mine = DeliveryStore(tmp_path / "state.db", 7)
+    theirs = DeliveryStore(tmp_path / "state.db", 8)
+    servers = [Server(mine, None, GUILD), Server(theirs, None, OTHER_GUILD)]
+    bot = DirectoryWatcher(
+        tmp_path,
+        fetcher,
+        journal,
+        Releases(FakePoster, fetcher, journal, None),
+        mine,
+        lambda _: None,
+        servers=servers,
+    )
+    company = INVESTIGATED.model_copy(update={"investigated": now.date()})
+    servers[0].calendar.add("LCID", company)
+    found = to_target("LCID", now + timedelta(days=2), 2026, 3, company)
+    servers[0].calendar.set_target(found, f"Issuer confirmed release time <{EVIDENCE_PAGE}>")
+    speed = replace(SPEED, history=[datetime(2026, 8, 5, 16, 5, tzinfo=ET)])
+    servers[0].calendar.save_review(found.cik, now - audited_ago, speed.to_json())
+
+    reply = await call(TrackingCommands(lambda: bot).track, "LCID", guild=OTHER_GUILD)
+
+    return reply, servers[0], servers[1], [url for _, url, _ in fetcher.requests]
+
+
+async def test_a_server_takes_research_another_did_after_a_quick_check(tmp_path: Path) -> None:
+    reply, mine, theirs, requested = await borrowing(tmp_path, 200, timedelta(hours=2))
+
+    assert "📥 Took another server's research: its release date and its speed audit." in reply
+    [own] = mine.calendar.entries()
+    [taken] = theirs.calendar.entries()
+    assert taken.target == own.target and taken.evidence == own.evidence
+    assert taken.company == own.company  # the investigated profile came along
+    assert theirs.calendar.review(own.cik) == mine.calendar.review(own.cik)
+    # The one check, that the date's source still answers; no SEC lookup or investigation
+    assert requested == [EVIDENCE_PAGE]
+    for server in (mine, theirs):
+        server.store.db.close()
+
+
+async def test_what_fails_the_check_is_researched_again(tmp_path: Path) -> None:
+    reply, mine, theirs, _ = await borrowing(tmp_path, 404, timedelta(days=2))
+
+    assert "🔁 Researching its release date, whose source didn't answer." in reply
+    assert "📥" not in reply  # the two-day-old audit didn't come either
+    [taken] = theirs.calendar.entries()
+    assert taken.target is None
+    assert theirs.calendar.review(taken.cik) == (None, None)
+    for server in (mine, theirs):
+        server.store.db.close()

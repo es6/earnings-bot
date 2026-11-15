@@ -13,6 +13,7 @@ from earnings_bot.calendar import (
     upcoming_releases,
 )
 from earnings_bot.formatting import BLUE, bullets
+from earnings_bot.investigate import due
 from earnings_bot.issuers import symbol
 from earnings_bot.recorder import ET
 from earnings_bot.track_progress import PROBLEM
@@ -142,15 +143,26 @@ class TrackingCommands:
                         "Supply both a release time and a fiscal period for an override."
                     )
             existing = watcher.calendar.find(ticker)
-            company = (
-                existing.company
-                if existing
-                else await watcher.issuers.company(ticker, now.astimezone(ET).date())
-            )
+            today = now.astimezone(ET).date()
+            # Another server already tracking it lends its research, after a quick check
+            other = None if existing else watcher.others_record(ticker)
+            if other and due(ticker, other[1].company, today):
+                other = None  # its investigation is due again, so this one starts fresh
+            if existing:
+                company = existing.company
+            elif other:
+                company = other[1].company
+            else:
+                company = await watcher.issuers.company(ticker, today)
             override = (
                 manual_target(ticker, when, period, now, company) if when and period else None
             )
             row, added = watcher.calendar.add(ticker, company)
+            imported = (
+                await watcher.import_record(*other, now, date=override is None)
+                if added and other
+                else ""
+            )
             watcher.dates.changed.set()
             if override:
                 watcher.calendar.set_target(override, "Manual override")
@@ -169,6 +181,8 @@ class TrackingCommands:
                 message = f"{state} **{row.ticker}** · {row.company.name}"
                 if target:
                     message += f"\n{describe(target, 'Scheduled')}"
+            if imported:
+                message += f"\n{imported}"
             if watcher.progress:
                 watcher.progress.changed.set()
                 channel_id = watcher.progress.store.channel_id
