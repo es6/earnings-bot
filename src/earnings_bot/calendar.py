@@ -9,6 +9,7 @@ from earnings_bot.delivery import DeliveryStore
 from earnings_bot.formatting import clock, period_label, stamp
 from earnings_bot.ir_research import IR_LISTINGS, quarter_headline
 from earnings_bot.known import KnownCompany, known_companies, to_target, wire_publisher
+from earnings_bot.plan_migrations import restore_ir_headline
 from earnings_bot.recorder import ET, Target
 
 _LINKED = re.compile(r"(.*?)\s*<(https?://[^>\s]+)>")
@@ -252,17 +253,12 @@ def _read_target(saved: str | None) -> Target | None:
     if saved is None:
         return None
     target = Target.model_validate_json(saved)
-    browser = target.ir
-    if (
-        target.period
-        and browser
-        and browser.verify_text
-        and browser.listing == IR_LISTINGS.get(target.ticker)
-    ):
-        headline = quarter_headline(int(target.period[2:6]), int(target.period[-1]))
-        # Only repair the exact zero-width pattern stored by the original planner.
-        if browser.headline == headline.removesuffix(".*"):
-            browser.headline = headline
+    if target.period:
+        restore_ir_headline(
+            target.ir,
+            listing=IR_LISTINGS.get(target.ticker),
+            headline=quarter_headline(int(target.period[2:6]), int(target.period[-1])),
+        )
     return target
 
 

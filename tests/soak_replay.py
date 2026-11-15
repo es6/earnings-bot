@@ -87,6 +87,7 @@ async def run(folder: Path, hours: float, iterations: int | None, tickers: int, 
             "src/earnings_bot/recorder.py",
             "src/earnings_bot/pipeline.py",
             "src/earnings_bot/text.py",
+            "src/earnings_bot/html_text.py",
             "tests/burst_replay.py",
         )
     }

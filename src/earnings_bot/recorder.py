@@ -35,6 +35,7 @@ from earnings_bot.fetch import Fetcher, Response, RoutePause
 from earnings_bot.globe_frontier import guess_release, guessed_for
 from earnings_bot.http_policy import retry_after
 from earnings_bot.periods import agrees_with_period
+from earnings_bot.plan_migrations import schedule_fields
 from earnings_bot.release_band import SLOW, pace, paced
 from earnings_bot.resources import snapshot
 from earnings_bot.sec_results import SixKResults, SixKUnavailable, is_results_release
@@ -88,9 +89,8 @@ CLOCK_RESYNC = 300
 class Trial(BaseModel):
     """More sources for a release, a `[target.trial]` table in the plan file. They post like any
     other source: a new source goes live, since a release day is the only way to time it. The
-    table keeps its old name, and `post` is ignored, so older schedules still load."""
+    table keeps its old name. Unknown old fields, including `post`, are ignored."""
 
-    post: bool = False  # ignored
     broadcom_newsroom: bool = False  # Broadcom's newsroom JSON
     rss: list[str] = []  # company press release feeds
     globenewswire: list[str] = []  # names to look for in GlobeNewswire's earnings feed
@@ -188,18 +188,7 @@ class Target(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _migrate_ir(cls, values: Any) -> Any:
-        # Schedule TOML and saved calendar JSON used to nest IR under trial.
-        if (
-            isinstance(values, dict)
-            and isinstance(trial := values.get("trial"), dict)
-            and "ir" in trial
-        ):
-            return {
-                "ir": trial["ir"],
-                **values,
-                "trial": {k: v for k, v in trial.items() if k != "ir"},
-            }
-        return values
+        return schedule_fields(values)
 
     @field_validator("expected")
     @classmethod
