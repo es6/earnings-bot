@@ -4,6 +4,11 @@ Chrome runs in a Windows job object that ends it, and every process it started, 
 last handle closes, which happens when the bot exits for any reason. Before that, a bot stopped
 for a deploy or a crash left its Chrome running: one from Nov 13 was still running on Nov 15,
 its parent gone, with 18 old profiles (1.8 GB) in the temp folder.
+
+The job also keeps Chrome from crowding the PC: below-normal priority, so the owner's own programs
+come first when the CPU is busy, and a ceiling on the memory all its processes may commit. Five
+release windows at once peaked at 1.6 GB working set (1.0 GB committed) and 1.4 cores; a /track
+research run at 1.2 GB and 2.1 cores (measured Nov 15 on a 32-thread, 64 GB PC).
 """
 
 import ctypes
@@ -97,8 +102,31 @@ class _ExtendedLimits(ctypes.Structure):
     ]
 
 
+_BASIC_ACCOUNTING = 1  # JobObjectBasicAccountingInformation
 _EXTENDED_LIMITS = 9  # JobObjectExtendedLimitInformation
 _KILL_ON_JOB_CLOSE = 0x2000
+_LIMIT_PRIORITY_CLASS = 0x20
+_LIMIT_JOB_MEMORY = 0x200
+_BELOW_NORMAL = 0x4000  # BELOW_NORMAL_PRIORITY_CLASS
+# The most memory all of Chrome's processes may commit together: several times the measured peak,
+# and an eighth of the PC's 64 GB. Past it a tab fails, and its route falls back like any other
+# Chrome error, instead of the PC running short.
+CHROME_MEMORY_LIMIT = 8 * 1024**3
+
+
+class _Accounting(ctypes.Structure):
+    _fields_ = [
+        ("TotalUserTime", w.LARGE_INTEGER),
+        ("TotalKernelTime", w.LARGE_INTEGER),
+        ("ThisPeriodTotalUserTime", w.LARGE_INTEGER),
+        ("ThisPeriodTotalKernelTime", w.LARGE_INTEGER),
+        ("TotalPageFaultCount", w.DWORD),
+        ("TotalProcesses", w.DWORD),
+        ("ActiveProcesses", w.DWORD),
+        ("TotalTerminatedProcesses", w.DWORD),
+    ]
+
+
 _CREATE_SUSPENDED = 0x4
 
 
@@ -149,6 +177,14 @@ class DesktopProcess:
         self._kernel.AssignProcessToJobObject.restype = w.BOOL
         self._kernel.ResumeThread.argtypes = [w.HANDLE]
         self._kernel.ResumeThread.restype = w.DWORD
+        self._kernel.QueryInformationJobObject.argtypes = [
+            w.HANDLE,
+            ctypes.c_int,
+            w.LPVOID,
+            w.DWORD,
+            ctypes.POINTER(w.DWORD),
+        ]
+        self._kernel.QueryInformationJobObject.restype = w.BOOL
 
         name = f"EarningsBot-{uuid.uuid4().hex}"
         generic_all = 0x10000000
@@ -192,7 +228,11 @@ class DesktopProcess:
         if not job:
             return None
         limits = _ExtendedLimits()
-        limits.BasicLimitInformation.LimitFlags = _KILL_ON_JOB_CLOSE
+        limits.BasicLimitInformation.LimitFlags = (
+            _KILL_ON_JOB_CLOSE | _LIMIT_PRIORITY_CLASS | _LIMIT_JOB_MEMORY
+        )
+        limits.BasicLimitInformation.PriorityClass = _BELOW_NORMAL
+        limits.JobMemoryLimit = CHROME_MEMORY_LIMIT
         if not self._kernel.SetInformationJobObject(
             job, _EXTENDED_LIMITS, ctypes.byref(limits), ctypes.sizeof(limits)
         ):
@@ -208,6 +248,21 @@ class DesktopProcess:
     @property
     def pid(self) -> int:
         return self._process.dwProcessId
+
+    def usage(self) -> tuple[int, float, int] | None:
+        """Chrome's processes now, the CPU seconds they've used in all, and the most memory they
+        have committed together (bytes), from its job. None without a job."""
+        if not self._job:
+            return None
+        accounting, limits = _Accounting(), _ExtendedLimits()
+        if not self._kernel.QueryInformationJobObject(
+            self._job, _BASIC_ACCOUNTING, ctypes.byref(accounting), ctypes.sizeof(accounting), None
+        ) or not self._kernel.QueryInformationJobObject(
+            self._job, _EXTENDED_LIMITS, ctypes.byref(limits), ctypes.sizeof(limits), None
+        ):
+            return None
+        cpu = (accounting.TotalUserTime + accounting.TotalKernelTime) / 10_000_000
+        return accounting.ActiveProcesses, cpu, limits.PeakJobMemoryUsed
 
     @property
     def ended_with_owner(self) -> bool:
