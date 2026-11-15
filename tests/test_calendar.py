@@ -1,3 +1,4 @@
+import re
 from datetime import UTC, date, datetime
 from pathlib import Path
 
@@ -6,10 +7,13 @@ import pytest
 from earnings_bot.browser_sources import IRSource, QuarterlyTable
 from earnings_bot.calendar import Calendar, manual_target, upcoming
 from earnings_bot.delivery import DeliveryStore
+from earnings_bot.fetch import Response
 from earnings_bot.ir_research import IR_LISTINGS, quarter_headline
 from earnings_bot.issuers import profile
 from earnings_bot.known import known_companies, to_target
-from earnings_bot.recorder import ET, Trial
+from earnings_bot.recorder import ET, Target, Trial
+from earnings_bot.sources import PR_NEWSWIRE_EARNINGS
+from tests.builders import AMAT
 from tests.sec_data import LCID_CIK, LCID_SUBMISSIONS
 
 NOW = datetime(2026, 11, 7, tzinfo=UTC)
@@ -44,14 +48,30 @@ def test_tracking_and_untracking_can_be_repeated(tmp_path: Path) -> None:
         for _ in range(6):
             row, added = calendar.add("NVDA")
             assert added
+            calendar.save_review(row.cik, NOW, "{}")
             assert calendar.remove(row.cik)
+            assert not calendar.remove(row.cik)
+            assert calendar.entries() == []
+            assert calendar.review(row.cik) == (None, None)
 
 
-def test_override_requires_a_valid_fiscal_period_and_future_time() -> None:
-    with pytest.raises(ValueError, match=r"fiscal|period"):
-        manual_target("NVDA", "2026-11-17T16:20", "FY2027Q0", NOW)
-    with pytest.raises(ValueError, match="future"):
-        manual_target("NVDA", "2026-11-01T16:20", "FY2027Q3", NOW)
+@pytest.mark.parametrize(
+    ("when", "period", "message"),
+    [
+        (
+            "2026-11-17T16:20",
+            "FY2027Q0",
+            "Use an ISO date and time like 2026-11-17T16:20 and a period like FY2027Q3.",
+        ),
+        ("2026-11-01T16:20", "FY2027Q3", "Choose a future earnings release time."),
+    ],
+    ids=["bad-period", "past-time"],
+)
+def test_override_requires_a_valid_fiscal_period_and_future_time(
+    when: str, period: str, message: str
+) -> None:
+    with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
+        manual_target("NVDA", when, period, NOW)
 
 
 def test_auto_browser_source_preserves_existing_schedule_choices(tmp_path: Path) -> None:
@@ -173,3 +193,65 @@ def test_legacy_schedule_keeps_its_key_and_watches_the_researched_table(tmp_path
     table = tables[0]
     assert (table.listing, table.year, table.quarter) == (results, 2027, 3)
     assert table.rendered and table.cache_bust
+
+
+def test_a_schedule_file_for_a_6k_filer_is_told_to_watch_6k(tmp_path: Path) -> None:
+    company = AMAT.model_copy(update={"sec_form": "6-K"})
+    expected = datetime(2026, 11, 17, 16, 20, tzinfo=ET)
+    file = Target.model_validate(
+        to_target("AMAT", expected, 2026, 4, AMAT).model_dump(exclude={"sec_form"})
+    )
+    assert "sec_form" not in file.model_fields_set
+    explicit = file.model_copy(update={"sec_form": "8-K"})
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        calendar = Calendar(store)
+        calendar.add("AMAT", company)
+        calendar.set_target(to_target("AMAT", expected, 2026, 4, company), "Issuer notice")
+
+        [effective] = calendar.plan({file.release_key: file}).values()
+        assert effective.sec_form == "6-K"
+
+        # A file that names its form is left as written
+        [kept] = calendar.plan({explicit.release_key: explicit}).values()
+        assert kept.sec_form == "8-K"
+
+
+def _wire_item(title: str, lead: str, guid: str, publisher: str | None = None) -> str:
+    contributor = f"<dc:contributor>{publisher}</dc:contributor>" if publisher else ""
+    return (
+        f"<item><title>{title}</title><link>https://www.prnewswire.com/{guid}</link>"
+        f"<guid>{guid}</guid><description>{lead}</description>{contributor}</item>"
+    )
+
+
+def test_a_saved_single_word_company_gets_its_wire_publisher_on_the_next_plan(
+    tmp_path: Path,
+) -> None:
+    company = profile("AZTA", 933974, "Azenta, Inc.", LCID_SUBMISSIONS, date(2026, 11, 10))
+    target = to_target("AZTA", datetime(2026, 11, 10, 16, 30, tzinfo=ET), 2026, 4, company)
+    title = "Azenta Reports Fourth Quarter and Full Year Results for Fiscal 2026"
+    featured = ("Year-end revenue grew as announced in the release. " * 5) + "(Nasdaq: AZTA)"
+    feed = (
+        '<rss xmlns:dc="http://purl.org/dc/elements/1.1/"><channel>'
+        f"<link>{PR_NEWSWIRE_EARNINGS}</link>"
+        + _wire_item(title, featured, "azenta", "Azenta, Inc.")
+        + _wire_item(title, "No exchange tag", "headline")
+        + _wire_item(title, "No exchange tag", "wrong-publisher", "Another Company")
+        + _wire_item("Other Company Reports Fourth Quarter Results", "Its customer Azenta", "other")
+        + "</channel></rss>"
+    )
+    response = Response(PR_NEWSWIRE_EARNINGS, 200, {}, feed.encode(), 0.01)
+    assert target.prnewswire == ["NASDAQ: AZTA", "NYSE: AZTA"]
+    # Existing /track rows and matching old TOML files pick up the identity on the next scan.
+    old = target.model_copy(update={"wire_publisher": None})
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        calendar = Calendar(store)
+        calendar.add("AZTA", company)
+        calendar.set_target(old, "Issuer confirmed release time")
+        planned = calendar.plan({old.release_key: old})[old.release_key]
+
+    assert planned.wire_publisher == "Azenta"
+    wire_sources = [s for s in planned.sources() if s.name in ("prnewswire", "prnewswire_busted")]
+    assert len(wire_sources) == 2
+    for source in wire_sources:
+        assert [item.key for item in source.parse(response)] == ["azenta", "headline"]

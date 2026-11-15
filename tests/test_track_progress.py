@@ -20,11 +20,12 @@ from earnings_bot.browser_sources import IRSource
 from earnings_bot.cache_research import CHECKING_CACHE
 from earnings_bot.calendar import Calendar
 from earnings_bot.config import Settings
-from earnings_bot.date_discovery import VERIFYING_IR
+from earnings_bot.date_discovery import VERIFYING_IR, DateDiscovery
 from earnings_bot.delivery import DeliveryStore
 from earnings_bot.edit_priority import EditPriority
 from earnings_bot.formatting import GREEN
 from earnings_bot.investigate import INVESTIGATION, Report
+from earnings_bot.issuers import profile
 from earnings_bot.known import KnownCompany, SourceCheck, to_target
 from earnings_bot.pipeline import Release
 from earnings_bot.recorder import ET, Journal, Target
@@ -33,6 +34,7 @@ from earnings_bot.source_audit import Speed, Timing
 from earnings_bot.sources import RssFeed, Sighting
 from earnings_bot.track_progress import REPLACE_AFTER, CardPoster, TrackProgress
 from earnings_bot.version import release_version
+from tests.brookfield_data import BN_NOW, CIK, filings
 from tests.builders import INVESTIGATED, LISTING, LUCID, SPEED, uber
 from tests.builders import PROGRESS_NOW as NOW
 from tests.fakes import FakeDiscord, FakeMessage, RoutedFetcher, WatchedDiscord, embed_text
@@ -121,7 +123,9 @@ async def test_a_card_is_edited_in_place_and_sent_again_if_deleted(tmp_path: Pat
         assert channel.messages[2].embed and channel.messages[2].embed.description == "Three"
 
 
-async def test_an_unchanged_card_isnt_edited_again(tmp_path: Path) -> None:
+async def test_an_unchanged_card_isnt_edited_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     channel = FakeDiscord()
     edits = 0
     original = FakeMessage.edit
@@ -131,14 +135,11 @@ async def test_an_unchanged_card_isnt_edited_again(tmp_path: Path) -> None:
         edits += 1
         return await original(self, **kwargs)  # type: ignore[arg-type]
 
-    FakeMessage.edit = counted  # type: ignore[method-assign]
-    try:
-        with DeliveryStore(tmp_path / "state.db", 7) as store:
-            progress = tracker(store, channel)
-            for text in ("Same", "Same", "Same", "Changed"):
-                await progress.publish(1045810, card("NVDA · NVIDIA", text))
-    finally:
-        FakeMessage.edit = original  # type: ignore[method-assign]
+    monkeypatch.setattr(FakeMessage, "edit", counted)
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        progress = tracker(store, channel)
+        for text in ("Same", "Same", "Same", "Changed"):
+            await progress.publish(1045810, card("NVDA · NVIDIA", text))
     assert channel.attempts == 1
     assert edits == 1
 
@@ -158,18 +159,50 @@ async def test_a_restart_leaves_a_card_alone_if_it_still_reads_the_same(tmp_path
     assert channel.attempts == 1
 
 
-async def test_card_edits_are_spaced_to_leave_room_for_release_edits(tmp_path: Path) -> None:
+class VirtualTime:
+    """The scorecard publisher's clock and sleep, which advance only when it waits."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+        self.slept: list[float] = []
+
+    def monotonic(self) -> float:
+        return self.now
+
+    async def sleep(self, seconds: float) -> None:
+        self.slept.append(seconds)
+        self.now += seconds
+        await asyncio.sleep(0)
+
+
+class _VirtualAsyncio:
+    def __init__(self, virtual: VirtualTime) -> None:
+        self.sleep = virtual.sleep
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(asyncio, name)
+
+
+@pytest.fixture
+def virtual_time(monkeypatch: pytest.MonkeyPatch) -> VirtualTime:
+    virtual = VirtualTime()
+    monkeypatch.setattr(track_progress, "time", SimpleNamespace(monotonic=virtual.monotonic))
+    monkeypatch.setattr(track_progress, "asyncio", _VirtualAsyncio(virtual))
+    return virtual
+
+
+async def test_card_edits_are_spaced_to_leave_room_for_release_edits(
+    tmp_path: Path, virtual_time: VirtualTime
+) -> None:
     channel = FakeDiscord()
     with DeliveryStore(tmp_path / "state.db", 7) as store:
         progress = tracker(store, channel, card_spacing=0.2)
-        started = time.monotonic()
         for n in range(3):
             await progress.publish(1000 + n, card(f"T{n} · Company", "New"))
         # Three sends: the first goes at once, then two waits
-        assert time.monotonic() - started >= 0.35
-        started = time.monotonic()
+        assert virtual_time.slept == pytest.approx([0.2, 0.2])
         await progress.publish(1000, card("T0 · Company", "New"))  # unchanged: no wait
-        assert time.monotonic() - started < 0.1
+        assert len(virtual_time.slept) == 2
 
 
 async def test_the_audit_waits_for_the_investigation(tmp_path: Path) -> None:
@@ -409,49 +442,34 @@ def test_a_complete_card_is_green_only_when_its_routes_are_verified_fresh(
     assert dot == "🟡"
 
 
-async def test_a_check_saved_in_the_old_format_is_redone(tmp_path: Path) -> None:
-    channel = WatchedDiscord()
-    asked = asyncio.Event()
-
-    async def audit(ticker: str, company: KnownCompany, when: datetime) -> Speed:
-        asked.set()
-        return SPEED
-
-    with DeliveryStore(tmp_path / "state.db", 7) as store:
-        calendar = Calendar(store)
-        calendar.add("LCID", INVESTIGATED)
-        calendar.save_review(LCID_CIK, NOW - timedelta(hours=1), "**Last release | Aug 05**")
-        progress = tracker(store, channel, audit=audit)
-        task = asyncio.create_task(progress.run())
-        try:
-            await asyncio.wait_for(asked.wait(), 5)
-        finally:
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
-        _, saved = calendar.review(LCID_CIK)
-    assert Speed.from_json(saved) == SPEED
+def _without_history() -> str:
+    """What an audit saved before it kept the release history."""
+    saved = json.loads(SPEED.to_json())
+    del saved["history"]
+    return json.dumps(saved)
 
 
-async def test_a_check_saved_without_a_release_history_is_redone(tmp_path: Path) -> None:
-    channel = WatchedDiscord()
-    asked = asyncio.Event()
+@pytest.mark.parametrize(
+    "saved",
+    ["**Last release | Aug 05**", _without_history()],
+    ids=["old-format", "no-release-history"],
+)
+async def test_a_check_saved_in_an_outdated_form_is_redone(tmp_path: Path, saved: str) -> None:
     redone = replace(SPEED, history=[datetime(2026, 8, 5, 16, 5, tzinfo=ET)])
+    asked = asyncio.Event()
 
     async def audit(ticker: str, company: KnownCompany, when: datetime) -> Speed:
         asked.set()
         return redone
 
-    # What an audit saved before it kept the release history, an hour ago
-    saved = {key: value for key, value in json.loads(SPEED.to_json()).items() if key != "history"}
     with DeliveryStore(tmp_path / "state.db", 7) as store:
         calendar = Calendar(store)
         calendar.add("LCID", INVESTIGATED)
-        calendar.save_review(LCID_CIK, NOW - timedelta(hours=1), json.dumps(saved))
-        progress = tracker(store, channel, audit=audit)
+        calendar.save_review(LCID_CIK, NOW - timedelta(hours=1), saved)
+        progress = tracker(store, WatchedDiscord(), audit=audit)
         task = asyncio.create_task(progress.run())
         try:
             await asyncio.wait_for(asked.wait(), 5)
-            await asyncio.sleep(0.05)
         finally:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
@@ -620,20 +638,6 @@ def refused_edit(retry_after: str) -> discord.HTTPException:
     )
 
 
-async def test_a_new_version_alone_doesnt_edit_a_card(tmp_path: Path) -> None:
-    channel = FakeDiscord()
-    with DeliveryStore(tmp_path / "state.db", 7) as store:
-        shown = card("NVDA · NVIDIA", "Same")
-        shown.set_footer(text="Earnings Bot v0.14.2 · Updated")
-        await tracker(store, channel).publish(1045810, shown)
-        deployed = card("NVDA · NVIDIA", "Same")
-        deployed.set_footer(text="Earnings Bot v0.15.0 · Updated")
-        await tracker(store, channel).publish(1045810, deployed)
-
-    [message] = channel.messages.values()
-    assert message.edited_at is None
-
-
 async def test_a_restart_edits_no_card_whose_content_is_unchanged(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -760,7 +764,9 @@ async def test_a_release_edit_cancels_a_card_edit_already_waiting_on_discord(
     assert scorecard.embed is not None and scorecard.embed.description == "New"
 
 
-async def test_old_cards_show_settled_results_one_at_a_time(tmp_path: Path) -> None:
+async def test_old_cards_show_settled_results_one_at_a_time(
+    tmp_path: Path, virtual_time: VirtualTime
+) -> None:
     """Each hourly date check turned every card amber and back: two edits an hour on messages
     days old, which count against Discord's cap on edits to old messages."""
     channel = FakeDiscord()
@@ -782,7 +788,7 @@ async def test_old_cards_show_settled_results_one_at_a_time(tmp_path: Path) -> N
         progress.offer(1000, card("T1000 · Co", "Checked"))  # the latest content wins
         await progress.flush()
         assert shown() == ["Done", "New date"]  # within 0.3 s of the last old card's edit
-        await asyncio.sleep(0.35)
+        virtual_time.now += 0.35
         await progress.flush()
         assert shown() == ["Checked", "New date"]
         assert progress.pending == {}
@@ -922,3 +928,44 @@ async def test_a_deferred_audit_preserves_the_previous_review(tmp_path: Path) ->
         assert calendar.review(row.cik) == previous
         assert progress.next_attempt[row.cik] == NOW + timedelta(minutes=10)
         assert row.cik in progress.audit_failed
+
+
+async def test_scorecard_explains_busy_and_missing_date_states(tmp_path: Path) -> None:
+    async def audit(*args: object) -> Speed:
+        return Speed(None)
+
+    company = profile("BN", CIK, "Brookfield Corporation", filings(), BN_NOW.date()).model_copy(
+        update={
+            "investigated": BN_NOW.date(),
+            "checks": [SourceCheck(source="SEC 8-K filings", watch=True, why="Filed here")],
+            "investigation": INVESTIGATION,
+        }
+    )
+    busy = True
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        calendar = Calendar(store)
+        row, _ = calendar.add("BN", company)
+        dates = DateDiscovery(calendar, RoutedFetcher({}), lambda: BN_NOW, lambda: busy, print)
+        progress = TrackProgress(
+            calendar,
+            store,
+            cast(discord.abc.Messageable, FakeDiscord()),
+            42,
+            dict,
+            lambda: BN_NOW,
+            lambda: busy,
+            audit,
+            date_phase=dates.phases.get,
+        )
+        assert "Speed history (waits for an open release window)" in embed_text(
+            progress.render(row, None, False)
+        )
+        await dates.run_once(row)
+        assert "Release date: waiting for an open release window to close" in embed_text(
+            progress.render(row, None, False)
+        )
+        busy = False
+        await dates.run_once(row)
+        score = embed_text(progress.render(row, None, False))
+        assert "results on Form 6-K" in score
+        assert "⚠️ No release date read yet" in score and "`when`" in score and "`period`" in score

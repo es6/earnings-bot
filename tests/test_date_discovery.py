@@ -12,6 +12,7 @@ from earnings_bot.browser import RenderedPage
 from earnings_bot.browser_sources import IRSource, QuarterlyTable
 from earnings_bot.calendar import Calendar, Tracked, describe, manual_target
 from earnings_bot.date_discovery import (
+    CALENDAR_6K_DATE,
     CALENDAR_DATE,
     FMP_EARNINGS,
     DateDiscovery,
@@ -32,8 +33,21 @@ from earnings_bot.issuers import profile
 from earnings_bot.known import SourceCheck, known_companies, to_target
 from earnings_bot.recorder import ET, Target
 from earnings_bot.source_audit import Speed, Timing
-from earnings_bot.sources import is_date_notice
-from tests.builders import AMAT, AMAT_NOTICE_BODY
+from earnings_bot.sources import EdgarFilings, is_date_notice
+from tests.brookfield_data import (
+    BN_NOW,
+    CIK,
+    HOST,
+    LISTING,
+    NOTICE,
+    NOTICE_BODY,
+    ORDINARY,
+    TITLE,
+    filings,
+    fixtures,
+    folder,
+)
+from tests.builders import AMAT, AMAT_NOTICE_BODY, sec_filing_detail
 from tests.fakes import RoutedFetcher, rendered
 from tests.sec_data import LCID_CIK, LCID_SUBMISSIONS
 
@@ -274,7 +288,7 @@ async def test_a_date_found_as_a_window_opens_or_after_untrack_isnt_saved(
         fetcher = InterruptedFetcher({NVIDIA_FEED: nvidia_notices()}, interrupt)
         dates = DateDiscovery(calendar, fetcher, lambda: NOW, lambda: window_open, statuses.append)
 
-        await dates._check(row)
+        await dates.run_once(row)
 
         assert fetcher.requests
         assert all(entry.target is None for entry in calendar.entries())
@@ -293,10 +307,10 @@ async def test_discovery_leaves_an_admin_override_alone(tmp_path: Path) -> None:
         [row] = calendar.entries()
         dates = DateDiscovery(calendar, fetcher, lambda: NOW, lambda: False, statuses.append)
 
-        await dates._check(row)
+        await dates.run_once(row)
 
+        # The saved date and its evidence are as the admin left them, and nothing is announced
         assert calendar.entries() == [row]
-    assert fetcher.requests == []
     assert statuses == []
 
 
@@ -319,13 +333,13 @@ async def test_a_verified_browser_source_joins_the_found_date_and_is_kept(
         dates = DateDiscovery(calendar, fetcher, lambda: NOW, lambda: False, statuses.append)
         [row] = calendar.entries()
 
-        await dates._check(row)
+        await dates.run_once(row)
 
         [row] = calendar.entries()
         assert row.target and row.target.ir == trial
         assert dates.ir_notes[row.cik] == "Last quarter's results read in Chrome"
         # The next hourly check finds the same date, and keeps the trial without verifying again
-        await dates._check(row)
+        await dates.run_once(row)
         assert calendar.entries() == [row]
     assert verified == ["FY2027Q3"]
     assert len(statuses) == 1
@@ -362,7 +376,7 @@ class Lucid:
 
     async def check(self) -> None:
         [row] = self.calendar.entries()
-        await self.dates._check(row)
+        await self.dates.run_once(row)
 
     def row(self) -> tuple[datetime | None, str | None]:
         [row] = self.calendar.entries()
@@ -428,6 +442,28 @@ async def test_a_failed_fmp_answer_saves_nothing_and_is_asked_again(
         assert lucid.row() == (datetime(2026, 11, 9, 16, 5, tzinfo=ET), CALENDAR_DATE)
 
 
+@pytest.mark.parametrize("answer", [(500, b"busy"), (200, b"[]")], ids=["error", "no-dates"])
+async def test_a_remembered_fmp_date_is_kept_when_the_next_fmp_check_gives_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, answer: tuple[int, bytes]
+) -> None:
+    monkeypatch.setattr(date_discovery, "CALENDAR_REFRESH", 0)  # ask FMP at every check
+    fetcher = RoutedFetcher({FMP_ROUTE: fmp_dates(("2026-11-09", None))})
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        lucid = Lucid(store, fetcher, "secret")
+        await lucid.check()
+        remembered = lucid.row()
+        assert remembered == (datetime(2026, 11, 9, 16, 5, tzinfo=ET), CALENDAR_DATE)
+
+        fetcher.routes[FMP_ROUTE] = answer
+        await lucid.check()
+
+        assert sum(FMP_ROUTE in url for _, url, _ in fetcher.requests) == 2
+        assert lucid.row() == remembered
+        # The card isn't told that no date was read
+        [row] = lucid.calendar.entries()
+        assert row.cik not in lucid.dates.phases
+
+
 async def test_a_symbol_fmps_plan_doesnt_cover_waits_for_the_next_refresh(
     tmp_path: Path,
 ) -> None:
@@ -475,7 +511,7 @@ async def test_fmp_isnt_asked_without_a_time_or_fiscal_year_to_go_with_its_date(
         [row] = calendar.entries()
         dates = DateDiscovery(calendar, fetcher, lambda: NOW, lambda: False, print, "secret")
 
-        await dates._check(row)
+        await dates.run_once(row)
 
         assert calendar.entries() == [row]
     assert not any(FMP_ROUTE in url for _, url, _ in fetcher.requests)
@@ -566,7 +602,7 @@ async def test_a_notice_whose_date_cant_be_read_is_named_on_the_card(
         calendar = Calendar(store)
         row, _ = calendar.add("AMAT", company)
         dates = DateDiscovery(calendar, fetcher, lambda: NOW, lambda: False, print)
-        await dates._check(row)
+        await dates.run_once(row)
     # Chrome tried the IR site too, and the card says what came of it
     assert dates.phases[row.cik] == (
         f"No release date read yet. Chrome couldn't open its IR site: {host} answered HTTP 404. "
@@ -648,6 +684,30 @@ def test_a_morning_call_moves_an_afternoon_estimate_before_it() -> None:
     assert target.period == "FY2026Q4"
     assert target.expected == datetime(2026, 11, 19, 7, 30, tzinfo=ET)
     assert target.window[1] >= datetime(2026, 11, 19, 8, 35, tzinfo=ET)
+
+
+@pytest.mark.parametrize(
+    ("form", "published", "expected"),
+    [
+        ("8-K", False, datetime(2026, 11, 18, 16, 15, tzinfo=ET)),
+        ("6-K", True, datetime(2026, 11, 18, 16, 15, tzinfo=ET)),
+        # A 6-K filing time says when the filing came, not when the release did
+        ("6-K", False, datetime(2026, 11, 19, 9, 0, tzinfo=ET)),
+    ],
+    ids=["8-K", "6-K-with-published-release-time", "6-K-filing-time-only"],
+)
+def test_a_6k_filers_evening_filing_time_doesnt_place_the_release_before_a_morning_call(
+    form: str, published: bool, expected: datetime
+) -> None:
+    company = AMAT.model_copy(
+        update={"sec_form": form, "release_time": "16:15", "release_published": published}
+    )
+    call = Moment(date(2026, 11, 19), datetime(2026, 11, 19, 10, tzinfo=ET))
+
+    result = event_target("ACME", company, "Q3 2026 Earnings Conference Call", call, NOW)
+
+    assert result is not None
+    assert result[0].expected == expected
 
 
 def test_before_930_am_is_before_the_open_whatever_the_filing_times() -> None:
@@ -781,7 +841,7 @@ async def test_a_tracked_window_is_widened_by_the_saved_release_history(tmp_path
         calendar.save_review(company.cik, now, Speed(None, history=history).to_json())
         [row] = calendar.entries()
         dates = DateDiscovery(calendar, RoutedFetcher({}), lambda: now, lambda: False, print)
-        await dates._check(row)
+        await dates.run_once(row)
         [row] = calendar.entries()
 
     assert row.target is not None
@@ -833,7 +893,7 @@ async def test_a_closed_window_needs_evidence_of_a_release(tmp_path: Path, deliv
             store.delivered(done.release_key, 101)
         [row] = calendar.entries()
         dates = DateDiscovery(calendar, RoutedFetcher({}), lambda: now, lambda: False, print)
-        await dates._check(row)
+        await dates.run_once(row)
 
     expected = (
         "Q4 FY26 results came out Tue, Nov 10. The next release isn't announced yet."
@@ -880,12 +940,12 @@ async def test_track_arms_the_rendered_results_page_alongside_the_issuer_api(
         dates = DateDiscovery(calendar, fetcher, lambda: NOW, lambda: False, print)
         if first_probe_fails:
             fetcher.routes[page] = (503, b"")
-            await dates._check(row)
+            await dates.run_once(row)
             [row] = calendar.entries()
             assert row.target and row.target.ir and row.target.ir.results_api == api
             assert row.target.ir.results_table is None
             fetcher.routes[page] = (200, listing.encode())
-        await dates._check(row)
+        await dates.run_once(row)
         [row] = calendar.entries()
 
     assert row.target is not None
@@ -926,12 +986,12 @@ async def test_a_wire_notice_can_supply_the_date_when_ir_cannot(tmp_path: Path) 
         row, _ = calendar.add("CAE", company)
         dates = DateDiscovery(calendar, fetcher, lambda: NOW, lambda: False, print)
         fetcher.routes[notice] = (200, text.replace("NYSE: CAE", "NYSE: OTHER").encode())
-        await dates._check(row)
+        await dates.run_once(row)
         [row] = calendar.entries()
         assert row.target is None
 
         fetcher.routes[notice] = (200, text.encode())
-        await dates._check(row)
+        await dates.run_once(row)
         [row] = calendar.entries()
         assert row.target is not None
         assert row.target.expected.date() == date(2026, 11, 11)
@@ -939,45 +999,55 @@ async def test_a_wire_notice_can_supply_the_date_when_ir_cannot(tmp_path: Path) 
         assert row.evidence and notice in row.evidence
 
 
-@pytest.mark.parametrize(
-    ("text", "day", "time"),
-    [
-        (
-            (
-                "Upcoming Events\nNov 24, 2026 \u2022 3:30 pm CST\n\n"
-                "Dell Technologies Fiscal Year 2027 Third Quarter Results"
-            ),
-            24,
-            "4:30 PM",
-        ),
-        ("John Deere - 4Q Earnings Call\nNovember 25, 2026 09:00 AM - CST", 25, "10:00 AM"),
-        (
-            "Upcoming Events\nNovember 18, 2026 (tentative)\nCompany Q3 2026 Earnings Results",
-            18,
-            None,
-        ),
-    ],
-)
-async def test_event_cards_read_adjacent_dates_and_zones_without_arming_tentative_events(
-    text: str, day: int, time: str | None
-) -> None:
-    url = "https://investor.example.com/"
+async def _event_card(text: str) -> tuple[Target, str] | None:
     company = AMAT.model_copy(update={"release_time": "06:00", "fiscal_year_end": "1031"})
 
     async def render(page: str) -> RenderedPage:
         html = "".join(f"<div>{line}</div>" for line in text.splitlines())
         return rendered(page, 200, html)
 
-    result, _ = await rendered_date(render, [url], "AMAT", company, NOW, [])
+    result, _ = await rendered_date(
+        render, ["https://investor.example.com/"], "AMAT", company, NOW, []
+    )
+    return result
 
-    if time is None:
-        assert result is None
-    else:
-        assert result is not None
-        assert result[0].expected.day == day
-        assert time in result[1]
-        if day == 25:
-            assert result[0].expected.hour == 6
+
+@pytest.mark.parametrize(
+    ("text", "day", "shown_time", "hour"),
+    [
+        (
+            (
+                "Upcoming Events\nNov 24, 2026 • 3:30 pm CST\n\n"
+                "Dell Technologies Fiscal Year 2027 Third Quarter Results"
+            ),
+            24,
+            "4:30 PM",
+            15,
+        ),
+        ("John Deere - 4Q Earnings Call\nNovember 25, 2026 09:00 AM - CST", 25, "10:00 AM", 6),
+    ],
+    ids=["time-zone-converted", "call-time-gives-earlier-release"],
+)
+async def test_event_cards_read_adjacent_dates_and_zones(
+    text: str, day: int, shown_time: str, hour: int
+) -> None:
+    result = await _event_card(text)
+
+    assert result is not None
+    target, evidence = result
+    assert target.expected.day == day
+    assert target.expected.hour == hour
+    assert shown_time in evidence
+
+
+async def test_a_tentative_event_is_not_armed_though_the_same_card_without_it_is() -> None:
+    card = "Upcoming Events\nNovember 18, 2026{}\nCompany Q3 2026 Earnings Results"
+
+    confirmed = await _event_card(card.format(""))
+    tentative = await _event_card(card.format(" (tentative)"))
+
+    assert confirmed is not None and confirmed[0].expected.day == 18
+    assert tentative is None
 
 
 async def test_a_morning_results_event_keeps_its_issuer_date_when_history_is_afternoon() -> None:
@@ -1101,3 +1171,142 @@ async def test_a_company_is_settled_once_its_check_finishes_outside_a_window(
         window_open = True
         await dates.run_once(row)
         assert not dates.settled(row.cik)
+
+
+async def test_saved_bn_profile_is_enriched_and_scheduled_from_issuer_notice(
+    tmp_path: Path,
+) -> None:
+    data = filings()
+    company = profile("BN", CIK, "Brookfield Corporation", data, BN_NOW.date())
+    assert company.sec_form == "6-K"
+    old = company.model_copy(update={"sec_form": None, "investigated": BN_NOW.date()})
+    routes = fixtures(data)
+    routes[LISTING] = (200, f'<a href="{NOTICE}">{TITLE}</a>'.encode())
+    routes[NOTICE] = (200, NOTICE_BODY)
+    routes[f"{HOST}/"] = (200, b'<a href="/events-news/press-releases">Press Releases</a>')
+    routes["symbol=BN"] = (200, b'[{"symbol":"BN","date":"2026-11-12","epsActual":null}]')
+    fetcher = RoutedFetcher(routes)
+    messages: list[str] = []
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        calendar = Calendar(store)
+        row, _ = calendar.add("BN", old)
+        dates = DateDiscovery(calendar, fetcher, lambda: BN_NOW, lambda: False, messages.append)
+        await dates.run_once(row)
+        found = calendar.find("BN")
+        assert found and found.target
+        assert found.target.expected == datetime(2026, 11, 12, 7, tzinfo=ET)
+        assert found.target.period == "FY2026Q3" and found.target.sec_form == "6-K"
+        assert found.target.before_minutes == 30
+        assert found.company.sixk == ["06:45"] and found.company.release_time == "06:45"
+        assert found.company.ir_listing == LISTING
+        assert found.company.wire == "GlobeNewswire"
+        assert messages == [f"📅 {describe(found.target, found.evidence or '')}"]
+        assert ("SEC 6-K filings", True) in [(c.source, c.watch) for c in found.company.checks]
+        fallback = await calendar_date(fetcher, "test", "BN", found.company, BN_NOW)
+        assert fallback and fallback[0].expected.hour == 6 and fallback[1] == CALENDAR_6K_DATE
+
+
+async def test_klarna_style_results_exhibit_leads_to_issuer_q4_notice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("earnings_bot.date_discovery.chrome_available", lambda: False)
+    cik = 2003292
+    accession = "0001628280-26-057573"
+    path = f"/Archives/edgar/data/{cik}/{accession.replace('-', '')}"
+    host = "investors.klarna.com"
+    release = (
+        "<h1>Klarna Reports Second Quarter 2026 Results</h1>"
+        "<p>Klarna Group plc today reported second quarter 2026 results. "
+        "Revenue reached $1 billion.</p>"
+        + "<p>Revenues and net income. </p>" * 100
+        + f"<p>See https://{host}/financials/quarterly-results/.</p>"
+    )
+    notice = "/News--Events/news/news-details/2026/earnings-notice/default.aspx"
+    data = {
+        "fiscalYearEnd": "1231",
+        "filings": {
+            "recent": {
+                "accessionNumber": [accession],
+                "form": ["6-K"],
+                "items": [""],
+                "acceptanceDateTime": ["2026-08-18T14:37:37Z"],
+                "primaryDocument": ["cover.htm"],
+            }
+        },
+    }
+    q4 = {
+        "GetPressReleaseListResult": [
+            {
+                "Headline": "Klarna to Publish Q3 2026 Earnings on November 17, 2026",
+                "Body": (
+                    "<p>Klarna will publish its Q3 2026 earnings on Tuesday, "
+                    "November 17, 2026, before market open.</p>"
+                ),
+                "LinkToDetailPage": notice,
+            },
+            {
+                "Headline": "Klarna Reports Second Quarter 2026 Results",
+                "Body": "<p>NEW YORK--(BUSINESS WIRE)-- Klarna reported its results.</p>",
+            },
+        ]
+    }
+    fetcher = RoutedFetcher(
+        {
+            f"CIK{cik:010d}.json": (200, json.dumps(data).encode()),
+            f"{path}/{accession}-index.htm": (
+                200,
+                sec_filing_detail(f"{path}/cover.htm", "results.htm"),
+            ),
+            f"{path}/results.htm": (200, release.encode()),
+            "pageSize=20": (200, json.dumps(q4).encode()),
+            "pageSize=10": (
+                200,
+                json.dumps(
+                    {"GetPressReleaseListResult": q4["GetPressReleaseListResult"][:1]}
+                ).encode(),
+            ),
+            f"https://{host}/": (200, b"Investor relations"),
+        }
+    )
+    saved = profile("KLAR", cik, "Klarna Group plc", data, BN_NOW.date()).model_copy(
+        update={"investigated": BN_NOW.date(), "investigation": 8}
+    )
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        calendar = Calendar(store)
+        row, _ = calendar.add("KLAR", saved)
+        dates = DateDiscovery(calendar, fetcher, lambda: BN_NOW, lambda: False, lambda _: None)
+        await dates.run_once(row)
+        [found] = calendar.entries()
+
+    assert found.company.sixk == ["10:37"]
+    assert found.company.wire == "Business Wire"
+    assert found.target and found.target.period == "FY2026Q3"
+    assert found.target.expected == datetime(2026, 11, 17, 7, tzinfo=ET)
+    assert found.target.q4_host == host and found.target.sec_form == "6-K"
+    assert found.evidence and f"https://{host}{notice}" in found.evidence
+
+
+async def test_an_issuer_notice_filed_on_6k_can_schedule_but_never_alert(tmp_path: Path) -> None:
+    data = filings(accepted="2026-10-09T21:00:03Z")
+    routes = fixtures(data)
+    routes[f"{folder(ORDINARY)}/exh_991.htm"] = (200, NOTICE_BODY)
+    fetcher = RoutedFetcher(routes)
+    company = profile("BN", CIK, "Brookfield Corporation", data, BN_NOW.date()).model_copy(
+        update={
+            "investigated": BN_NOW.date(),
+            "checks": [SourceCheck(source="SEC 8-K filings", watch=True, why="Filed here")],
+            "investigation": INVESTIGATION,
+        }
+    )
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        calendar = Calendar(store)
+        row, _ = calendar.add("BN", company)
+        dates = DateDiscovery(calendar, fetcher, lambda: BN_NOW, lambda: False, print)
+        await dates.run_once(row)
+        found = calendar.find("BN")
+        assert found and found.target and found.evidence
+        assert found.target.expected == datetime(2026, 11, 12, 7, tzinfo=ET)
+        assert "from issuer 6-K exhibit" in found.evidence
+        recent = EdgarFilings(CIK, form="6-K")
+        ordinary = recent.parse(await fetcher.request("GET", recent.url()))[0]
+        assert await dates.sixk.verify(ordinary) is None

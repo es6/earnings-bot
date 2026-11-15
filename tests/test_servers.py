@@ -3,7 +3,6 @@ once, and its alert goes to each of them at once."""
 
 import asyncio
 import io
-import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import cast
@@ -11,7 +10,6 @@ from typing import cast
 import discord
 import pytest
 
-from earnings_bot import recorder
 from earnings_bot.config import Settings
 from earnings_bot.delivery import DeliveryStore
 from earnings_bot.pipeline import FanOutPoster, Releases, fan_out
@@ -21,7 +19,14 @@ from earnings_bot.tracking_commands import NOT_CONNECTED, TrackingCommands
 from earnings_bot.unattended import DirectoryWatcher, Server, _Window, durable_posters
 from tests.builders import GUILD
 from tests.clocks import ShiftedClock
-from tests.fakes import FakeDiscord, FakePoster, ReleaseDay, call
+from tests.fakes import (
+    FakePoster,
+    PolledReleaseDay,
+    ReleaseDay,
+    WatchedDiscord,
+    call,
+    quick_windows,
+)
 
 OTHER_GUILD = 777
 
@@ -69,12 +74,12 @@ async def test_every_server_gets_each_step_and_one_refusal_doesnt_stop_the_other
 async def test_a_company_other_servers_track_is_watched_once_and_alerted_in_each(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(recorder, "pace", lambda at, times, own: (own, None))
+    quick_windows(monkeypatch)
     clock = ShiftedClock()
     clock.sync()
     journal = Journal(io.StringIO(), clock)
-    fetcher = ReleaseDay()
-    channels = [FakeDiscord() for _ in range(4)]
+    fetcher = PolledReleaseDay()
+    channels = [WatchedDiscord() for _ in range(4)]
     guilds = [GUILD, OTHER_GUILD, 888, 999]
     with (
         DeliveryStore(tmp_path / "state.db", 7) as mine,
@@ -114,10 +119,13 @@ async def test_a_company_other_servers_track_is_watched_once_and_alerted_in_each
         [row] = servers[1].calendar.entries()
         assert row.target is not None
 
-        clock.shift = row.target.window[1] - clock.now() - timedelta(seconds=3)
-        fetcher.released_at = time.monotonic() + 0.8
         await bot.scan()
         assert len(bot.windows) == 1  # one window, however many servers track it
+        # The results come out after the first poll; once both servers have their alert, skip
+        # to the end of the window
+        for channel in channels[1:3]:
+            await asyncio.wait_for(channel.sent.wait(), 10)
+        clock.shift = row.target.window[1] - clock.now() + timedelta(seconds=1)
         await asyncio.gather(*(window.task for window in bot.windows.values()))
 
         for channel in channels[1:3]:
@@ -381,7 +389,7 @@ async def test_each_companys_speed_audit_runs_once_for_every_server(
 
     async def audit(ticker: str, company: object, when: datetime) -> object:
         audits.append(ticker)
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(0)
         done.set()
         if fails:
             raise OSError("temporary source failure")
@@ -432,7 +440,8 @@ async def test_each_companys_speed_audit_runs_once_for_every_server(
             await asyncio.wait_for(done.wait(), 5)
             for tracker in trackers:
                 tracker.changed.set()
-            await asyncio.sleep(0.3)
+            for channel in channels:
+                await asyncio.wait_for(channel.sent.wait(), 5)
         finally:
             for task in tasks:
                 task.cancel()

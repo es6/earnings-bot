@@ -14,8 +14,10 @@ from urllib.parse import unquote, urljoin, urlsplit
 
 import aiohttp
 import discord
+import pytest
 from yarl import URL
 
+from earnings_bot import recorder
 from earnings_bot.browser import _SETTLED, DesktopChrome, RenderedPage
 from earnings_bot.clock import TrustedClock
 from earnings_bot.delivery import DeliveryStore
@@ -697,3 +699,49 @@ class ScanFinished(Exception):
 
 async def scan_finished() -> None:
     raise ScanFinished
+
+
+class PolledReleaseDay(ReleaseDay):
+    """ReleaseDay whose list shows the results once it has been read `polls_before_release`
+    times, so a test needs no clock to put the release after a first poll without it.
+    """
+
+    def __init__(self, polls_before_release: int = 1) -> None:
+        super().__init__()
+        self.polls_before_release = polls_before_release
+        self.polls = 0
+
+    async def request(
+        self,
+        method: str,
+        url: str,
+        headers: dict[str, str] | None = None,
+        give_up_after: float | None = None,
+        urgent: bool = False,
+        *,
+        allow_redirects: bool = True,
+        encoded_url: bool = False,
+    ) -> Response:
+        if PLTR_FEED in url:
+            self.polls += 1
+            if self.polls > self.polls_before_release:
+                self.released_at = 0.0
+        return await super().request(
+            method,
+            url,
+            headers,
+            give_up_after,
+            urgent,
+            allow_redirects=allow_redirects,
+            encoded_url=encoded_url,
+        )
+
+
+def quick_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Makes a recorder window react within milliseconds: every route polls every 20 ms, and the
+    housekeeping tasks that sleep minutes between rounds look at the clock every 50 ms, so a test
+    that moves the clock to the end of a window sees it close at once. The real cadence is
+    test_release_band's."""
+    monkeypatch.setattr(recorder, "pace", lambda at, times, own: (0.02, None))
+    monkeypatch.setattr(recorder, "RESOURCES_EVERY", 0.05)
+    monkeypatch.setattr(recorder, "CLOCK_RESYNC", 0.05)

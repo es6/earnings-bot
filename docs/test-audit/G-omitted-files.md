@@ -25,14 +25,14 @@ Counts: KEEP 25, STRENGTHEN 8.
 |---|---|---|
 | `test_other_servers_alert_channels_come_from_one_comma_separated_setting` | KEEP | Checks parsing, deduplication, primary precedence and absence. Newly kills the config-parser mutant reported as CF4. |
 | `test_every_server_gets_each_step_and_one_refusal_doesnt_stop_the_others` | KEEP | Checks both send/summary steps, first-seen propagation, partial refusal and the single-server path. |
-| `test_a_company_other_servers_track_is_watched_once_and_alerted_in_each` | STRENGTHEN | Four-server delivery isolation and one shared watch are useful; replace elapsed waits with completion events. Newly kills subscriber removal. |
+| `test_a_company_other_servers_track_is_watched_once_and_alerted_in_each` | STRENGTHEN | Four-server delivery isolation and one shared watch are useful; replace elapsed waits with completion events. Newly kills subscriber removal. FIXED: release is poll-count driven (PolledReleaseDay) and the clock jumps after both alerts; 3.05 s to under 0.1 s (measured). |
 | `test_a_command_works_with_the_list_of_the_server_its_used_in` | KEEP | Exercises command output and tracked-list isolation across guilds. |
 | `test_a_schedule_files_release_goes_to_the_deployments_own_server` | KEEP | Preserves file-only releases and the primary-server fallback. |
 | `test_the_watcher_gives_each_configured_server_its_own_list_and_scorecards` | KEEP | Checks state separation and own scorecard stores through watcher construction. |
 | `test_the_bot_registers_its_commands_in_every_configured_server` | KEEP | Checks actual command synchronization calls for every configured guild. |
 | `test_the_shared_calendar_reads_each_company_once_and_writes_to_every_server` | KEEP | Checks deduplication, finding propagation only to trackers and prohibition of shared add/remove. |
 | `test_a_company_two_servers_track_is_researched_once_for_both` | KEEP | Runs date research through the shared calendar and checks both persisted targets. |
-| `test_each_companys_speed_audit_runs_once_for_every_server` | STRENGTHEN | Success/failure controls check shared claims, cooldown and both cards; replace short real sleeps with barriers. |
+| `test_each_companys_speed_audit_runs_once_for_every_server` | STRENGTHEN | Success/failure controls check shared claims, cooldown and both cards; replace short real sleeps with barriers. FIXED: waits on each channel's sent event instead of sleeps; 0.49 s and 0.42 s to 0.11 s (measured). |
 | `test_a_server_takes_research_another_did_after_a_quick_check` | KEEP | Verifies copied profile/date/review and exactly one evidence check rather than fresh SEC investigation. |
 | `test_what_fails_the_check_is_researched_again` | KEEP | Parametrized block, gone, throttle and outage responses cannot validate a borrowed date. |
 | `test_manual_dates_are_not_borrowed_and_future_audits_are_not_current` | KEEP | Prevents cross-server manual overrides and future-dated review reuse. |
