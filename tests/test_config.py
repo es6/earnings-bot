@@ -28,6 +28,42 @@ def test_empty_guild_id_means_unset(monkeypatch: pytest.MonkeyPatch) -> None:
     assert load_settings().discord_guild_id is None
 
 
+def test_no_alert_channel_is_set_until_one_is_configured(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DISCORD_TOKEN", "not-a-real-token")
+    for name in ("DISCORD_CHANNEL_ID", "DISCORD_SERVER_CHANNEL_IDS", "WATCHDOG_WEBHOOK_URL"):
+        monkeypatch.delenv(name, raising=False)
+
+    settings = load_settings()
+
+    assert settings.discord_channel_id is None
+    assert settings.alert_channel_ids == []
+    assert settings.watchdog_webhook_url is None
+
+
+@pytest.mark.parametrize(
+    ("own", "others", "expected"),
+    [
+        ("5", "6, 7", [5, 6, 7]),
+        ("5", "7,5,6,7", [5, 7, 6]),  # one list: the primary first, no repeats
+        (None, "9", [9]),  # a single id is not a comma list
+        ("5", None, [5]),
+    ],
+    ids=["own-first", "deduplicated", "single-server", "only-own"],
+)
+def test_alert_channels_list_the_primary_first_without_repeats(
+    monkeypatch: pytest.MonkeyPatch, own: str | None, others: str | None, expected: list[int]
+) -> None:
+    monkeypatch.setenv("DISCORD_TOKEN", "not-a-real-token")
+    monkeypatch.delenv("DISCORD_CHANNEL_ID", raising=False)
+    monkeypatch.delenv("DISCORD_SERVER_CHANNEL_IDS", raising=False)
+    if own:
+        monkeypatch.setenv("DISCORD_CHANNEL_ID", own)
+    if others:
+        monkeypatch.setenv("DISCORD_SERVER_CHANNEL_IDS", others)
+
+    assert load_settings().alert_channel_ids == expected
+
+
 def test_token_is_hidden_in_repr(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DISCORD_TOKEN", "not-a-real-token")
 

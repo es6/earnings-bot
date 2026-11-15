@@ -1,10 +1,15 @@
 import json
 import sqlite3
+import urllib.request
+from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from earnings_bot.watchdog import Watchdog, Window
+import pytest
+
+from earnings_bot import watchdog as watchdog_module
+from earnings_bot.watchdog import Watchdog, Window, post_webhook
 
 OPEN = datetime(2026, 11, 17, 21, 10, tzinfo=UTC)
 WINDOW = Window("1045810:FY2027Q3", "NVDA", OPEN, OPEN + timedelta(minutes=50))
@@ -149,3 +154,82 @@ def test_a_failed_check_is_logged_and_the_next_one_still_alarms(tmp_path: Path) 
     assert not dog.check_safely(seen + timedelta(minutes=3))
     assert dog.check_safely(seen + timedelta(minutes=3, seconds=30))
     assert len(posts) == 1 and "The bot may be down." in posts[0]
+
+
+def test_a_slow_route_gets_five_of_its_own_poll_intervals_before_it_counts_as_down(
+    tmp_path: Path,
+) -> None:
+    journal, posts = tmp_path / "watch.jsonl", []
+    seen = OPEN + timedelta(minutes=5)
+    write(journal, progress(seen, "slow-feed", seen, interval=60.0))
+    # Another route keeps the journal busy
+    write(journal, progress(seen + timedelta(seconds=290), "edgar", seen + timedelta(seconds=290)))
+    dog = watchdog(journal, posts)
+
+    dog.check(seen + timedelta(seconds=250))  # past the usual 90 s, within 5 x 60 s
+    assert posts == []
+    dog.check(seen + timedelta(seconds=301))
+    assert len(posts) == 1 and "`slow-feed`: no answer for 5m 1s." in posts[0]
+
+
+def test_an_alarm_whose_webhook_post_failed_is_tried_again_at_the_next_check(
+    tmp_path: Path,
+) -> None:
+    journal, posts, attempts = tmp_path / "watch.jsonl", [], []
+
+    def flaky(text: str) -> None:
+        attempts.append(text)
+        if len(attempts) == 1:
+            raise OSError("webhook unreachable")
+        posts.append(text)
+
+    seen = OPEN + timedelta(minutes=5)
+    write(journal, progress(seen, "edgar", seen))
+    dog = Watchdog(journal, lambda: [WINDOW], flaky)
+
+    dog.check(seen + timedelta(minutes=3))
+    assert posts == []  # the post failed, so nothing has been raised
+    dog.check(seen + timedelta(minutes=3, seconds=30))
+    assert len(posts) == 1 and "The bot may be down." in posts[0]
+    dog.check(seen + timedelta(minutes=4))
+    assert len(posts) == 1
+
+
+def test_a_long_journal_is_read_from_its_tail_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    journal = tmp_path / "watch.jsonl"
+    long_ago = OPEN - timedelta(hours=3)
+    seen = OPEN + timedelta(minutes=5)
+    write(
+        journal,
+        progress(long_ago, "old-route", long_ago),
+        progress(long_ago, "older-route", long_ago),
+        progress(seen, "edgar", seen),
+    )
+    last = journal.read_bytes().splitlines(keepends=True)[-1]
+    monkeypatch.setattr(watchdog_module, "START_BYTES", len(last) + 10)  # into the line before it
+    dog = watchdog(journal, [])
+
+    dog.read()
+
+    assert list(dog.progress) == [("NVDA", "edgar")]
+
+
+def test_the_webhook_gets_the_text_cut_to_discords_limit_and_mentions_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sent: list[urllib.request.Request] = []
+
+    def urlopen(request: urllib.request.Request, timeout: float) -> Any:
+        sent.append(request)
+        return nullcontext()
+
+    monkeypatch.setattr(watchdog_module.urllib.request, "urlopen", urlopen)
+
+    post_webhook("https://discord.example/api/webhooks/1/x", "@everyone " + "a" * 3000)
+
+    [request] = sent
+    body = json.loads(request.data)  # pyright: ignore[reportArgumentType]
+    assert len(body["content"]) == 2000 and body["allowed_mentions"] == {"parse": []}
+    assert request.get_method() == "POST"

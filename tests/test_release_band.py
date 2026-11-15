@@ -1,5 +1,6 @@
 import asyncio
 import io
+import itertools
 import json
 import time
 from datetime import datetime, timedelta
@@ -9,6 +10,7 @@ import pytest
 
 from earnings_bot import recorder
 from earnings_bot.browser_sources import BrowserRelease
+from earnings_bot.clock import TrustedClock
 from earnings_bot.recorder import ET, Journal, Polls, Target, Watch, pace_routes, watch
 from earnings_bot.release_band import NEAR, SLOW, pace, paced, release_times
 from earnings_bot.sources import EdgarFilings, EdgarLatest, RssFeed
@@ -69,36 +71,65 @@ def test_recent_release_times_are_placed_on_the_release_day_in_its_part_of_the_d
     assert release_times([], T) == [T]
 
 
+class VirtualTime:
+    """Time that only moves when something sleeps, for the recorder's own loop."""
+
+    def __init__(self) -> None:
+        self.start = datetime(2026, 11, 19, 6, 50, tzinfo=ET)
+        self.seconds = 0.0
+
+    def monotonic(self) -> float:
+        return self.seconds
+
+    async def sleep(self, delay: float) -> None:
+        self.seconds += max(0.0, delay)
+        await asyncio.sleep(0)
+
+    def now(self) -> datetime:
+        return self.start + timedelta(seconds=self.seconds)
+
+
+class _Proxy:
+    """A module whose named attributes are replaced, the rest passed through."""
+
+    def __init__(self, real: Any, **replaced: Any) -> None:
+        self._real, self._replaced = real, replaced
+
+    def __getattr__(self, name: str) -> Any:
+        return self._replaced.get(name, getattr(self._real, name))
+
+
+class Minute(ListSource):
+    interval = 1.0
+
+
 async def test_a_watch_polls_slowly_then_speeds_up_on_time(monkeypatch: pytest.MonkeyPatch) -> None:
     """Nebius's newsroom refused us on Nov 12 after an hour of polling once a second."""
-    monkeypatch.setattr(recorder, "pace", pace_scaled)
+    virtual = VirtualTime()
+    monkeypatch.setattr(recorder, "time", _Proxy(time, monotonic=virtual.monotonic))
+    monkeypatch.setattr(recorder, "asyncio", _Proxy(asyncio, sleep=virtual.sleep))
     sent: list[float] = []
 
     class Timed(FakeFetcher):
         async def request(self, method: str, url: str, *args: Any, **kwargs: Any) -> Any:
-            sent.append(time.monotonic())
+            sent.append(virtual.seconds)
             return await super().request(method, url, *args, **kwargs)
 
-    journal = Journal(io.StringIO())
-    started = time.monotonic()
-    w = Watch("ROAD", ListSource(), times=[journal.now() + timedelta(seconds=0.35)])
+    class Clock(TrustedClock):
+        def now(self) -> datetime:
+            return virtual.now()
 
-    await watch(w, Timed((200, "old")), journal, end=journal.now() + timedelta(seconds=0.6))
+    journal = Journal(io.StringIO(), Clock(()))
+    release = virtual.start + 10 * MINUTE  # 600 s in
+    w = Watch("ROAD", Minute(), times=[release])
 
-    slow = [t - started for t in sent if t - started < 0.34]
-    fast = [t - started for t in sent if t - started >= 0.34]
-    assert len(slow) == 2  # at 0 and 0.2 s, against about 34 at full speed
-    assert fast and fast[0] < 0.40  # full speed from 0.35 s, not at the next slow poll
-    assert len(fast) > 10
+    await watch(w, Timed((200, "old")), journal, end=release + timedelta(seconds=30))
 
-
-def pace_scaled(at: datetime, times: list[datetime], own: float) -> tuple[float, float | None]:
-    """Like pace, with seconds for minutes: slow polls 0.2 s apart until the release time, then
-    the route's own speed."""
-    [moment] = times
-    if at < moment:
-        return 0.2, (moment - at).total_seconds()
-    return own, None
+    gaps = [(at, b - at) for at, b in itertools.pairwise(sent)]
+    assert {gap for at, gap in gaps if at < 300} == {SLOW}  # far away: every 15 s
+    assert {gap for at, gap in gaps if 300 <= at < 480} == {NEAR}  # 5 minutes before: every 5 s
+    assert 480.0 in sent  # full speed from 2 minutes before, not at the next slow poll
+    assert {gap for at, gap in gaps if at >= 480} == {1.0}  # then at the route's own speed
 
 
 async def test_a_shared_feed_polls_as_fast_as_its_fastest_window_needs() -> None:
@@ -117,13 +148,12 @@ async def test_a_shared_feed_polls_as_fast_as_its_fastest_window_needs() -> None
 
     both = FakeFetcher((200, ""))
     polls = Polls(both, journal)
-    end = journal.now() + timedelta(seconds=0.2)
+    end = journal.now() + timedelta(seconds=0.25)
     await asyncio.gather(
         polls.watch(Watch("HD", CompanyFeed("HD"), times=far), end),
         polls.watch(Watch("KLAR", CompanyFeed("KLAR"), times=near + far), end),
-        polls.watch(Watch("NVDA", CompanyFeed("NVDA")), end),  # no release times: full speed
     )
-    assert both.sent > 5
+    assert both.sent >= 3  # KLAR's near release time speeds up the feed HD would poll slowly
 
 
 def test_a_window_paces_every_route_but_secs_by_the_release_times() -> None:

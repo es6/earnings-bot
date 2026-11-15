@@ -480,3 +480,28 @@ What CI misses:
 6. Add hypothesis property tests for the pure parsers (`html_to_text`, `parse_reply`, `pace`,
    `pick_exhibit`, `bullets`, `duration`) and a nightly Linux mutmut job on the pure modules;
    enable coverage reporting (no threshold at first) in CI.
+
+---
+
+## FIX PASS (branch tests-fix-f; numbers measured)
+
+Survivors (whole suite run with each mutation in place, then retested):
+
+| id | outcome |
+|---|---|
+| P2 | gap fixed: `test_a_release_already_up_at_the_first_poll_is_not_a_measured_transition` |
+| TX2 | gap fixed: `test_a_missing_page_or_file_has_no_text` now 404/403/500 with a release-sized body |
+| W3 | gap fixed: `test_a_slow_route_gets_five_of_its_own_poll_intervals_before_it_counts_as_down` |
+| W5 | gap fixed: `test_an_alarm_whose_webhook_post_failed_is_tried_again_at_the_next_check` |
+| W4 | equivalent: a cut first line is rejected by `json.loads` anyway, so skipping it changes nothing observable (the whole suite only failed on unrelated load flakes). Added `test_a_long_journal_is_read_from_its_tail_only` for the tail read |
+| CF1 | already caught elsewhere: test_restart `the_check_needs_the_alert_channel` and test_chrome_cleanup `the_bot_sweeps_leftover_chrome...`; also added config tests |
+| CF4 | already caught by tests/test_servers.py (G) |
+| MAIN1, MAIN2 | gap fixed: test_main rewritten (4 tests) |
+| CMD2 | gap fixed: `test_the_bot_registers_ping_in_its_command_tree` |
+| B2, B3 | gap fixed: benchmark window test has a non-earnings embed and an out-of-window valid post |
+
+Slow tests: publication_trials 3.2/3.2/3.0/2.2 s -> 0.35/0.30/0.07/0.29 s (host gap patched via
+`fetch._DEFAULT_GAP`, wall-clock assert removed); source_observations 1.2 s x4 -> 0.15 s;
+release_band watch 0.69 s -> 0.01 s (virtual time, real `pace`). Skipped: test_resources
+priority test and chrome kill test (real hidden-desktop subprocesses; REWRITE needs a public
+accessor in source), window_report REWRITE (harness shared with test_unattended, not mine).

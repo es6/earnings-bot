@@ -4,10 +4,14 @@ import textwrap
 import time
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
+from earnings_bot import bot as bot_module
+from earnings_bot.bot import EarningsBot
 from earnings_bot.browser import PROFILE_PREFIX, leftover_chrome, sweep_leftover_chrome
+from earnings_bot.config import Settings
 
 LEFT = PROFILE_PREFIX + "v9z3ozn7"  # from a bot stopped on Nov 13
 LIVE = PROFILE_PREFIX + "zv253xe1"  # this bot's
@@ -109,12 +113,6 @@ def test_chrome_ends_when_the_bot_that_started_it_is_killed() -> None:
 async def test_the_bot_sweeps_leftover_chrome_before_it_starts_watching(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from unittest.mock import AsyncMock
-
-    from earnings_bot import bot as bot_module
-    from earnings_bot.bot import EarningsBot
-    from earnings_bot.config import Settings
-
     order: list[str] = []
     monkeypatch.setattr(
         bot_module, "sweep_leftover_chrome", lambda: order.append("sweep") or (11, 18)

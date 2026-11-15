@@ -61,3 +61,7 @@ Counts: KEEP 25, STRENGTHEN 8.
 | `test_full_nested_story_survives_a_missing_date_spelling` | KEEP | Real nested article ensures complete report/tables and at most the documented fallback. |
 | `test_mirror_backoff_is_shared_by_other_releases_and_spelling_fallbacks` | KEEP | Checks 403/429/503, case-insensitive headers, server wait and no second transfer during pause. |
 
+
+### Fix pass: tests/test_source_observations.py
+Retry-After test now freezes UTC and asserts exactly 3600; the module shrinks the host turn gap
+(trial tests 1.2 s -> 0.15 s each); the stitching test asserts both polls were observed.
