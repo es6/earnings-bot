@@ -13,11 +13,11 @@ Counts: KEEP 25, STRENGTHEN 8.
 | Test function | Verdict | Evidence / next action |
 |---|---|---|
 | `test_public_pagination_recovers_road_history_without_a_fixed_clock_exception` | KEEP | Real linked pages assert six regular releases, both clock slots and exclusion of preliminary results. |
-| `test_history_follows_only_bounded_linked_pages_and_same_host` | STRENGTHEN | Covers wrong zone, external next link and duplicate identity; add a four-page chain to isolate the three-page cap. |
-| `test_release_history_reads_a_feed_that_requires_the_owned_browser` | STRENGTHEN | Positive owned-browser feed is valuable; add refused/malformed responses and disabled-browser controls. |
+| `test_history_follows_only_bounded_linked_pages_and_same_host` | STRENGTHEN | Covers wrong zone, external next link and duplicate identity; add a four-page chain to isolate the three-page cap. Done: `test_history_reads_at_most_three_linked_pages` (fails with the cap at 4). |
+| `test_release_history_reads_a_feed_that_requires_the_owned_browser` | STRENGTHEN | Positive owned-browser feed is valuable; add refused/malformed responses and disabled-browser controls. Done: parametrized readable/refused/malformed/browser-held (browser-held fails without the `chrome_allowed()` guard). |
 | `test_exact_publisher_listing_identifies_a_wire_missing_from_the_exhibit` | KEEP | Matches issuer/quarter and nearby verified filing; rejects wrong period and distant dates. |
 | `test_jpm_manifest_discovers_and_verifies_the_real_random_pdf` | KEEP | Real manifest/PDF plus role, host and period controls exercise acquisition, not a fixed URL. |
-| `test_manifest_discovery_requires_the_pages_declaration_and_linked_script` | STRENGTHEN | Keeps discovery provenance explicit; add a third-script case to isolate the script-read ceiling. |
+| `test_manifest_discovery_requires_the_pages_declaration_and_linked_script` | STRENGTHEN | Keeps discovery provenance explicit; add a third-script case to isolate the script-read ceiling. Done: `test_manifest_discovery_reads_at_most_two_scripts` (fails with the limit at 3). |
 
 ## tests/test_servers.py
 

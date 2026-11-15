@@ -1,5 +1,7 @@
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import unquote
 
 import pytest
 
@@ -106,21 +108,79 @@ async def test_cache_comparison(
     assert all(url.startswith(f"{URL}&_=") for url in urls[2:])
 
 
-async def test_a_feed_that_rejects_query_strings_keeps_its_readable_url(tmp_path: Path) -> None:
-    fetcher = RoutedFetcher({f"{URL}&_=": (403, b"blocked"), URL: (200, b"feed")})
-    now = datetime(2026, 11, 10, 3, tzinfo=ET)
+FEED = "https://ir.hubspot.com/rss/news-releases.xml"
+FEED_TITLE = "<title>HubSpot, Inc. - News Releases</title>"
+STORED = {
+    "cf-cache-status": "DYNAMIC",
+    "last-modified": "Mon, 09 Nov 2026 18:55:39 GMT",
+    "x-cache-hits": "657",
+}
+# What HubSpot's feed answered a new spelling with on Nov 10, 2026: built on request
+BUILT_NOW = {"cf-cache-status": "DYNAMIC", "last-modified": "Tue, 10 Nov 2026 21:10:07 GMT"}
+
+
+def feed(*items: str) -> bytes:
+    entries = "".join(f"<item><title>{item}</title><guid>{item}</guid></item>" for item in items)
+    return f"<rss><channel>{FEED_TITLE}{entries}</channel></rss>".encode()
+
+
+class CacheFetcher(RoutedFetcher):
+    """Answers every request through `get`, so a test can give each spelling its own headers."""
+
+    def __init__(self, get: Callable[[str], Awaitable[Response]]) -> None:
+        super().__init__({})
+        self.get = get
+
+    async def request(self, method: str, url: str, *args: object, **kwargs: object) -> Response:
+        return await self.get(url)
+
+
+async def hubspot_stores_the_plain_feed(url: str) -> Response:
+    """The plain feed and its query copies are stored; a new spelling is built on request."""
+    if url == FEED or url.startswith(f"{FEED}?_="):
+        return Response(url, 200, STORED, feed("Q2 2026 Results"), 0)
+    return Response(url, 200, BUILT_NOW, feed("Q2 2026 Results"), 0)
+
+
+async def feed_rejecting_queries_and_spellings(url: str) -> Response:
+    """A feed whose server answers 403 to a query string and to a new spelling."""
+    return Response(url, 200 if url == URL else 403, {}, b"feed" if url == URL else b"blocked", 0)
+
+
+@pytest.mark.parametrize(
+    ("url", "get", "spelled"),
+    [
+        pytest.param(
+            URL, feed_rejecting_queries_and_spellings, [], id="rejecting-queries-keeps-url"
+        ),
+        pytest.param(
+            FEED, hubspot_stores_the_plain_feed, [FEED], id="cache-ignores-queries-is-spelled"
+        ),
+    ],
+)
+async def test_the_planner_polls_a_feed_as_the_cache_check_found_it_can_be_read(
+    tmp_path: Path,
+    url: str,
+    get: Callable[[str], Awaitable[Response]],
+    spelled: list[str],
+) -> None:
+    now = datetime(2026, 11, 10, 18, 30, tzinfo=ET)
     with DeliveryStore(tmp_path / "calendar.db", 7) as store:
         calendar = Calendar(store)
         row, _ = calendar.add("AAPL")
-        calendar.set_target(Target(ticker=row.ticker, cik=row.cik, expected=now, rss=[URL]), "Test")
+        calendar.set_target(Target(ticker=row.ticker, cik=row.cik, expected=now, rss=[url]), "Test")
         [planned] = calendar.entries()
+        fetcher = CacheFetcher(get)
         dates = DateDiscovery(calendar, fetcher, lambda: now, lambda: False, lambda _: None)
         await dates._prepare_cache(planned)
         [saved] = calendar.entries()
 
-    assert saved.target and saved.target.rss_canonical == [URL]
-    [feed] = [source for source in saved.target.sources() if source.name.startswith("rss:")]
-    assert feed.url() == URL
+    assert saved.target
+    assert (saved.target.rss_spelled, saved.target.rss_canonical) == (spelled, [url])
+    [source] = [s for s in saved.target.sources() if s.name.startswith("rss:")]
+    assert unquote(source.url()) == url
+    assert (source.url() != url) is bool(spelled)
+    assert "?_=" not in source.url()
 
 
 @pytest.mark.parametrize("reported", [False, True], ids=["no-telemetry", "cache-miss"])

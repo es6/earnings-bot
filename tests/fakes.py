@@ -689,3 +689,11 @@ def client(owner: int = OWNER, team: list[int] | None = None) -> discord.Client:
         owner=SimpleNamespace(id=owner), team=SimpleNamespace(members=members) if team else None
     )
     return cast(discord.Client, SimpleNamespace(application=application))
+
+
+class ScanFinished(Exception):
+    """Raised in place of DateDiscovery's wait for a change, to end one `run()` scan."""
+
+
+async def scan_finished() -> None:
+    raise ScanFinished

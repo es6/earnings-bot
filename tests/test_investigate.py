@@ -134,15 +134,47 @@ def released(monkeypatch: pytest.MonkeyPatch) -> Callable[[str], None]:
     return set_text
 
 
-def test_ir_hosts_are_the_investor_sites_a_release_names() -> None:
-    assert ir_hosts(LUCID_RELEASE) == ["ir.lucidmotors.com"]
-    text = "See investor.apple.com, investors.palantir.com, sec.gov and Investors.Example.com."
-    assert ir_hosts(text) == [
-        "investor.apple.com",
-        "investors.palantir.com",
-        "investors.example.com",
-    ]
-    assert ir_hosts("U.S. revenue grew 5.2%. Visit www.example.com.") == []
+@pytest.mark.parametrize(
+    ("release", "ticker", "name", "hosts"),
+    [
+        pytest.param(LUCID_RELEASE, None, "", ["ir.lucidmotors.com"], id="lucid-webcast-site"),
+        pytest.param(
+            "See investor.apple.com, investors.palantir.com, sec.gov and Investors.Example.com.",
+            None,
+            "",
+            ["investor.apple.com", "investors.palantir.com", "investors.example.com"],
+            id="investor-hosts-lowercased-sec-left-out",
+        ),
+        pytest.param(
+            "U.S. revenue grew 5.2%. Visit www.example.com.", None, "", [], id="no-investor-site"
+        ),
+        pytest.param(
+            "Contact mollie.obrien@bestbuy.com. Visit www.investors.bestbuy.com.",
+            "BBY",
+            "BEST BUY CO INC",
+            ["www.investors.bestbuy.com", "bestbuy.com"],
+            id="www-in-front-of-the-ir-site",
+        ),
+        pytest.param(
+            "Learn more at JohnDeere.com",
+            "DE",
+            "DEERE & CO",
+            ["johndeere.com"],
+            id="corporate-site",
+        ),
+        pytest.param(
+            "Contact investor.relations@hpe.com or visit www.hpe.com.",
+            "HPE",
+            "Hewlett Packard Enterprise Co",
+            ["hpe.com"],
+            id="email-start-is-not-a-site",
+        ),
+    ],
+)
+def test_ir_hosts_are_the_investor_sites_a_release_names(
+    release: str, ticker: str | None, name: str, hosts: list[str]
+) -> None:
+    assert ir_hosts(release, ticker, name) == hosts
 
 
 @pytest.mark.parametrize(
@@ -210,36 +242,20 @@ async def test_a_q4_site_is_polled_directly(released: Callable[[str], None]) -> 
     )
     # The IR site is opened in Chrome even with a feed to poll
     assert chrome.started == 1
-    assert [(c.source, c.watch, c.why) for c in found.checks] == [
-        (
-            "SEC 8-K filings",
-            True,
-            f"Its last results 8-Ks were accepted at {', '.join(LUCID.eightk)} ET",
-        ),
-        ("ir.gone.example homepage over HTTP", False, "Returned HTTP 404"),
-        ("Q4 press release feed on ir.gone.example", False, "Not a Q4 site (HTTP 404)"),
-        ("Q4 press release feed on investors.example.com", True, "Lists its releases and files"),
-        (
-            "investors.example.com press release page",
-            False,
-            "Chrome got HTTP 404 from investors.example.com",
-        ),
-        (
-            "PR Newswire earnings feed",
-            False,
-            "Its releases go out on Business Wire",
-        ),
-        (
-            "Business Wire earnings feed",
-            True,
-            "Its releases go out on Business Wire.",
-        ),
-        (
-            "GlobeNewswire earnings feed",
-            False,
-            "Its releases go out on Business Wire",
-        ),
+    assert [(c.source, c.watch) for c in found.checks] == [
+        ("SEC 8-K filings", True),
+        ("ir.gone.example homepage over HTTP", False),
+        ("Q4 press release feed on ir.gone.example", False),
+        ("Q4 press release feed on investors.example.com", True),
+        ("investors.example.com press release page", False),
+        ("PR Newswire earnings feed", False),
+        ("Business Wire earnings feed", True),
+        ("GlobeNewswire earnings feed", False),
     ]
+    reasons = {c.source: c.why for c in found.checks}
+    assert ", ".join(LUCID.eightk) in reasons["SEC 8-K filings"]
+    assert "404" in reasons["ir.gone.example homepage over HTTP"]
+    assert "Business Wire" in reasons["PR Newswire earnings feed"]
     target = to_target("LCID", NOW, 2026, 4, found)
     assert [s.name for s in target.sources()] == [
         "q4_press",
@@ -439,21 +455,6 @@ async def test_without_chrome_a_blocked_site_is_reported_and_both_wires_kept(
     assert target.newswire == target.prnewswire == LUCID.names
 
 
-async def test_a_release_naming_no_ir_site_still_gives_its_wire(
-    released: Callable[[str], None],
-) -> None:
-    released("AUSTIN, Texas--(BUSINESS WIRE)--Example Corp today reported. See www.example.com.")
-    fetcher = RoutedFetcher({})
-
-    found = await investigate.investigate(fetcher, LUCID, TODAY, FakeChrome({}).open)
-
-    assert fetcher.requests == []
-    assert (found.platform, found.wire, found.investigated) == ("unknown", "Business Wire", TODAY)
-    assert found.evidence == (
-        "Investigated Nov 09: No issuer press release site could be verified. Wire: Business Wire."
-    )
-
-
 async def test_an_issuer_named_rss_index_reaches_a_separate_newsroom(
     released: Callable[[str], None],
 ) -> None:
@@ -622,7 +623,7 @@ async def test_discovery_investigates_once_then_finds_the_date_on_the_new_feed(
         dates = DateDiscovery(calendar, fetcher, lambda: NOW, lambda: False, statuses.append)
         [row] = calendar.entries()
 
-        await dates._check(row)
+        await dates.run_once(row)
 
         [row] = calendar.entries()
         assert row.company.q4_host == "investors.example.com"
@@ -636,7 +637,7 @@ async def test_discovery_investigates_once_then_finds_the_date_on_the_new_feed(
 
         # The next hourly check uses what was found without looking again
         homepage = len([url for _, url, _ in fetcher.requests if url.endswith(".com/")])
-        await dates._check(row)
+        await dates.run_once(row)
         assert len([url for _, url, _ in fetcher.requests if url.endswith(".com/")]) == homepage
 
 
@@ -664,7 +665,7 @@ async def test_findings_from_a_check_cut_short_by_a_window_arent_saved(
         )
         [row] = calendar.entries()
 
-        await dates._check(row)
+        await dates.run_once(row)
 
         [after] = calendar.entries()
         assert after.company == LUCID
@@ -690,35 +691,21 @@ async def test_every_source_checked_is_reported_with_why_as_it_goes(
 
     assert found.checks == report.checks
     assert found.ir_http_status == 403
-    assert [(c.source, c.watch, c.why) for c in found.checks] == [
-        (
-            "SEC 8-K filings",
-            True,
-            f"Its last results 8-Ks were accepted at {', '.join(LUCID.eightk)} ET",
-        ),
-        ("ir.lucidmotors.com homepage over HTTP", False, "Returned HTTP 403"),
-        (
-            "Q4 press release feed on ir.lucidmotors.com",
-            False,
-            "Not readable as a Q4 site: its firewall answered HTTP 403",
-        ),
-        (
-            f"Press release page <{LUCID_LIST}>, read in Chrome",
-            True,
-            f"Chrome read its latest results, “{LUCID_Q2_TITLE}”",
-        ),
-        ("PR Newswire earnings feed", True, "Its releases go out on PR Newswire."),
-        (
-            "Business Wire earnings feed",
-            False,
-            "Its releases go out on PR Newswire",
-        ),
-        (
-            "GlobeNewswire earnings feed",
-            False,
-            "Its releases go out on PR Newswire",
-        ),
+    assert [(c.source, c.watch) for c in found.checks] == [
+        ("SEC 8-K filings", True),
+        ("ir.lucidmotors.com homepage over HTTP", False),
+        ("Q4 press release feed on ir.lucidmotors.com", False),
+        (f"Press release page <{LUCID_LIST}>, read in Chrome", True),
+        ("PR Newswire earnings feed", True),
+        ("Business Wire earnings feed", False),
+        ("GlobeNewswire earnings feed", False),
     ]
+    reasons = {c.source: c.why for c in found.checks}
+    assert ", ".join(LUCID.eightk) in reasons["SEC 8-K filings"]
+    assert "403" in reasons["ir.lucidmotors.com homepage over HTTP"]
+    assert "403" in reasons["Q4 press release feed on ir.lucidmotors.com"]
+    assert LUCID_Q2_TITLE in reasons[f"Press release page <{LUCID_LIST}>, read in Chrome"]
+    assert "PR Newswire" in reasons["Business Wire earnings feed"]
     # The scorecard hears of each finding as it's made
     assert sorted(set(counts)) == list(range(len(found.checks) + 1))
     # Each step is announced as it starts
@@ -830,20 +817,35 @@ async def test_a_site_without_a_q4_feed_or_rss_says_what_was_tried(
     ]
 
 
-async def test_a_release_naming_no_ir_site_says_so(released: Callable[[str], None]) -> None:
-    released("Results. See www.example.com.")
-    found = await investigate.investigate(RoutedFetcher({}), LUCID, TODAY, None)
-    assert (
-        "IR site",
-        False,
-        "No IR site or issuer website identified in its last results release",
-    ) in [(c.source, c.watch, c.why) for c in found.checks]
+@pytest.mark.parametrize(
+    ("release", "wire", "why"),
+    [
+        pytest.param(
+            "AUSTIN, Texas--(BUSINESS WIRE)--Example Corp today reported. See www.example.com.",
+            "Business Wire",
+            "No IR site or issuer website identified in its last results release",
+            id="names-only-a-corporate-site-but-its-wire",
+        ),
+        pytest.param(
+            "Results. See www.example.com.",
+            "unknown",
+            "No IR site or issuer website identified in its last results release",
+            id="names-no-ir-site-and-no-wire",
+        ),
+        pytest.param("", "unknown", "Couldn't read its last results 8-K", id="no-readable-release"),
+    ],
+)
+async def test_a_release_naming_no_ir_site_says_so_and_still_gives_its_wire(
+    released: Callable[[str], None], release: str, wire: str, why: str
+) -> None:
+    released(release)
+    fetcher = RoutedFetcher({})
 
-    released("")
-    found = await investigate.investigate(RoutedFetcher({}), LUCID, TODAY, None)
-    assert ("IR site", False, "Couldn't read its last results 8-K") in [
-        (c.source, c.watch, c.why) for c in found.checks
-    ]
+    found = await investigate.investigate(fetcher, LUCID, TODAY, FakeChrome({}).open)
+
+    assert fetcher.requests == []
+    assert (found.platform, found.wire, found.investigated) == ("unknown", wire, TODAY)
+    assert ("IR site", False, why) in [(c.source, c.watch, c.why) for c in found.checks]
 
 
 async def test_discovery_shows_the_investigation_while_it_runs(

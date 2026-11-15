@@ -8,7 +8,6 @@ import pytest
 from earnings_bot.browser import BrowserError, RenderedPage
 from earnings_bot.date_discovery import EVENT_DATE, event_target, rendered_date, title_period
 from earnings_bot.formatting import period_label
-from earnings_bot.investigate import ir_hosts
 from earnings_bot.ir_pages import (
     IRReader,
     Moment,
@@ -107,8 +106,22 @@ def test_dates_and_times_in_any_ir_format(text: str, expected: tuple[int, ...]) 
     assert (moment.at.month, moment.at.day, moment.at.hour, moment.at.minute) == expected
 
 
-def test_a_date_without_a_time_is_kept_as_a_day() -> None:
-    assert moments("Posted 11/19/2026") == [Moment(date(2026, 11, 19), None)]
+@pytest.mark.parametrize(
+    ("text", "days"),
+    [
+        pytest.param("Posted 11/19/2026", [date(2026, 11, 19)], id="slashed-date"),
+        pytest.param(
+            "on November 19, 2026November 6, 2026Alibaba",
+            [date(2026, 11, 19), date(2026, 11, 6)],
+            id="year-run-into-the-next-word",
+        ),
+    ],
+)
+def test_a_date_without_a_time_is_kept_as_a_day(text: str, days: list[date]) -> None:
+    assert moments(text) == [Moment(day, None) for day in days]
+
+
+def test_only_days_still_ahead_are_upcoming() -> None:
     assert upcoming(moments("2026-08-12 and 2026-11-20"), date(2026, 11, 10)) == [
         Moment(date(2026, 11, 20), None)
     ]
@@ -255,33 +268,6 @@ async def test_a_page_chrome_cant_open_is_named_in_the_reading() -> None:
     )
 
 
-@pytest.mark.parametrize(
-    ("release", "ticker", "name", "hosts"),
-    [
-        # Best Buy names its IR site with a www. in front
-        (
-            "Contact mollie.obrien@bestbuy.com. Visit www.investors.bestbuy.com.",
-            "BBY",
-            "BEST BUY CO INC",
-            ["www.investors.bestbuy.com", "bestbuy.com"],
-        ),
-        # Deere's site is johndeere.com
-        ("Learn more at JohnDeere.com", "DE", "DEERE & CO", ["johndeere.com"]),
-        # "investor.relations" is the start of an email address, not a site
-        (
-            "Contact investor.relations@hpe.com or visit www.hpe.com.",
-            "HPE",
-            "Hewlett Packard Enterprise Co",
-            ["hpe.com"],
-        ),
-    ],
-)
-def test_ir_hosts_found_in_a_results_release(
-    release: str, ticker: str, name: str, hosts: list[str]
-) -> None:
-    assert ir_hosts(release, ticker, name) == hosts
-
-
 def test_a_results_headline_can_name_its_quarter_like_2q2026() -> None:
     # WeRide's Q2 2026 results headline names neither "results" nor "quarter"
     assert looks_like_earnings(
@@ -408,13 +394,6 @@ def test_a_fiscal_year_end_from_the_latest_annual_report_when_sec_gives_none() -
     }
     assert fiscal_year_end(submissions) == "0331"
     assert fiscal_year_end({"fiscalYearEnd": "1231"}) == "1231"
-
-
-def test_a_year_run_into_the_next_word_is_still_a_date() -> None:
-    assert [m.day for m in moments("on November 19, 2026November 6, 2026Alibaba")] == [
-        date(2026, 11, 19),
-        date(2026, 11, 6),
-    ]
 
 
 async def test_a_notice_dated_ahead_is_read_before_undated_ones() -> None:

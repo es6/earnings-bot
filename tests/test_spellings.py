@@ -2,7 +2,6 @@
 
 import tomllib
 from datetime import datetime
-from pathlib import Path
 from urllib.parse import unquote
 
 import pytest
@@ -10,9 +9,6 @@ from pydantic import ValidationError
 
 from earnings_bot.browser_sources import BrowserRelease, BrowserRss, IRSource
 from earnings_bot.cache_research import probe_cache
-from earnings_bot.calendar import Calendar
-from earnings_bot.date_discovery import DateDiscovery
-from earnings_bot.delivery import DeliveryStore
 from earnings_bot.fetch import Response
 from earnings_bot.issuer_news import IssuerNews
 from earnings_bot.known import target_toml
@@ -51,8 +47,14 @@ def test_spellings_dont_repeat_and_name_the_same_url() -> None:
 
 
 def test_a_short_path_can_be_spelled_anywhere() -> None:
-    # Every letter of "/newsroom": the rest of the path would have too few to spell
-    assert Spellings(LISTING).positions == list(range(1, len("/newsroom")))
+    # With a single folder there is none to leave as written: even its first letter is spelled
+    spellings = Spellings(LISTING)
+
+    urls = [spellings.next() for _ in range(200)]
+
+    assert len(set(urls)) == 200
+    assert all(unquote(url) == LISTING for url in urls)
+    assert any(url.startswith("https://nebius.com/%") for url in urls)
 
 
 async def test_a_spelled_feed_goes_out_as_written_and_parses_like_the_plain_one() -> None:
@@ -142,37 +144,3 @@ async def test_a_new_spelling_can_get_past_a_cache_that_ignores_queries(
     assert result.spelled is outcome
     assert result.stored_only is not outcome
     assert ("reaches the server" in result.summary) is outcome
-
-
-class SpellingFetcher:
-    """Answers the cache check the way HubSpot's feed did on Nov 10, 2026."""
-
-    def __init__(self) -> None:
-        self.get = routes((200, BUILT_NOW, feed("Q2 2026 Results")))
-
-    async def request(self, method: str, url: str, *args: object, **kwargs: object) -> Response:
-        return await self.get(url)
-
-    def chrome_allowed(self) -> bool:
-        return True
-
-
-async def test_the_planner_polls_a_feed_by_new_spellings_once_the_check_finds_they_work(
-    tmp_path: Path,
-) -> None:
-    now = datetime(2026, 11, 10, 18, 30, tzinfo=ET)
-    with DeliveryStore(tmp_path / "calendar.db", 7) as store:
-        calendar = Calendar(store)
-        row, _ = calendar.add("HUBS")
-        target = Target(ticker=row.ticker, cik=row.cik, expected=now, rss=[FEED])
-        calendar.set_target(target, "Test")
-        [planned] = calendar.entries()
-        fetcher = SpellingFetcher()
-        dates = DateDiscovery(calendar, fetcher, lambda: now, lambda: False, lambda _: None)  # type: ignore[arg-type]
-        await dates._prepare_cache(planned)
-        [saved] = calendar.entries()
-
-    assert saved.target and saved.target.rss_spelled == [FEED]
-    [source] = [s for s in saved.target.sources() if s.name.startswith("rss:")]
-    assert unquote(source.url()) == FEED != source.url()
-    assert "?_=" not in source.url()
