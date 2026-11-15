@@ -1,0 +1,100 @@
+{
+  "items": [
+    {
+      "year": "2026",
+      "quarter": "3rd",
+      "docs": {
+        "pressRelease": {
+          "title": "3Q26 Earnings Press Release",
+          "link": "/content/dam/jpmc/jpmorgan-chase-and-co/investor-relations/documents/quarterly-earnings/2026/3rd-quarter/6c1f8114-1be4-4174-8292-f75bbb59bc21.pdf",
+          "analyticsTag": "lnk_3q26_e_pr",
+          "analyticsClass": "chaseanalytics-opt-doc-dnld"
+        },
+        "presentation": {
+          "title": "3Q26 Earnings Presentation",
+          "link": "/content/dam/jpmc/jpmorgan-chase-and-co/investor-relations/documents/quarterly-earnings/2026/3rd-quarter/2b5b9a7e-a968-4985-94ad-5fa949a08d1c.pdf",
+          "analyticsTag": "lnk_3q26_e_pres",
+          "analyticsClass": "chaseanalytics-opt-doc-dnld"
+        },
+        "supplement": {
+          "title": "3Q26 Earnings Supplement",
+          "link": "/content/dam/jpmc/jpmorgan-chase-and-co/investor-relations/documents/quarterly-earnings/2026/3rd-quarter/c89c7479-82df-4c9f-a7be-957956430abd.pdf",
+          "analyticsTag": "lnk_3q26_e_supp",
+          "analyticsClass": "chaseanalytics-opt-doc-dnld"
+        }
+      }
+    },
+    {
+      "year": "2026",
+      "quarter": "2nd",
+      "docs": {
+        "pressRelease": {
+          "title": "2Q26 Earnings Press Release",
+          "link": "/content/dam/jpmc/jpmorgan-chase-and-co/investor-relations/documents/quarterly-earnings/2026/2nd-quarter/6cded9fd-a164-4e6c-8cff-377357cf105c.pdf",
+          "analyticsTag": "lnk_2q26_e_pr",
+          "analyticsClass": "chaseanalytics-opt-doc-dnld"
+        },
+        "presentation": {
+          "title": "2Q26 Earnings Presentation",
+          "link": "/content/dam/jpmc/jpmorgan-chase-and-co/investor-relations/documents/quarterly-earnings/2026/2nd-quarter/9e8f3cef-bd2a-4140-b50f-83c4fba3f23c.pdf",
+          "analyticsTag": "lnk_2q26_e_pres",
+          "analyticsClass": "chaseanalytics-opt-doc-dnld"
+        },
+        "supplement": {
+          "title": "2Q26 Earnings Supplement",
+          "link": "/content/dam/jpmc/jpmorgan-chase-and-co/investor-relations/documents/quarterly-earnings/2026/2nd-quarter/c9c097af-34e9-4aae-92d2-909a2ab7c083.pdf",
+          "analyticsTag": "lnk_2q26_e_supp",
+          "analyticsClass": "chaseanalytics-opt-doc-dnld"
+        }
+      }
+    },
+    {
+      "year": "2026",
+      "quarter": "1st",
+      "docs": {
+        "pressRelease": {
+          "title": "1Q26 Earnings Press Release",
+          "link": "/content/dam/jpmc/jpmorgan-chase-and-co/investor-relations/documents/quarterly-earnings/2026/1st-quarter/a5fd2d13-877b-43b2-8b58-81bad4399c87.pdf",
+          "analyticsTag": "lnk_1q26_e_pr",
+          "analyticsClass": "chaseanalytics-opt-doc-dnld"
+        },
+        "presentation": {
+          "title": "1Q26 Earnings Presentation",
+          "link": "/content/dam/jpmc/jpmorgan-chase-and-co/investor-relations/documents/quarterly-earnings/2026/1st-quarter/ba305358-f754-4f76-a59d-5278b3bcf99a.pdf",
+          "analyticsTag": "lnk_1q26_e_pres",
+          "analyticsClass": "chaseanalytics-opt-doc-dnld"
+        },
+        "supplement": {
+          "title": "1Q26 Earnings Supplement",
+          "link": "/content/dam/jpmc/jpmorgan-chase-and-co/investor-relations/documents/quarterly-earnings/2026/1st-quarter/ea70ca6c-a0d5-4596-94f5-52f1722cd704.pdf",
+          "analyticsTag": "lnk_1q26_e_supp",
+          "analyticsClass": "chaseanalytics-opt-doc-dnld"
+        }
+      }
+    },
+    {
+      "year": "2025",
+      "quarter": "4th",
+      "docs": {
+        "pressRelease": {
+          "title": "4Q25 Earnings Press Release",
+          "link": "/content/dam/jpmc/jpmorgan-chase-and-co/investor-relations/documents/quarterly-earnings/2025/4th-quarter/d868c7ef-1670-465d-ba75-c2b36ddbcc6b.pdf",
+          "analyticsTag": "lnk_4q25_e_pr",
+          "analyticsClass": "chaseanalytics-opt-doc-dnld"
+        },
+        "presentation": {
+          "title": "4Q25 Earnings Presentation",
+          "link": "/content/dam/jpmc/jpmorgan-chase-and-co/investor-relations/documents/quarterly-earnings/2025/4th-quarter/3f2030e7-c144-4ad8-92b8-57b36851ffb6.pdf",
+          "analyticsTag": "lnk_4q25_e_pres",
+          "analyticsClass": "chaseanalytics-opt-doc-dnld"
+        },
+        "supplement": {
+          "title": "4Q25 Earnings Supplement",
+          "link": "/content/dam/jpmc/jpmorgan-chase-and-co/investor-relations/documents/quarterly-earnings/2025/4th-quarter/ff69a4a4-ab52-4a38-b82a-f153ba695e41.pdf",
+          "analyticsTag": "lnk_4q25_e_supp",
+          "analyticsClass": "chaseanalytics-opt-doc-dnld"
+        }
+      }
+    }
+  ]
+}
