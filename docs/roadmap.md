@@ -98,8 +98,8 @@ Open:
 
 Agreed with the owner on Nov 15:
 
-1. **`/track` test mode** ([track-testing.md](track-testing.md)). Next: it doesn't touch
-   live code, so it's built during the streak week.
+1. **`/track` test mode** ([track-testing.md](track-testing.md)). Built in v0.21.28 for US
+   tickers; it adds an option to `/track` and changes nothing else live.
 2. **Verified summaries:** plan and test the summary checker that verifies each number's
    measure and period, aiming to remove the "Beta" label (plan item 6).
 3. **After the streak (Nov 20):** merge and deploy multiple servers (#136 to #138), then

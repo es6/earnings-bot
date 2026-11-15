@@ -137,9 +137,10 @@ class Issuers:
         self._listed: dict[str, tuple[int, str]] = {}
         self._listed_until = 0.0
 
-    async def company(self, ticker: str, today: date) -> KnownCompany:
-        """Raises ValueError, with a reply for the member, when there's no such company."""
-        if known := known_companies().get(ticker):
+    async def company(self, ticker: str, today: date, *, catalog: bool = True) -> KnownCompany:
+        """Raises ValueError, with a reply for the member, when there's no such company.
+        `catalog=False` looks a catalog company up as if it weren't there (/track test mode)."""
+        if catalog and (known := known_companies().get(ticker)):
             return known
         if not _SYMBOL.fullmatch(ticker):
             raise ValueError("Enter a ticker symbol, such as NVDA.")
