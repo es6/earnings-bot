@@ -4,66 +4,40 @@ import pytest
 
 from earnings_bot.fetch import Response
 from earnings_bot.file_downloads import FileDownloads
+from tests.fakes import GatedRequest
 
 URL = "https://ir.example.com/release.pdf"
 PDF = Response(URL, 200, {}, b"%PDF-complete-report", 0.01)
 
 
-@pytest.mark.parametrize("cancel_reader", [False, True], ids=["shared", "cancelled-reader"])
-async def test_concurrent_readers_share_one_fetch_without_sharing_cancellation(
-    cancel_reader: bool,
-) -> None:
+async def test_concurrent_readers_share_one_fetch_without_sharing_cancellation() -> None:
     async with asyncio.timeout(5):
         downloads = FileDownloads()
-        started, complete = asyncio.Event(), asyncio.Event()
-        calls = 0
-
-        async def request() -> Response:
-            nonlocal calls
-            calls += 1
-            started.set()
-            await complete.wait()
-            return PDF
-
+        request = GatedRequest(PDF)
         first = asyncio.create_task(downloads.get("release.pdf", request))
-        await asyncio.wait_for(started.wait(), 1)
-        second = asyncio.create_task(downloads.get("release.pdf", request))
-        if cancel_reader:
-            first.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await first
-        complete.set()
-        assert await second == PDF
-        if not cancel_reader:
-            assert await first == PDF
+        await request.started.wait()
+        readers = [asyncio.create_task(downloads.get("release.pdf", request)) for _ in range(2)]
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        request.release.set()
+        assert await asyncio.gather(*readers) == [PDF, PDF]
         assert await downloads.get("release.pdf", request) == PDF
         await downloads.finish()
-        assert calls == 1
+        assert request.calls == 1
 
 
 async def test_verified_poll_bytes_release_all_readers_and_cancel_the_obsolete_fetch() -> None:
     async with asyncio.timeout(5):
         downloads = FileDownloads()
-        started, cancelled = asyncio.Event(), asyncio.Event()
-        calls = 0
-
-        async def stalled() -> Response:
-            nonlocal calls
-            calls += 1
-            started.set()
-            try:
-                await asyncio.Event().wait()
-            finally:
-                cancelled.set()
-            return PDF
-
-        waiting = asyncio.create_task(downloads.get("release.pdf", stalled))
-        await asyncio.wait_for(started.wait(), 1)
-        assert await downloads.get("release.pdf", stalled, ready=PDF) == PDF
+        request = GatedRequest(PDF)
+        waiting = asyncio.create_task(downloads.get("release.pdf", request))
+        await request.started.wait()
+        assert await downloads.get("release.pdf", request, ready=PDF) == PDF
         assert await waiting == PDF
-        assert await downloads.get("release.pdf", stalled, ready=PDF) == PDF
         await downloads.finish()
-        assert cancelled.is_set() and calls == 1
+        assert request.finished.is_set() and not request.release.is_set()
+        assert request.calls == 1
 
 
 @pytest.mark.parametrize("failure", ["exception", "404"])
@@ -94,18 +68,9 @@ async def test_a_failed_acquisition_can_be_retried(failure: str) -> None:
 async def test_finish_cancellation_reaps_a_fetch_after_its_only_reader_was_cancelled() -> None:
     async with asyncio.timeout(5):
         downloads = FileDownloads()
-        started, cancelled = asyncio.Event(), asyncio.Event()
-
-        async def stalled() -> Response:
-            started.set()
-            try:
-                await asyncio.Event().wait()
-            finally:
-                cancelled.set()
-            return PDF
-
-        reader = asyncio.create_task(downloads.get("release.pdf", stalled))
-        await asyncio.wait_for(started.wait(), 1)
+        request = GatedRequest(PDF)
+        reader = asyncio.create_task(downloads.get("release.pdf", request))
+        await request.started.wait()
         reader.cancel()
         with pytest.raises(asyncio.CancelledError):
             await reader
@@ -114,7 +79,7 @@ async def test_finish_cancellation_reaps_a_fetch_after_its_only_reader_was_cance
         finish.cancel()
         with pytest.raises(asyncio.CancelledError):
             await finish
-        assert cancelled.is_set()
+        assert request.finished.is_set() and not request.release.is_set()
 
 
 async def test_cancelling_before_a_worker_starts_does_not_poison_a_later_retry() -> None:

@@ -746,3 +746,23 @@ def quick_windows(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(recorder, "pace", lambda at, times, own: (0.02, None))
     monkeypatch.setattr(recorder, "RESOURCES_EVERY", 0.05)
     monkeypatch.setattr(recorder, "CLOCK_RESYNC", 0.05)
+
+
+class GatedRequest:
+    """Hold a response until released; expose request start and cleanup to async tests."""
+
+    def __init__(self, response: Response) -> None:
+        self.response = response
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.finished = asyncio.Event()
+        self.calls = 0
+
+    async def __call__(self, *args: Any, **kwargs: Any) -> Response:
+        self.calls += 1
+        self.started.set()
+        try:
+            await self.release.wait()
+        finally:
+            self.finished.set()
+        return self.response
