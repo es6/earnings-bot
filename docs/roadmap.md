@@ -80,11 +80,34 @@ test server (`DISCORD_GUILD_ID`). The tables are already kept per channel. Neede
 - Each server keeps its own tracked list and scorecards. Two servers tracking one company share
   its window and polls.
 
-### CPU use of `/track` and live releases
+### Load on the PC from `/track` and live releases
 
-Not measured yet. First, profile a `/track` run and a replayed release window (the burst
-replay) to find where the time goes: Chrome rendering, HTML and PDF parsing, feed parsing on
-one-second polls. Then set targets, and measure the change before claiming one.
+The aim: a heavy release (four or more companies at once) or a `/track` run never slows the
+owner's PC down, whether through CPU, memory or leftover processes. Measured on Nov 15 on this
+PC (i9-13900K, 32 threads, 64 GB):
+
+| Load | Chrome | The bot itself | Whole PC |
+|---|---|---|---|
+| Five release windows at once, full speed, real Chrome and sites, 3 min | 1.4 GB median, 1.6 GB peak working set (1.0 GB committed); 1.4 cores peak, about 0.1 on average | 76 MB; 0.1 core peak | CPU 14% median, 27% peak; free RAM unchanged at 35 GB |
+| `/track` research for 3 new companies, one at a time as the bot does | 760 MB median, 1.2 GB peak; 2.1 cores peak | 129 MB; 0.9 core peak | CPU 40% peak |
+| 40 real release files read at once (PDFs and pages) | — | 106 MB; 1 core (Python runs one thread at a time) | 4.5 s in all |
+
+Done:
+- Chrome ends with the bot, and leftovers are cleared at start (#133). A Chrome from Nov 13 was
+  still running two days later, beside 1.8 GB of old profiles on disk.
+- Chrome runs at below-normal priority, so the owner's programs come first when the CPU is
+  busy, under an 8 GB ceiling on the memory its processes may commit together.
+- Every minute of a window, the journal records the bot's memory and CPU, Chrome's processes,
+  CPU and peak memory, and the PC's free memory (`resources` events).
+- Tried and dropped: turning off images in Chrome saved about 3% of its memory and no CPU, and
+  BN's rendered results table failed without them.
+
+Open:
+- Read the `resources` records from the live streak (Nov 17 to 20).
+- A soak test: hours of windows, to catch slow growth in memory, handles or processes.
+- When many releases land at once, one release's text can wait seconds behind the others'
+  parsing (a PDF read took 0.3 s alone and up to 4 s among 40). That costs summary speed, not
+  responsiveness. A separate process for parsing would fix it at some memory cost.
 
 ## Other open work
 

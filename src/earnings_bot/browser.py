@@ -444,6 +444,10 @@ class DesktopChrome:
             except (aiohttp.ClientError, TimeoutError):
                 pass
 
+    def usage(self) -> tuple[int, float, int] | None:
+        """Its processes, their CPU seconds and their peak committed memory (DesktopProcess)."""
+        return self._process.usage() if self._process else None
+
     async def inspect_json(self, url: str) -> list[BrowserJSON]:
         """Observe public JSON requests from a normal navigation without replaying them."""
         host = browser_host(url)
