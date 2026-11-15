@@ -15,6 +15,7 @@ from earnings_bot.fetch import Fetcher
 from earnings_bot.formatting import clock
 from earnings_bot.globe_history import past_releases
 from earnings_bot.ir_research import inspect_issuer, issuer_listing
+from earnings_bot.issuer_history import browser_feed_history, listing_history
 from earnings_bot.known import KnownCompany, wire_publisher, wires
 from earnings_bot.recorder import ET, PollError, Target, poll
 from earnings_bot.sec_results import SixKResults, SixKUnavailable, announces_results
@@ -60,7 +61,7 @@ def _timings(rows: object) -> list[Timing]:
 
 # The release history's version. 2 (v0.21.23) reads releases whose headlines don't say results
 # and GlobeNewswire's listings: WeRide's went from one release to four.
-HISTORY_VERSION = 2
+HISTORY_VERSION = 3
 
 
 @dataclass(frozen=True)
@@ -218,7 +219,22 @@ async def release_history(
     if company.q4_host and company.reachable:
         q4 = Q4PressReleases(company.q4_host, page_size=HISTORY_PAGE)
         items += [(q4, item) for item in await _list(fetcher, q4)]
-    if company.wire == "GlobeNewswire" and company.name:
+    if company.ir_listing:
+        source = RssFeed("issuer-history", company.ir_listing)
+        # Public dated HTML rows complement feeds that retain only one quarter.
+        chrome = company.ir_http_status in {403, 429} and fetcher.chrome_allowed()
+        items += [
+            (source, item)
+            for item in await listing_history(fetcher, company.ir_listing, chrome=chrome)
+        ]
+    if company.ir_browser_rss and fetcher.chrome_allowed():
+        source = RssFeed("issuer-history", company.ir_browser_rss)
+        with suppress(OSError, TimeoutError, ValueError):
+            items += [
+                (source, item)
+                for item in await browser_feed_history(fetcher, company.ir_browser_rss)
+            ]
+    if company.wire in {"GlobeNewswire", "unknown"} and company.name:
         # A year of the company's releases, which its own feed may not reach back to
         globe = RssFeed("globenewswire", GLOBENEWSWIRE_EARNINGS, company.names)
         with suppress(OSError, TimeoutError, ValueError):
