@@ -3,8 +3,8 @@
 [![CI](https://github.com/es6/earnings-bot/actions/workflows/ci.yml/badge.svg)](https://github.com/es6/earnings-bot/actions/workflows/ci.yml)
 [![Docker](https://github.com/es6/earnings-bot/actions/workflows/docker.yml/badge.svg)](https://github.com/es6/earnings-bot/actions/workflows/docker.yml)
 
-A Discord bot that posts a company's earnings release the moment it's public, from whichever
-source has it first, then edits in a short summary of the numbers that move the stock.
+A Discord bot that races public earnings sources, posts a release as soon as it detects it,
+then edits in a short summary of the numbers that move the stock.
 
 Type `/track NVDA`. The bot works out where the company publishes (its investor relations
 site, its newswire, its SEC filings), when its next results come out and at what time of day,
@@ -105,6 +105,7 @@ for you.
    `SEC_USER_AGENT` (your name and email, which SEC requires). Optional:
    - `DISCORD_GUILD_ID`, so slash commands show up in your test server at once;
    - `DISCORD_STATUS_CHANNEL_ID` for window reports;
+   - `DISCORD_SERVER_CHANNEL_IDS` for additional servers' alert channels;
    - `LIVE_SUMMARIES=true` with `META_MODEL_API_KEY` for summaries (a key alone never starts
      paid calls);
    - `FMP_API_KEY` for earnings-calendar dates;
@@ -119,8 +120,14 @@ for you.
 
    It watches the companies tracked with `/track`, plus any schedule files in `schedules/`.
    Keep the `schedules/*.sqlite3` files: they let a restart resume alerts and scorecards
-   without posting anything twice. Docker works too: `docker build -t earnings-bot .` then
-   `docker run --env-file .env earnings-bot`. The Chrome routes for sites that block
+   without posting anything twice. Docker works too:
+
+   ```bash
+   docker build -t earnings-bot .
+   docker run --env-file .env -v "${PWD}/schedules:/data" earnings-bot earnings-bot /data
+   ```
+
+   The mounted directory must be writable by container user 1000. The Chrome routes for sites that block
    automated requests run only on Windows, in a signed-in session, so a Docker copy works
    without them.
 
@@ -128,8 +135,8 @@ for you.
 
 `.\scripts\install-tasks.ps1` registers the bot and its watchdog as Task Scheduler tasks.
 They run hidden, start at logon and again every 5 minutes, and won't start a second copy.
-`.\scripts\update-bot.ps1` deploys the latest `main`, refusing while a release window is
-open. Details: [running continuously on Windows](docs/unattended.md#run-continuously-on-windows).
+`.\scripts\update-bot.ps1` deploys the latest `main`, refusing while an unreleased window is
+open or starts within five minutes. Details: [running continuously on Windows](docs/unattended.md#run-continuously-on-windows).
 
 ## How it works
 
