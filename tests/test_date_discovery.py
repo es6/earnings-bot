@@ -72,6 +72,10 @@ def nvidia_notices() -> tuple[int, bytes]:
     return 200, json.dumps({"GetPressReleaseListResult": [notice]}).encode()
 
 
+# The real IR listing read, for tests that serve the listing from their fake fetcher
+REAL_LISTING_DATE = date_discovery._listing_date
+
+
 @pytest.fixture(autouse=True)
 def no_browser(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keeps desktop Chrome out of these tests: no IR listing read, no browser source verified."""
@@ -1179,8 +1183,10 @@ async def test_saved_bn_profile_is_enriched_and_scheduled_from_issuer_notice(
     async def no_trial(*args: object) -> tuple[None, str]:
         return None, "Not checked in tests"
 
-    # Chrome's verification would otherwise run, or not, by platform
+    # The notice comes from the IR listing over HTTP, the same with or without Chrome
     monkeypatch.setattr(date_discovery, "verified_browser_source", no_trial)
+    monkeypatch.setattr(date_discovery, "_listing_date", REAL_LISTING_DATE)
+    monkeypatch.setattr(date_discovery, "chrome_available", lambda: False)
     data = filings()
     company = profile("BN", CIK, "Brookfield Corporation", data, BN_NOW.date())
     assert company.sec_form == "6-K"
