@@ -13,56 +13,7 @@ from earnings_bot.summary_policy import HAIKU
 from earnings_bot.summary_request import referenced_request
 from scripts import summary_prepare
 from scripts.summary_prepare import prepare
-
-DOCUMENT = document_from_html(
-    "<p>Q3 2026 (USD millions)</p><table><tr><th>Metric</th><th>Q3 2026</th>"
-    '<th>Q3 2025</th></tr><tr><th scope="row">Revenue</th><td>100</td><td>80</td></tr>'
-    "</table><p>Revenue growth was 25% reported, 20% excluding acquisitions.</p>"
-)
-
-
-def evidence(**changes: Any) -> dict[str, Any]:
-    return {
-        "document_sha256": DOCUMENT.sha256,
-        "block_id": "t1",
-        "cell_ids": ["t1r1c0", "t1r0c1", "t1r1c1"],
-        "quote": "Revenue | 100 | 80",
-    } | changes
-
-
-def value(**changes: Any) -> dict[str, Any]:
-    return {
-        "amount": "100",
-        "upper": None,
-        "unit": "money",
-        "scale": "million",
-        "currency": "USD",
-        "value_qualifier": "exact",
-        "period": "Q3 2026",
-        "duration": "three months",
-        "basis": "reported",
-        "comparison": "",
-        "comparison_qualifier": "",
-        "evidence": [evidence()],
-    } | changes
-
-
-def fact(**changes: Any) -> dict[str, Any]:
-    return {
-        "metric": "Revenue",
-        "kind": "actual",
-        "role": "headline",
-        "group": "",
-        "relevance": "Headline growth",
-        "current_actual": value(),
-        "prior_year_actual": None,
-        "reported_growth": None,
-        "comparable_growth": None,
-        "previous_guidance": None,
-        "new_guidance": None,
-        "update": "",
-        "update_evidence": [],
-    } | changes
+from tests.builders import DOCUMENT, evidence, fact, value
 
 
 def answer(candidate: dict[str, Any]) -> str:

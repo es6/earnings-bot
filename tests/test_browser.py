@@ -3,45 +3,7 @@ from typing import Any
 import pytest
 
 from earnings_bot.browser import _SETTLED, DesktopChrome, _Tab
-
-
-class FakeTabSocket:
-    """Answers DevTools commands the way a tab does, and remembers what it was asked."""
-
-    def __init__(self) -> None:
-        self.sent: list[dict[str, Any]] = []
-        self.replies: list[dict[str, Any]] = []
-        self.value: Any = None  # what the next in-page fetch answers, when set
-
-    async def send_json(self, message: dict[str, Any]) -> None:
-        self.sent.append(message)
-        result: dict[str, Any] = {}
-        if message["method"] == "Runtime.evaluate":
-            if message["params"]["expression"] == _SETTLED:
-                value: Any = ["complete", 1, 10]
-            elif self.value is not None:
-                value = self.value
-            else:
-                value = {
-                    "url": "https://ir.example.com/results",
-                    "status": 200,
-                    "title": "Results",
-                    "text": "Q3 2026 Earnings Release",
-                    "links": [["https://ir.example.com/q3.pdf", "Earnings Release", "card"]],
-                    "frames": [],
-                }
-            result = {"result": {"value": value}}
-        # A tab sends events between replies, which the reader must skip
-        self.replies += [
-            {"method": "Network.requestWillBeSent", "params": {}},
-            {"id": 1, "result": result},
-        ]
-
-    async def receive_json(self) -> dict[str, Any]:
-        return self.replies.pop(0)
-
-    async def close(self) -> None:
-        return None
+from tests.fakes import FakeTabSocket
 
 
 async def test_a_render_turns_off_chromes_own_cache_before_it_navigates() -> None:

@@ -4,8 +4,6 @@ import itertools
 import json
 import sys
 import time
-from collections import deque
-from collections.abc import Hashable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
@@ -30,48 +28,7 @@ from earnings_bot.recorder import (
     watch,
 )
 from earnings_bot.sources import GuessedFile, GuessedPage, RssFeed, Sighting, Source, published_time
-from tests.fakes import PinnedClock, RoutedFetcher
-
-
-class ListSource(Source):
-    """Lists the keys in the response body, one per line."""
-
-    name = "list"
-    interval = 0.01
-
-    def url(self) -> str:
-        return "https://example.com/list"
-
-    def parse(self, response: Response) -> list[Sighting]:
-        keys = response.body.decode().split()
-        return [Sighting(key, f"Item {key}", "", earnings=True) for key in keys]
-
-
-class FakeFetcher(Fetcher):
-    """Serves canned responses in order, then repeats the last one."""
-
-    def __init__(self, *responses: tuple[int, str], queued: float = 0.0) -> None:
-        super().__init__("Test Person test@example.com")
-        self.responses = deque(responses)
-        self.queued = queued  # how long each request waits for its host's turn
-        self.sent = 0
-
-    async def request(
-        self,
-        method: str,
-        url: str,
-        headers: dict[str, str] | None = None,
-        give_up_after: float | None = None,
-        urgent: bool = False,
-        *,
-        allow_redirects: bool = True,
-        encoded_url: bool = False,
-    ) -> Response:
-        self.sent += 1
-        status, body = self.responses[0] if len(self.responses) == 1 else self.responses.popleft()
-        if status == 0:
-            raise TimeoutError
-        return Response(url, status, {"age": "3"}, body.encode(), 0.02, self.queued)
+from tests.fakes import CompanyFeed, FakeFetcher, ListSource, PinnedClock, RoutedFetcher
 
 
 def events(log: io.StringIO) -> list[dict[str, object]]:
@@ -480,27 +437,6 @@ async def test_a_poll_that_downloads_the_release_logs_its_text_arriving() -> Non
     assert "body" not in new  # far too big for the log
     [body] = [e for e in events(log) if e["event"] == "body"]
     assert (body["key"], body["via"], body["bytes"]) == ("page", "poll", 24)
-
-
-class CompanyFeed(Source):
-    """One feed for every company, listing "TICKER:key" items, read for one company."""
-
-    name = "feed"
-    interval = 0.01
-
-    def __init__(self, ticker: str) -> None:
-        self.ticker = ticker
-
-    @property
-    def share_key(self) -> Hashable:
-        return self.name
-
-    def url(self) -> str:
-        return "https://example.com/feed"
-
-    def parse(self, response: Response) -> list[Sighting]:
-        items = response.body.decode().split()
-        return [Sighting(i, i, "", earnings=True) for i in items if i.startswith(self.ticker)]
 
 
 async def test_overlapping_windows_share_one_poll_of_a_feed() -> None:

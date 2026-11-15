@@ -19,9 +19,9 @@ from earnings_bot.recorder import ET, Journal, Target
 from earnings_bot.release_cards import release_content
 from earnings_bot.tracking_commands import NOT_CONNECTED, TrackingCommands
 from earnings_bot.unattended import DirectoryWatcher, Server, _Window, durable_posters
-from tests.test_pipeline import FakePoster
-from tests.test_tracking_commands import GUILD, ReleaseDay, ShiftedClock, call
-from tests.test_unattended import FakeDiscord
+from tests.builders import GUILD
+from tests.clocks import ShiftedClock
+from tests.fakes import FakeDiscord, FakePoster, ReleaseDay, call
 
 OTHER_GUILD = 777
 
@@ -371,7 +371,9 @@ async def test_each_companys_speed_audit_runs_once_for_every_server(
     from dataclasses import replace
 
     from earnings_bot.track_progress import TrackProgress
-    from tests.test_track_progress import INVESTIGATED, NOW, SPEED, WatchedDiscord
+    from tests.builders import INVESTIGATED, SPEED
+    from tests.builders import PROGRESS_NOW as NOW
+    from tests.fakes import WatchedDiscord
 
     audits: list[str] = []
     done = asyncio.Event()
@@ -457,8 +459,8 @@ async def borrowing(
     from dataclasses import replace
 
     from earnings_bot.known import to_target
+    from tests.builders import INVESTIGATED, SPEED
     from tests.fakes import RoutedFetcher
-    from tests.test_track_progress import INVESTIGATED, SPEED
 
     fetcher = RoutedFetcher({EVIDENCE_PAGE: (page_status, b"<html>Lucid call</html>")})
     journal = Journal(io.StringIO())
@@ -559,7 +561,8 @@ async def test_primary_server_commands_are_registered_without_a_test_guild_setti
 async def test_debug_managers_are_scoped_to_configured_servers_and_owner_stays_global(
     tmp_path: Path,
 ) -> None:
-    from tests.test_tracking_commands import OWNER, client
+    from tests.builders import OWNER
+    from tests.fakes import client
 
     fetcher = ReleaseDay()
     journal = Journal(io.StringIO())

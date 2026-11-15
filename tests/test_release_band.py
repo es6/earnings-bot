@@ -12,7 +12,7 @@ from earnings_bot.browser_sources import BrowserRelease
 from earnings_bot.recorder import ET, Journal, Polls, Target, Watch, pace_routes, watch
 from earnings_bot.release_band import NEAR, SLOW, pace, paced, release_times
 from earnings_bot.sources import EdgarFilings, EdgarLatest, RssFeed
-from tests.test_recorder import CompanyFeed, FakeFetcher, ListSource
+from tests.fakes import CompanyFeed, FakeFetcher, ListSource
 
 T = datetime(2026, 11, 19, 7, 0, tzinfo=ET)
 MINUTE = timedelta(minutes=1)

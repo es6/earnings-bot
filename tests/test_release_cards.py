@@ -11,7 +11,7 @@ from earnings_bot.formatting import GREEN
 from earnings_bot.pipeline import DurableDiscordPoster
 from earnings_bot.recorder import ET
 from earnings_bot.release_cards import HIGHLIGHTS, RELEASE, release_cards, release_content
-from tests.test_unattended import FakeDiscord, FakeMessage
+from tests.fakes import FakeDiscord, FakeMessage
 
 SEEN = datetime(2026, 11, 9, 16, 5, 2, 708000, tzinfo=ET)
 HEADER = "🚨 **$LCID Q3 FY26 earnings are out**"

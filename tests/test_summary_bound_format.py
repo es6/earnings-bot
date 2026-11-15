@@ -9,8 +9,7 @@ from earnings_bot.source_document import document_from_html
 from earnings_bot.summary_binding import BindingReport, BoundFact, bind_brief
 from earnings_bot.summary_bound_format import display_facts, render_bound, value_text
 from earnings_bot.summary_evidence import ReferencedFact, parse_referenced_brief
-from tests.test_summary_binding import TABLE
-from tests.test_summary_evidence import fact, value
+from tests.builders import TABLE, fact, value
 
 
 @pytest.mark.parametrize("months", [3, 6, 9, 12])

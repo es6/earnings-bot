@@ -31,9 +31,10 @@ from earnings_bot.track_test import (
     save,
 )
 from earnings_bot.tracking_commands import is_owner
-from tests.fakes import RoutedFetcher
+from tests.builders import NVDA_CIK, OWNER
+from tests.builders import TRACKING_NOW as NOW
+from tests.fakes import RoutedFetcher, client
 from tests.sec_data import LCID_SUBMISSIONS, sec_routes
-from tests.test_tracking_commands import NOW, NVDA_CIK, OWNER, client
 
 NVDA_ROUTE = f"data.sec.gov/submissions/CIK{NVDA_CIK:010d}.json"
 RELEASE = datetime(2026, 11, 18, 16, 20, tzinfo=ET)

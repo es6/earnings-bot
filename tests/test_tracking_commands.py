@@ -4,10 +4,9 @@ import asyncio
 import io
 import json
 import time
-from collections.abc import Awaitable, Callable, Iterator
+from collections.abc import Iterator
 from datetime import datetime, timedelta
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any, cast
 from urllib.parse import unquote
 
@@ -38,17 +37,21 @@ from earnings_bot.tracking_commands import (
     upcoming_embed,
 )
 from earnings_bot.unattended import DirectoryWatcher, _Window
-from tests.burst_replay import LocalClock
-from tests.fakes import RoutedFetcher, embed_text
+from tests.builders import GUILD, NVDA_CIK, OWNER
+from tests.builders import TRACKING_NOW as NOW
+from tests.clocks import ShiftedClock
+from tests.fakes import (
+    FakeDiscord,
+    FakePoster,
+    ReleaseDay,
+    RoutedFetcher,
+    call,
+    client,
+    embed_text,
+)
 from tests.sec_data import LCID_CIK, LCID_ROUTE, LCID_SUBMISSIONS, sec_routes
-from tests.test_pipeline import FakePoster
-from tests.test_unattended import FakeDiscord
 
-GUILD = 555
 PROGRESS_CHANNEL = 99
-NOW = datetime(2026, 11, 12, 12, tzinfo=ET)
-NVDA_CIK = 1045810
-OWNER = 4242  # owns the bot's Discord application
 
 
 class FixedClock(TrustedClock):
@@ -58,55 +61,6 @@ class FixedClock(TrustedClock):
 
     def now(self) -> datetime:
         return self.moment
-
-
-async def call(
-    handler: Callable[..., Awaitable[None]],
-    *args: str,
-    user: int = 1,
-    admin: bool = False,
-    guild: int = GUILD,
-    events: list[str] | None = None,
-    app: discord.Client | None = None,
-    **options: str | bool | None,
-) -> str:
-    """Runs a command handler as one server member and returns its one reply, sent at once or
-    after deferring. `events` records "defer" and "reply" in order. `app` is the bot's client."""
-    replies: list[str] = []
-    events = [] if events is None else events
-
-    async def send_message(
-        content: str | None = None, *, embed: discord.Embed | None = None, ephemeral: bool = False
-    ) -> None:
-        assert ephemeral, "calendar replies are only for the member who asked"
-        assert "defer" not in events, "Discord refuses a second response"
-        events.append("reply")
-        replies.append(embed_text(embed) if embed is not None else content or "")
-
-    async def defer(*, ephemeral: bool = False, thinking: bool = False) -> None:
-        assert ephemeral and thinking, "only the member who asked sees the bot thinking"
-        assert not events, "Discord refuses a second response"
-        events.append("defer")
-
-    async def follow_up(
-        content: str | None = None, *, embed: discord.Embed | None = None, ephemeral: bool = False
-    ) -> None:
-        assert ephemeral, "calendar replies are only for the member who asked"
-        assert "defer" in events, "a follow-up needs a deferred response"
-        events.append("reply")
-        replies.append(embed_text(embed) if embed is not None else content or "")
-
-    interaction = SimpleNamespace(
-        guild_id=guild,
-        user=SimpleNamespace(id=user),
-        permissions=discord.Permissions(manage_guild=admin),
-        response=SimpleNamespace(send_message=send_message, defer=defer),
-        followup=SimpleNamespace(send=follow_up),
-        client=app,
-    )
-    await handler(cast(discord.Interaction, interaction), *args, **options)
-    [reply] = replies
-    return reply
 
 
 async def never_audit(ticker: str, company: KnownCompany, when: datetime) -> Speed:
@@ -519,57 +473,6 @@ async def test_upcoming_shows_each_scorecards_readiness(
     assert "🔴 **HD**" in reply
 
 
-PLTR_FEED = "investors.palantir.com/feed/PressRelease.svc/GetPressReleaseList"
-RESULTS = {
-    "PressReleaseId": 9001,
-    "Headline": "Palantir Reports Q4 2026 Financial Results",
-    "LinkToDetailPage": "/news-details/2027/palantir-reports-q4-2026",
-    "PressReleaseDate": "02/02/2027 16:05:00",
-    "Body": "<p>" + "Revenue grew 70% year over year to $1.4 billion. " * 40 + "</p>",
-}
-
-
-class ReleaseDay(RoutedFetcher):
-    """Palantir's IR site, whose press release list shows its results from `released_at`
-    (time.monotonic()) on. Everything else answers 404."""
-
-    def __init__(self) -> None:
-        super().__init__({})
-        self.released_at = float("inf")
-
-    async def request(
-        self,
-        method: str,
-        url: str,
-        headers: dict[str, str] | None = None,
-        give_up_after: float | None = None,
-        urgent: bool = False,
-        *,
-        allow_redirects: bool = True,
-        encoded_url: bool = False,
-    ) -> Response:
-        listed: list[dict[str, Any]] = [RESULTS] if time.monotonic() >= self.released_at else []
-        self.routes = {PLTR_FEED: (200, json.dumps({"GetPressReleaseListResult": listed}).encode())}
-        return await super().request(
-            method,
-            url,
-            headers,
-            give_up_after,
-            urgent,
-            allow_redirects=allow_redirects,
-            encoded_url=encoded_url,
-        )
-
-
-class ShiftedClock(LocalClock):
-    """This PC's clock moved forward by `shift`, so a test can skip to the end of a window."""
-
-    shift = timedelta()
-
-    def now(self) -> datetime:
-        return super().now() + self.shift
-
-
 async def test_a_tracked_issuer_with_no_schedule_file_gets_one_alert(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -816,14 +719,6 @@ async def test_status_names_a_degraded_route_while_its_window_is_open(
     assert refused in text
     assert "Degraded: SEC" not in text
     assert embed.color is not None and embed.color.value == AMBER
-
-
-def client(owner: int = OWNER, team: list[int] | None = None) -> discord.Client:
-    members = [SimpleNamespace(id=member) for member in team or []]
-    application = SimpleNamespace(
-        owner=SimpleNamespace(id=owner), team=SimpleNamespace(members=members) if team else None
-    )
-    return cast(discord.Client, SimpleNamespace(application=application))
 
 
 @pytest.fixture

@@ -12,7 +12,8 @@ from earnings_bot.http_policy import retry_after
 from earnings_bot.publication_trials import run_trials
 from earnings_bot.recorder import Journal, PollError, fetch
 from earnings_bot.trial_matching import candidates
-from tests.test_publication_trials import QueuedFetcher, events, plan
+from tests.builders import events, plan
+from tests.fakes import QueuedFetcher
 
 
 @pytest.mark.parametrize("status", [429, 503])

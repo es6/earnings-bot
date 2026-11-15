@@ -13,7 +13,7 @@ from earnings_bot.source_document import (
 )
 from earnings_bot.summary_binding import bind_answer, bind_brief
 from earnings_bot.summary_evidence import parse_referenced_brief
-from tests.test_summary_evidence import fact, value
+from tests.builders import TABLE, fact, value
 
 
 def report(document: SourceDocument, metric: str = "Revenue", **changes: Any):
@@ -29,12 +29,6 @@ def report(document: SourceDocument, metric: str = "Revenue", **changes: Any):
         json.dumps({"schema_version": "source-values/1", "facts": [data]}), document
     )
     return bind_brief(candidate, document)
-
-
-TABLE = """<p>Q3 2026 (USD millions)</p><table>
-<tr><th>Metric</th><th>Q3 2026</th><th>Q3 2025</th></tr>
-<tr><th scope="row">Revenue</th><td>100</td><td>80</td></tr>
-<tr><th scope="row">Operating income</th><td>10</td><td>8</td></tr></table>"""
 
 
 def test_wrong_row_wrong_period_wrong_sign_wrong_scale_and_wrong_unit_are_rejected() -> None:

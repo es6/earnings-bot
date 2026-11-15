@@ -5,7 +5,7 @@ import json
 import time
 from collections.abc import Iterator
 from dataclasses import replace
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -25,7 +25,6 @@ from earnings_bot.delivery import DeliveryStore
 from earnings_bot.edit_priority import EditPriority
 from earnings_bot.formatting import GREEN
 from earnings_bot.investigate import INVESTIGATION, Report
-from earnings_bot.issuers import profile
 from earnings_bot.known import KnownCompany, SourceCheck, to_target
 from earnings_bot.pipeline import Release
 from earnings_bot.recorder import ET, Journal, Target
@@ -34,43 +33,10 @@ from earnings_bot.source_audit import Speed, Timing
 from earnings_bot.sources import RssFeed, Sighting
 from earnings_bot.track_progress import REPLACE_AFTER, CardPoster, TrackProgress
 from earnings_bot.version import release_version
-from tests.fakes import RoutedFetcher, embed_text
-from tests.sec_data import LCID_CIK, LCID_SUBMISSIONS
-from tests.test_pipeline import uber
-from tests.test_unattended import FakeDiscord, FakeMessage
-
-NOW = datetime(2026, 11, 9, 15, tzinfo=UTC)
-LUCID = profile("LCID", LCID_CIK, "Lucid Group, Inc.", LCID_SUBMISSIONS, date(2026, 11, 9))
-LISTING = "https://ir.lucidmotors.com/press-releases"
-# What an investigation of Lucid finds
-INVESTIGATED = LUCID.model_copy(
-    update={
-        "investigated": date(2026, 11, 9),
-        "investigation": INVESTIGATION,
-        "wire": "PR Newswire",
-        "ir_listing": LISTING,
-        "ir_http_status": 403,
-        "platform": "own-site",
-        "checks": [
-            SourceCheck(source="SEC 8-K filings", watch=True, why="Filed here"),
-            SourceCheck(
-                source="ir.lucidmotors.com without Chrome",
-                watch=False,
-                why="Blocks automated requests (HTTP 403)",
-            ),
-            SourceCheck(
-                source=f"Press release page <{LISTING}>, read in Chrome",
-                watch=True,
-                why="Chrome read its latest results",
-            ),
-            SourceCheck(
-                source="Business Wire earnings feed",
-                watch=False,
-                why="Its releases go out on PR Newswire",
-            ),
-        ],
-    }
-)
+from tests.builders import INVESTIGATED, LISTING, LUCID, SPEED, uber
+from tests.builders import PROGRESS_NOW as NOW
+from tests.fakes import FakeDiscord, FakeMessage, RoutedFetcher, WatchedDiscord, embed_text
+from tests.sec_data import LCID_CIK
 
 
 def test_directory_bot_registers_tracking_commands(tmp_path: Path) -> None:
@@ -206,27 +172,6 @@ async def test_card_edits_are_spaced_to_leave_room_for_release_edits(tmp_path: P
         assert time.monotonic() - started < 0.1
 
 
-class WatchedDiscord(FakeDiscord):
-    """Sets `sent` when a message goes out."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.sent = asyncio.Event()
-
-    async def send(
-        self,
-        content: str = "",
-        *,
-        nonce: str | None = None,
-        embed: discord.Embed | None = None,
-        embeds: list[discord.Embed] | None = None,
-        allowed_mentions: object = None,
-    ) -> FakeMessage:
-        message = await super().send(content, nonce=nonce, embed=embed, embeds=embeds)
-        self.sent.set()
-        return message
-
-
 async def test_the_audit_waits_for_the_investigation(tmp_path: Path) -> None:
     channel = WatchedDiscord()
     audited: list[str] = []
@@ -289,19 +234,6 @@ def lucid_target(ir: bool) -> Target:
     if ir:
         target.ir = IRSource(listing=LISTING, headline="Third Quarter 2026 Results")
     return target
-
-
-SPEED = Speed(
-    date(2026, 8, 5),
-    confident=True,
-    measured_headlines=[
-        Timing("edgar_latest", datetime(2026, 8, 5, 16, 8, 53, tzinfo=ET)),
-        Timing("prnewswire_busted", datetime(2026, 8, 5, 16, 5, 17, tzinfo=ET)),
-        Timing("prnewswire", datetime(2026, 8, 5, 16, 6, 2, tzinfo=ET)),
-        Timing("browser-ir", datetime(2026, 8, 5, 16, 6, 59, tzinfo=ET)),
-    ],
-    benchmark="[@earnings_guy posted](https://x.com/earnings_guy/status/1) at 16:06:00 ET",
-)
 
 
 async def test_a_finished_card_says_what_was_fastest_watched_and_rejected(tmp_path: Path) -> None:

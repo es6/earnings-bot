@@ -1,9 +1,6 @@
 import asyncio
 import io
-import itertools
 import json
-from collections.abc import AsyncIterator
-from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,121 +12,18 @@ import pytest
 from earnings_bot import unattended
 from earnings_bot.delivery import DeliveryStore
 from earnings_bot.fetch import Fetcher
-from earnings_bot.pipeline import DurableDiscordPoster, Release, Releases
+from earnings_bot.pipeline import Release, Releases
 from earnings_bot.recorder import ET, Journal, OnNew, Polls, Target, Trial, Watch
 from earnings_bot.release_cards import release_content
 from earnings_bot.sources import EdgarFilings, EdgarLatest, GuessedFile, RssFeed, Sighting
 from earnings_bot.track_progress import TrackProgress
-from tests.fakes import PinnedClock, RoutedFetcher
-from tests.test_pipeline import FakePoster, uber
-
-
-def unknown_message() -> discord.NotFound:
-    response = SimpleNamespace(status=404, reason="Not Found")
-    return discord.NotFound(cast(Any, response), {"message": "Unknown Message", "code": 10008})
-
-
-@dataclass
-class FakeMessage:
-    id: int
-    content: str
-    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
-    edited_at: datetime | None = None
-    author: SimpleNamespace = field(default_factory=lambda: SimpleNamespace(id=42))
-    attachments: list[Any] = field(default_factory=list)
-    embed: discord.Embed | None = None
-    extra_embeds: list[discord.Embed] = field(default_factory=list)
-    deleted: bool = False
-
-    @property
-    def embeds(self) -> list[discord.Embed]:
-        return self.extra_embeds or ([self.embed] if self.embed else [])
-
-    async def edit(
-        self,
-        *,
-        content: str | None = None,
-        attachments: list[Any] | None = None,
-        embed: discord.Embed | None = None,
-        embeds: list[discord.Embed] | None = None,
-    ) -> "FakeMessage":
-        if self.deleted:
-            raise unknown_message()
-        if embed is not None:
-            self.embed = embed
-            self.extra_embeds = []
-        if embeds is not None:
-            self.extra_embeds = embeds
-            self.embed = embeds[0] if embeds else None
-        if content is not None:
-            self.content = content
-        if attachments is not None:
-            # As Discord stores them: it drops "%" from a filename ("Nebius%20Q3...pdf" came
-            # back as "Nebius20Q3...pdf" on Nov 12)
-            self.attachments = [
-                SimpleNamespace(filename=a.filename.replace("%", "")) for a in attachments
-            ]
-        self.edited_at = datetime.now(UTC)
-        return self
-
-    async def delete(self) -> None:
-        if self.deleted:
-            raise unknown_message()
-        self.deleted = True
-
-
-class FakeDiscord:
-    def __init__(self) -> None:
-        self.messages: dict[int, FakeMessage] = {}
-        self.ids = itertools.count(1)  # never reused, like Discord's
-        self.nonces: dict[str, FakeMessage] = {}
-        self.attempts = 0
-        self.fail_before_send = False
-        self.lose_response = False
-
-    async def send(
-        self,
-        content: str = "",
-        *,
-        nonce: str | None = None,
-        embed: discord.Embed | None = None,
-        embeds: list[discord.Embed] | None = None,
-        allowed_mentions: object = None,
-    ) -> FakeMessage:
-        self.attempts += 1
-        if self.fail_before_send:
-            self.fail_before_send = False
-            raise TimeoutError("request timed out before delivery")
-        if nonce is not None and nonce in self.nonces:
-            return self.nonces[nonce]
-        message = FakeMessage(next(self.ids), content, embed=embed, extra_embeds=embeds or [])
-        self.messages[message.id] = message
-        if nonce is not None:
-            self.nonces[nonce] = message
-        if self.lose_response:
-            self.lose_response = False
-            raise TimeoutError("Discord accepted the message but the response was lost")
-        return message
-
-    async def fetch_message(self, message_id: int) -> FakeMessage:
-        if message_id not in self.messages:
-            raise unknown_message()
-        return self.messages[message_id]
-
-    def delete(self, message_id: int) -> None:
-        self.messages.pop(message_id).deleted = True
-
-    async def history(
-        self, *, limit: int | None, after: datetime | None = None
-    ) -> AsyncIterator[FakeMessage]:
-        for message in self.messages.values():
-            if after is None or message.created_at > after:
-                yield message
-
-    def poster(self, store: DeliveryStore, target: Target) -> DurableDiscordPoster:
-        return DurableDiscordPoster(
-            cast(discord.abc.Messageable, self), store, target.release_key, 42
-        )
+from tests.builders import uber
+from tests.fakes import (
+    FakeDiscord,
+    FakePoster,
+    PinnedClock,
+    RoutedFetcher,
+)
 
 
 async def test_an_alert_retries_then_resumes_after_restart(tmp_path: Path) -> None:

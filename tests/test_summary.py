@@ -1,6 +1,4 @@
 import json
-from types import SimpleNamespace
-from typing import Any, cast
 
 import pytest
 from pydantic import SecretStr
@@ -10,10 +8,10 @@ from earnings_bot.source_document import document_from_text
 from earnings_bot.summary import (
     META_API,
     MODEL,
-    Summarizer,
     SummaryError,
     summarizer_from,
 )
+from tests.fakes import summarizer_answering
 
 RELEASE = """\
 Uber Announces Results for Third Quarter 2026
@@ -66,39 +64,6 @@ AUTONOMY = fact(
 INVENTED = fact(
     metric="Revenue", value="$15,800 million", period="Q3 2026", source="Revenue | $ | 13,467"
 )
-
-
-class FakeStream:
-    def __init__(self, message: SimpleNamespace) -> None:
-        self.message = message
-
-    async def __aenter__(self) -> "FakeStream":
-        return self
-
-    async def __aexit__(self, *exc_info: object) -> None:
-        pass
-
-    async def get_final_message(self) -> SimpleNamespace:
-        return self.message
-
-
-def summarizer_answering(stop_reason: str, *texts: str) -> tuple[Summarizer, list[dict[str, Any]]]:
-    """A Summarizer whose model answers with these text blocks, and the requests it gets."""
-    asked: list[dict[str, Any]] = []
-    message = SimpleNamespace(
-        stop_reason=stop_reason,
-        content=[SimpleNamespace(type="redacted_thinking")]
-        + [SimpleNamespace(type="text", text=text) for text in texts],
-        usage=SimpleNamespace(input_tokens=9000, output_tokens=700),
-    )
-
-    def stream(**request: Any) -> FakeStream:
-        asked.append(request)
-        return FakeStream(message)
-
-    summarizer = Summarizer("not-a-real-key")
-    summarizer.client = cast(Any, SimpleNamespace(messages=SimpleNamespace(stream=stream)))
-    return summarizer, asked
 
 
 def answer(*facts: dict[str, str]) -> str:

@@ -2,7 +2,6 @@ import asyncio
 import io
 import json
 import tomllib
-from collections.abc import Iterable
 from datetime import datetime
 
 import pytest
@@ -30,8 +29,7 @@ from earnings_bot.pipeline import Releases
 from earnings_bot.recorder import ET, Journal, PollError, Target, Watch, poll, take
 from earnings_bot.sources import RssFeed, Sighting
 from earnings_bot.text import release_text
-from tests.fakes import RoutedFetcher
-from tests.test_pipeline import FakePoster
+from tests.fakes import BrowserFake, FakePoster, RoutedFetcher
 
 FICO = "https://investors.fico.com/news-releases/"
 ARTICLE = FICO + "news-release-details/earnings"
@@ -48,23 +46,6 @@ LUCID_Q3 = (
     r"^(?!.*\b(?:webcast|conference call|to host|to announce|will report|date|schedule)\b)"
     r"(?=.*\b(?:Q3|third quarter)\b)(?=.*\b2026\b)(?=.*\bresults\b).*"
 )
-
-
-class BrowserFake(RoutedFetcher):
-    def __init__(self, responses: Iterable[tuple[int, bytes] | Exception]) -> None:
-        super().__init__({})
-        self._responses = iter(responses)
-        self.browser_calls: list[tuple[str, str, bool]] = []
-
-    async def browser_request(
-        self, url: str, warmup: str, give_up_after: float, *, urgent: bool = False
-    ) -> Response:
-        self.browser_calls.append((url, warmup, urgent))
-        reply = next(self._responses)
-        if isinstance(reply, Exception):
-            raise reply
-        status, body = reply
-        return Response(url, status, {"x-cache": f"cache for {url}"}, body, 0.015)
 
 
 def rss_item(title: str, url: str, stamp: str = "Mon, 09 Nov 2026 16:05:00 -0500") -> str:

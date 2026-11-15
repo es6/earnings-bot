@@ -24,7 +24,7 @@ from earnings_bot.globe_frontier import (
 )
 from earnings_bot.pipeline import Releases
 from earnings_bot.recorder import ET, Journal, Target, Trial
-from tests.test_unattended import FakePoster
+from tests.fakes import FakePoster
 
 FRIDAY = datetime(2026, 11, 20, 7, tzinfo=ET)
 NUMBER = re.compile(r"/news-release/\d{4}/\d{2}/\d{2}/(\d+)/0/en/([^/]+)\.html$")

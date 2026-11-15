@@ -18,40 +18,18 @@ from earnings_bot.calendar import Calendar
 from earnings_bot.date_discovery import DateDiscovery, _cache_routes, parse_notice
 from earnings_bot.delivery import DeliveryStore
 from earnings_bot.fetch import Response
-from earnings_bot.investigate import INVESTIGATION
 from earnings_bot.ir_research import quarter_headline
 from earnings_bot.issuer_news import IssuerNews, news_records
-from earnings_bot.known import KnownCompany, SourceCheck
 from earnings_bot.pipeline import describe_source
 from earnings_bot.recorder import ET, Journal, Target, Watch, poll, take
 from earnings_bot.source_audit import Speed, Timing
 from earnings_bot.sources import Q4PressReleases, Sighting
+from tests.builders import IR_COVERAGE_NOW as NOW
+from tests.builders import IR_COVERAGE_RESULTS as RESULTS
+from tests.builders import NEWS, company
 from tests.fakes import RoutedFetcher
 
 FIXTURES = json.loads((Path(__file__).parent / "fixtures/ir_misses.json").read_text())
-RESULTS = "https://www.sea.com/api/financial/resource"
-NEWS = "https://www.sea.com/api/invest/news?page=1&size=12"
-NOW = datetime(2026, 11, 9, 12, tzinfo=ET)
-
-
-def company(ticker: str) -> KnownCompany:
-    return KnownCompany(
-        name="Sea Limited" if ticker == "SE" else "On Holding AG",
-        cik=1703399 if ticker == "SE" else 1858985,
-        platform="own-site",
-        reachable=False,
-        wire="unknown",
-        sec_form="6-K",
-        release_time="06:10",
-        fastest="unknown",
-        evidence="Saved public source replay",
-        checked=NOW.date(),
-        investigated=NOW.date(),
-        investigation=INVESTIGATION,
-        checks=[SourceCheck(source="SEC", watch=True, why="Verified 6-K filer")],
-        ir_news_api=NEWS if ticker == "SE" else None,
-        ir_results_api=RESULTS if ticker == "SE" else None,
-    )
 
 
 @pytest.mark.parametrize("legacy_results_alias", [False, True])

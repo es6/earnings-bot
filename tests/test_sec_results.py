@@ -25,7 +25,8 @@ from earnings_bot.sec_results import (
 from earnings_bot.source_audit import Speed, Timing, audit_sources, site_local_time
 from earnings_bot.sources import EdgarFilings, EdgarLatest, Sighting, _filing_type
 from earnings_bot.track_progress import TrackProgress
-from tests.fakes import PinnedClock, RoutedFetcher, embed_text, sec_filing_detail
+from tests.builders import sec_filing_detail
+from tests.fakes import FakeDiscord, PinnedClock, RoutedFetcher, embed_text
 from tests.results_data import (
     CRM_RELEASES,
     HD_RELEASES,
@@ -34,7 +35,6 @@ from tests.results_data import (
     TGT_RELEASES,
     WMT_RELEASES,
 )
-from tests.test_unattended import FakeDiscord
 
 NOW = datetime(2026, 11, 9, 17, tzinfo=ET)
 RESULT = "0001171843-26-005474"
