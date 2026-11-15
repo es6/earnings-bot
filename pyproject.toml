@@ -96,6 +96,6 @@ only_mutate = [
     "src/earnings_bot/summary_format.py",
     "src/earnings_bot/binding_text.py",
 ]
-also_copy = ["tests/", "scripts/", "pyproject.toml"]
+also_copy = ["tests/", "scripts/", "schedules/", "docs/", "pyproject.toml"]
 pytest_add_cli_args = ["-p", "no:randomly", "-p", "no:xdist", "-p", "no:cacheprovider"]
 pytest_add_cli_args_test_selection = ["tests/"]

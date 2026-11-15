@@ -27,7 +27,15 @@ jobs:
       - name: Install dependencies
         run: uv sync --locked
 
+      # A pull request that changes this setup checks it on one small module; the weekly run
+      # covers every selected parser
+      - name: Check the mutation setup
+        if: github.event_name == 'pull_request'
+        timeout-minutes: 10
+        run: uv run --with mutmut==3.8.1 mutmut run 'earnings_bot.http_policy*' --max-children 4
+
       - name: Run mutmut
+        if: github.event_name != 'pull_request'
         run: uv run --with mutmut==3.8.1 mutmut run --max-children 4
 
       - name: Report the changes no test noticed
