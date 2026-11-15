@@ -1,4 +1,10 @@
-"""Start and reap a Chrome process on a Windows desktop that is never displayed."""
+"""Start and reap a Chrome process on a Windows desktop that is never displayed.
+
+Chrome runs in a Windows job object that ends it, and every process it started, when the job's
+last handle closes, which happens when the bot exits for any reason. Before that, a bot stopped
+for a deploy or a crash left its Chrome running: one from Nov 13 was still running on Nov 15,
+its parent gone, with 18 old profiles (1.8 GB) in the temp folder.
+"""
 
 import ctypes
 import os
@@ -52,11 +58,56 @@ def chrome_path() -> Path:
     raise OSError("Google Chrome was not found in its standard Windows locations")
 
 
+class _BasicLimits(ctypes.Structure):
+    _fields_ = [
+        ("PerProcessUserTimeLimit", w.LARGE_INTEGER),
+        ("PerJobUserTimeLimit", w.LARGE_INTEGER),
+        ("LimitFlags", w.DWORD),
+        ("MinimumWorkingSetSize", ctypes.c_size_t),
+        ("MaximumWorkingSetSize", ctypes.c_size_t),
+        ("ActiveProcessLimit", w.DWORD),
+        ("Affinity", ctypes.c_size_t),
+        ("PriorityClass", w.DWORD),
+        ("SchedulingClass", w.DWORD),
+    ]
+
+
+class _IoCounters(ctypes.Structure):
+    _fields_ = [
+        (name, ctypes.c_ulonglong)
+        for name in (
+            "ReadOperationCount",
+            "WriteOperationCount",
+            "OtherOperationCount",
+            "ReadTransferCount",
+            "WriteTransferCount",
+            "OtherTransferCount",
+        )
+    ]
+
+
+class _ExtendedLimits(ctypes.Structure):
+    _fields_ = [
+        ("BasicLimitInformation", _BasicLimits),
+        ("IoInfo", _IoCounters),
+        ("ProcessMemoryLimit", ctypes.c_size_t),
+        ("JobMemoryLimit", ctypes.c_size_t),
+        ("PeakProcessMemoryUsed", ctypes.c_size_t),
+        ("PeakJobMemoryUsed", ctypes.c_size_t),
+    ]
+
+
+_EXTENDED_LIMITS = 9  # JobObjectExtendedLimitInformation
+_KILL_ON_JOB_CLOSE = 0x2000
+_CREATE_SUSPENDED = 0x4
+
+
 class DesktopProcess:
     _user: ctypes.CDLL
     _kernel: ctypes.CDLL
     _desktop: int
     _process: _Process
+    _job: int | None
 
     def __init__(self, exe: Path, args: list[str]) -> None:
         if sys.platform != "win32":
@@ -90,6 +141,14 @@ class DesktopProcess:
             ctypes.POINTER(_Process),
         ]
         self._kernel.CreateProcessW.restype = w.BOOL
+        self._kernel.CreateJobObjectW.argtypes = [w.LPVOID, w.LPCWSTR]
+        self._kernel.CreateJobObjectW.restype = w.HANDLE
+        self._kernel.SetInformationJobObject.argtypes = [w.HANDLE, ctypes.c_int, w.LPVOID, w.DWORD]
+        self._kernel.SetInformationJobObject.restype = w.BOOL
+        self._kernel.AssignProcessToJobObject.argtypes = [w.HANDLE, w.HANDLE]
+        self._kernel.AssignProcessToJobObject.restype = w.BOOL
+        self._kernel.ResumeThread.argtypes = [w.HANDLE]
+        self._kernel.ResumeThread.restype = w.DWORD
 
         name = f"EarningsBot-{uuid.uuid4().hex}"
         generic_all = 0x10000000
@@ -102,22 +161,58 @@ class DesktopProcess:
         startup.lpDesktop = name
         self._process = _Process()
         command = ctypes.create_unicode_buffer(subprocess.list2cmdline([str(exe), *args]))
+        self._job = self._kill_on_close_job()
         if not self._kernel.CreateProcessW(
             str(exe),
             command,
             None,
             None,
             False,
-            0,
+            _CREATE_SUSPENDED,  # joins the job before it can start anything
             None,
             None,
             ctypes.byref(startup),
             ctypes.byref(self._process),
         ):
             error = ctypes.WinError(ctypes.get_last_error())
+            self._close_job()
             self._user.CloseDesktop(self._desktop)
             raise error
+        if self._job and not self._kernel.AssignProcessToJobObject(
+            self._job, self._process.hProcess
+        ):
+            self._close_job()  # Chrome still runs; it just isn't ended with the bot
+        self._kernel.ResumeThread(self._process.hThread)
         self._kernel.CloseHandle(self._process.hThread)
+
+    def _kill_on_close_job(self) -> int | None:
+        """A job that ends its processes when its last handle closes, or None if Windows won't
+        make one."""
+        job = self._kernel.CreateJobObjectW(None, None)
+        if not job:
+            return None
+        limits = _ExtendedLimits()
+        limits.BasicLimitInformation.LimitFlags = _KILL_ON_JOB_CLOSE
+        if not self._kernel.SetInformationJobObject(
+            job, _EXTENDED_LIMITS, ctypes.byref(limits), ctypes.sizeof(limits)
+        ):
+            self._kernel.CloseHandle(job)
+            return None
+        return job
+
+    def _close_job(self) -> None:
+        if self._job:
+            self._kernel.CloseHandle(self._job)
+            self._job = None
+
+    @property
+    def pid(self) -> int:
+        return self._process.dwProcessId
+
+    @property
+    def ended_with_owner(self) -> bool:
+        """Whether Chrome and its processes end when this process does."""
+        return self._job is not None
 
     @property
     def running(self) -> bool:
@@ -129,4 +224,5 @@ class DesktopProcess:
             self._kernel.TerminateProcess(handle, 1)
             self._kernel.WaitForSingleObject(handle, 2000)
         self._kernel.CloseHandle(handle)
+        self._close_job()  # ends any of Chrome's processes still running
         self._user.CloseDesktop(self._desktop)
