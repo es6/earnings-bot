@@ -285,7 +285,7 @@ wheels = [
 
 [[package]]
 name = "earnings-bot"
-version = "0.21.41"
+version = "0.21.42"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
