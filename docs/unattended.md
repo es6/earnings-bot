@@ -85,7 +85,12 @@ hour old (error 30046) much harder. Release alerts go first:
    results don't count: Construction Partners' came at 8:30 AM, two weeks before
    full results it had put out at 7:00 or 7:30 for six quarters. A Q4 site's
    stamp counts as Eastern only within an hour of an 8-K filer's results 8-K
-   (Alphabet's are Pacific). Pending issuers are rechecked roughly hourly outside
+   (Alphabet's are Pacific). A release whose headline doesn't say results counts
+   when its text announces them (up to eight reads an audit, on filing days), and a
+   GlobeNewswire issuer's history also comes from GlobeNewswire's own listings, which
+   reach back a year. A company whose times line up better on a clock without
+   daylight saving (WeRide releases in Hong Kong's evening) has its window cover both
+   clocks' times. Pending issuers are rechecked roughly hourly outside
    release windows. Before the speed audit finishes, a verified results-article
    timestamp can already replace the SEC acceptance-time estimate for the first
    plan.

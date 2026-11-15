@@ -170,3 +170,21 @@ async def test_a_window_paces_its_routes_from_the_moment_it_opens(
     assert by_name["rss:ir.example.com"].times == [now, later]
     assert all(w.times == [] for w in started if not paced(w.source))
     assert any(json.loads(line)["event"] == "polling_band" for line in log.getvalue().splitlines())
+
+
+def test_a_company_releasing_by_a_clock_without_daylight_saving_is_placed_by_it_too() -> None:
+    """WeRide releases in Hong Kong's evening: 4:00 to 7:10 AM ET in its last four quarters, which
+    in November is 4:00 to 6:10 AM by the Hong Kong clock."""
+    history = [
+        datetime(2026, 8, 12, 7, 0, 18, tzinfo=ET),
+        datetime(2026, 5, 13, 5, 40, tzinfo=ET),
+        datetime(2026, 3, 23, 7, 10, tzinfo=ET),
+        datetime(2025, 11, 24, 4, 0, tzinfo=ET),
+    ]
+    friday = datetime(2026, 11, 20, 7, tzinfo=ET)
+    clock = [(4, 0), (4, 40), (5, 40), (6, 0), (6, 10), (7, 0), (7, 10)]
+    assert release_times(history, friday) == [friday.replace(hour=h, minute=m) for h, m in clock]
+    # A US company at the same Eastern time all year gains nothing from it
+    nvidia = [datetime(2026, 8, 26, 16, 20, tzinfo=ET), datetime(2026, 2, 25, 16, 20, tzinfo=ET)]
+    tuesday = datetime(2026, 11, 17, 16, 20, tzinfo=ET)
+    assert release_times(nvidia, tuesday) == [tuesday]

@@ -69,14 +69,42 @@ def _session(moment: datetime) -> int:
     return 0 if hhmm < _OPEN else (1 if hhmm < _CLOSE else 2)
 
 
+# Stands for any time zone without daylight saving time. WeRide releases in Hong Kong's evening:
+# 17:00 to 19:10 there, which is 4:00 to 7:10 AM ET in summer and 4:00 to 6:10 AM in winter
+_FIXED = ZoneInfo("UTC")
+
+
+def _minutes(moment: datetime, zone: ZoneInfo) -> int:
+    clock = moment.astimezone(zone)
+    return clock.hour * 60 + clock.minute
+
+
+def _home(history: Sequence[datetime]) -> ZoneInfo:
+    """US Eastern, or a zone without daylight saving time when the company's release times line
+    up better there."""
+
+    def spread(zone: ZoneInfo) -> int:
+        minutes = [_minutes(moment, zone) for moment in history]
+        return max(minutes) - min(minutes)
+
+    return _FIXED if len(history) >= 2 and spread(_FIXED) < spread(ET) else ET
+
+
 def release_times(history: Sequence[datetime], expected: datetime) -> list[datetime]:
     """The times on `expected`'s day that the company's recent releases (newest first) came out
-    at, US Eastern, in the same part of the trading day as `expected`, with `expected` itself."""
-    day: date = expected.astimezone(ET).date()
+    at, US Eastern, in the same part of the trading day as `expected`, with `expected` itself.
+    Each is placed by its US Eastern clock time and, for a company whose times line up better
+    without daylight saving time (_home), by that clock as well."""
+    recent = list(history[:RECENT])
+    zones = {ET, _home(recent)}
     times = {expected}
-    for moment in history[:RECENT]:
-        clock = moment.astimezone(ET)
-        placed = datetime(day.year, day.month, day.day, clock.hour, clock.minute, tzinfo=ET)
-        if _session(placed) == _session(expected):
-            times.add(placed)
+    for zone in zones:
+        day: date = expected.astimezone(zone).date()
+        for moment in recent:
+            clock = moment.astimezone(zone)
+            placed = datetime(
+                day.year, day.month, day.day, clock.hour, clock.minute, tzinfo=zone
+            ).astimezone(ET)
+            if _session(placed) == _session(expected):
+                times.add(placed)
     return sorted(times)
