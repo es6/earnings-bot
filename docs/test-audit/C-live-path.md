@@ -247,3 +247,13 @@ Coverage with only these tests: pipeline.py 87%, recorder.py 88%, release_cards.
 - Large tests (20, 14, 15 in their files) mix several scenarios; docstrings recount incidents (good) but assertions should be split.
 - Fetcher-level tests (sockets, cookies, headers, pacing) live in test_recorder.py instead of test_fetch.py.
 - Real `asyncio.sleep` for ordering in several tests; prefer asyncio.Event or a controllable clock.
+
+## Fixes applied (branch tests-fix-c)
+
+Survivors: (1) merged-resume content cut: gap, fixed by `test_links_merged_into_a_resumed_alert_are_cut_to_discords_limit` (fails with the cut removed, passes without). (2) `_SHARED_QUEUES = ()`: already caught by 8 tests in test_fetch.py (measured, full suite); the harness no longer overrides the default unless `sec="per-host"`. (3) `synchronous=NORMAL`: gap, the store test now asserts `PRAGMA synchronous == 1` (fails with the pragma removed).
+
+Slow tests (measured, serial): calendar-update card test 5.02 s to 0.09 s (`card_spacing=0`); twenty-release burst 1.03 s to <0.1 s and alert-retry-restart 1.02 s to <0.1 s (RETRY_DELAYS patched); follow-up test 1.00 s to ~0.05 s; cookie test 1.00 s to 0.27 s (gap patched); timeout replay 1.0 s x2 to 0.17 s, other four 0.5 s to 0.22-0.28 s (stalled issuer's window is now cancelled once the healthy one posted; healthy deadline 0.02 s raised to 0.05 s); newsroom refusal tests 0.3 s to 0.1 s, refusal now by count instead of time; keep-warm and PDF-during-summary use events. Burst replay stays 4.2-4.3 s: shortening warmup or tail made the SEC-gap mutation (gap 0) survive, so the real-clock budget is needed. Not changed: three 0.5-0.6 s recorder tests whose window runs to its end.
+
+Verdicts: deleted 4 tests (trial-gating tombstone, GlobeNewswire duplicate via private `_watch`, resumed-attach duplicate, release_cards crash-recovery duplicate) and one dead helper; merged 2 into one parametrized resumed-links test; rewrote 2 (summary tombstone now asserts no request is made; Nebius wire test rebuilt on shared helpers with `unlisted_looks`); strengthened/split 6 (window report split in 4, catch-up/legacy split, journal clock pinned in 2 tests, headline test awaits `releases.checks`, `seen == [8]` poll count instead of wall clock, burst harness). Mutation spot-checks (all killed): drop `_same_release_link` (2 cases), keep-warm always ping, route pause `left()` = 0 (3 tests), attach-retry window check removed (2 tests), merge cut, synchronous pragma.
+
+Skipped: moving five Fetcher tests to test_fetch.py (area D owns it); folding `test_a_later_sighting_recreates...` into the resent-alert test (different layers); splitting the burst harness (large, out of scope); coverage gaps listed above.

@@ -17,7 +17,7 @@ from earnings_bot.delivery import DeliveryStore
 from earnings_bot.fetch import Response
 from earnings_bot.ir_research import quarter_headline
 from earnings_bot.pipeline import Release, Releases, describe_source
-from earnings_bot.recorder import ET, Journal, Target, Trial, Watch, watch
+from earnings_bot.recorder import ET, Journal, Target, Watch, watch
 from earnings_bot.source_document import SourceDocument, document_from_text
 from earnings_bot.sources import (
     GLOBENEWSWIRE_EARNINGS,
@@ -50,7 +50,7 @@ from tests.builders import (
     simple_pdf,
     uber,
 )
-from tests.fakes import FakePoster, FakeSummarizer, RoutedFetcher, fetcher
+from tests.fakes import FakePoster, FakeSummarizer, PinnedClock, RoutedFetcher, fetcher
 
 PDF = "https://s23.q4cdn.com/1/files/Uber-Q3-26-Earnings-Press-Release.pdf"
 
@@ -220,34 +220,6 @@ async def test_only_one_summary_when_several_sources_have_the_text(
     assert [e["event"] for e in map(json.loads, log.getvalue().splitlines())].count("body") == 1
 
 
-def broadcom_release() -> tuple[BroadcomNewsroom, Sighting]:
-    newsroom = BroadcomNewsroom()
-    path = "/company/news/financial-releases/64900"
-    title = "Broadcom Inc. Announces Fourth Quarter and Fiscal Year 2026 Financial Results"
-    url = f"https://www.broadcom.com{path}"
-    return newsroom, Sighting("64900", title, url, earnings=True, details={"path": path})
-
-
-async def test_a_newly_added_source_posts_like_any_other() -> None:
-    # No source waits on a trial: a release day is the only way to time a new one
-    posters: list[FakePoster] = []
-
-    def new_poster() -> FakePoster:
-        posters.append(FakePoster())
-        return posters[-1]
-
-    releases = Releases(new_poster, fetcher(), Journal(io.StringIO()), None)
-    newsroom, results = broadcom_release()
-    expected = datetime(2026, 12, 10, 16, 15, tzinfo=ET)
-    added = Target(ticker="AVGO", expected=expected, cik=1730168, trial=Trial())
-
-    releases.on_new(added, newsroom, results)
-    await releases.finish()
-    [poster] = posters
-    assert [kind for kind, _ in poster.calls] == ["send"]
-    assert f"[Broadcom newsroom](<{results.url}>)" in poster.calls[0][1]
-
-
 async def test_the_same_release_from_both_copies_of_a_feed_posts_and_downloads_once() -> None:
     url = "https://www.globenewswire.com/news-release/2026/11/18/3400000/0/en/nvidia-results.html"
     article = url.replace("www.", "rss.", 1)
@@ -316,8 +288,9 @@ def listed_pdf() -> Sighting:
 
 async def test_a_file_listed_before_its_upload_is_attached_once_it_goes_up() -> None:
     poster, files = FakePoster(), UploadedLater()
-    tonight = Target(ticker="UBER", expected=datetime.now(ET), cik=1543151)
-    release = Release(tonight, poster, files, Journal(io.StringIO()), None)
+    journal = Journal(io.StringIO(), PinnedClock())
+    tonight = Target(ticker="UBER", expected=journal.now().astimezone(ET), cik=1543151)
+    release = Release(tonight, poster, files, journal, None)
     release.attach_retry = 0.01
 
     release.add(Q4FinancialReports("investor.uber.com"), listed_pdf())
@@ -329,7 +302,8 @@ async def test_a_file_listed_before_its_upload_is_attached_once_it_goes_up() -> 
 
 async def test_a_missing_file_isnt_retried_after_the_window_closes() -> None:
     poster, files = FakePoster(), UploadedLater()
-    release = Release(uber(), poster, files, Journal(io.StringIO()), None)  # Nov 4
+    # Nov 4's window has closed by the pinned clock's Nov 10, whatever today is
+    release = Release(uber(), poster, files, Journal(io.StringIO(), PinnedClock()), None)
     release.attach_retry = 0.01
 
     release.add(Q4FinancialReports("investor.uber.com"), listed_pdf())
@@ -365,17 +339,19 @@ async def test_keep_warm_pings_discord_only_while_a_window_is_open(
     now = journal.now()
     windows = [(now - timedelta(minutes=1), now + timedelta(minutes=1))]
     pings = 0
+    kept_going = asyncio.Event()
 
     async def ping() -> None:
         nonlocal pings
         pings += 1
         if pings == 2:
             raise aiohttp.ClientConnectionError("connection dropped")
+        if pings > 3:
+            kept_going.set()
 
     warm = asyncio.create_task(pipeline.keep_warm(ping, lambda: windows, journal))
     try:
-        await asyncio.sleep(0.1)
-        assert pings > 3  # it kept going after a failed ping
+        await asyncio.wait_for(kept_going.wait(), 5)  # it kept going after a failed ping
         windows.clear()
         await asyncio.sleep(0.02)
         quiet = pings
@@ -385,37 +361,21 @@ async def test_keep_warm_pings_discord_only_while_a_window_is_open(
         warm.cancel()
 
 
-async def test_the_summary_starts_as_soon_as_the_text_arrives(
+async def test_the_summary_needs_nothing_but_the_release_text(
     release_texts: dict[str, str],
 ) -> None:
     """Each release looked up FMP's consensus estimates, and the summary waited for the answer,
     though the writer never sent estimates to the model."""
     release_texts[IR_PAGE] = "the release"
-    started: list[float] = []
-
-    class TimedSummarizer(FakeSummarizer):
-        async def write(
-            self, ticker: str, release: str, seconds: float = 0.0, *, context: dict | None = None
-        ) -> Summary:
-            started.append(time.monotonic())
-            return await super().write(ticker, release, seconds)
-
-    class SlowCalendar(RoutedFetcher):
-        async def request(self, method: str, url: str, *args: Any, **kwargs: Any) -> Response:
-            if "financialmodelingprep.com" in url:
-                await asyncio.sleep(1)
-            return await super().request(method, url, *args, **kwargs)
-
-    fetch = SlowCalendar({})
-    releases = Releases(FakePoster, fetch, Journal(io.StringIO()), TimedSummarizer())
-    added = time.monotonic()
+    summarizer, fetch = FakeSummarizer(), RoutedFetcher({})
+    releases = Releases(FakePoster, fetch, Journal(io.StringIO()), summarizer)
 
     press = Sighting("1700", "Uber Announces Results", IR_PAGE, earnings=True)
     releases.on_new(uber(), Q4PressReleases("investor.uber.com"), press)
     await releases.finish()
 
-    assert started and started[0] - added < 0.5
-    assert not [url for _, url, _ in fetch.requests if "financialmodelingprep.com" in url]
+    assert summarizer.calls == ["the release"]
+    assert fetch.requests == []  # no estimates lookup, or anything else, stood in the way
 
 
 async def test_a_file_too_big_for_discord_stays_a_link(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -569,18 +529,23 @@ async def test_a_page_that_comes_during_the_pdf_summary_replaces_it_after(
     release_texts[PDF_ONLY] = "the PDF's text"
     release_texts[IR_PAGE] = "the page's text"
 
+    writing, page_added = asyncio.Event(), asyncio.Event()
+
     class Slow(FakeSummarizer):
         async def write(
             self, ticker: str, release: str, seconds: float = 0.0, *, context: dict | None = None
         ) -> Summary:
-            await asyncio.sleep(0.1)
+            if "PDF" in release:
+                writing.set()
+                await page_added.wait()  # the page arrives while this summary is being written
             return await super().write(ticker, release, seconds)
 
     poster, summarizer = FakePoster(), Slow()
     release = Release(uber(), poster, RoutedFetcher({}), Journal(io.StringIO()), summarizer)
     release.add(*pdf_sighting())
-    await asyncio.sleep(0.03)  # the PDF's summary is being written
+    await asyncio.wait_for(writing.wait(), 5)  # the PDF's summary is being written
     release.add(*ir_sighting())
+    page_added.set()
     await release.finish()
 
     assert summarizer.calls == ["the PDF's text", "the page's text"]
@@ -616,63 +581,6 @@ async def test_a_deck_or_unreadable_pdf_is_not_summarized() -> None:
     assert [kind for kind, _ in poster.calls] == ["send", "attach"]
 
 
-async def test_a_wire_alert_without_text_reads_the_release_from_the_issuers_newsroom(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Business Wire's article pages are closed to us. Nebius's Q3 2026 alert came from its feed
-    while the newsroom watcher was stopped, so the summary waited 2h 7m for the 6-K."""
-    monkeypatch.setattr(pipeline, "ISSUER_TEXT_EVERY", 0.01)
-    listing = "https://nebius.com/newsroom"
-    article = listing + "/nebius-reports-third-quarter-2026-financial-results"
-    title = "Nebius reports third quarter 2026 financial results"
-    target = Target(
-        ticker="NBIS",
-        cik=1513845,
-        period="FY2026Q3",
-        expected=datetime(2026, 11, 12, 8, 0, tzinfo=ET),
-        ir=IRSource(
-            listing=listing, headline=quarter_headline(2026, 3), verify_text=True, http_first=True
-        ),
-    )
-    page = f"<h1>{title}</h1><p>{'Revenues and net income per share grew. ' * 120}</p>".encode()
-    # The newsroom lists the release only from the second look
-    listings = iter([b"<a href='/newsroom/other'>Nebius opens a data center</a>"])
-    link = f'<a href="{article}">{title}</a>'.encode()
-
-    class Newsroom(RoutedFetcher):
-        async def request(self, method: str, url: str, *args: Any, **kwargs: Any) -> Response:
-            self.requests.append((method, url, None))
-            if url.lower() == listing:
-                return Response(url, 200, {}, next(listings, link), 0.01)
-            if url == article:
-                return Response(url, 200, {}, page, 0.01)
-            return Response(url, 404, {}, b"", 0.01)
-
-    fetcher = Newsroom({})
-    poster, summarizer, log = FakePoster(), FakeSummarizer(), io.StringIO()
-    release = Release(target, poster, fetcher, Journal(log), summarizer)
-    wire = RssFeed("businesswire_busted", "https://feed.businesswire.com/rss/home/?rss=x")
-    alert = Sighting(
-        "20261112208769en",
-        title,
-        "http://www.businesswire.com/news/home/20261112208769/en/Nebius",
-        earnings=True,
-    )
-
-    release.add(wire, alert)
-    release.add(wire, alert)  # a second copy of the feed starts no second search
-    await release.finish()
-
-    assert len(summarizer.calls) == 1
-    assert "Revenues and net income per share grew." in summarizer.calls[0]
-    assert [url for _, url, _ in fetcher.requests if url == article] == [article]
-    assert f"](<{article}>)" in next(
-        text for kind, text in reversed(poster.calls) if kind == "edit"
-    )
-    events = [json.loads(line)["event"] for line in log.getvalue().splitlines()]
-    assert events.count("issuer_text_search") == 1
-
-
 NBIS_LISTING = "https://nebius.com/newsroom"
 NBIS_TITLE = "Nebius reports third quarter 2026 financial results"
 NBIS_ARTICLE = NBIS_LISTING + "/nebius-reports-third-quarter-2026-financial-results"
@@ -701,20 +609,24 @@ def nebius() -> Target:
 
 
 class NebiusNewsroom(RoutedFetcher):
-    """Refuses the listing for `refuse_for` seconds, over HTTP and in Chrome alike, then lists
+    """Refuses the listing for its first `refusals` looks, over HTTP and in Chrome alike, then lists
     the release."""
 
-    def __init__(self, refuse_for: float = 0.0) -> None:
+    def __init__(self, refusals: int = 0, unlisted_looks: int = 0) -> None:
         super().__init__({})
-        self.refused_until = time.monotonic() + refuse_for
+        self.unlisted_looks = unlisted_looks  # looks that find the release not listed yet
+        self.refusals = refusals
         # When each request for the listing went out, and the status it got
         self.listing_asked: list[tuple[float, int]] = []
 
     def _answer(self, url: str) -> Response:
         if url.lower() == NBIS_LISTING:
-            status = 403 if time.monotonic() < self.refused_until else 200
+            status = 403 if len(self.listing_asked) < self.refusals else 200
             self.listing_asked.append((time.monotonic(), status))
             link = f'<a href="{NBIS_ARTICLE}">{NBIS_TITLE}</a>'.encode()
+            if status == 200 and self.unlisted_looks:
+                self.unlisted_looks -= 1
+                link = b"<a href='/newsroom/other'>Nebius opens a data center</a>"
             return Response(url, status, {}, link if status == 200 else b"", 0.01)
         if url == NBIS_ARTICLE:
             body = f"<h1>{NBIS_TITLE}</h1><p>{'Revenues and net income grew. ' * 120}</p>"
@@ -731,12 +643,37 @@ class NebiusNewsroom(RoutedFetcher):
         return self._answer(url)
 
 
+async def test_a_wire_alert_without_text_reads_the_release_from_the_issuers_newsroom(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Business Wire's article pages are closed to us. Nebius's Q3 2026 alert came from its feed
+    while the newsroom watcher was stopped, so the summary waited 2h 7m for the 6-K."""
+    monkeypatch.setattr(pipeline, "ISSUER_TEXT_EVERY", 0.01)
+    fetcher = NebiusNewsroom(unlisted_looks=1)  # the newsroom lists the release from the 2nd look
+    poster, summarizer, log = FakePoster(), FakeSummarizer(), io.StringIO()
+    release = Release(nebius(), poster, fetcher, Journal(log), summarizer)
+
+    release.add(NBIS_WIRE, NBIS_ALERT)
+    release.add(NBIS_WIRE, NBIS_ALERT)  # a second copy of the feed starts no second search
+    await release.finish()
+
+    assert len(summarizer.calls) == 1
+    assert "Revenues and net income grew." in summarizer.calls[0]
+    assert [url for _, url, _ in fetcher.requests if url == NBIS_ARTICLE] == [NBIS_ARTICLE]
+    assert len([1 for _, status in fetcher.listing_asked if status == 200]) == 2
+    assert f"](<{NBIS_ARTICLE}>)" in next(
+        text for kind, text in reversed(poster.calls) if kind == "edit"
+    )
+    events = [json.loads(line)["event"] for line in log.getvalue().splitlines()]
+    assert events.count("issuer_text_search") == 1
+
+
 async def test_the_newsroom_read_waits_out_a_refusal(monkeypatch: pytest.MonkeyPatch) -> None:
     """The read that stands in for a closed wire article asked again 5 s after a 403, though
     Nebius's newsroom had refused us for polling it too often."""
-    monkeypatch.setattr(fetch, "BLOCK_PAUSE", 0.3)
+    monkeypatch.setattr(fetch, "BLOCK_PAUSE", 0.1)
     monkeypatch.setattr(pipeline, "ISSUER_TEXT_EVERY", 0.01)
-    fetcher, log = NebiusNewsroom(refuse_for=0.1), io.StringIO()
+    fetcher, log = NebiusNewsroom(refusals=2), io.StringIO()
     summarizer = FakeSummarizer()
     release = Release(nebius(), FakePoster(), fetcher, Journal(log), summarizer)
 
@@ -746,20 +683,20 @@ async def test_the_newsroom_read_waits_out_a_refusal(monkeypatch: pytest.MonkeyP
     refused = [at for at, status in fetcher.listing_asked if status == 403]
     answered = [at for at, status in fetcher.listing_asked if status == 200]
     assert refused and answered
-    assert answered[0] - refused[-1] >= 0.3
+    assert answered[0] - refused[-1] >= 0.08
     assert len(summarizer.calls) == 1
     errors = [
         record
         for line in log.getvalue().splitlines()
         if (record := json.loads(line))["event"] == "issuer_text_error"
     ]
-    assert [(error["message"][:8], error["retry_in"]) for error in errors] == [("HTTP 403", 0.3)]
+    assert [(error["message"][:8], error["retry_in"]) for error in errors] == [("HTTP 403", 0.1)]
 
 
 async def test_the_newsroom_read_waits_while_the_newsrooms_watcher_is_refused(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(fetch, "BLOCK_PAUSE", 0.3)
+    monkeypatch.setattr(fetch, "BLOCK_PAUSE", 0.1)
     fetcher = NebiusNewsroom()
     # The window's own watcher of the newsroom was just refused
     fetcher.route_pause(NBIS_LISTING).refused()
@@ -769,13 +706,13 @@ async def test_the_newsroom_read_waits_while_the_newsrooms_watcher_is_refused(
     release.add(NBIS_WIRE, NBIS_ALERT)
     await release.finish()
 
-    assert fetcher.listing_asked and fetcher.listing_asked[0][0] - started >= 0.29
+    assert fetcher.listing_asked and fetcher.listing_asked[0][0] - started >= 0.08
 
 
 async def test_the_newsroom_watcher_waits_while_a_read_of_the_newsroom_is_refused(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(fetch, "BLOCK_PAUSE", 0.3)
+    monkeypatch.setattr(fetch, "BLOCK_PAUSE", 0.1)
     target = nebius()
     assert target.ir is not None
     day = target.expected.astimezone(ET).date()
@@ -788,7 +725,7 @@ async def test_the_newsroom_watcher_waits_while_a_read_of_the_newsroom_is_refuse
 
     await watch(Watch("NBIS", source), fetcher, journal, journal.now() + timedelta(seconds=1))
 
-    assert fetcher.listing_asked and fetcher.listing_asked[0][0] - started >= 0.29
+    assert fetcher.listing_asked and fetcher.listing_asked[0][0] - started >= 0.08
 
 
 async def test_a_restart_doesnt_summarize_a_delivered_release_again(
@@ -1079,7 +1016,8 @@ async def test_a_new_item_whose_headline_isnt_earnings_posts_if_its_text_announc
     # SEC's filings have their own checks, and a date notice is never the results
     releases.on_new(klarna, EdgarFilings(2003292, form="6-K"), Sighting("3", "6-K", page))
     releases.on_new(klarna, feed, Sighting("4", "Klarna to Publish Q3 2026 Earnings", page))
-    await asyncio.sleep(0.05)
+    # The headline checks read each page in the background
+    await asyncio.gather(*(task for tasks in releases.checks.values() for task in tasks))
     await releases.finish()
 
     [poster] = posters

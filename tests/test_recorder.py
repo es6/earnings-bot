@@ -131,7 +131,8 @@ async def test_fetcher_reads_a_header_longer_than_aiohttps_default() -> None:
     assert len(response.headers["content-security-policy-report-only"]) > 13_000
 
 
-async def test_fetcher_doesnt_send_cookies_back() -> None:
+async def test_fetcher_doesnt_send_cookies_back(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(fetch, "_DEFAULT_GAP", 0.0)
     # cloudflare.com answers 500 to requests that carry the cookies it set
     requests: list[bytes] = []
 
@@ -680,7 +681,7 @@ async def test_after_the_window_a_source_that_hadnt_shown_the_release_still_link
         FakeFetcher((200, json.dumps([later]))),
         journal,
         lambda t, source, item: seen.append((t.ticker, item.key)),
-        longest=timedelta(seconds=1),
+        longest=timedelta(milliseconds=50),
     )
 
     # Only the source that hadn't shown it is checked, and its link joins the alert
@@ -793,8 +794,7 @@ async def test_repeated_timeouts_as_a_release_goes_live_dont_delay_it() -> None:
     log = io.StringIO()
     journal = Journal(log)
     w = Watch("NVDA", ListSource())
-    seen: list[float] = []
-    started = time.monotonic()
+    seen: list[int] = []
     timeouts = [(0, "")] * 6
     fetcher = FakeFetcher((200, "old"), *timeouts, (200, "old results"))
 
@@ -803,10 +803,11 @@ async def test_repeated_timeouts_as_a_release_goes_live_dont_delay_it() -> None:
         fetcher,
         journal,
         end=journal.now() + timedelta(seconds=0.5),
-        on_new=lambda source, item: seen.append(time.monotonic() - started),
+        on_new=lambda source, item: seen.append(w.polls),
     )
 
-    assert seen and seen[0] < 0.2  # eight polls at 0.01 s apart, not a backoff
+    # One old answer, six timeouts, then the release on the very next poll: no backoff between
+    assert seen == [8]
     assert (w.timeouts, w.errors, w.problem, w.first_title) == (6, 0, None, "Item results")
     reports = [r for r in events(log) if r["event"] == "progress"]
     assert [bool(r["problem"]) for r in reports] == [False, True, False]

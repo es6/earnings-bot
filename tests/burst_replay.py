@@ -606,7 +606,9 @@ async def replay(settings: Settings) -> dict[str, Any]:
     """Runs the scenario and returns its measurements."""
     shared = fetch._SHARED_QUEUES
     # main kept one queue per host, so www.sec.gov and data.sec.gov each got 8 a second
-    fetch._SHARED_QUEUES = () if settings.sec == "per-host" else ("sec.gov",)
+    # the shared setting is the shipped default; only the per-host comparison overrides it
+    if settings.sec == "per-host":
+        fetch._SHARED_QUEUES = ()
     try:
         return await _replay(settings)
     finally:
