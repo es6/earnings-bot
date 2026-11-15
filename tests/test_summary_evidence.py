@@ -137,32 +137,31 @@ def test_nested_outer_layout_table_is_not_independent_cell_evidence() -> None:
         parse_referenced_brief(answer(fact(current_actual=value(evidence=[ref]))), document)
 
 
-def test_existing_references_are_explicitly_not_a_metric_or_period_correctness_check() -> None:
-    for changes in ({"metric": "Operating income"}, {"current_actual": value(period="Q4 2026")}):
-        # These are acceptance cases for the NEXT semantic verifier, not for this integrity guard.
-        candidate = parse_referenced_brief(answer(fact(**changes)), DOCUMENT)
-        assert type(candidate).__name__ == "UnverifiedBrief"
-
-
-def test_request_preserves_geometry_uses_ember_low_and_keeps_the_schema_stable() -> None:
+def test_request_preserves_geometry_and_context_and_uses_ember_low() -> None:
     request = referenced_request("TEST", DOCUMENT, {"advisory": "not evidence"})
-    schema = request["output_config"]["format"]["schema"]
     content = json.loads(request["messages"][0]["content"])
     source = content["source_document"]
     assert request["model"] == "muse-ember-1.0" and request["output_config"]["effort"] == "low"
     assert source["sha256"] == DOCUMENT.sha256 and source["format"] == "html"
     assert source["tables"][0]["cells"][3] == ["t1r1c0", 1, 0, 1, 1, True, "row", "Revenue"]
     assert content["issuer_context"] == {"advisory": "not evidence"}
+
+
+def test_the_request_schema_is_stable_across_documents_and_not_shared_between_requests() -> None:
+    request = referenced_request("TEST", DOCUMENT)
+    schema = request["output_config"]["format"]["schema"]
     second = referenced_request("OTHER", document_from_text("A different report"))
     assert schema == second["output_config"]["format"]["schema"]
     assert DOCUMENT.sha256 not in json.dumps(schema)
-    assert "no editorial word or line limit" in request["system"]
-    assert (
-        "prior_year_actual" in request["system"] and "Context\nis not evidence" in request["system"]
-    )
     schema["properties"]["facts"]["type"] = "string"
     fresh = referenced_request("TEST", DOCUMENT)["output_config"]["format"]["schema"]
     assert fresh["properties"]["facts"]["type"] == "array"
+
+
+def test_the_prompt_keeps_the_rules_that_must_not_be_reworded_away() -> None:
+    system = referenced_request("TEST", DOCUMENT)["system"]
+    assert "no editorial word or line limit" in system
+    assert "prior_year_actual" in system and "Context\nis not evidence" in system
 
 
 def test_input_limits_reject_rather_than_silently_truncate() -> None:

@@ -8,7 +8,11 @@ from earnings_bot.driver_profile import (
     profile_request,
     request_reservation_micros,
 )
-from earnings_bot.driver_profile_store import DriverProfileStore
+from earnings_bot.driver_profile_store import (
+    DAILY_PROFILE_CALLS,
+    DAILY_PROFILE_MICROS,
+    DriverProfileStore,
+)
 from tests.builders import KPI, SOURCE, TODAY, content, parsed
 
 
@@ -82,13 +86,14 @@ def test_a_sent_profile_call_is_not_repeated_after_a_restart(tmp_path: Path) -> 
 
 
 def test_profile_reservations_bound_both_money_and_call_count(tmp_path: Path) -> None:
+    half = DAILY_PROFILE_MICROS // 2
     with DeliveryStore(tmp_path / "state.db", 7) as store:
         profiles = DriverProfileStore(store)
-        assert profiles.claim(1, "a", TODAY, 250_000)
-        assert profiles.claim(2, "b", TODAY, 250_000)
+        assert profiles.claim(1, "a", TODAY, half)
+        assert profiles.claim(2, "b", TODAY, half)
         assert not profiles.claim(3, "c", TODAY, 1)
         next_day = TODAY + timedelta(days=1)
-        for cik in range(5):
+        for cik in range(DAILY_PROFILE_CALLS):
             assert profiles.claim(cik, "new", next_day, 1000)
         assert not profiles.claim(99, "new", next_day, 1)
         profiles.finish(0, "new", 0, None)  # rejection still consumes a call
