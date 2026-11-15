@@ -18,7 +18,7 @@ from earnings_bot.pipeline import FanOutPoster, Releases, fan_out
 from earnings_bot.recorder import ET, Journal, Target
 from earnings_bot.release_cards import release_content
 from earnings_bot.tracking_commands import NOT_CONNECTED, TrackingCommands
-from earnings_bot.unattended import DirectoryWatcher, Server, durable_posters
+from earnings_bot.unattended import DirectoryWatcher, Server, _Window, durable_posters
 from tests.test_pipeline import FakePoster
 from tests.test_tracking_commands import GUILD, ReleaseDay, ShiftedClock, call
 from tests.test_unattended import FakeDiscord
@@ -160,6 +160,18 @@ async def test_a_command_works_with_the_list_of_the_server_its_used_in(tmp_path:
         assert not bot.desk(GUILD).planned  # type: ignore[union-attr]
         assert bot.desk(OTHER_GUILD).planned == bot.planned  # type: ignore[union-attr]
         assert "NVDA" not in await call(commands.upcoming, guild=GUILD)
+
+        async def idle() -> None:
+            await asyncio.Event().wait()
+
+        task = asyncio.create_task(idle())
+        try:
+            bot.windows = {target.release_key: _Window(target, task)}
+            assert "NVDA" not in str(bot.health_embed("test", None, servers[0]).to_dict())
+            assert "NVDA" in str(bot.health_embed("test", None, servers[1]).to_dict())
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
         # A server the bot doesn't post to has no list
         assert await call(commands.track, "NVDA", guild=999) == NOT_CONNECTED
         assert await call(commands.upcoming, guild=999) == NOT_CONNECTED
@@ -269,3 +281,63 @@ async def test_the_bot_registers_its_commands_in_every_configured_server(
 
     assert synced == [GUILD, OTHER_GUILD, 888]
     assert [channel.id for channel in await bot._other_channels()] == [8]
+
+
+async def test_primary_server_commands_are_registered_without_a_test_guild_setting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from unittest.mock import AsyncMock, Mock
+
+    from earnings_bot.bot import EarningsBot
+
+    settings = Settings.model_validate(
+        {
+            "discord_token": "test",
+            "discord_channel_id": 7,
+            "discord_guild_id": None,
+            "discord_server_channel_ids": [8],
+        }
+    )
+    bot = EarningsBot(settings)
+    channels = {
+        7: Mock(spec=discord.TextChannel, guild=Mock(id=GUILD)),
+        8: Mock(spec=discord.TextChannel, guild=Mock(id=OTHER_GUILD)),
+    }
+    monkeypatch.setattr(bot, "fetch_channel", AsyncMock(side_effect=channels.__getitem__))
+    assert await bot._server_guilds() == [GUILD, OTHER_GUILD]
+
+
+async def test_debug_managers_are_scoped_to_configured_servers_and_owner_stays_global(
+    tmp_path: Path,
+) -> None:
+    from tests.test_tracking_commands import OWNER, client
+
+    fetcher = ReleaseDay()
+    journal = Journal(io.StringIO())
+    with (
+        DeliveryStore(tmp_path / "state.db", 7) as first,
+        DeliveryStore(tmp_path / "state.db", 8) as other,
+    ):
+        servers = [Server(first, None, GUILD), Server(other, None, OTHER_GUILD)]
+        watcher = DirectoryWatcher(
+            tmp_path,
+            fetcher,
+            journal,
+            Releases(FakePoster, fetcher, journal, None),
+            first,
+            lambda _: None,
+            servers=servers,
+        )
+        watcher.research_paused = lambda: True
+        commands = TrackingCommands(lambda: watcher)
+        pause = "⏳ A release is due in the next few minutes. Run the test after it."
+        assert (
+            await call(
+                commands.track, "NVDA", debug=True, admin=True, guild=OTHER_GUILD, app=client()
+            )
+            == pause
+        )
+        assert (
+            await call(commands.track, "NVDA", debug=True, user=OWNER, guild=9999, app=client())
+            == pause
+        )

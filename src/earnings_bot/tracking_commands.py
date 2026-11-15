@@ -183,7 +183,9 @@ class TrackingCommands:
         if watcher is None:
             return OFFLINE
         # Manage Server counts in the bot's own server; the owner counts in any server
-        admin = watcher.guild_id == interaction.guild_id and interaction.permissions.manage_guild
+        admin = (
+            watcher.desk(interaction.guild_id) is not None and interaction.permissions.manage_guild
+        )
         if not admin and not await is_owner(interaction.client, interaction.user):
             return "⚠️ Debug mode is for members with Manage Server and the bot's owner."
         if watcher.research_paused():
