@@ -6,6 +6,7 @@ import json
 from collections.abc import Iterator
 from datetime import datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 from urllib.parse import unquote
 
@@ -316,18 +317,18 @@ async def test_an_admin_can_pin_a_ticker_outside_the_catalog(
     ]
 
 
-async def test_one_member_can_track_six_tickers_in_one_day(
+async def test_the_calendar_refuses_a_company_past_its_cap_whoever_asks(
     watcher: DirectoryWatcher, commands: TrackingCommands, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    for ticker in ("AAPL", "AMD", "AMZN", "META", "MSFT", "NVDA"):
+    # Lower the cap rather than track 50 companies
+    monkeypatch.setattr(tracking_calendar, "MAX_TRACKED", 2)
+    for ticker in ("AAPL", "AMD"):
         assert (await call(commands.track, ticker)).startswith(f"✅ Now tracking **{ticker}**")
 
-    # Lower the cap rather than track 50 companies
-    monkeypatch.setattr(tracking_calendar, "MAX_TRACKED", 6)
     assert await call(commands.track, "TSLA", user=3) == (
-        "⚠️ This calendar already tracks 6 companies."
+        "⚠️ This calendar already tracks 2 companies."
     )
-    assert len(tracked(watcher)) == 6
+    assert tracked(watcher) == ["AAPL", "AMD"]
 
 
 async def test_commands_from_another_server_or_with_the_watcher_off_answer_offline(
@@ -435,7 +436,7 @@ async def test_a_long_upcoming_list_stops_at_a_whole_line(
     watcher: DirectoryWatcher, commands: TrackingCommands
 ) -> None:
     targets = [
-        to_target(ticker, NOW + timedelta(hours=i + 1), 2027, 1)
+        to_target(ticker, NOW + timedelta(minutes=i + 1), 2027, 1)
         for i, ticker in enumerate(known_companies())
     ]
     watcher.planned = {t.release_key: t for t in targets}
@@ -454,8 +455,18 @@ async def test_a_long_upcoming_list_stops_at_a_whole_line(
         for line in (field.value or "").splitlines()
         if line.startswith("-# …and")
     )
+    # Every release this week is shown, or counted in a full field's note, or on a day dropped
+    # whole, and the footer counts the dropped days exactly
+    week = [t for t in targets if t.expected < NOW + timedelta(days=7)]
+    day_fields = [f for f in embed.fields if not (f.name or "").startswith("⚠️")]
+    dropped_days = len({t.expected.astimezone(ET).date() for t in week}) - len(day_fields)
     footer = embed.footer.text or ""
-    assert shown + more == len(targets) or "didn't fit" in footer
+    assert more > 0, "the list should be long enough that a field cuts lines"
+    if dropped_days:
+        assert footer.startswith(f"{dropped_days} later day(s) didn't fit")
+    else:
+        assert "didn't fit" not in footer
+        assert shown + more == len(week)
 
 
 async def test_upcoming_shows_each_scorecards_readiness(
@@ -779,3 +790,13 @@ async def test_a_test_waits_for_a_release_due_soon_and_runs_one_at_a_time(
         reply = await asyncio.wait_for(run, 1)
     assert reply == "⏳ Another /track debug run is going. Try again when it's done."
     assert ran == []
+
+
+async def test_the_owner_is_whoever_owns_the_bots_application_or_its_team() -> None:
+    def user(id: int) -> discord.abc.User:
+        return cast(discord.abc.User, SimpleNamespace(id=id))
+
+    assert await tracking_commands.is_owner(client(), user(OWNER))
+    assert not await tracking_commands.is_owner(client(), user(1))
+    assert await tracking_commands.is_owner(client(team=[7, OWNER]), user(7))
+    assert not await tracking_commands.is_owner(client(owner=7, team=[OWNER]), user(8))

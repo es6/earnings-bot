@@ -999,45 +999,55 @@ async def test_a_wire_notice_can_supply_the_date_when_ir_cannot(tmp_path: Path) 
         assert row.evidence and notice in row.evidence
 
 
-@pytest.mark.parametrize(
-    ("text", "day", "time"),
-    [
-        (
-            (
-                "Upcoming Events\nNov 24, 2026 \u2022 3:30 pm CST\n\n"
-                "Dell Technologies Fiscal Year 2027 Third Quarter Results"
-            ),
-            24,
-            "4:30 PM",
-        ),
-        ("John Deere - 4Q Earnings Call\nNovember 25, 2026 09:00 AM - CST", 25, "10:00 AM"),
-        (
-            "Upcoming Events\nNovember 18, 2026 (tentative)\nCompany Q3 2026 Earnings Results",
-            18,
-            None,
-        ),
-    ],
-)
-async def test_event_cards_read_adjacent_dates_and_zones_without_arming_tentative_events(
-    text: str, day: int, time: str | None
-) -> None:
-    url = "https://investor.example.com/"
+async def _event_card(text: str) -> tuple[Target, str] | None:
     company = AMAT.model_copy(update={"release_time": "06:00", "fiscal_year_end": "1031"})
 
     async def render(page: str) -> RenderedPage:
         html = "".join(f"<div>{line}</div>" for line in text.splitlines())
         return rendered(page, 200, html)
 
-    result, _ = await rendered_date(render, [url], "AMAT", company, NOW, [])
+    result, _ = await rendered_date(
+        render, ["https://investor.example.com/"], "AMAT", company, NOW, []
+    )
+    return result
 
-    if time is None:
-        assert result is None
-    else:
-        assert result is not None
-        assert result[0].expected.day == day
-        assert time in result[1]
-        if day == 25:
-            assert result[0].expected.hour == 6
+
+@pytest.mark.parametrize(
+    ("text", "day", "shown_time", "hour"),
+    [
+        (
+            (
+                "Upcoming Events\nNov 24, 2026 • 3:30 pm CST\n\n"
+                "Dell Technologies Fiscal Year 2027 Third Quarter Results"
+            ),
+            24,
+            "4:30 PM",
+            15,
+        ),
+        ("John Deere - 4Q Earnings Call\nNovember 25, 2026 09:00 AM - CST", 25, "10:00 AM", 6),
+    ],
+    ids=["time-zone-converted", "call-time-gives-earlier-release"],
+)
+async def test_event_cards_read_adjacent_dates_and_zones(
+    text: str, day: int, shown_time: str, hour: int
+) -> None:
+    result = await _event_card(text)
+
+    assert result is not None
+    target, evidence = result
+    assert target.expected.day == day
+    assert target.expected.hour == hour
+    assert shown_time in evidence
+
+
+async def test_a_tentative_event_is_not_armed_though_the_same_card_without_it_is() -> None:
+    card = "Upcoming Events\nNovember 18, 2026{}\nCompany Q3 2026 Earnings Results"
+
+    confirmed = await _event_card(card.format(""))
+    tentative = await _event_card(card.format(" (tentative)"))
+
+    assert confirmed is not None and confirmed[0].expected.day == 18
+    assert tentative is None
 
 
 async def test_a_morning_results_event_keeps_its_issuer_date_when_history_is_afternoon() -> None:
