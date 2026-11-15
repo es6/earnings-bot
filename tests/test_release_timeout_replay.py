@@ -82,7 +82,8 @@ def source_for(transport: str, listing: str = LISTING) -> BrowserRelease:
         else BrowserRelease(listing, TITLE, verify_text=True)
     )
     source.interval = 0.001
-    source.timeout = 0.02
+    # Long enough that a loop stall on a busy runner cannot expire a healthy answer
+    source.timeout = 0.05
     return source
 
 
@@ -165,6 +166,7 @@ async def test_an_independent_issuer_posts_while_another_request_is_still_stalle
     """Recovery cannot serialize unrelated issuers behind a request that never answers."""
     monkeypatch.setattr(fetch, "_DEFAULT_GAP", 0.001)
     stalled = asyncio.Event()
+    recovered = asyncio.Event()  # the stalled issuer's third deadline has expired
     poster, writer, log = RecordingPoster(), RecordingWriter(), io.StringIO()
     failed_calls = 0
     posted_during_stall = False
@@ -181,6 +183,7 @@ async def test_an_independent_issuer_posts_while_another_request_is_still_stalle
                     await asyncio.Event().wait()
                 finally:
                     posted_during_stall |= poster.sent.is_set()
+            recovered.set()
             return 200, {}, b"<h1>No matching report</h1>"
         await stalled.wait()
         if url == healthy_listing:
@@ -193,20 +196,22 @@ async def test_an_independent_issuer_posts_while_another_request_is_still_stalle
         releases = Releases(lambda: poster, fetcher, journal, writer)
         slow = Watch("SLOW", source_for(transport))
         healthy = Watch("UBER", source_for(transport, healthy_listing), period="FY2026Q3")
-        # This is a recovery/ordering assertion, not a wall-clock performance budget.
-        end = journal.now() + timedelta(seconds=1)
+        # This is a recovery/ordering assertion, not a wall-clock performance budget. The
+        # stalled issuer's window outlasts the healthy one, which is all that is watched.
+        end = journal.now() + timedelta(seconds=30)
+        slow_task = asyncio.create_task(watch(slow, fetcher, journal, end))
         try:
-            await asyncio.gather(
-                watch(slow, fetcher, journal, end),
-                watch(
-                    healthy,
-                    fetcher,
-                    journal,
-                    end,
-                    lambda source, item: releases.on_new(target(), source, item),
-                ),
+            await watch(
+                healthy,
+                fetcher,
+                journal,
+                end,
+                lambda source, item: releases.on_new(target(), source, item),
             )
+            await recovered.wait()
         finally:
+            slow_task.cancel()
+            await asyncio.gather(slow_task, return_exceptions=True)
             await releases.finish()
 
     assert slow.timeouts == 3 and slow.stopped is None
