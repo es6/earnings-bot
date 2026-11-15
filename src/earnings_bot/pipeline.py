@@ -1078,7 +1078,7 @@ class Release:
                 self.journal.say(f"{self.target.ticker}: summary failed: {error}")
                 return
         took = time.monotonic() - started
-        footer = f"Summary by {WRITER} in {took:.0f}s from the {label} text"
+        footer = f"{BETA} · Summary by {WRITER} in {took:.0f}s from the {label} text"
         if summary.unverified:
             held = len(summary.unverified)
             figures = "figure" if held == 1 else "figures"
@@ -1167,6 +1167,11 @@ async def watch_schedule(
                 if warm:
                     warm.cancel()
 
+
+# Every summary says it's a beta until its numbers' measure and period are checked too, the
+# 1.0 gate agreed on Nov 12. Today's checker confirms a figure appears in the release, so it
+# would pass "Operating income: $10B" from "Revenue was $10 billion" (plan item 6)
+BETA = "Beta"
 
 # Text reads per window for new items whose headlines don't read as earnings (Releases)
 HEADLINE_CHECKS = 6
