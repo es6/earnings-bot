@@ -84,3 +84,15 @@ branch = true
 [tool.coverage.report]
 skip_covered = true
 show_missing = true
+
+# Scheduled in .github/workflows/mutation.yml (mutmut runs on Linux only). The pure parsers,
+# where a fast, thorough check is cheap.
+[tool.mutmut]
+paths_to_mutate = [
+    "src/earnings_bot/http_policy.py",
+    "src/earnings_bot/formatting.py",
+    "src/earnings_bot/summary_format.py",
+    "src/earnings_bot/binding_text.py",
+]
+tests_dir = ["tests/"]
+pytest_add_cli_args = ["-p", "no:randomly", "-p", "no:xdist"]
