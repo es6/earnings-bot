@@ -1,6 +1,7 @@
 """Persistent issuer subscriptions and the next planned release."""
 
 import re
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
@@ -408,3 +409,69 @@ def release_lines(target: Target, evidence: str) -> str:
         f"**{target.ticker}**{period} · results {when} ({stamp(target.expected, 'R')})\n"
         f"-# Watching {window_text(target)} · {evidence_text(evidence)}"
     )
+
+
+class SharedCalendar(Calendar):
+    """Every server's tracked companies as one, for the research they share: each company once,
+    read from the first server that tracks it, and each finding (release date, profile, speed
+    audit) written to every server that tracks it. A company two servers track is researched
+    once, and both servers' scorecards show the same research."""
+
+    def __init__(self, calendars: Callable[[], Sequence[Calendar]]) -> None:
+        self._calendars = calendars
+        first = calendars()[0]
+        self.catalog = first.catalog
+        self.store, self.db, self.channel, self.moved_from = (
+            first.store,
+            first.db,
+            first.channel,
+            None,
+        )
+
+    def _tracking(self, cik: int) -> list[Calendar]:
+        return [calendar for calendar in self._calendars() if calendar.contains(cik)]
+
+    def entries(self) -> list[Tracked]:
+        rows: dict[int, Tracked] = {}
+        for calendar in self._calendars():
+            for row in calendar.entries():
+                rows.setdefault(row.cik, row)
+        return sorted(rows.values(), key=lambda row: row.ticker)
+
+    def find(self, ticker: str) -> Tracked | None:
+        for calendar in self._calendars():
+            if row := calendar.find(ticker):
+                return row
+        return None
+
+    def contains(self, cik: int) -> bool:
+        return bool(self._tracking(cik))
+
+    def delivered(self, release_key: str) -> bool:
+        return any(calendar.delivered(release_key) for calendar in self._calendars())
+
+    def review(self, cik: int) -> tuple[datetime | None, str | None]:
+        tracking = self._tracking(cik)
+        return tracking[0].review(cik) if tracking else (None, None)
+
+    def save_review(self, cik: int, checked: datetime, result: str) -> None:
+        for calendar in self._tracking(cik):
+            calendar.save_review(cik, checked, result)
+
+    def clear_review(self, cik: int) -> None:
+        for calendar in self._tracking(cik):
+            calendar.clear_review(cik)
+
+    def set_target(self, target: Target, evidence: str) -> None:
+        for calendar in self._tracking(target.cik):
+            calendar.set_target(target, evidence)
+
+    def save_profile(self, cik: int, company: KnownCompany) -> None:
+        for calendar in self._tracking(cik):
+            calendar.save_profile(cik, company)
+
+    def add(self, ticker: str, company: KnownCompany | None = None) -> tuple[Tracked, bool]:
+        raise TypeError("A company is tracked in one server's own calendar")
+
+    def remove(self, cik: int) -> bool:
+        raise TypeError("A company is untracked in one server's own calendar")

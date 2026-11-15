@@ -16,7 +16,7 @@ from pydantic import ValidationError
 
 from earnings_bot.benchmark import BenchmarkResult, EarningsBenchmark
 from earnings_bot.browser_sources import BrowserRelease, BrowserRss
-from earnings_bot.calendar import Calendar
+from earnings_bot.calendar import Calendar, SharedCalendar
 from earnings_bot.date_discovery import DateDiscovery
 from earnings_bot.delivery import DeliveryStore, retry_delivery
 from earnings_bot.driver_profiles import DriverProfiles, ProfileWriter
@@ -193,27 +193,32 @@ class DirectoryWatcher:
         if self.servers[0].store is not store:
             raise ValueError("The first server's state is the watcher's own")
         self.calendar = self.servers[0].calendar
+        # Every server's companies as one, for the research they share (SharedCalendar)
+        self.shared = SharedCalendar(lambda: [server.calendar for server in self.servers])
+        # Companies a server's scorecard tracker is auditing now, so no other audits them too
+        self.auditing: set[int] = set()
+        self.audit_next_attempts: dict[int, datetime] = {}
         self.planned: dict[str, Target] = {}
         # Record-only publication trials (publication_trials.py), by plan ID
         self.trials: dict[str, asyncio.Task[None]] = {}
         self.trial_problems: set[str] = set()
         self.trial_db: sqlite3.Connection | None = None
+        # One research loop for every server: a company several servers track is researched
+        # once, and what it finds is written to each of them
+        self.dates = DateDiscovery(
+            self.shared if len(self.servers) > 1 else self.calendar,
+            fetcher,
+            journal.now,
+            self.research_paused,
+            self._inline_status,
+            fmp_api_key,
+            sixk=self.sixk,
+            windows_open=self.busy,
+            chrome_live=self.chrome_live,
+            in_window=self.in_window,
+        )
         for server in self.servers:
-            server.dates = DateDiscovery(
-                server.calendar,
-                fetcher,
-                journal.now,
-                self.research_paused,
-                self._inline_status,
-                fmp_api_key,
-                sixk=self.sixk,
-                windows_open=self.busy,
-                chrome_live=self.chrome_live,
-                in_window=self.in_window,
-            )
-        dates = self.servers[0].dates
-        assert dates is not None
-        self.dates = dates
+            server.dates = self.dates
         self.issuers = Issuers(fetcher)
         self.status = status
         self.benchmark = benchmark
@@ -255,6 +260,13 @@ class DirectoryWatcher:
         """The servers a release is posted to: every one tracking the company, or the
         deployment's own for a release only its schedule files name."""
         return [s for s in self.servers if s.calendar.contains(target.cik)] or self.servers[:1]
+
+    def claim_audit(self, cik: int) -> bool:
+        """Takes a company for one server's speed audit, unless another's has it."""
+        if cik in self.auditing:
+            return False
+        self.auditing.add(cik)
+        return True
 
     def tracks(self, cik: int) -> bool:
         return any(server.calendar.contains(cik) for server in self.servers)
@@ -594,9 +606,7 @@ class DirectoryWatcher:
                 self.live_watches.pop(target.release_key, None)
             self._problem(problem, None)
             self.store.close_window(target.release_key, target.expected)
-            for server in self.servers:
-                if server.dates:
-                    server.dates.changed.set()
+            self.dates.changed.set()
             comparison = ""
             if benchmark is not None:
                 comparison = await self._compare(target, watches, benchmark)
@@ -658,15 +668,14 @@ class DirectoryWatcher:
         return outcome
 
     async def run(self) -> None:
-        dates = [asyncio.create_task(s.dates.run()) for s in self.servers if s.dates]
+        dates = asyncio.create_task(self.dates.run())
         try:
             while True:
                 await self.scan()
                 await asyncio.sleep(SCAN_SECONDS)
         finally:
-            for task in dates:
-                task.cancel()
-            await asyncio.gather(*dates, return_exceptions=True)
+            dates.cancel()
+            await asyncio.gather(dates, return_exceptions=True)
             for trial in self.trials.values():
                 trial.cancel()
             await asyncio.gather(*self.trials.values(), return_exceptions=True)
@@ -952,9 +961,20 @@ async def watch_directory(
                     research_mode=watcher.research_mode,
                     research_deferred=fetcher.research_deferred,
                     profile_note=profiles.notes.get if profiles else None,
+                    reviews=watcher.shared if len(servers) > 1 else None,
+                    claim=watcher.claim_audit,
+                    release=watcher.auditing.discard,
+                    next_attempt=watcher.audit_next_attempts,
                 )
-                dates.on_progress = server.progress.changed.set
                 server.progress.follow_calendar()
+
+            def research_changed() -> None:
+                """Research shows on every server's scorecards."""
+                for each in servers:
+                    if each.progress:
+                        each.progress.changed.set()
+
+            watcher.dates.on_progress = research_changed
             watcher.progress = servers[0].progress
             ready(watcher)
             status(f"{STARTED} · {release_version()} · `{directory.name}/`", start=True)

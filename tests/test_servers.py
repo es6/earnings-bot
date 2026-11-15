@@ -283,6 +283,168 @@ async def test_the_bot_registers_its_commands_in_every_configured_server(
     assert [channel.id for channel in await bot._other_channels()] == [8]
 
 
+def test_the_shared_calendar_reads_each_company_once_and_writes_to_every_server(
+    tmp_path: Path,
+) -> None:
+    from earnings_bot.calendar import Calendar, SharedCalendar
+
+    with (
+        DeliveryStore(tmp_path / "state.db", 7) as mine,
+        DeliveryStore(tmp_path / "state.db", 8) as theirs,
+    ):
+        own, other = Calendar(mine), Calendar(theirs)
+        own.add("NVDA")
+        other.add("NVDA")
+        other.add("AMZN")
+        shared = SharedCalendar(lambda: [own, other])
+        assert [row.ticker for row in shared.entries()] == ["AMZN", "NVDA"]
+
+        nvda = Target(
+            ticker="NVDA", cik=1045810, expected=datetime(2026, 11, 17, 16, 20, tzinfo=ET)
+        )
+        shared.set_target(nvda, "Issuer confirmed release time")
+        shared.save_review(1045810, datetime(2026, 11, 15, tzinfo=ET), "{}")
+
+        for calendar in (own, other):
+            row = calendar.find("NVDA")
+            assert row and row.target == nvda and row.evidence == "Issuer confirmed release time"
+            assert calendar.review(1045810)[1] == "{}"
+        # Written only where the company is tracked
+        assert own.find("AMZN") is None
+        with pytest.raises(TypeError):
+            shared.add("MSFT")
+
+
+async def test_a_company_two_servers_track_is_researched_once_for_both(tmp_path: Path) -> None:
+    from earnings_bot.calendar import SharedCalendar
+
+    journal = Journal(io.StringIO())
+    with (
+        DeliveryStore(tmp_path / "state.db", 7) as mine,
+        DeliveryStore(tmp_path / "state.db", 8) as theirs,
+    ):
+        servers = [Server(mine, None, GUILD), Server(theirs, None, OTHER_GUILD)]
+        bot = DirectoryWatcher(
+            tmp_path,
+            ReleaseDay(),
+            journal,
+            Releases(FakePoster, ReleaseDay(), journal, None),
+            mine,
+            lambda _: None,
+            servers=servers,
+        )
+        # One research loop, over both servers' companies
+        assert all(server.dates is bot.dates for server in servers)
+        assert isinstance(bot.dates.calendar, SharedCalendar)
+        from earnings_bot.investigate import INVESTIGATION
+        from earnings_bot.known import SourceCheck, known_companies, to_target
+
+        now = datetime(2026, 11, 14, 21, tzinfo=ET)
+        company = known_companies()["NVDA"].model_copy(
+            update={
+                "checks": [SourceCheck(source="SEC 8-K filings", watch=True, why="Filed here")],
+                "investigation": INVESTIGATION,
+                "investigated": now.date(),
+            }
+        )
+        servers[0].calendar.add("NVDA", company)
+        servers[1].calendar.add("NVDA", company)
+        assert [row.ticker for row in bot.dates.calendar.entries()] == ["NVDA"]
+        # What the deployment's own server already found
+        found = to_target("NVDA", datetime(2026, 11, 17, 16, 20, tzinfo=ET), 2027, 3, company)
+        servers[0].calendar.set_target(found, "Issuer's earnings event")
+        bot.dates.now = lambda: now
+        [row] = bot.dates.calendar.entries()
+
+        await bot.dates._check(row)
+
+        # The one check wrote what it found to both servers
+        for server in servers:
+            [entry] = server.calendar.entries()
+            assert entry.target is not None and entry.target.expected == found.expected
+
+
+@pytest.mark.parametrize("fails", [False, True])
+async def test_each_companys_speed_audit_runs_once_for_every_server(
+    tmp_path: Path, fails: bool
+) -> None:
+    from dataclasses import replace
+
+    from earnings_bot.track_progress import TrackProgress
+    from tests.test_track_progress import INVESTIGATED, NOW, SPEED, WatchedDiscord
+
+    audits: list[str] = []
+    done = asyncio.Event()
+    speed = replace(SPEED, history=[datetime(2026, 8, 5, 16, 5, tzinfo=ET)])
+
+    async def audit(ticker: str, company: object, when: datetime) -> object:
+        audits.append(ticker)
+        await asyncio.sleep(0.05)
+        done.set()
+        if fails:
+            raise OSError("temporary source failure")
+        return speed
+
+    journal = Journal(io.StringIO())
+    channels = [WatchedDiscord(), WatchedDiscord()]
+    with (
+        DeliveryStore(tmp_path / "state.db", 7) as mine,
+        DeliveryStore(tmp_path / "state.db", 8) as theirs,
+        DeliveryStore(tmp_path / "cards.db", 7) as my_cards,
+        DeliveryStore(tmp_path / "cards.db", 8) as their_cards,
+    ):
+        servers = [Server(mine, None, GUILD), Server(theirs, None, OTHER_GUILD)]
+        bot = DirectoryWatcher(
+            tmp_path,
+            ReleaseDay(),
+            journal,
+            Releases(FakePoster, ReleaseDay(), journal, None),
+            mine,
+            lambda _: None,
+            servers=servers,
+        )
+        for server in servers:
+            server.calendar.add("LCID", INVESTIGATED)
+        trackers = [
+            TrackProgress(
+                server.calendar,
+                cards,
+                cast(discord.abc.Messageable, channel),
+                42,
+                planned=dict,
+                now=lambda: NOW,
+                busy=lambda: False,
+                audit=audit,  # type: ignore[arg-type]
+                card_spacing=0.0,
+                reviews=bot.shared,
+                claim=bot.claim_audit,
+                release=bot.auditing.discard,
+                next_attempt=bot.audit_next_attempts,
+            )
+            for server, cards, channel in zip(
+                servers, (my_cards, their_cards), channels, strict=True
+            )
+        ]
+        tasks = [asyncio.create_task(tracker.run()) for tracker in trackers]
+        try:
+            await asyncio.wait_for(done.wait(), 5)
+            for tracker in trackers:
+                tracker.changed.set()
+            await asyncio.sleep(0.3)
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+        assert audits == ["LCID"]  # once, not once per server
+        assert bot.auditing == set()
+        assert bot.audit_next_attempts[INVESTIGATED.cik] > NOW
+        for server in servers:
+            assert (server.calendar.review(INVESTIGATED.cik)[1] is None) == fails
+        # Each server still gets its own scorecard
+        assert all(channel.messages for channel in channels)
+
+
 async def test_primary_server_commands_are_registered_without_a_test_guild_setting(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
