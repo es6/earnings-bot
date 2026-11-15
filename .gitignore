@@ -28,3 +28,4 @@ schedules/*.jsonl
 schedules/.earnings-state.sqlite3*
 recordings/
 schedules/.tracking-progress.sqlite3*
+schedules/track-tests/

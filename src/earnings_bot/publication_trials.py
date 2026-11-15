@@ -12,9 +12,7 @@ import json
 import re
 import sqlite3
 import time
-from contextlib import suppress
-from datetime import UTC, datetime, timedelta
-from email.utils import parsedate_to_datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Literal, Self
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -24,9 +22,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from earnings_bot.browser import MAX_BROWSER_BYTES, CacheMode, browser_host
 from earnings_bot.config import RecorderSettings
 from earnings_bot.fetch import Fetcher, Response
+from earnings_bot.http_policy import retry_after
 from earnings_bot.recorder import Journal
 from earnings_bot.sec_results import is_results_release
 from earnings_bot.text import html_to_text, pdf_text
+from earnings_bot.trial_matching import candidates
 
 _CACHE_HEADERS = {
     "date",
@@ -193,13 +193,7 @@ class TrialBudget:
 
 
 def _retry_pause(response: Response, now: datetime) -> float:
-    raw = response.headers.get("retry-after", "")
-    if raw.isdigit():
-        return float(raw)
-    with suppress(ValueError, TypeError, OverflowError):
-        stamp = parsedate_to_datetime(raw)
-        return max(0, (stamp.astimezone(UTC) - now).total_seconds())
-    return 30
+    return retry_after(response.headers.get("retry-after", ""), now)
 
 
 async def _read_text(body: bytes) -> str:
@@ -273,7 +267,16 @@ async def run_trials(
                     received = journal.now()
                     parsing = time.monotonic()
                     text = await _read_text(response.body)
-                    matched = response.status == 200 and all(p.search(text) for p in patterns)
+                    matches = (
+                        candidates(response.body, response.url, patterns)
+                        if route.kind in {"listing", "api"}
+                        else []
+                    )
+                    matched = response.status == 200 and (
+                        bool(matches)
+                        if route.kind in {"listing", "api"}
+                        else all(p.search(text) for p in patterns)
+                    )
                     usable = (
                         matched
                         and route.kind in {"article", "file"}
@@ -295,6 +298,13 @@ async def run_trials(
                         sha256=digest,
                         content_changed=last_digest is not None and digest != last_digest,
                         candidate_visible=matched,
+                        candidate_scope="entry" if route.kind in {"listing", "api"} else "document",
+                        matched_entries=[
+                            {"id": safe_url(entry["id"]), "title": entry["title"]}
+                            for entry in matches[:20]
+                        ]
+                        if matched
+                        else [],
                         usable_report=usable,
                         already_present=first and matched,
                         transition_observed=absent and matched,

@@ -153,6 +153,12 @@ async def test_a_command_works_with_the_list_of_the_server_its_used_in(tmp_path:
         assert "Now tracking **NVDA**" in reply
         assert [r.ticker for r in servers[1].calendar.entries()] == ["NVDA"]
         assert servers[0].calendar.entries() == []
+        # A shared scheduler's populated plan must not appear as another server's schedule.
+        [tracked] = servers[1].calendar.entries()
+        target = Target(ticker="NVDA", cik=tracked.cik, expected=journal.now() + timedelta(days=1))
+        bot.planned = {target.release_key: target}
+        assert not bot.desk(GUILD).planned  # type: ignore[union-attr]
+        assert bot.desk(OTHER_GUILD).planned == bot.planned  # type: ignore[union-attr]
         assert "NVDA" not in await call(commands.upcoming, guild=GUILD)
         # A server the bot doesn't post to has no list
         assert await call(commands.track, "NVDA", guild=999) == NOT_CONNECTED

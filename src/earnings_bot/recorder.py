@@ -33,8 +33,10 @@ from earnings_bot.clock import TrustedClock
 from earnings_bot.config import RecorderSettings
 from earnings_bot.fetch import Fetcher, Response, RoutePause
 from earnings_bot.globe_frontier import guess_release, guessed_for
+from earnings_bot.http_policy import retry_after
 from earnings_bot.periods import agrees_with_period
 from earnings_bot.release_band import SLOW, pace, paced
+from earnings_bot.resources import snapshot
 from earnings_bot.sec_results import SixKResults, SixKUnavailable, is_results_release
 from earnings_bot.sources import (
     BUSINESS_WIRE_EARNINGS,
@@ -406,8 +408,7 @@ async def fetch(source: Source, fetcher: Fetcher) -> Response:
     if response.status == 403:
         raise PollError("HTTP 403: the site refused us. Trying again after a pause", blocked=True)
     if response.status in (429, 503):
-        retry_after = response.headers.get("retry-after", "")
-        pause = float(retry_after) if retry_after.isdigit() else 30.0
+        pause = retry_after(response.headers.get("retry-after", ""))
         raise PollError(f"HTTP {response.status}, backing off for {pause:.0f}s", pause=pause)
     if response.status not in source.ok_statuses:
         if response.status == 0:
@@ -1013,6 +1014,32 @@ async def sync_clock(journal: Journal, periodic: bool = False) -> bool:
     return True
 
 
+# Seconds between records of the bot's use of the PC during a window (resources.snapshot)
+RESOURCES_EVERY = 60.0
+
+
+# time.monotonic() of the last record, shared by every open window so overlapping ones write one
+_last_resources: dict[int, float] = {}
+
+
+async def log_resources(target: Target, fetcher: Fetcher, journal: Journal, end: datetime) -> None:
+    """Records the bot's and its Chrome's use of the PC every RESOURCES_EVERY seconds until the
+    window closes, once for all the windows open together. Never raises: a failed reading
+    mustn't stop the window."""
+    while True:
+        last = _last_resources.get(id(journal))
+        if last is None or time.monotonic() - last >= RESOURCES_EVERY / 2:
+            _last_resources[id(journal)] = time.monotonic()
+            try:
+                journal.write("resources", ticker=target.ticker, **snapshot(fetcher.chromes()))
+            except Exception as error:
+                journal.write("resources_error", ticker=target.ticker, message=repr(error))
+        left = (end - journal.now()).total_seconds()
+        if left <= RESOURCES_EVERY:
+            return
+        await asyncio.sleep(RESOURCES_EVERY)
+
+
 async def keep_clock_synced(journal: Journal, end: datetime) -> None:
     while (end - journal.now()).total_seconds() > CLOCK_RESYNC:
         await asyncio.sleep(CLOCK_RESYNC)
@@ -1086,6 +1113,7 @@ async def record_target(
     try:
         async with asyncio.TaskGroup() as group:
             group.create_task(keep_clock_synced(journal, end))
+            group.create_task(log_resources(target, fetcher, journal, end))
             if guessed_for(target):
                 group.create_task(guess_release(target, fetcher, journal, notify, end))
             for w in watches:
