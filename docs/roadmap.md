@@ -71,6 +71,21 @@ Not measured yet. First, profile a `/track` run and a replayed release window (t
 replay) to find where the time goes: Chrome rendering, HTML and PDF parsing, feed parsing on
 one-second polls. Then set targets, and measure the change before claiming one.
 
+## Order of work
+
+Agreed with the owner on Nov 15:
+
+1. **`/track` test mode** ([track-testing.md](track-testing.md)). Next: it doesn't touch
+   live code, so it's built during the streak week.
+2. **Verified summaries:** plan and test the summary checker that verifies each number's
+   measure and period, aiming to remove the "Beta" label (plan item 6).
+3. **After the streak (Nov 20):** merge and deploy multiple servers (#136 to #138), then
+   measure Discord's rate limits with several servers.
+4. **International tickers:** the foundations, identification, then a dedicated source
+   per market ([international.md](international.md)), each going live once its answer
+   keys pass one-shot.
+5. **After 1.0:** `/transcript`.
+
 ## Other open work
 
 - Mon Nov 16: review GlobeNewswire's two record-only batch runs (06:58 and 15:58) before NVDA's

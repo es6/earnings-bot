@@ -7,7 +7,11 @@ needed fact right on the first try. Not built yet; it's Phase 0 of
 
 ## The command
 
-`/track ticker:SAF.PA test:true`, for members with Manage Server in a configured server.
+`/track ticker:SAF.PA test:true`, for members with Manage Server in a configured server, and
+for the bot's owner in any server the bot is in, whatever roles they have there (the
+owner's decision). The owner is whoever owns the bot's Discord application, as
+discord.py's `is_owner` reads it, so no setting is needed and it can't be lost with a
+role.
 
 It runs everything `/track` does, from scratch, as for a company the bot has never seen:
 
