@@ -99,7 +99,7 @@ def test_chrome_ends_when_the_bot_that_started_it_is_killed() -> None:
         assert _running(int(pid))
     finally:
         owner.kill()  # TerminateProcess, as a stopped task does
-        owner.wait(10)
+        owner.communicate(timeout=10)  # also closes the pipes
     deadline = time.monotonic() + 10
     while _running(int(pid)) and time.monotonic() < deadline:
         time.sleep(0.2)

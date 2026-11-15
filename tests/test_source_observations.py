@@ -2,6 +2,7 @@ import io
 import json
 import re
 import sqlite3
+from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from email.utils import format_datetime
 
@@ -75,7 +76,7 @@ async def test_trial_never_stitches_a_candidate_from_different_entries(markup: s
     config = plan(max_requests=2)
     for route in config.routes:
         route.kind = "listing"
-    with sqlite3.connect(":memory:") as db:
+    with closing(sqlite3.connect(":memory:")) as db, db:
         await run_trials(config, fetcher, Journal(log), db)
     assert not any(e["candidate_visible"] for e in events(log, "publication_trial"))
 
@@ -116,7 +117,7 @@ async def test_trial_positive_records_the_matching_link_not_unrelated_page_links
     config = plan(max_requests=2)
     for route in config.routes:
         route.kind = "listing"
-    with sqlite3.connect(":memory:") as db:
+    with closing(sqlite3.connect(":memory:")) as db, db:
         await run_trials(config, fetcher, Journal(log), db)
     for event in events(log, "publication_trial"):
         assert event["candidate_scope"] == "entry"

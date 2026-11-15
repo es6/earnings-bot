@@ -12,6 +12,7 @@ import json
 import re
 import sqlite3
 import time
+from contextlib import closing
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Literal, Self
@@ -418,7 +419,11 @@ def main() -> None:
 
     async def run() -> None:
         settings = RecorderSettings()  # pyright: ignore[reportCallIssue]
-        with args.journal.open("a", encoding="utf-8") as file, sqlite3.connect(args.state) as db:
+        with (
+            args.journal.open("a", encoding="utf-8") as file,
+            closing(sqlite3.connect(args.state)) as db,
+            db,
+        ):
             journal = Journal(file)
             await asyncio.to_thread(journal.clock.sync)
             async with Fetcher(settings.sec_user_agent) as fetcher:

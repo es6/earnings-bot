@@ -57,8 +57,10 @@ jobs:
       - name: Type check
         run: uv run pyright
 
+      # In parallel and in a random order. The run prints its seed: uv run pytest --randomly-seed=N
+      # repeats that order. Coverage is reported, not enforced.
       - name: Test
-        run: uv run pytest
+        run: uv run pytest -n auto --cov --cov-report=term
 
   windows:
     # The bot runs on the owner's Windows PC, where consoles, paths and asyncio's event loop
@@ -74,4 +76,4 @@ jobs:
         run: uv sync --locked
 
       - name: Test
-        run: uv run pytest
+        run: uv run pytest -n auto

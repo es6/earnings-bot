@@ -31,9 +31,14 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    "hypothesis>=6.170.15",
     "pyright>=1.1.414",
     "pytest>=9.2.0",
     "pytest-asyncio>=1.4.1",
+    "pytest-cov>=7.1.0",
+    "pytest-randomly>=5.1.0",
+    "pytest-timeout>=2.4.0",
+    "pytest-xdist>=3.8.0",
     "ruff>=0.17.3",
 ]
 
@@ -57,5 +62,25 @@ typeCheckingMode = "standard"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Tests import their shared fakes as the tests package, without pytest editing sys.path
+pythonpath = ["."]
+addopts = ["--strict-markers", "--strict-config", "--import-mode=importlib", "-ra"]
+xfail_strict = true
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+# A hung test fails on its own instead of stalling the whole run
+timeout = 120
+# Our warnings are bugs, ResourceWarnings above all (an unclosed database or pipe). The one
+# exception is discord.py's own call to re.sub on Python 3.13+, which isn't ours to fix.
+filterwarnings = [
+    "error",
+    "ignore:'count' is passed as positional argument:DeprecationWarning:discord.utils",
+]
+
+[tool.coverage.run]
+source = ["earnings_bot"]
+branch = true
+
+[tool.coverage.report]
+skip_covered = true
+show_missing = true

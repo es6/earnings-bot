@@ -6,6 +6,7 @@ import io
 import json
 import sqlite3
 import time
+from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -96,7 +97,7 @@ async def test_a_trial_records_a_transition_and_stops_at_its_budget() -> None:
         }
     )
     log = io.StringIO()
-    with sqlite3.connect(":memory:") as db:
+    with closing(sqlite3.connect(":memory:")) as db, db:
         await run_trials(plan(), fetcher, Journal(log), db)
 
     seen = events(log, "publication_trial")
@@ -112,10 +113,10 @@ async def test_a_trial_records_a_transition_and_stops_at_its_budget() -> None:
 async def test_a_trial_budget_survives_a_restart_and_its_id_cant_be_reused(tmp_path: Path) -> None:
     fetcher = QueuedFetcher({"example.com": [RELEASE.encode()]})
     path = tmp_path / "trials.sqlite3"
-    with sqlite3.connect(path) as db:
+    with closing(sqlite3.connect(path)) as db, db:
         await run_trials(plan(max_requests=3), fetcher, Journal(io.StringIO()), db)
     log = io.StringIO()
-    with sqlite3.connect(path) as db:
+    with closing(sqlite3.connect(path)) as db, db:
         await run_trials(plan(max_requests=3), fetcher, Journal(log), db)
         assert events(log, "publication_trial") == []  # the budget was already spent
         other = io.StringIO()

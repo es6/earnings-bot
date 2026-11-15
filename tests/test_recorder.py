@@ -137,8 +137,11 @@ async def test_watch_keeps_polling_after_a_timeout() -> None:
 
 
 async def test_fetcher_gives_up_on_a_server_that_never_answers() -> None:
-    async def accept_and_say_nothing(reader: asyncio.StreamReader, _: asyncio.StreamWriter) -> None:
+    async def accept_and_say_nothing(
+        reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
         await reader.read()  # until the client gives up and closes the connection
+        writer.close()
 
     server = await asyncio.start_server(accept_and_say_nothing, "127.0.0.1", 0)
     port = server.sockets[0].getsockname()[1]
