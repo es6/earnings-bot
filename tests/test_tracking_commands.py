@@ -3,7 +3,6 @@
 import asyncio
 import io
 import json
-import time
 from collections.abc import Iterator
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -43,11 +42,13 @@ from tests.clocks import ShiftedClock
 from tests.fakes import (
     FakeDiscord,
     FakePoster,
-    ReleaseDay,
+    PolledReleaseDay,
     RoutedFetcher,
+    WatchedDiscord,
     call,
     client,
     embed_text,
+    quick_windows,
 )
 from tests.sec_data import LCID_CIK, LCID_ROUTE, LCID_SUBMISSIONS, sec_routes
 
@@ -476,14 +477,12 @@ async def test_upcoming_shows_each_scorecards_readiness(
 async def test_a_tracked_issuer_with_no_schedule_file_gets_one_alert(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Full speed to the end: the jump to the window's last seconds lands where routes poll every
-    # 5 s (test_release_band), and this test is about the alert
-    monkeypatch.setattr(recorder, "pace", lambda at, times, own: (own, None))
+    quick_windows(monkeypatch)  # this test is about the alert, not the polling cadence
     clock = ShiftedClock()
     clock.sync()
     journal = Journal(io.StringIO(), clock)
-    fetcher = ReleaseDay()
-    channel = FakeDiscord()
+    fetcher = PolledReleaseDay()
+    channel = WatchedDiscord()
     status: list[str] = []
     with DeliveryStore(tmp_path / "state.db", 7) as store:
 
@@ -509,12 +508,13 @@ async def test_a_tracked_issuer_with_no_schedule_file_gets_one_alert(
         [row] = bot.calendar.entries()
         assert row.target is not None
 
-        # Skip to 3 seconds before the window closes. The results come out 0.8 s in, after the
-        # first poll has seen the list without them.
-        clock.shift = row.target.window[1] - clock.now() - timedelta(seconds=3)
-        fetcher.released_at = time.monotonic() + 0.8
+        # The results come out after the first poll has seen the list without them. Once the
+        # alert is out, skip to the end of the window
         await bot.scan()
         assert [window.target for window in bot.windows.values()] == [row.target]
+        await asyncio.wait_for(channel.sent.wait(), 10)
+        assert fetcher.polls > 1
+        clock.shift = row.target.window[1] - clock.now() + timedelta(seconds=1)
         await asyncio.gather(*(window.task for window in bot.windows.values()))
 
         [alert] = channel.messages.values()
@@ -550,13 +550,14 @@ def _wire_item(title: str, lead: str, link: str) -> str:
 
 
 class WireDay(RoutedFetcher):
-    """SEC, and PR Newswire's earnings feed. Its server lists Lucid's results from `released_at`
-    (time.monotonic()) on, but its CDN's copy at the usual URL still predates them, as on
-    Nov 9. Another company's results are listed throughout."""
+    """SEC, and PR Newswire's earnings feed. Its server lists Lucid's results once it has been
+    asked `polls_before_release` times for a fresh copy, but its CDN's copy at the usual URL
+    still predates them, as on Nov 9. Another company's results are listed throughout."""
 
-    def __init__(self) -> None:
+    def __init__(self, polls_before_release: int = 1) -> None:
         super().__init__(sec_routes())
-        self.released_at = float("inf")
+        self.polls_before_release = polls_before_release
+        self.fresh_polls = 0
 
     async def request(
         self,
@@ -576,8 +577,9 @@ class WireDay(RoutedFetcher):
                 "https://www.prnewswire.com/news-releases/acme-q3-302600000.html",
             )
         ]
-        fresh = url != PR_NEWSWIRE_EARNINGS
-        if fresh and time.monotonic() >= self.released_at:
+        fresh = unquote(url) == PR_NEWSWIRE_EARNINGS and url != PR_NEWSWIRE_EARNINGS
+        self.fresh_polls += fresh
+        if fresh and self.fresh_polls > self.polls_before_release:
             items.insert(
                 0,
                 _wire_item(
@@ -606,13 +608,14 @@ class WireDay(RoutedFetcher):
 
 
 async def test_a_ticker_outside_the_catalog_gets_its_alert_from_the_wire(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    quick_windows(monkeypatch)
     clock = ShiftedClock()
     clock.sync()
     journal = Journal(io.StringIO(), clock)
     fetcher = WireDay()
-    channel = FakeDiscord()
+    channel = WatchedDiscord()
     status: list[str] = []
     with DeliveryStore(tmp_path / "state.db", 7) as store:
         releases = Releases(FakePoster, fetcher, journal, None, lambda t: channel.poster(store, t))
@@ -631,11 +634,12 @@ async def test_a_ticker_outside_the_catalog_gets_its_alert_from_the_wire(
         [row] = bot.calendar.entries()
         assert row.target is not None
 
-        # PR Newswire is polled every 2 seconds. Skip to 6 seconds before the window closes, with
-        # the results out a second in, after the first poll has seen the list without them.
-        clock.shift = row.target.window[1] - clock.now() - timedelta(seconds=6)
-        fetcher.released_at = time.monotonic() + 1
+        # The results come out after the first fresh poll has seen the list without them. Once
+        # the alert is out, skip to the end of the window
         await bot.scan()
+        await asyncio.wait_for(channel.sent.wait(), 10)
+        assert fetcher.fresh_polls > 1
+        clock.shift = row.target.window[1] - clock.now() + timedelta(seconds=1)
         await asyncio.gather(*(window.task for window in bot.windows.values()))
 
         [alert] = channel.messages.values()

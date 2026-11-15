@@ -1,4 +1,4 @@
-"""Brookfield (BN), a 6-K filer, as SEC and its IR site show it. Shared by the tests of its watches."""
+"""Brookfield (BN), a 6-K filer, as SEC and its IR site show it, for tests of its watches."""
 
 import json
 from datetime import datetime
