@@ -66,6 +66,8 @@ class SourceDocument:
     blocks: tuple[SourceBlock, ...]
     tables: tuple[SourceTable, ...] = ()
     raw_text: str | None = None
+    retrieval_url: str | None = None
+    canonical_url: str | None = None
 
     @property
     def text(self) -> str:
