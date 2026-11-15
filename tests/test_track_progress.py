@@ -20,11 +20,12 @@ from earnings_bot.browser_sources import IRSource
 from earnings_bot.cache_research import CHECKING_CACHE
 from earnings_bot.calendar import Calendar
 from earnings_bot.config import Settings
-from earnings_bot.date_discovery import VERIFYING_IR
+from earnings_bot.date_discovery import VERIFYING_IR, DateDiscovery
 from earnings_bot.delivery import DeliveryStore
 from earnings_bot.edit_priority import EditPriority
 from earnings_bot.formatting import GREEN
 from earnings_bot.investigate import INVESTIGATION, Report
+from earnings_bot.issuers import profile
 from earnings_bot.known import KnownCompany, SourceCheck, to_target
 from earnings_bot.pipeline import Release
 from earnings_bot.recorder import ET, Journal, Target
@@ -33,6 +34,7 @@ from earnings_bot.source_audit import Speed, Timing
 from earnings_bot.sources import RssFeed, Sighting
 from earnings_bot.track_progress import REPLACE_AFTER, CardPoster, TrackProgress
 from earnings_bot.version import release_version
+from tests.brookfield_data import BN_NOW, CIK, filings
 from tests.builders import INVESTIGATED, LISTING, LUCID, SPEED, uber
 from tests.builders import PROGRESS_NOW as NOW
 from tests.fakes import FakeDiscord, FakeMessage, RoutedFetcher, WatchedDiscord, embed_text
@@ -922,3 +924,44 @@ async def test_a_deferred_audit_preserves_the_previous_review(tmp_path: Path) ->
         assert calendar.review(row.cik) == previous
         assert progress.next_attempt[row.cik] == NOW + timedelta(minutes=10)
         assert row.cik in progress.audit_failed
+
+
+async def test_scorecard_explains_busy_and_missing_date_states(tmp_path: Path) -> None:
+    async def audit(*args: object) -> Speed:
+        return Speed(None)
+
+    company = profile("BN", CIK, "Brookfield Corporation", filings(), BN_NOW.date()).model_copy(
+        update={
+            "investigated": BN_NOW.date(),
+            "checks": [SourceCheck(source="SEC 8-K filings", watch=True, why="Filed here")],
+            "investigation": INVESTIGATION,
+        }
+    )
+    busy = True
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        calendar = Calendar(store)
+        row, _ = calendar.add("BN", company)
+        dates = DateDiscovery(calendar, RoutedFetcher({}), lambda: BN_NOW, lambda: busy, print)
+        progress = TrackProgress(
+            calendar,
+            store,
+            cast(discord.abc.Messageable, FakeDiscord()),
+            42,
+            dict,
+            lambda: BN_NOW,
+            lambda: busy,
+            audit,
+            date_phase=dates.phases.get,
+        )
+        assert "Speed history (waits for an open release window)" in embed_text(
+            progress.render(row, None, False)
+        )
+        await dates.run_once(row)
+        assert "Release date: waiting for an open release window to close" in embed_text(
+            progress.render(row, None, False)
+        )
+        busy = False
+        await dates.run_once(row)
+        score = embed_text(progress.render(row, None, False))
+        assert "results on Form 6-K" in score
+        assert "⚠️ No release date read yet" in score and "`when`" in score and "`period`" in score
