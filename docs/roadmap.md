@@ -27,44 +27,29 @@ From the earlier 1.0 list:
 
 ### International tickers
 
-`/track` should accept tickers listed outside the US, such as `SAF.PA` (Safran, Euronext
-Paris) and `TEA.AX` (Tasmea, ASX). Neither is on SEC's ticker list. This replaces "reject
-non-US tickers": supported exchanges are accepted, and others are refused with a clear
-message.
+The full plan is [international.md](international.md); the test mode it's built with is
+[track-testing.md](track-testing.md). Agreed with the owner on Nov 15:
 
-The polling, alerts, Chrome reading, summaries and Discord parts don't depend on the
-exchange. The company model does:
+- **Markets:** ASX, Hong Kong, Tokyo, Toronto and Europe's main markets. Any other exchange is
+  learned when `/track` identifies one of its tickers and a second source confirms it.
+- **Symbols:** `SYMBOL.SUFFIX` with Yahoo Finance's suffixes (`TEA.AX`, `0700.HK`, `7203.T`,
+  `SHOP.TO`, `SAF.PA`); `EXCHANGE:SYMBOL` also accepted.
+- **US tickers keep today's path.** The new logic runs only for symbols naming a non-US
+  exchange, or plain symbols that aren't on SEC's list.
+- **Decisions:** OpenFIGI for identification (it named all six test tickers correctly without
+  a key); `exchange_calendars` for hours and holidays; Japanese and Chinese releases
+  summarized in English by Muse Ember at low effort; new exchanges learned automatically once
+  two sources agree.
+- **Order:**
+  1. Test mode (`/track ... test:true`).
+  2. Foundations: symbols and the exchange table, a non-SEC company key, half-year periods,
+     each exchange's hours, currencies and languages.
+  3. Identification.
+  4. A dedicated source per market: ASX, Toronto, Hong Kong, Tokyo, then Europe exchange by
+     exchange.
+  5. Live checks as each market reports.
 
-- **Identity.** Every company is keyed by its SEC CIK: 15 of 58 modules and the database's
-  keys. A non-SEC issuer needs another key (such as `ASX:TEA`) and a data migration.
-- **Ticker lookup.** Only SEC's list is read. The suffix (`.AX`, `.PA`, `.L`, ...) should
-  pick the exchange, which supplies the time zone, trading hours, currency and announcement
-  source.
-- **Research.** The IR site and fiscal-year naming come from SEC filings. Instead: the ASX
-  announcements, and for Euronext the company's own site. Safran's `/finance` page answered
-  the bot 403 on Nov 15, so it would go through Chrome.
-- **Periods.** Only `FYyyyyQn` exists. Half-year and full-year periods are needed. Safran
-  gives full results twice a year and revenue only in Q1 and Q3. ASX companies file half-year
-  and full-year reports (Appendix 4D and 4E).
-- **Timing.** "Before the open" and "after the close" defaults and the polling sessions assume
-  09:30 to 16:00 ET. They should come from the exchange's own hours.
-- **Sources.** SEC's feeds are added to every window. For these companies, use the exchange's
-  announcements instead. ASX's public announcements data answered the bot on Nov 15 with each
-  item's time to the second, headline, type and price-sensitive flag, so one adapter would
-  cover every ASX company. Euronext's regulated news isn't checked yet.
-- **Detection.** Headlines like "Half Year Results", "1H FY26" and "Appendix 4D", and
-  matching a half-year to its period.
-
-Suggested order, after the streak ends on Nov 20, since the identity change touches the data
-every window depends on:
-
-1. A non-SEC company key and the migration.
-2. Exchange-aware tickers.
-3. Half-year and full-year periods.
-4. ASX announcements as a source, company lookup and dates.
-5. Euronext.
-6. Each exchange's hours for polling.
-7. Summary and headline tuning, measured on many international releases.
+  The company-key change waits until the streak ends and the multiple-servers PRs merge.
 
 ### Multiple Discord servers
 
