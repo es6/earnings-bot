@@ -11,6 +11,12 @@ Later listing and RSS polls fetch from that tab without reloading the page. A
 quarterly page that builds release links with JavaScript is rendered every six
 seconds. The bot keeps verified report responses in memory for attachments or summaries.
 
+Chrome runs in a Windows job object that ends it, and every process it started, when the
+bot exits for any reason, including a deploy that ends the bot's process. At start the bot
+also ends any Chrome a previous run left (its main process's parent gone) and removes
+`earnings-bot-chrome-*` profiles no live Chrome uses. Before this, one from Nov 13 was
+still running on Nov 15, beside 18 old profiles (1.8 GB).
+
 The worker has been exercised under an active Windows login session. Chrome
 startup under the Task Scheduler account depends on that account's desktop
 access. A browser startup failure is reported for that source. The other

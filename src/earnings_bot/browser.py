@@ -6,10 +6,16 @@ import asyncio
 import base64
 import ipaddress
 import json
+import os
+import re
+import shutil
+import signal
 import socket
+import subprocess
+import sys
 import tempfile
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -22,6 +28,81 @@ from earnings_bot._windows_desktop import DesktopProcess, chrome_path
 
 if TYPE_CHECKING:
     from earnings_bot.fetch import Response
+
+
+# The bot's Chrome profiles are temporary folders named this
+PROFILE_PREFIX = "earnings-bot-chrome-"
+_PROFILE = re.compile(re.escape(PROFILE_PREFIX) + r"[A-Za-z0-9_]+")
+
+
+def leftover_chrome(processes: Sequence[Mapping[str, Any]]) -> tuple[set[int], set[str]]:
+    """The bot's Chrome processes that a bot that's gone left running, and the profiles live
+    Chromes still use. A profile is left over when its main Chrome process (the one without
+    `--type=`) is gone or its parent is: a bot stopped for a deploy or a crash used to leave
+    its Chrome running (DesktopProcess now ends it with the bot)."""
+    alive = {int(process.get("ProcessId") or 0) for process in processes}
+    profiles: dict[str, list[Mapping[str, Any]]] = {}
+    for process in processes:
+        command = str(process.get("CommandLine") or "")
+        if str(process.get("Name") or "").lower() == "chrome.exe" and (
+            found := _PROFILE.search(command)
+        ):
+            profiles.setdefault(found[0], []).append(process)
+    left: set[int] = set()
+    used: set[str] = set()
+    for profile, members in profiles.items():
+        main = [m for m in members if "--type=" not in str(m.get("CommandLine") or "")]
+        if any(int(m.get("ParentProcessId") or 0) in alive for m in main):
+            used.add(profile)
+        else:
+            left |= {int(m.get("ProcessId") or 0) for m in members}
+    return left, used
+
+
+def _processes() -> list[dict[str, Any]]:
+    """Every process on this PC, with its parent and command line, from Windows."""
+    if sys.platform != "win32":
+        return []
+    command = (
+        "Get-CimInstance Win32_Process | "
+        "Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json -Compress"
+    )
+    result = subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    found = json.loads(result.stdout or "[]")
+    return found if isinstance(found, list) else [found]
+
+
+def _end(pid: int) -> None:
+    with suppress(OSError):
+        os.kill(pid, signal.SIGTERM)  # TerminateProcess on Windows
+
+
+def sweep_leftover_chrome(
+    processes: Callable[[], Sequence[Mapping[str, Any]]] = _processes,
+    end: Callable[[int], None] = _end,
+    folder: Path | None = None,
+    settle: float = 1.0,
+) -> tuple[int, int]:
+    """Ends the Chrome processes a previous bot left running and removes the profiles no
+    live Chrome uses. Returns how many of each. Run once at start, before this bot opens a
+    Chrome of its own."""
+    left, used = leftover_chrome(processes())
+    for pid in sorted(left):
+        end(pid)
+    if left:
+        time.sleep(settle)  # let Windows release the profiles' files
+    removed = 0
+    for profile in Path(folder or tempfile.gettempdir()).glob(PROFILE_PREFIX + "*"):
+        if profile.is_dir() and profile.name not in used:
+            shutil.rmtree(profile, ignore_errors=True)
+            removed += not profile.exists()
+    return len(left), removed
 
 
 # Names that only mean something inside a home or office network
@@ -271,7 +352,7 @@ class DesktopChrome:
             try:
                 exe = chrome_path()
                 self._profile = tempfile.TemporaryDirectory(
-                    prefix="earnings-bot-chrome-", ignore_cleanup_errors=True
+                    prefix=PROFILE_PREFIX, ignore_cleanup_errors=True
                 )
                 with socket.socket() as listener:
                     listener.bind(("127.0.0.1", 0))

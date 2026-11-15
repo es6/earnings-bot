@@ -2,12 +2,14 @@
 
 import asyncio
 import logging
+import subprocess
 from functools import partial
 from pathlib import Path
 
 import discord
 from discord import app_commands
 
+from earnings_bot.browser import sweep_leftover_chrome
 from earnings_bot.commands import ALL_COMMANDS
 from earnings_bot.config import Settings
 from earnings_bot.pipeline import watch_schedule
@@ -65,6 +67,17 @@ class EarningsBot(discord.Client):
             synced = await self.tree.sync()
             log.info("Synced %d command(s) globally", len(synced))
         if self.schedule is not None:
+            # Before this run opens a Chrome of its own
+            try:
+                ended, removed = await asyncio.to_thread(sweep_leftover_chrome)
+                if ended or removed:
+                    log.info(
+                        "Ended %d Chrome processes a previous run left and removed %d old profiles",
+                        ended,
+                        removed,
+                    )
+            except (OSError, ValueError, subprocess.SubprocessError) as error:
+                log.warning("Couldn't check for Chrome a previous run left: %r", error)
             self.watcher = asyncio.create_task(self._watch(self.schedule))
             self.watcher.add_done_callback(self._watch_ended)
 
