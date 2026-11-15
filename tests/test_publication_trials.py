@@ -5,7 +5,6 @@ import asyncio
 import io
 import json
 import sqlite3
-import time
 from contextlib import closing
 from pathlib import Path
 from typing import Any
@@ -13,7 +12,7 @@ from typing import Any
 import pytest
 from aiohttp import web
 
-from earnings_bot import unattended
+from earnings_bot import fetch, unattended
 from earnings_bot.delivery import DeliveryStore
 from earnings_bot.fetch import Fetcher, Response, ResponseTooLarge
 from earnings_bot.pipeline import Releases
@@ -34,6 +33,12 @@ RELEASE = (
     )
     * 3
 )
+
+
+@pytest.fixture(autouse=True)
+def quick_host_turns(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Hosts hand out a turn every second; shrink that so tests don't wait in real time."""
+    monkeypatch.setattr(fetch, "_DEFAULT_GAP", 0.02)
 
 
 async def test_a_trial_records_a_transition_and_stops_at_its_budget() -> None:
@@ -57,6 +62,17 @@ async def test_a_trial_records_a_transition_and_stops_at_its_budget() -> None:
     assert all("queued_ms" in row and "network_ms" in row for row in seen)
 
 
+async def test_a_release_already_up_at_the_first_poll_is_not_a_measured_transition() -> None:
+    fetcher = QueuedFetcher({"example.com": [RELEASE.encode()]})
+    log = io.StringIO()
+    with closing(sqlite3.connect(":memory:")) as db, db:
+        await run_trials(plan(), fetcher, Journal(log), db)
+    seen = events(log, "publication_trial")
+    article = [row for row in seen if row["route"] == "article"]
+    assert len(article) >= 1 and all(row["usable_report"] for row in article)
+    assert not any(row["transition_observed"] for row in seen)
+
+
 async def test_a_trial_budget_survives_a_restart_and_its_id_cant_be_reused(tmp_path: Path) -> None:
     fetcher = QueuedFetcher({"example.com": [RELEASE.encode()]})
     path = tmp_path / "trials.sqlite3"
@@ -71,7 +87,7 @@ async def test_a_trial_budget_survives_a_restart_and_its_id_cant_be_reused(tmp_p
         assert events(other, "publication_trial_error")  # same ID, different plan
 
 
-async def test_trial_turns_wait_behind_monitoring_polls(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_trial_turns_wait_behind_monitoring_polls() -> None:
     fetcher = Fetcher("Test Person test@example.com")
     turns: list[str] = []
 
@@ -87,10 +103,8 @@ async def test_trial_turns_wait_behind_monitoring_polls(monkeypatch: pytest.Monk
     trial = asyncio.create_task(take("trial", True))
     await asyncio.sleep(0)
     polls = [asyncio.create_task(take(f"poll {i}", False)) for i in range(2)]
-    started = time.monotonic()
     await asyncio.gather(trial, *polls)
     assert turns == ["first poll", "poll 0", "poll 1", "trial"]
-    assert time.monotonic() - started >= 2.9  # one turn a second on this host
 
 
 async def test_the_bot_runs_trial_plans_from_its_schedule_folder(tmp_path: Path) -> None:

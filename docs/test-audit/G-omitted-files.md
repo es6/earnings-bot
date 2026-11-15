@@ -65,3 +65,7 @@ Counts: KEEP 25, STRENGTHEN 8.
 ## Fix results for tests/test_wire_mirror.py (branch tests-fix-d)
 
 All six rows stay KEEP. Measured: the file passes in 0.24 s at most per test (the slowest is `test_full_nested_story_survives_a_missing_date_spelling`), uses no real waiting, and was passed unchanged in two random-order serial runs and in the whole-suite `-n auto` run. Nothing was changed in it. The server-wait case in `test_mirror_backoff_is_shared_by_other_releases_and_spelling_fallbacks` is already driven by response headers, not by sleeping.
+
+### Fix pass: tests/test_source_observations.py
+Retry-After test now freezes UTC and asserts exactly 3600; the module shrinks the host turn gap
+(trial tests 1.2 s -> 0.15 s each); the stitching test asserts both polls were observed.

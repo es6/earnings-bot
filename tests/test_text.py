@@ -64,13 +64,18 @@ async def test_a_page_the_poll_downloaded_isnt_fetched_again() -> None:
     assert fetcher.requests == []
 
 
-async def test_a_missing_page_or_file_has_no_text() -> None:
+# A 404 or 403 page often has a long body (a branded error page), which must not read as a release
+ERROR_PAGE = b"<p>Revenue and earnings per share. </p>" * 100
+
+
+@pytest.mark.parametrize("status", [404, 403, 500], ids=["not-found", "forbidden", "error"])
+async def test_a_missing_page_or_file_has_no_text(status: int) -> None:
     url = "https://ir.example.com/news/q3-results"
-    fetcher = RoutedFetcher({})  # every URL answers 404
+    pdf_url = "https://example.com/Q3-Earnings-Release.pdf"
+    fetcher = RoutedFetcher({url: (status, ERROR_PAGE), pdf_url: (status, ERROR_PAGE)})
 
     item = Sighting(url, "Results", url, earnings=True)
     assert await release_text(fetcher, RssFeed("rss:ir.example.com", "https://x/rss"), item) is None
-    pdf_url = "https://example.com/Q3-Earnings-Release.pdf"
     pdf = Sighting(pdf_url, "Release", pdf_url, earnings=True)
     assert await release_text(fetcher, GuessedFile(pdf_url), pdf) is None
     assert fetcher.urgent == [url]  # PDFs aren't read, since the release's page comes too

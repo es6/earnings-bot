@@ -105,7 +105,7 @@ def _run(
     return exit_info.value.code, capsys.readouterr().out
 
 
-def test_the_check_counts_schedule_files_and_tracked_tickers(
+def test_the_check_finds_open_windows_in_schedule_files_and_tracked_tickers(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     schedules = tmp_path / "schedules"
