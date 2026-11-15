@@ -393,3 +393,12 @@ async def test_a_globenewswire_issuers_history_reads_releases_without_results_he
     # date notice and the results headlines weren't read
     assert len(read) == 3 and any("3389839" in url for url in read)
     assert not any("3387169" in url for url in read)
+
+
+def test_a_check_saved_by_an_older_release_history_reads_back_without_it() -> None:
+    """So the bot redoes it (TrackProgress): WeRide's saved history held one release of four."""
+    history = [datetime(2026, 8, 12, 7, tzinfo=ET)]
+    saved = json.loads(Speed(None, form="6-K", history=history).to_json())
+    assert Speed.from_json(json.dumps(saved)).history == history  # type: ignore[union-attr]
+    del saved["history_version"]
+    assert Speed.from_json(json.dumps(saved)).history is None  # type: ignore[union-attr]

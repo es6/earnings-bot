@@ -58,6 +58,11 @@ def _timings(rows: object) -> list[Timing]:
     ]
 
 
+# The release history's version. 2 (v0.21.23) reads releases whose headlines don't say results
+# and GlobeNewswire's listings: WeRide's went from one release to four.
+HISTORY_VERSION = 2
+
+
 @dataclass(frozen=True)
 class Speed:
     """How fast each source had a company's most recent results."""
@@ -73,8 +78,9 @@ class Speed:
     ir_json: str = ""  # JSON routes the IR site's pages called, for finding faster sources
     watched_from: datetime | None = None  # when the bot's watch of that release began
     # When each recent quarterly release came out, newest first (see release_history). None in
-    # an audit saved before it was kept, which is then redone.
+    # an audit saved before it was kept, or by an older release_history, which is then redone.
     history: list[datetime] | None = None
+    history_version: int = HISTORY_VERSION
 
     def fastest(self) -> tuple[str, list[Timing]]:
         """The best evidence of which source was first, and its timings, earliest first. What
@@ -119,6 +125,7 @@ class Speed:
                 else None,
                 history=[datetime.fromisoformat(stamp) for stamp in data["history"]]
                 if data.get("history") is not None
+                and data.get("history_version", 1) >= HISTORY_VERSION
                 else None,
             )
         except (ValueError, KeyError, TypeError):
