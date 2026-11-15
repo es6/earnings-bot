@@ -189,6 +189,11 @@ async def test_the_watcher_gives_each_configured_server_its_own_list_and_scoreca
 
     from earnings_bot.unattended import watch_directory
 
+    from earnings_bot.calendar import Calendar
+
+    # The deployment's own server already tracks NVIDIA; the other server is new
+    with DeliveryStore(tmp_path / ".earnings-state.sqlite3", 7) as before:
+        Calendar(before).add("NVDA")
     mine = SimpleNamespace(id=7, guild=SimpleNamespace(id=GUILD), send=None)
     theirs = SimpleNamespace(id=8, guild=SimpleNamespace(id=OTHER_GUILD), send=None)
     started: list[DirectoryWatcher] = []
@@ -223,6 +228,9 @@ async def test_the_watcher_gives_each_configured_server_its_own_list_and_scoreca
         assert all(s.dates and s.progress for s in watcher.servers)
         assert watcher.servers[1].progress is not watcher.servers[0].progress
         assert watcher.desk(OTHER_GUILD) is not None
+        # A new server starts with an empty list; it doesn't take the deployment's
+        assert [r.ticker for r in watcher.servers[0].calendar.entries()] == ["NVDA"]
+        assert watcher.servers[1].calendar.entries() == []
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)

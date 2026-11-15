@@ -111,10 +111,12 @@ class Server:
     guild_id: int | None = None
     dates: DateDiscovery | None = None  # set by the watcher
     progress: TrackProgress | None = None
+    # Whether its calendar follows the bot to a new channel: only the deployment's own server's
+    follow: bool = False
     calendar: Calendar = field(init=False)
 
     def __post_init__(self) -> None:
-        self.calendar = Calendar(self.store)
+        self.calendar = Calendar(self.store, follow=self.follow)
 
     @property
     def channel_id(self) -> int:
@@ -182,7 +184,7 @@ class DirectoryWatcher:
         self.polls = Polls(fetcher, journal, self.sixk)
         self.releases = releases
         self.store = store
-        self.servers = list(servers) or [Server(store)]
+        self.servers = list(servers) or [Server(store, follow=True)]
         if self.servers[0].store is not store:
             raise ValueError("The first server's state is the watcher's own")
         self.calendar = self.servers[0].calendar
@@ -815,7 +817,11 @@ async def watch_directory(
         )
         # Every other server keeps its own tracked companies, alerts and scorecards, under its
         # alert channel in the same databases
-        servers = [Server(store, channel, getattr(getattr(channel, "guild", None), "id", None))]
+        servers = [
+            Server(
+                store, channel, getattr(getattr(channel, "guild", None), "id", None), follow=True
+            )
+        ]
         server_progress: list[DeliveryStore] = [progress_store]
         for other in other_channels:
             other_id = other.id
