@@ -12,3 +12,8 @@ public contact email addresses redacted. No cookies or headers are included.
   results report. This is a parsing/provenance fixture, not evidence of publication timing.
 
 Original request metadata and hashes remain in the workspace's Astra research directory.
+
+- Lucid Q2: the original PR Newswire HTML linked by its public issuer report, saved
+  November 15 during the continuation. The explicit meta date 2026-08-04T21:05:00+01:00
+  is 16:05 EDT; navigation remains to exercise locating the actual report headline.
+  URL: https://www.prnewswire.com/news-releases/lucid-announces-operational-reset-and-second-quarter-2026-results-302842855.html

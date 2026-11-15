@@ -9,7 +9,15 @@ import aiohttp
 
 from earnings_bot.browser import BrowserError, browser_host
 from earnings_bot.fetch import Fetcher
-from earnings_bot.sources import RssFeed, Sighting
+from earnings_bot.periods import title_period
+from earnings_bot.publisher_history import publication
+from earnings_bot.sources import (
+    RssFeed,
+    Sighting,
+    is_date_notice,
+    looks_like_earnings,
+    preliminary_headline,
+)
 
 
 class _Rows(HTMLParser):
@@ -95,6 +103,7 @@ async def listing_history(
     """Follow at most three public, linked pages; no invented pagination or host changes."""
     browser_host(listing)
     items: dict[str, Sighting] = {}
+    pending: dict[str, Sighting] = {}
     seen: set[str] = set()
     url: str | None = listing
     for _ in range(3):
@@ -111,8 +120,33 @@ async def listing_history(
                 break
             rows, url = listing_rows(url, response.body)
             items.update((item.key, item) for item in rows)
+            if len(pending) < 3:
+                from earnings_bot.browser_sources import _ReleaseLinks
+
+                parser = _ReleaseLinks()
+                parser.feed(response.body.decode(errors="replace"))
+                for href, title in parser.links:
+                    article = urljoin(response.url, href)
+                    if (
+                        len(pending) < 3
+                        and title_period(title) is not None
+                        and looks_like_earnings(title)
+                        and not is_date_notice(title)
+                        and not preliminary_headline(title)
+                        and browser_host(article) == browser_host(listing)
+                    ):
+                        pending.setdefault(article, Sighting(article, title, article))
         except (aiohttp.ClientError, BrowserError, TimeoutError, ValueError):
             break
+    if len(items) < 3:
+        for item in pending.values():
+            if item.key in items:
+                continue
+            try:
+                if stamped := await publication(fetcher, item, listing, chrome=chrome):
+                    items[stamped.key] = stamped
+            except (aiohttp.ClientError, BrowserError, TimeoutError, ValueError):
+                continue
     return list(items.values())
 
 
