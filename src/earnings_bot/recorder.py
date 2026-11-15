@@ -33,6 +33,7 @@ from earnings_bot.clock import TrustedClock
 from earnings_bot.config import RecorderSettings
 from earnings_bot.fetch import Fetcher, Response, RoutePause
 from earnings_bot.globe_frontier import guess_release, guessed_for
+from earnings_bot.http_policy import retry_after
 from earnings_bot.periods import agrees_with_period
 from earnings_bot.release_band import SLOW, pace, paced
 from earnings_bot.resources import snapshot
@@ -407,8 +408,7 @@ async def fetch(source: Source, fetcher: Fetcher) -> Response:
     if response.status == 403:
         raise PollError("HTTP 403: the site refused us. Trying again after a pause", blocked=True)
     if response.status in (429, 503):
-        retry_after = response.headers.get("retry-after", "")
-        pause = float(retry_after) if retry_after.isdigit() else 30.0
+        pause = retry_after(response.headers.get("retry-after", ""))
         raise PollError(f"HTTP {response.status}, backing off for {pause:.0f}s", pause=pause)
     if response.status not in source.ok_statuses:
         if response.status == 0:
