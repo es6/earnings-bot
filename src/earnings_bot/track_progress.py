@@ -246,8 +246,17 @@ class TrackProgress:
         research_mode: Callable[[], contextlib.AbstractContextManager[None]] | None = None,
         research_deferred: Callable[[], bool] = lambda: False,
         profile_note: Callable[[int], str | None] | None = None,
+        reviews: Calendar | None = None,
+        claim: Callable[[int], bool] = lambda cik: True,
+        release: Callable[[int], None] = lambda cik: None,
     ) -> None:
         self.calendar, self.store, self.channel = calendar, store, channel
+        # Where speed audits are read and saved: this server's calendar, or every server's
+        # (calendar.SharedCalendar), so a company several servers track is audited once
+        self.reviews = reviews or calendar
+        # Whether this tracker may audit a company now, and that it's done: another server's
+        # tracker may be auditing it
+        self.claim, self.release = claim, release
         # Source audits stop while research is paused (by default, while any window is open);
         # otherwise they run in `research_mode`, never for a company whose own window is open
         self.research_paused = research_paused or busy
@@ -402,7 +411,7 @@ class TrackProgress:
         row = next((item for item in self.calendar.entries() if item.cik == cik), None)
         if row is None:
             return None
-        _, review = self.calendar.review(cik)
+        _, review = self.reviews.review(cik)
         checking = bool(self.active and self.active[0] == cik)
         color = self.render(row, review, checking).color
         value = color.value if color is not None else None
@@ -590,6 +599,12 @@ class TrackProgress:
         return embed
 
     async def _check(self, row: Tracked) -> None:
+        try:
+            await self._audit(row)
+        finally:
+            self.release(row.cik)
+
+    async def _audit(self, row: Tracked) -> None:
         now = self.now()
         self.next_attempt[row.cik] = now + timedelta(hours=1)
         try:
@@ -607,7 +622,7 @@ class TrackProgress:
             return
         self.audit_failed.discard(row.cik)
         if any(item.cik == row.cik for item in self.calendar.entries()):
-            self.calendar.save_review(row.cik, now, speed.to_json())
+            self.reviews.save_review(row.cik, now, speed.to_json())
         self.changed.set()
 
     async def run(self) -> None:
@@ -626,7 +641,7 @@ class TrackProgress:
                         self.active = None
                 for row in rows:
                     now = self.now()
-                    checked, review = self.calendar.review(row.cik)
+                    checked, review = self.reviews.review(row.cik)
                     speed = Speed.from_json(review)
                     if speed is None or speed.history is None:
                         checked = None  # never checked, or saved in an older format
@@ -638,6 +653,7 @@ class TrackProgress:
                         and self.active is None
                         and (checked is None or now - checked >= REFRESH)
                         and self.next_attempt.get(row.cik, now) <= now
+                        and self.claim(row.cik)  # last: it takes the company
                     ):
                         # Tasks inherit the policy; its callbacks follow window changes.
                         with self.research_mode():

@@ -76,8 +76,10 @@ another already researched may import that research after a quick check.
    until the streak ends Nov 20). `DISCORD_SERVER_CHANNEL_IDS`; commands registered in each
    server; one window, one set of polls and one summary per release; the alert goes to every
    server tracking the company at once.
-2. Research once per company across servers, written to each server that tracks it. Until
-   then, a company two servers track is researched twice.
+2. Research once per company across servers, written to each server that tracks it (in
+   review, stacked on step 1). A server that starts tracking a company another already
+   researched gets its findings at the next research pass, within about an hour, or at
+   once with step 3.
 3. Importing another server's research at `/track`, after a quick check that it's current.
 
 Open: Discord's rate limits with many servers posting the same release (one send per server,

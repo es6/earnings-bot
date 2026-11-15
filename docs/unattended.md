@@ -148,7 +148,11 @@ for per-release schedule settings.
   list, `/upcoming`, `/status` and scorecards (in its alert channel). A company several
   servers track gets one window, one set of polls and one summary, and its alert goes
   to each of them at once. A schedule file's release goes to the deployment's own
-  server unless another server tracks the company too. A command in a server that
+  server unless another server tracks the company too. Research is shared: one loop
+  looks into each company once, writes what it finds (release date, profile, speed
+  audit) to every server tracking it, and a company's speed audit never runs for two
+  servers at once. A manual override in one server sets the window for every server
+  tracking the company, since it's the same release. A command in a server that
   isn't configured says so.
 - Changing `DISCORD_CHANNEL_ID` moves the calendar with it at the next start: the
   tracked companies, their research, the alerts and windows already done, and the
