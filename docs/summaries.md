@@ -210,6 +210,53 @@ EPS between", and groups such as "MCO" or "guidance" required as if they were se
 - Retention is still below what default activation needs, and the reference request's
   extra latency is unchanged. Activation stays off.
 
+## Verifying the live summaries' facts (Nov 15, measured, offline)
+
+The question before removing "Beta": how often do the live summaries show a fact whose
+measure, period or basis is wrong, and does the verifier catch those facts without
+dropping right ones? `scripts/verify_replay.py` replays the 36 saved Ember-low answers of
+November 12 (15 releases: two runs each of the first set's 9 releases and three each
+of the second set's 6).
+Each fact the live checker keeps is handed to the verifier with every paragraph and table
+cell of the release that holds its number. No model calls. SPOT's release was a PDF, so it
+is read from its text, as the live bot reads a PDF; the others from their HTML.
+
+| Of 619 facts the live checker kept | Facts |
+|---|---|
+| Verifier confirmed the main value, and its growth and prior-year values | 239 |
+| Verifier confirmed the main value only | 64 |
+| Verifier refused the main value | 299 (48%) |
+| The replay couldn't read the value | 17 |
+
+- **Refusals aren't errors.** A fixed random sample of 30 refused facts, read against
+  their quotes: none was clearly wrong; two carry a label the quote doesn't confirm
+  (JPM's $50.9 billion net revenue labeled "managed", Adobe's "Total Customer Group
+  subscription revenue" shown as "Subscription revenue"). The rest were refused because
+  the verifier reads too narrowly: a segment named in the row above its numbers
+  ("LATAM:" over "Revenue"), a share ("cRPO were 67%"), "up 38%" growth phrasing, a
+  measure named before "and" ("R&D costs of around EUR1.2 billion and SG&A costs of
+  around EUR0.4 billion").
+- **Known errors.** The November 12 study found 8 wrong facts in 7 of the 18 first-set
+  answers. The live checker drops 2 (NOW's free cash flow margin given as its growth,
+  Duolingo's full-year bookings growth of 13% for 12%). It shows 6. The verifier refuses
+  4 of them: Netflix's 12% reported growth labeled as its 11% currency-neutral growth,
+  DoorDash's cash change labeled year over year when it compares December 31 with
+  September 30, and Synopsys's nine-month operating cash flow labeled Q3, in both runs.
+  It missed Duolingo's daily active users and paid subscribers claimed in USD: a dollar
+  sign elsewhere in their table read as their currency. Visa's revenue growth labeled
+  constant-dollar wasn't tested, as the replay doesn't pass that label.
+- **The fix, v0.21.29:** a count of people or things (users, subscribers, customers,
+  accounts, vehicles, stores and the like) is never bound as money, unless its measure
+  names money ("revenue per user", "customer deposits", "customer credits"). On the 619
+  facts it refused exactly the two Duolingo facts and nothing else.
+
+So today's live summaries show at least 6 known wrong labels in 18 answers, about 2% of
+the facts they show; the study's checks were targeted, so that is a floor. The verifier
+catches most of them, but it would also drop nearly half of the right facts, so it can't
+yet filter the live summaries. Next: raise what it confirms among the right facts, while
+the 6 known errors stay refused, measured on this replay and then on releases it was never
+tuned on.
+
 ## Live summaries (v0.13.0)
 
 `summary_bound_format.py` supplies the item 6 presentation path for `BindingReport`

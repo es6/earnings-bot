@@ -6,7 +6,7 @@ import json
 import logging
 import re
 from collections.abc import Awaitable, Callable
-from contextlib import AbstractAsyncContextManager
+from contextlib import AbstractAsyncContextManager, suppress
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from html.parser import HTMLParser
@@ -19,11 +19,13 @@ from earnings_bot.browser import BrowserError, RenderedPage, browser_host
 from earnings_bot.browser_sources import _ReleaseLinks, article_matches
 from earnings_bot.fetch import Fetcher, Response
 from earnings_bot.formatting import clock
+from earnings_bot.globe_history import past_releases
 from earnings_bot.ir_pages import RESULTS, IRReader, nav_rank
 from earnings_bot.ir_research import issuer_links, next_page
-from earnings_bot.issuer_news import news_records, read_news
+from earnings_bot.issuer_news import discover_manifest, news_records, read_news
 from earnings_bot.issuers import SEC_SUBMISSIONS, filing_form, release_time
 from earnings_bot.known import KnownCompany, SourceCheck, known_companies, naming_offset
+from earnings_bot.periods import title_period
 from earnings_bot.recorder import ET, PollError, poll
 from earnings_bot.sec_results import SixKResults, SixKUnavailable, reported_period
 from earnings_bot.sources import (
@@ -54,7 +56,7 @@ REINVESTIGATE = timedelta(days=30)
 # investor landing pages and feeds only Chrome can read, 13 learns how the company names
 # its fiscal years from its results releases, 14 checks feeds advertised on the actual IR
 # listing even when the homepage is blocked or names a separate corporate host.
-INVESTIGATION = 14
+INVESTIGATION = 15
 _HOST = re.compile(r"\b((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,})\b", re.IGNORECASE)
 _WEB_HOST = re.compile(r"\b(?:https?://|(?=www\.))" + _HOST.pattern, re.IGNORECASE)
 _IR_HOST = re.compile(r"^(?:ir|investors?|investor-?relations)\.", re.IGNORECASE)
@@ -130,9 +132,10 @@ class Chrome(Protocol):
 OpenChrome = Callable[[], AbstractAsyncContextManager[Chrome]]
 
 
-def due(ticker: str, company: KnownCompany, today: date) -> bool:
-    """Whether to look for a company's sources: one outside the catalog, not looked at lately."""
-    if ticker in known_companies():
+def due(ticker: str, company: KnownCompany, today: date, catalog: bool = True) -> bool:
+    """Whether to look for a company's sources: one outside the catalog, not looked at lately.
+    `catalog=False` looks at a catalog company's too (/track debug mode)."""
+    if catalog and ticker in known_companies():
         return False
     return (
         (company.sec_form is None and not company.eightk)
@@ -173,6 +176,29 @@ def ir_hosts(text: str, ticker: str | None = None, name: str = "") -> list[str]:
 def wire(text: str) -> str | None:
     """The newswire named in a release's dateline."""
     return next((name for name, dateline in _WIRES if dateline.search(text[:2000])), None)
+
+
+async def listed_wire(
+    fetcher: Fetcher, company: KnownCompany, releases: list[tuple[Sighting, str]]
+) -> str | None:
+    """An exact publisher's recent public listing can identify a wire absent from the exhibit."""
+    if not releases:
+        return None
+    filing, text = releases[0]
+    at, period = published_time(filing.published), reported_period(text)
+    if at is None or period is None:
+        return None
+    for item in await past_releases(fetcher, company.name):
+        stamped = published_time(item.published)
+        if (
+            stamped is not None
+            and abs((at - stamped).total_seconds()) <= 2 * 86400
+            and looks_like_earnings(item.title)
+            and not preliminary_headline(item.title)
+            and title_period(item.title) == period
+        ):
+            return "GlobeNewswire"
+    return None
 
 
 class _FeedLinks(HTMLParser):
@@ -436,6 +462,8 @@ async def _named_feed(fetcher: Fetcher, text: str, report: Report) -> tuple[str 
 async def _news_api(fetcher: Fetcher, listing: str) -> str | None:
     """Replay only an observed same-origin GET that returns dated issuer releases."""
     try:
+        if manifest := await discover_manifest(fetcher, listing):
+            return manifest
         host = browser_host(listing)
         async with fetcher.research_browser() as browser:
             responses = await browser.inspect_json(listing)
@@ -932,7 +960,7 @@ async def investigate(
                 report.watch(
                     f"Issuer newsroom API <{findings.news_api}>", "Verified over direct HTTP"
                 )
-    if chrome is not None and findings.results_page and not findings.q4:
+    if findings.results_page and not findings.q4:
         # A results page's own data can name new results before the newsroom does: Sea's had
         # its Q3 2026 press release hours before its newsroom listed it
         report.doing("Looking for the public data behind the results page")
@@ -953,6 +981,9 @@ async def investigate(
             "Kept, since its recent releases no longer name an IR site",
         )
     report.doing("Choosing its sources")
+    if not findings.wire:
+        with suppress(*_ERRORS):
+            findings.wire = await listed_wire(fetcher, company, releases)
     _wire_checks(report, findings.wire)
     found_wire = findings.wire or "unknown"
     # GlobeNewswire's earnings feed is watched like the other two wires: when it's the wire,

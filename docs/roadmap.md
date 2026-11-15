@@ -27,44 +27,29 @@ From the earlier 1.0 list:
 
 ### International tickers
 
-`/track` should accept tickers listed outside the US, such as `SAF.PA` (Safran, Euronext
-Paris) and `TEA.AX` (Tasmea, ASX). Neither is on SEC's ticker list. This replaces "reject
-non-US tickers": supported exchanges are accepted, and others are refused with a clear
-message.
+The full plan is [international.md](international.md); the debug mode it's built with is
+[track-testing.md](track-testing.md). Agreed with the owner on Nov 15:
 
-The polling, alerts, Chrome reading, summaries and Discord parts don't depend on the
-exchange. The company model does:
+- **Markets:** ASX, Hong Kong, Tokyo, Toronto and Europe's main markets. Any other exchange is
+  learned when `/track` identifies one of its tickers and a second source confirms it.
+- **Symbols:** `SYMBOL.SUFFIX` with Yahoo Finance's suffixes (`TEA.AX`, `0700.HK`, `7203.T`,
+  `SHOP.TO`, `SAF.PA`); `EXCHANGE:SYMBOL` also accepted.
+- **US tickers keep today's path.** The new logic runs only for symbols naming a non-US
+  exchange, or plain symbols that aren't on SEC's list.
+- **Decisions:** OpenFIGI for identification (it named all six test tickers correctly without
+  a key); `exchange_calendars` for hours and holidays; Japanese and Chinese releases
+  summarized in English by Muse Ember at low effort; new exchanges learned automatically once
+  two sources agree.
+- **Order:**
+  1. Debug mode (`/track ... debug:true`).
+  2. Foundations: symbols and the exchange table, a non-SEC company key, half-year periods,
+     each exchange's hours, currencies and languages.
+  3. Identification.
+  4. A dedicated source per market: ASX, Toronto, Hong Kong, Tokyo, then Europe exchange by
+     exchange.
+  5. Live checks as each market reports.
 
-- **Identity.** Every company is keyed by its SEC CIK: 15 of 58 modules and the database's
-  keys. A non-SEC issuer needs another key (such as `ASX:TEA`) and a data migration.
-- **Ticker lookup.** Only SEC's list is read. The suffix (`.AX`, `.PA`, `.L`, ...) should
-  pick the exchange, which supplies the time zone, trading hours, currency and announcement
-  source.
-- **Research.** The IR site and fiscal-year naming come from SEC filings. Instead: the ASX
-  announcements, and for Euronext the company's own site. Safran's `/finance` page answered
-  the bot 403 on Nov 15, so it would go through Chrome.
-- **Periods.** Only `FYyyyyQn` exists. Half-year and full-year periods are needed. Safran
-  gives full results twice a year and revenue only in Q1 and Q3. ASX companies file half-year
-  and full-year reports (Appendix 4D and 4E).
-- **Timing.** "Before the open" and "after the close" defaults and the polling sessions assume
-  09:30 to 16:00 ET. They should come from the exchange's own hours.
-- **Sources.** SEC's feeds are added to every window. For these companies, use the exchange's
-  announcements instead. ASX's public announcements data answered the bot on Nov 15 with each
-  item's time to the second, headline, type and price-sensitive flag, so one adapter would
-  cover every ASX company. Euronext's regulated news isn't checked yet.
-- **Detection.** Headlines like "Half Year Results", "1H FY26" and "Appendix 4D", and
-  matching a half-year to its period.
-
-Suggested order, after the streak ends on Nov 20, since the identity change touches the data
-every window depends on:
-
-1. A non-SEC company key and the migration.
-2. Exchange-aware tickers.
-3. Half-year and full-year periods.
-4. ASX announcements as a source, company lookup and dates.
-5. Euronext.
-6. Each exchange's hours for polling.
-7. Summary and headline tuning, measured on many international releases.
+  The company-key change waits until the streak ends and the multiple-servers PRs merge.
 
 ### Multiple Discord servers
 
@@ -85,11 +70,49 @@ another already researched may import that research after a quick check.
 Open: Discord's rate limits with many servers posting the same release (one send per server,
 then its edits), to be measured.
 
-### CPU use of `/track` and live releases
+### Load on the PC from `/track` and live releases
 
-Not measured yet. First, profile a `/track` run and a replayed release window (the burst
-replay) to find where the time goes: Chrome rendering, HTML and PDF parsing, feed parsing on
-one-second polls. Then set targets, and measure the change before claiming one.
+The aim: a heavy release (four or more companies at once) or a `/track` run never slows the
+owner's PC down, whether through CPU, memory or leftover processes. Measured on Nov 15 on this
+PC (i9-13900K, 32 threads, 64 GB):
+
+| Load | Chrome | The bot itself | Whole PC |
+|---|---|---|---|
+| Five release windows at once, full speed, real Chrome and sites, 3 min | 1.4 GB median, 1.6 GB peak working set (1.0 GB committed); 1.4 cores peak, about 0.1 on average | 76 MB; 0.1 core peak | CPU 14% median, 27% peak; free RAM unchanged at 35 GB |
+| `/track` research for 3 new companies, one at a time as the bot does | 760 MB median, 1.2 GB peak; 2.1 cores peak | 129 MB; 0.9 core peak | CPU 40% peak |
+| 40 real release files read at once (PDFs and pages) | — | 106 MB; 1 core (Python runs one thread at a time) | 4.5 s in all |
+
+Done:
+- Chrome ends with the bot, and leftovers are cleared at start (#133). A Chrome from Nov 13 was
+  still running two days later, beside 1.8 GB of old profiles on disk.
+- Chrome runs at below-normal priority, so the owner's programs come first when the CPU is
+  busy, under an 8 GB ceiling on the memory its processes may commit together.
+- Every minute of a window, the journal records the bot's memory and CPU, Chrome's processes,
+  CPU and peak memory, and the PC's free memory (`resources` events).
+- Tried and dropped: turning off images in Chrome saved about 3% of its memory and no CPU, and
+  BN's rendered results table failed without them.
+
+Open:
+- Read the `resources` records from the live streak (Nov 17 to 20).
+- A soak test: hours of windows, to catch slow growth in memory, handles or processes.
+- When many releases land at once, one release's text can wait seconds behind the others'
+  parsing (a PDF read took 0.3 s alone and up to 4 s among 40). That costs summary speed, not
+  responsiveness. A separate process for parsing would fix it at some memory cost.
+
+## Order of work
+
+Agreed with the owner on Nov 15:
+
+1. **`/track` debug mode** ([track-testing.md](track-testing.md)). Built in v0.21.28 for US
+   tickers; it adds an option to `/track` and changes nothing else live.
+2. **Verified summaries:** plan and test the summary checker that verifies each number's
+   measure and period, aiming to remove the "Beta" label (plan item 6).
+3. **After the streak (Nov 20):** merge and deploy multiple servers (#136 to #138), then
+   measure Discord's rate limits with several servers.
+4. **International tickers:** the foundations, identification, then a dedicated source
+   per market ([international.md](international.md)), each going live once its answer
+   keys pass one-shot.
+5. **After 1.0:** `/transcript`.
 
 ## Other open work
 

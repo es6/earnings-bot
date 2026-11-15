@@ -15,7 +15,10 @@ Chrome runs in a Windows job object that ends it, and every process it started, 
 bot exits for any reason, including a deploy that ends the bot's process. At start the bot
 also ends any Chrome a previous run left (its main process's parent gone) and removes
 `earnings-bot-chrome-*` profiles no live Chrome uses. Before this, one from Nov 13 was
-still running on Nov 15, beside 18 old profiles (1.8 GB).
+still running on Nov 15, beside 18 old profiles (1.8 GB). The same job runs Chrome at
+below-normal priority, so the owner's own programs come first when the CPU is busy, and
+caps the memory all its processes may commit at 8 GB (`CHROME_MEMORY_LIMIT`). Five release
+windows at once peaked at 1.6 GB.
 
 The worker has been exercised under an active Windows login session. Chrome
 startup under the Task Scheduler account depends on that account's desktop

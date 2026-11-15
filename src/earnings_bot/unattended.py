@@ -161,7 +161,12 @@ class ServerDesk:
 
     @property
     def planned(self) -> dict[str, Target]:
-        return self.watcher.planned
+        return {
+            key: target
+            for key, target in self.watcher.planned.items()
+            if self.calendar.contains(target.cik)
+            or (self._own and not self.watcher.tracks(target.cik))
+        }
 
 
 class DirectoryWatcher:
@@ -192,6 +197,7 @@ class DirectoryWatcher:
         self.shared = SharedCalendar(lambda: [server.calendar for server in self.servers])
         # Companies a server's scorecard tracker is auditing now, so no other audits them too
         self.auditing: set[int] = set()
+        self.audit_next_attempts: dict[int, datetime] = {}
         self.planned: dict[str, Target] = {}
         # Record-only publication trials (publication_trials.py), by plan ID
         self.trials: dict[str, asyncio.Task[None]] = {}
@@ -339,6 +345,8 @@ class DirectoryWatcher:
         scorecards' readiness, summaries and problems. The calendar itself is /upcoming."""
         now = self.journal.now()
         running = [w.target for w in self.windows.values() if not w.task.done()]
+        server = server or self.servers[0]
+        running = [target for target in running if server in self.subscribers(target)]
         live = sorted((t for t in running if t.window[0] <= now < t.window[1]), key=_expected)
         coming = sorted((t for t in running if t.window[0] > now), key=lambda t: t.window[0])
         color = AMBER if self.problems else GREEN
@@ -353,7 +361,6 @@ class DirectoryWatcher:
             )
         else:
             lines.append("⏭️ No watch scheduled")
-        server = server or self.servers[0]
         if server.progress:
             dots = [server.progress.readiness(row.cik) for row in server.calendar.entries()]
             counts = " · ".join(f"{dot} {dots.count(dot)}" for dot in dict.fromkeys(dots) if dot)
@@ -957,6 +964,7 @@ async def watch_directory(
                     reviews=watcher.shared if len(servers) > 1 else None,
                     claim=watcher.claim_audit,
                     release=watcher.auditing.discard,
+                    next_attempt=watcher.audit_next_attempts,
                 )
                 server.progress.follow_calendar()
 
