@@ -3,6 +3,7 @@
 import json
 import re
 import xml.etree.ElementTree as ET
+from contextlib import suppress
 from html.parser import HTMLParser
 from urllib.parse import urljoin, urlsplit
 
@@ -98,7 +99,19 @@ def _entries(body: bytes) -> list[dict[str, str]]:
 def candidates(body: bytes, base: str, patterns: list[re.Pattern[str]]) -> list[dict[str, str]]:
     out = []
     seen = set()
-    for entry in _entries(body):
+    entries = _entries(body)
+    if not any(entry["id"] for entry in entries):
+        # Quarterly manifests use nested document roles rather than a row-level URL.
+        # Reuse the production parser's issuer-host, role, period and conflict checks.
+        from earnings_bot.issuer_news import news_records
+
+        with suppress(ValueError, TypeError, KeyError):
+            entries = [
+                {"id": record.url, "title": record.title, "text": f"{record.title}\n{record.url}"}
+                for record in news_records(base, body)
+                if record.period is not None
+            ]
+    for entry in entries:
         if not entry["id"] or not all(
             p.search(entry.get("text", entry["title"])) for p in patterns
         ):
