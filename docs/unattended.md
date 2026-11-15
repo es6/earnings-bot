@@ -113,6 +113,13 @@ hour old (error 30046) much harder. Release alerts go first:
    doesn't read as earnings is read once (up to six a window): if its text announces
    this quarter's results with revenue figures, it counts as the release. Klarna's last
    two results headlines didn't say "results".
+   A release on GlobeNewswire alone is also guessed by article number: three numbers at
+   once every 2 seconds after GlobeNewswire's newest, from 2 minutes before its time to 4
+   after (6 minutes split among its release times), at most 540 guesses, and none after a
+   refusal. Each guess ends in a name never asked before, since a 410 for a number not
+   out yet can stay cached for 30 days. The page with the company's ticker and this
+   quarter's results posts like any other source. Record-only runs over a busy minute go
+   in `schedules/trials/globe/` (`GlobeBatch`).
    The first verified release sighting
    starts the Discord post, which is edited as links, files and any summary arrive.
    Release posts have a green earnings card, separate from research scorecards.

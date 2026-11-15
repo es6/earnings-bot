@@ -32,6 +32,7 @@ from earnings_bot.browser_sources import BrowserRelease, BrowserRss, IRSource
 from earnings_bot.clock import TrustedClock
 from earnings_bot.config import RecorderSettings
 from earnings_bot.fetch import Fetcher, Response, RoutePause
+from earnings_bot.globe_frontier import guess_release, guessed_for
 from earnings_bot.periods import agrees_with_period
 from earnings_bot.release_band import SLOW, pace, paced
 from earnings_bot.sec_results import SixKResults, SixKUnavailable, is_results_release
@@ -1085,6 +1086,8 @@ async def record_target(
     try:
         async with asyncio.TaskGroup() as group:
             group.create_task(keep_clock_synced(journal, end))
+            if guessed_for(target):
+                group.create_task(guess_release(target, fetcher, journal, notify, end))
             for w in watches:
                 group.create_task(polls.watch(w, end, notify))
     finally:
