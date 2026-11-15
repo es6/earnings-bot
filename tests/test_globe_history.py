@@ -38,7 +38,11 @@ async def test_a_companys_releases_come_from_its_own_organization_page() -> None
         row("May 13, 2026 05:40", "WeRide Inc.", "2026/05/13/3293762", "WeRide Q1"),
         row("March 23, 2026 07:10", "WeRide Inc.", "2026/03/23/3260264", "WeRide FY"),
     )
-    first = listing(row("May 13, 2026 05:40", "WeRide Inc.", "2026/05/13/3293762", "WeRide Q1"))
+    first = listing(
+        row("May 13, 2026 05:40", "WeRide Inc.", "2026/05/13/3293762", "WeRide Q1"),
+        # An organization page can list another organization's release among its rows
+        row("May 19, 2026 05:00", "Hesai Group", "2026/05/19/3297198", "Hesai results", hesai),
+    )
     second = listing(
         row("November 24, 2025 04:00", "WeRide Inc.", "2025/11/24/3193234", "WeRide Q3")
     )
@@ -53,6 +57,9 @@ async def test_a_companys_releases_come_from_its_own_organization_page() -> None
     releases = await past_releases(fetcher, "WeRide Inc.")
 
     assert [item.key for item in releases] == ["3293762", "3193234"]
+
+
+async def test_a_company_with_no_search_results_has_no_past_releases() -> None:
     assert await past_releases(RoutedFetcher({}), "WeRide Inc.") == []
 
 

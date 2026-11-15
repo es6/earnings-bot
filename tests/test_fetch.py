@@ -2,25 +2,86 @@
 host keeps its own queue."""
 
 import asyncio
+import heapq
 import itertools
 import socket
-import time
+from collections.abc import AsyncIterator
+from types import SimpleNamespace
 from typing import Any
 
 import aiohttp
 import pytest
+import pytest_asyncio
 from aiohttp import web
 from aiohttp.abc import AbstractResolver, ResolveResult
 
-from earnings_bot.fetch import Fetcher, host_gap, queue_key
+from earnings_bot import fetch as fetch_module
+from earnings_bot.browser import BrowserError
+from earnings_bot.fetch import Fetcher, HostBusy, host_gap, queue_key
 from earnings_bot.sources import EdgarFilings, EdgarLatest, Sighting
 from earnings_bot.text import release_text
+from tests import fakes
 from tests.fakes import FakeSession, SessionFetcher
 
 SEC_GAP = 0.125  # 8 requests a second, under SEC's limit of 10
 EXHIBIT = "<p>" + "Revenue grew 12 percent. " * 120 + "</p>"
 FILING = "https://www.sec.gov/Archives/edgar/data/320193/000032019326000101"
 INDEX = '{"directory": {"item": [{"name": "aapl-20261106.htm"}, {"name": "ex99-1.htm"}]}}'
+
+
+class VirtualClock:
+    """The Fetcher's time, which only moves when every task has run out of things to do.
+
+    A pause (`asyncio.sleep`) in the fetcher takes no real time: once all tasks are waiting,
+    the clock jumps to the earliest wake-up. The pacing the tests check is then exact, and
+    can't be thrown off by a busy machine."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+        self._sleepers: list[tuple[float, int, asyncio.Future[None]]] = []
+        self._count = itertools.count()
+        self._real_sleep = asyncio.sleep
+
+    def monotonic(self) -> float:
+        return self.now
+
+    async def sleep(self, delay: float) -> None:
+        if delay <= 0:
+            await self._real_sleep(0)
+            return
+        wake = asyncio.get_running_loop().create_future()
+        heapq.heappush(self._sleepers, (self.now + delay, next(self._count), wake))
+        await wake
+
+    async def drive(self) -> None:
+        while True:
+            for _ in range(20):  # let every task that can run, run
+                await self._real_sleep(0)
+            if self._sleepers:
+                moment, _, wake = heapq.heappop(self._sleepers)
+                self.now = max(self.now, moment)
+                if not wake.done():
+                    wake.set_result(None)
+
+
+@pytest_asyncio.fixture
+async def clock(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[VirtualClock]:
+    clock = VirtualClock()
+    clock_module = SimpleNamespace(monotonic=clock.monotonic)
+
+    class AsyncioWithVirtualSleep:
+        sleep = staticmethod(clock.sleep)
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(asyncio, name)
+
+    monkeypatch.setattr(fetch_module, "time", clock_module)
+    monkeypatch.setattr(fetch_module, "asyncio", AsyncioWithVirtualSleep())
+    monkeypatch.setattr(fakes, "time", clock_module)
+    driver = asyncio.create_task(clock.drive())
+    yield clock
+    driver.cancel()
+    await asyncio.gather(driver, return_exceptions=True)
 
 
 def most_in_one_second(times: list[float]) -> int:
@@ -43,8 +104,21 @@ def test_every_sec_host_waits_in_one_queue_at_8_requests_a_second() -> None:
     assert queue_key("notsec.gov") == "notsec.gov"
 
 
+@pytest.mark.parametrize(
+    ("host", "gap"),
+    [
+        ("data.sec.gov", 0.125),
+        ("s23.q4cdn.com", 0.2),
+        ("feed.businesswire.com", 1.0),
+        ("investor.uber.com", 1.0),
+        ("notsec.gov", 1.0),
+    ],
+)
+def test_host_gaps(host: str, gap: float) -> None:
+    assert host_gap(host) == gap
+
+
 async def sec(method: str, url: str) -> tuple[int, dict[str, str], bytes]:
-    await asyncio.sleep(0.01)
     if url.endswith("index.json"):
         return 200, {}, INDEX.encode()
     if url.endswith("ex99-1.htm"):
@@ -52,6 +126,7 @@ async def sec(method: str, url: str) -> tuple[int, dict[str, str], bytes]:
     return 200, {}, b"{}"
 
 
+@pytest.mark.usefixtures("clock")
 async def test_polls_of_both_sec_hosts_and_exhibit_downloads_share_8_requests_a_second() -> None:
     session = FakeSession(sec)
     filing = Sighting(
@@ -73,19 +148,23 @@ async def test_polls_of_both_sec_hosts_and_exhibit_downloads_share_8_requests_a_
     assert hosts == {"www.sec.gov", "data.sec.gov"}
     times = [moment for moment, _, _ in session.sent]
     assert len(times) == 12
-    # Each host on its own queue at 8 a second sent all 12 within 0.75 s
-    assert most_in_one_second(times) == 8
+    # SEC's two hosts share one queue: never more than 8 in a second, never closer than the gap
+    assert most_in_one_second(times) <= 8
     gaps = [b - a for a, b in itertools.pairwise(sorted(times))]
-    assert min(gaps) >= SEC_GAP - 0.005
+    assert min(gaps) >= SEC_GAP - 1e-9
+    # and the queue is kept full: all 12 went out one gap apart
+    assert max(times) - min(times) == pytest.approx(11 * SEC_GAP)
 
 
-async def test_an_urgent_exhibit_download_goes_ahead_of_polls_of_the_other_sec_host() -> None:
+async def test_an_urgent_exhibit_download_goes_ahead_of_polls_of_the_other_sec_host(
+    clock: VirtualClock,
+) -> None:
     fetcher = Fetcher("Test Person test@example.com")
     turns: list[tuple[str, float]] = []
 
     async def take_turn(name: str, host: str, urgent: bool = False) -> None:
         await fetcher.wait_turn(host, urgent)
-        turns.append((name, time.monotonic()))
+        turns.append((name, clock.now))
 
     await take_turn("latest filings", "www.sec.gov")  # SEC is free, so this goes at once
     polls = [asyncio.create_task(take_turn(f"submissions {i}", "data.sec.gov")) for i in range(3)]
@@ -101,25 +180,26 @@ async def test_an_urgent_exhibit_download_goes_ahead_of_polls_of_the_other_sec_h
         "submissions 2",
     ]
     gaps = [b - a for (_, a), (_, b) in itertools.pairwise(turns)]
-    assert min(gaps) >= SEC_GAP - 0.005
+    assert gaps == [pytest.approx(SEC_GAP)] * 4
 
 
-async def test_other_hosts_dont_wait_behind_a_full_sec_queue() -> None:
+async def test_other_hosts_dont_wait_behind_a_full_sec_queue(clock: VirtualClock) -> None:
     async with Fetcher("Test Person test@example.com") as fetcher:
         sec_turns = [
             asyncio.create_task(fetcher.wait_turn(host))
             for host in ("www.sec.gov", "data.sec.gov") * 10
         ]
         await asyncio.sleep(0)  # 20 SEC requests line up: 2.5 s of SEC's budget
-        started = time.monotonic()
+        started = clock.now
         # An IR site's poll and the file CDN's downloads go at once
         for host in ("investors.example.com", "s1.q4cdn.com", "s23.q4cdn.com"):
             await fetcher.wait_turn(host)
 
-        assert time.monotonic() - started < 0.05
+        assert clock.now == started  # no time passed: they didn't line up behind SEC
         assert sum(turn.done() for turn in sec_turns) <= 1
         for turn in sec_turns:
             turn.cancel()
+        await asyncio.gather(*sec_turns, return_exceptions=True)
 
 
 class _LoopbackResolver(AbstractResolver):
@@ -207,7 +287,7 @@ async def test_sec_redirects_and_connection_retries_wait_for_the_shared_queue(
 
 
 async def test_background_research_waits_behind_every_poll_and_paces_sec(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, clock: VirtualClock
 ) -> None:
     monkeypatch.setattr("earnings_bot.fetch.BACKGROUND_SEC_GAP", 0.4)
     fetcher = Fetcher("Test Person test@example.com")
@@ -219,7 +299,7 @@ async def test_background_research_waits_behind_every_poll_and_paces_sec(
                 await fetcher.wait_turn(host)
         else:
             await fetcher.wait_turn(host)
-        turns.append((name, time.monotonic()))
+        turns.append((name, clock.now))
 
     await take_turn("latest filings", "www.sec.gov")  # SEC is free, so this goes at once
     research = [
@@ -234,14 +314,13 @@ async def test_background_research_waits_behind_every_poll_and_paces_sec(
     # Every poll that was waiting went before the research that asked earlier
     assert names[:4] == ["latest filings", "poll 0", "poll 1", "poll 2"]
     times = dict(turns)
-    assert times["research 1"] - times["research 0"] >= 0.4 - 0.01
+    assert times["research 1"] - times["research 0"] >= 0.4 - 1e-9
 
 
+@pytest.mark.usefixtures("clock")
 async def test_background_research_gives_way_to_a_host_a_window_is_polling(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from earnings_bot.fetch import HostBusy
-
     fetcher = Fetcher("Test Person test@example.com")
     await fetcher.wait_turn("investors.example.com")  # a window's poll
     with fetcher.background(chrome=False), pytest.raises(HostBusy):
@@ -255,8 +334,6 @@ async def test_background_research_gives_way_to_a_host_a_window_is_polling(
 
 
 async def test_background_research_without_chrome_cannot_open_it() -> None:
-    from earnings_bot.browser import BrowserError
-
     fetcher = Fetcher("Test Person test@example.com")
     assert fetcher.chrome_allowed()
     with fetcher.background(chrome=True):
@@ -269,8 +346,6 @@ async def test_background_research_without_chrome_cannot_open_it() -> None:
 
 
 async def test_background_research_cannot_use_the_shared_live_browser() -> None:
-    from earnings_bot.browser import BrowserError
-
     class LiveBrowser:
         async def render(self, *args: object) -> None:
             raise AssertionError("Research reached the live browser")
@@ -282,45 +357,25 @@ async def test_background_research_cannot_use_the_shared_live_browser() -> None:
         await fetcher.browser_render("https://issuer.example/results", 1.0)
 
 
-async def test_queued_research_yields_without_a_turn_when_a_window_opens() -> None:
-    from earnings_bot.fetch import HostBusy
-
+@pytest.mark.usefixtures("clock")
+@pytest.mark.parametrize("condition", ["active", "paused"])
+async def test_queued_background_research_yields_without_spending_a_turn(condition: str) -> None:
+    """A window opens (`active`) or the hot interval begins (`paused`) while research waits
+    in SEC's queue: it gives up its place instead of taking the turn."""
     fetcher = Fetcher("Test Person test@example.com")
-    state = {"active": False}
+    state = {condition: False}
     await fetcher.wait_turn("data.sec.gov")
     reserved_until = fetcher._queues["sec.gov"].next_turn
 
     async def research() -> None:
-        with fetcher.background(chrome=True, active=lambda: state["active"]):
+        with fetcher.background(chrome=True, **{condition: lambda: state[condition]}):
             with pytest.raises(HostBusy):
                 await fetcher.wait_turn("data.sec.gov")
             assert fetcher.research_deferred()
 
     task = asyncio.create_task(research())
     await asyncio.sleep(0)
-    state["active"] = True
+    state[condition] = True
     await task
     assert fetcher._queues["sec.gov"].next_turn == reserved_until
     await fetcher.wait_turn("data.sec.gov")
-
-
-async def test_a_queued_background_turn_is_not_spent_when_the_hot_interval_begins() -> None:
-    from earnings_bot.fetch import HostBusy
-
-    fetcher = Fetcher("Test Person test@example.com")
-    state = {"paused": False}
-    await fetcher.wait_turn("data.sec.gov")
-    reserved_until = fetcher._queues["sec.gov"].next_turn
-
-    async def research() -> None:
-        with (
-            fetcher.background(chrome=True, paused=lambda: state["paused"]),
-            pytest.raises(HostBusy),
-        ):
-            await fetcher.wait_turn("data.sec.gov")
-
-    task = asyncio.create_task(research())
-    await asyncio.sleep(0)
-    state["paused"] = True
-    await task
-    assert fetcher._queues["sec.gov"].next_turn == reserved_until

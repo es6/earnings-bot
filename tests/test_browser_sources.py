@@ -112,6 +112,8 @@ async def test_issuer_http_watch_uses_one_transport_and_keeps_chrome_as_fallback
         assert [item.url for item in items] == [ARTICLE]
         assert items[0].details["transport"] == source.listing_transport == expected_transport
 
+    # Every direct request refuses redirects: a redirect could carry the read off the issuer's host
+    assert fetcher.no_redirect == [url for _, url, _ in fetcher.requests]
     if http_status == 403:
         assert [url for _, url, _ in fetcher.requests] == [FICO]
         assert len(fetcher.browser_calls) == 4
@@ -149,6 +151,42 @@ async def test_a_refused_chrome_fallback_says_why_http_gave_way_and_http_is_trie
 
     assert source.listing_transport == "http" and source.http_failure is None
     assert len(fetcher.browser_calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("urgent", "reads_through_chrome"), [(True, False), (False, True)], ids=["urgent", "listing"]
+)
+async def test_an_article_that_is_not_up_yet_is_an_answer_only_for_an_urgent_http_read(
+    urgent: bool, reads_through_chrome: bool
+) -> None:
+    fetcher = BrowserFake([(200, b"from chrome")])
+    fetcher.routes = {ARTICLE: (404, b"not yet")}
+    source = HttpRelease(FICO, PATTERN, chrome_fallback=True)
+
+    response = await source.request_page(fetcher, ARTICLE, urgent=urgent)
+
+    assert [call[0] for call in fetcher.browser_calls] == (
+        [ARTICLE] if reads_through_chrome else []
+    )
+    assert response.body == (b"from chrome" if reads_through_chrome else b"not yet")
+    assert source.transport == ("chrome" if reads_through_chrome else "http")
+
+
+async def test_http_is_tried_again_after_chrome_fails_during_a_block() -> None:
+    fetcher = BrowserFake(
+        [(200, b"first"), (200, b"second"), BrowserUnavailable("Chrome is gone"), (200, b"last")]
+    )
+    fetcher.routes = {FICO: (403, b"blocked")}
+    source = HttpRelease(FICO, PATTERN, chrome_fallback=True)
+
+    await source.request_page(fetcher, FICO)  # blocked over HTTP, so Chrome, and Chrome is kept
+    await source.request_page(fetcher, FICO)  # straight to Chrome: no HTTP request
+    assert len(fetcher.requests) == 1
+    with pytest.raises(BrowserUnavailable):
+        await source.request_page(fetcher, FICO)
+    await source.request_page(fetcher, FICO)  # the failure ended the stay: HTTP is tried first
+
+    assert len(fetcher.requests) == 2
 
 
 async def test_listing_diagnostics_survive_the_article_request_without_saving_body_or_secrets() -> (
@@ -202,7 +240,7 @@ def test_existing_browser_pdf_is_caught_up_without_claiming_a_live_detection() -
     assert watch.first is None
 
 
-async def test_tesla_scope_preserves_a_named_identity_and_rejects_other_urls() -> None:
+async def test_tesla_deck_is_read_with_a_named_identity_and_no_redirects() -> None:
     fetcher = RoutedFetcher({TESLA: (200, b"%PDF-1.7\n")})
     _, items = await poll(TeslaDeck(TESLA), fetcher)
 
@@ -211,11 +249,14 @@ async def test_tesla_scope_preserves_a_named_identity_and_rejects_other_urls() -
     assert method == "GET"
     assert fetcher.no_redirect == [fetcher.requests[0][1]]
     assert headers == {"User-Agent": "earnings-bot/0.1 (public earnings release monitor)"}
+
+
+def test_tesla_deck_rejects_any_other_url() -> None:
     with pytest.raises(ValueError, match="official quarterly update"):
         TeslaDeck("https://other.example/deck.pdf")
 
 
-async def test_browser_start_failure_stops_only_the_browser_source() -> None:
+async def test_browser_start_failure_is_fatal_to_the_browser_source() -> None:
     class Unavailable(BrowserFake):
         async def browser_request(
             self, url: str, warmup: str, give_up_after: float, *, urgent: bool = False

@@ -12,7 +12,6 @@ from earnings_bot import globe_frontier, recorder, unattended
 from earnings_bot.delivery import DeliveryStore
 from earnings_bot.fetch import Fetcher, Response
 from earnings_bot.globe_frontier import (
-    BUDGET,
     Frontier,
     GlobeBatch,
     Page,
@@ -142,6 +141,27 @@ async def test_guessing_finds_the_page_as_it_opens_with_a_new_url_each_time(
     assert max(int(NUMBER.search(url)[1]) for url in guesses) <= 105  # type: ignore[index]
 
 
+async def test_a_number_that_opened_ahead_of_an_earlier_one_is_not_guessed_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(globe_frontier, "ROUND", 0.0)
+    # 102 is out at once and 101 opens a few rounds later, as the release itself
+    fetcher = Frontier_({101: (3, WERIDE_Q3), 102: (0, OTHER)})
+    journal = Journal(io.StringIO())
+    weride = Target(ticker="WRD", cik=1867729, expected=FRIDAY, period="FY2026Q3")
+
+    async def found(item: Page) -> bool:
+        return is_release(item, weride)
+
+    outcome = await Frontier(fetcher, journal, "WRD").watch(
+        journal.now() + timedelta(seconds=5), found
+    )
+
+    assert outcome == "found"
+    assert fetcher.asked[101] == 4  # asked each round until it opened
+    assert fetcher.asked[102] == 1  # opened in the first round, never asked for again
+
+
 async def test_a_refusal_ends_the_guessing(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(globe_frontier, "ROUND", 0.02)
     fetcher = Frontier_({}, refuse=102)
@@ -166,7 +186,6 @@ async def test_the_budget_caps_the_guesses(monkeypatch: pytest.MonkeyPatch) -> N
     frontier = Frontier(fetcher, journal, "WRD", budget=10)
     assert await frontier.watch(journal.now() + timedelta(seconds=5), never) == "budget"
     assert frontier.sent == 10
-    assert BUDGET == 540
 
 
 async def test_a_window_posts_the_guessed_page_as_a_globenewswire_sighting(
@@ -190,14 +209,11 @@ async def test_a_window_posts_the_guessed_page_as_a_globenewswire_sighting(
     fetcher = Frontier_({101: (1, WERIDE_Q3)})
     await guess_release(weride, fetcher, journal, notify, journal.now() + timedelta(seconds=5))
 
-    assert posted == [
-        (
-            "globenewswire_page",
-            posted[0][1],
-            True,
-        )
-    ]
-    assert "/news-release/" in posted[0][1] and posted[0][1].startswith("https://www.")
+    [(source, url, earnings)] = posted
+    assert (source, earnings) == ("globenewswire_page", True)
+    assert re.fullmatch(
+        r"https://www\.globenewswire\.com/news-release/\d{4}/\d{2}/\d{2}/101/0/en/[^/]+\.html", url
+    )
 
 
 async def test_a_window_starts_the_guessing_only_for_a_globenewswire_release(
@@ -247,6 +263,9 @@ async def test_a_batch_records_every_page_and_posts_nothing(
     assert [e["number"] for e in events if e["event"] == "globe_page"] == [101, 102]
     [finished] = [e for e in events if e["event"] == "globe_batch_finished"]
     assert (finished["outcome"], finished["guesses"]) == ("budget", 30)
+    # 102 is a results page for WeRide's ticker, yet a batch only records: it is never found
+    assert not [e for e in events if e["event"] == "globe_found"]
+    assert "NEW" not in log.getvalue()
 
 
 async def test_the_bot_runs_globenewswire_batches_from_its_schedule_folder(
