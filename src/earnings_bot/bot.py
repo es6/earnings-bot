@@ -58,11 +58,14 @@ class EarningsBot(discord.Client):
 
     async def setup_hook(self) -> None:
         # Runs once after login, before the Gateway connection opens
-        if self.settings.discord_guild_id is not None:
-            guild = discord.Object(id=self.settings.discord_guild_id)
-            self.tree.copy_global_to(guild=guild)
-            synced = await self.tree.sync(guild=guild)
-            log.info("Synced %d command(s) to test server %s", len(synced), guild.id)
+        guild_ids = await self._server_guilds()
+        if guild_ids:
+            # Each configured server gets the commands at once; a global sync takes up to an hour
+            for guild_id in guild_ids:
+                guild = discord.Object(id=guild_id)
+                self.tree.copy_global_to(guild=guild)
+                synced = await self.tree.sync(guild=guild)
+                log.info("Synced %d command(s) to server %s", len(synced), guild.id)
         else:
             synced = await self.tree.sync()
             log.info("Synced %d command(s) globally", len(synced))
@@ -80,6 +83,37 @@ class EarningsBot(discord.Client):
                 log.warning("Couldn't check for Chrome a previous run left: %r", error)
             self.watcher = asyncio.create_task(self._watch(self.schedule))
             self.watcher.add_done_callback(self._watch_ended)
+
+    async def _server_guilds(self) -> list[int]:
+        """The test server, if set, and the server of every other alert channel. The
+        deployment's own channel is in the test server."""
+        guild_ids = (
+            [self.settings.discord_guild_id] if self.settings.discord_guild_id is not None else []
+        )
+        for channel_id in self.settings.discord_server_channel_ids:
+            try:
+                channel = await self.fetch_channel(channel_id)
+            except discord.HTTPException:
+                log.exception("Can't open alert channel %s", channel_id)
+                continue
+            if isinstance(channel, discord.abc.GuildChannel | discord.Thread):
+                guild_ids.append(channel.guild.id)
+        return list(dict.fromkeys(guild_ids))
+
+    async def _other_channels(self) -> list[discord.TextChannel | discord.Thread]:
+        """The other servers' alert channels that can take the bot's messages."""
+        channels: list[discord.TextChannel | discord.Thread] = []
+        for channel_id in self.settings.alert_channel_ids[1:]:
+            try:
+                channel = await self.fetch_channel(channel_id)
+            except discord.HTTPException:
+                log.exception("Can't open alert channel %s; that server gets no alerts", channel_id)
+                continue
+            if isinstance(channel, discord.TextChannel | discord.Thread):
+                channels.append(channel)
+            else:
+                log.error("Alert channel %s can't take messages; that server gets none", channel_id)
+        return channels
 
     async def on_ready(self) -> None:
         log.info("Logged in as %s (%s)", self.user, release_version())
@@ -131,6 +165,7 @@ class EarningsBot(discord.Client):
                 self._watch_ready,
                 ping,
                 driver_profiles=settings.live_driver_profiles,
+                other_channels=await self._other_channels(),
             )
             return
         await watch_schedule(
@@ -154,7 +189,10 @@ class EarningsBot(discord.Client):
         elif self.directory_watcher is None:
             status = f"Earnings watcher is running for {self.schedule}."
         else:
-            embed = self.directory_watcher.health_embed(release_version(), build_revision())
+            watcher = self.directory_watcher
+            embed = watcher.health_embed(
+                release_version(), build_revision(), watcher.server_for(interaction.guild_id)
+            )
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
         lines = [f"**Earnings Bot {release_version()}**"]

@@ -68,17 +68,20 @@ every window depends on:
 
 ### Multiple Discord servers
 
-Today the bot posts to one channel (`DISCORD_CHANNEL_ID`) and registers its commands on one
-test server (`DISCORD_GUILD_ID`). The tables are already kept per channel. Needed:
+Decided Nov 15: each server tracks its own companies; only the owner adds a server, in
+config; each server sees scorecards for its own companies; a server tracking a company
+another already researched may import that research after a quick check.
 
-- Each server sets its own alert channel with a command, and commands are registered
-  globally.
-- One detection, one text read and one summary per release, whatever the number of servers.
-  Only the posts multiply. Polling and model calls mustn't grow with servers.
-- The posts go out to every server at once, so the first server's alert isn't held up by the
-  others, within Discord's rate limits (to be measured).
-- Each server keeps its own tracked list and scorecards. Two servers tracking one company share
-  its window and polls.
+1. Several alert channels from config, own lists, alerts fanned out (in review, not deployed
+   until the streak ends Nov 20). `DISCORD_SERVER_CHANNEL_IDS`; commands registered in each
+   server; one window, one set of polls and one summary per release; the alert goes to every
+   server tracking the company at once.
+2. Research once per company across servers, written to each server that tracks it. Until
+   then, a company two servers track is researched twice.
+3. Importing another server's research at `/track`, after a quick check that it's current.
+
+Open: Discord's rate limits with many servers posting the same release (one send per server,
+then its edits), to be measured.
 
 ### CPU use of `/track` and live releases
 

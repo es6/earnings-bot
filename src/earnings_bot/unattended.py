@@ -4,8 +4,8 @@ import asyncio
 import contextlib
 import sqlite3
 import tomllib
-from collections.abc import Awaitable, Callable, Iterator
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable, Iterator, Sequence
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from pathlib import Path
@@ -39,7 +39,9 @@ from earnings_bot.issuers import Issuers
 from earnings_bot.pipeline import (
     DiscordPoster,
     DurableDiscordPoster,
+    Poster,
     Releases,
+    fan_out,
     keep_warm,
 )
 from earnings_bot.publication_trials import TRIALS_FOLDER, TRIALS_STATE, load_plans, run_trials
@@ -98,6 +100,68 @@ def uses_chrome(target: Target) -> bool:
     return any(isinstance(source, (BrowserRelease, BrowserRss)) for source in target.sources())
 
 
+@dataclass(eq=False)
+class Server:
+    """A Discord server the bot posts to: its alert channel, the companies it tracks (its own
+    calendar), and their research and scorecards. The first server is the deployment's own: it
+    also gets the schedule files' releases and the bot's status."""
+
+    store: DeliveryStore  # this server's state, kept under its alert channel
+    channel: discord.abc.Messageable | None = None
+    guild_id: int | None = None
+    dates: DateDiscovery | None = None  # set by the watcher
+    progress: TrackProgress | None = None
+    calendar: Calendar = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.calendar = Calendar(self.store)
+
+    @property
+    def channel_id(self) -> int:
+        return self.store.channel_id
+
+
+class ServerDesk:
+    """What a command in one server works with: that server's tracked companies, research and
+    scorecards, and the schedule and journal every server shares."""
+
+    def __init__(self, watcher: "DirectoryWatcher", server: Server) -> None:
+        self.watcher = watcher
+        self.server = server
+        self.guild_id = server.guild_id
+
+    @property
+    def _own(self) -> bool:
+        """The deployment's own server, whose parts are the watcher's."""
+        return self.server is self.watcher.servers[0]
+
+    @property
+    def calendar(self) -> Calendar:
+        return self.watcher.calendar if self._own else self.server.calendar
+
+    @property
+    def dates(self) -> DateDiscovery:
+        dates = self.watcher.dates if self._own else self.server.dates
+        assert dates is not None
+        return dates
+
+    @property
+    def progress(self) -> TrackProgress | None:
+        return self.watcher.progress if self._own else self.server.progress
+
+    @property
+    def journal(self) -> Journal:
+        return self.watcher.journal
+
+    @property
+    def issuers(self) -> Issuers:
+        return self.watcher.issuers
+
+    @property
+    def planned(self) -> dict[str, Target]:
+        return self.watcher.planned
+
+
 class DirectoryWatcher:
     def __init__(
         self,
@@ -109,6 +173,7 @@ class DirectoryWatcher:
         status: Callable[[str], None],
         benchmark: EarningsBenchmark | None = None,
         fmp_api_key: str | None = None,
+        servers: Sequence[Server] = (),
     ) -> None:
         self.directory = directory
         self.fetcher = fetcher
@@ -117,24 +182,31 @@ class DirectoryWatcher:
         self.polls = Polls(fetcher, journal, self.sixk)
         self.releases = releases
         self.store = store
-        self.calendar = Calendar(store)
+        self.servers = list(servers) or [Server(store)]
+        if self.servers[0].store is not store:
+            raise ValueError("The first server's state is the watcher's own")
+        self.calendar = self.servers[0].calendar
         self.planned: dict[str, Target] = {}
         # Record-only publication trials (publication_trials.py), by plan ID
         self.trials: dict[str, asyncio.Task[None]] = {}
         self.trial_problems: set[str] = set()
         self.trial_db: sqlite3.Connection | None = None
-        self.dates = DateDiscovery(
-            self.calendar,
-            fetcher,
-            journal.now,
-            self.research_paused,
-            self._inline_status,
-            fmp_api_key,
-            sixk=self.sixk,
-            windows_open=self.busy,
-            chrome_live=self.chrome_live,
-            in_window=self.in_window,
-        )
+        for server in self.servers:
+            server.dates = DateDiscovery(
+                server.calendar,
+                fetcher,
+                journal.now,
+                self.research_paused,
+                self._inline_status,
+                fmp_api_key,
+                sixk=self.sixk,
+                windows_open=self.busy,
+                chrome_live=self.chrome_live,
+                in_window=self.in_window,
+            )
+        dates = self.servers[0].dates
+        assert dates is not None
+        self.dates = dates
         self.issuers = Issuers(fetcher)
         self.status = status
         self.benchmark = benchmark
@@ -160,6 +232,25 @@ class DirectoryWatcher:
         self.journal.say(message)
         if self.progress:
             self.progress.changed.set()
+
+    def server_for(self, guild_id: int | None) -> Server | None:
+        """The server a command came from, if the bot posts there."""
+        return next((s for s in self.servers if s.guild_id == guild_id), None)
+
+    def desk(self, guild_id: int | None) -> ServerDesk | None:
+        """What a command from this server works with, or None if the bot doesn't post there."""
+        server = self.server_for(guild_id)
+        if server is None and self.guild_id is not None and guild_id == self.guild_id:
+            server = self.servers[0]
+        return ServerDesk(self, server) if server else None
+
+    def subscribers(self, target: Target) -> list[Server]:
+        """The servers a release is posted to: every one tracking the company, or the
+        deployment's own for a release only its schedule files name."""
+        return [s for s in self.servers if s.calendar.contains(target.cik)] or self.servers[:1]
+
+    def tracks(self, cik: int) -> bool:
+        return any(server.calendar.contains(cik) for server in self.servers)
 
     def open_windows(self) -> Iterator[tuple[datetime, datetime]]:
         """The windows of the targets being watched, for keep_warm."""
@@ -228,7 +319,9 @@ class DirectoryWatcher:
             lines.append(f"🏁 {self.latest_benchmark}")
         return "\n".join(lines)
 
-    def health_embed(self, version: str, revision: str | None) -> discord.Embed:
+    def health_embed(
+        self, version: str, revision: str | None, server: Server | None = None
+    ) -> discord.Embed:
         """/status: whether monitoring is healthy. What's live, when the next watch starts, the
         scorecards' readiness, summaries and problems. The calendar itself is /upcoming."""
         now = self.journal.now()
@@ -247,8 +340,9 @@ class DirectoryWatcher:
             )
         else:
             lines.append("⏭️ No watch scheduled")
-        if self.progress:
-            dots = [self.progress.readiness(row.cik) for row in self.calendar.entries()]
+        server = server or self.servers[0]
+        if server.progress:
+            dots = [server.progress.readiness(row.cik) for row in server.calendar.entries()]
             counts = " · ".join(f"{dot} {dots.count(dot)}" for dot in dict.fromkeys(dots) if dot)
             lines.append(f"📋 {len(dots)} tracked: {counts}" if dots else "📋 Nothing tracked")
         lines.append(f"📝 Live summaries {'on' if self.summaries else 'off'}")
@@ -278,16 +372,16 @@ class DirectoryWatcher:
     def _learn_wire(self, target: Target, watches: list[Watch]) -> None:
         """Keep the wire a live release came out on, for a tracked company whose research
         couldn't find it."""
-        row = self.calendar.find(target.ticker)
-        if row is None or row.company.wire != "unknown":
-            return
         seen = sorted(
             (w for w in watches if w.first or w.caught_up),
             key=lambda w: w.first or datetime.max.replace(tzinfo=UTC),
         )
-        if found := wire_seen([w.source.name for w in seen]):
-            self.calendar.save_profile(row.cik, with_wire(row.company, found))
-            self.journal.say(f"{target.ticker}: its releases go out on {found}")
+        found = wire_seen([w.source.name for w in seen])
+        for server in self.servers:
+            row = server.calendar.find(target.ticker)
+            if found and row is not None and row.company.wire == "unknown":
+                server.calendar.save_profile(row.cik, with_wire(row.company, found))
+                self.journal.say(f"{target.ticker}: its releases go out on {found}")
 
     def _problem(self, name: str, message: str | None) -> None:
         previous = self.problems.get(name)
@@ -385,7 +479,8 @@ class DirectoryWatcher:
         targets = self._targets()
         if targets is None:
             return
-        targets = self.calendar.plan(targets)
+        for server in self.servers:
+            targets = server.calendar.plan(targets)
         self.planned = targets
         now = self.journal.now()
         for key, window in list(self.windows.items()):
@@ -409,7 +504,7 @@ class DirectoryWatcher:
                     self.follow_up
                     and now < followup_end(target, self.follow_up)
                     and token not in self.followed
-                    and self.calendar.delivered(key)
+                    and any(server.calendar.delivered(key) for server in self.subscribers(target))
                 ):
                     task = asyncio.create_task(self._resume_links(target))
                     self.windows[key] = _Window(target, task)
@@ -449,7 +544,7 @@ class DirectoryWatcher:
             await self.fetcher.close_browser()
 
     def _on_new(self, target: Target, source: Source, sighting: Sighting) -> None:
-        self.releases.on_new(target, source, sighting, measure=self.calendar.contains(target.cik))
+        self.releases.on_new(target, source, sighting, measure=self.tracks(target.cik))
 
     async def _resume_links(self, target: Target) -> None:
         watches = [
@@ -491,7 +586,9 @@ class DirectoryWatcher:
                 self.live_watches.pop(target.release_key, None)
             self._problem(problem, None)
             self.store.close_window(target.release_key, target.expected)
-            self.dates.changed.set()
+            for server in self.servers:
+                if server.dates:
+                    server.dates.changed.set()
             comparison = ""
             if benchmark is not None:
                 comparison = await self._compare(target, watches, benchmark)
@@ -504,11 +601,12 @@ class DirectoryWatcher:
                     self.followed.add((target.release_key, target.expected))
                     await self._follow_links(target, watches)
             await self.releases.finish_target(target)
-            if self.calendar.contains(target.cik):
-                self.calendar.clear_review(target.cik)
-                if self.progress:
-                    self.progress.next_attempt.pop(target.cik, None)
-                    self.progress.changed.set()
+            for server in self.servers:
+                if server.calendar.contains(target.cik):
+                    server.calendar.clear_review(target.cik)
+                    if server.progress:
+                        server.progress.next_attempt.pop(target.cik, None)
+                        server.progress.changed.set()
         except Exception as error:
             self.journal.write("error", ticker=target.ticker, message=repr(error))
             self._problem(problem, f"failed and will retry: {error!r}")
@@ -525,7 +623,7 @@ class DirectoryWatcher:
         except Exception as error:
             self.journal.write("benchmark_error", ticker=target.ticker, message=repr(error))
             result = BenchmarkResult("unavailable")
-        delivered = self.store.get(target.release_key)
+        delivered = self.subscribers(target)[0].store.get(target.release_key)
         alert = (
             discord.utils.snowflake_time(delivered.message_id)
             if delivered and delivered.message_id is not None
@@ -552,14 +650,15 @@ class DirectoryWatcher:
         return outcome
 
     async def run(self) -> None:
-        dates = asyncio.create_task(self.dates.run())
+        dates = [asyncio.create_task(s.dates.run()) for s in self.servers if s.dates]
         try:
             while True:
                 await self.scan()
                 await asyncio.sleep(SCAN_SECONDS)
         finally:
-            dates.cancel()
-            await asyncio.gather(dates, return_exceptions=True)
+            for task in dates:
+                task.cancel()
+            await asyncio.gather(*dates, return_exceptions=True)
             for trial in self.trials.values():
                 trial.cancel()
             await asyncio.gather(*self.trials.values(), return_exceptions=True)
@@ -571,6 +670,22 @@ class DirectoryWatcher:
                 *(window.task for window in self.windows.values()), return_exceptions=True
             )
             await self.releases.finish()
+
+
+def durable_posters(watcher: DirectoryWatcher, author_id: int) -> Callable[[Target], Poster]:
+    """Each release's poster: one durable alert in every server tracking the company, all sent
+    at once (FanOutPoster), or in the deployment's own for a schedule file's release."""
+
+    def poster(target: Target) -> Poster:
+        return fan_out(
+            [
+                DurableDiscordPoster(server.channel, server.store, target.release_key, author_id)
+                for server in watcher.subscribers(target)
+                if server.channel is not None
+            ]
+        )
+
+    return poster
 
 
 def _benchmark_report(result: BenchmarkResult, alert: datetime | None) -> str:
@@ -686,14 +801,38 @@ async def watch_directory(
     ping: Callable[[], Awaitable[object]] | None = None,
     *,
     driver_profiles: bool = False,
+    other_channels: Sequence[discord.TextChannel | discord.Thread] = (),
 ) -> None:
     progress_channel = status_channel or channel
     progress_id = getattr(progress_channel, "id", channel_id)
-    with (
-        DeliveryStore(directory / ".tracking-progress.sqlite3", progress_id) as progress_store,
-        (directory / "watch.jsonl").open("a", encoding="utf-8") as file,
-        DeliveryStore(directory / ".earnings-state.sqlite3", channel_id) as store,
-    ):
+    with contextlib.ExitStack() as stack:
+        progress_store = stack.enter_context(
+            DeliveryStore(directory / ".tracking-progress.sqlite3", progress_id)
+        )
+        file = stack.enter_context((directory / "watch.jsonl").open("a", encoding="utf-8"))
+        store = stack.enter_context(
+            DeliveryStore(directory / ".earnings-state.sqlite3", channel_id)
+        )
+        # Every other server keeps its own tracked companies, alerts and scorecards, under its
+        # alert channel in the same databases
+        servers = [Server(store, channel, getattr(getattr(channel, "guild", None), "id", None))]
+        server_progress: list[DeliveryStore] = [progress_store]
+        for other in other_channels:
+            other_id = other.id
+            servers.append(
+                Server(
+                    stack.enter_context(
+                        DeliveryStore(directory / ".earnings-state.sqlite3", other_id)
+                    ),
+                    other,
+                    other.guild.id,
+                )
+            )
+            server_progress.append(
+                stack.enter_context(
+                    DeliveryStore(directory / ".tracking-progress.sqlite3", other_id)
+                )
+            )
         journal = Journal(file)
         queue: asyncio.Queue[tuple[str, bool]] = asyncio.Queue()
 
@@ -720,15 +859,19 @@ async def watch_directory(
         priority = EditPriority()
 
         async def recover_pending() -> None:
-            for pending in store.pending():
-                poster = DurableDiscordPoster(channel, store, pending.key, author_id)
-                try:
-                    async with priority.release():
-                        await retry_delivery(partial(poster.send, pending.content))
-                except (aiohttp.ClientError, discord.HTTPException, TimeoutError) as error:
-                    status(f"⚠️ Pending alert {pending.key} needs attention: {error!r}")
-                else:
-                    status(f"✅ Recovered pending alert {pending.key}")
+            for server in servers:
+                assert server.channel is not None
+                for pending in server.store.pending():
+                    poster = DurableDiscordPoster(
+                        server.channel, server.store, pending.key, author_id
+                    )
+                    try:
+                        async with priority.release():
+                            await retry_delivery(partial(poster.send, pending.content))
+                    except (aiohttp.ClientError, discord.HTTPException, TimeoutError) as error:
+                        status(f"⚠️ Pending alert {pending.key} needs attention: {error!r}")
+                    else:
+                        status(f"✅ Recovered pending alert {pending.key}")
 
         async with Fetcher(sec_user_agent) as fetcher:
             releases = Releases(
@@ -736,14 +879,23 @@ async def watch_directory(
                 fetcher,
                 journal,
                 summarizer,
-                lambda target: DurableDiscordPoster(channel, store, target.release_key, author_id),
+                None,
                 priority=priority,
                 store=store,
             )
             benchmark = EarningsBenchmark(fetcher, journal.now)
             watcher = DirectoryWatcher(
-                directory, fetcher, journal, releases, store, status, benchmark, fmp_api_key
+                directory,
+                fetcher,
+                journal,
+                releases,
+                store,
+                status,
+                benchmark,
+                fmp_api_key,
+                servers=servers,
             )
+            releases.durable_poster = durable_posters(watcher, author_id)
             watcher.follow_up = FOLLOW_UP
             profiles = (
                 DriverProfiles(
@@ -762,35 +914,41 @@ async def watch_directory(
             watcher.summaries = summarizer is not None
             if isinstance(channel, discord.abc.GuildChannel | discord.Thread):
                 watcher.guild_id = channel.guild.id
-            watcher.progress = TrackProgress(
-                watcher.calendar,
-                progress_store,
-                progress_channel,
-                author_id,
-                lambda: watcher.planned,
-                journal.now,
-                watcher.busy,
-                partial(audit_sources, fetcher, directory, benchmark=benchmark, sixk=watcher.sixk),
-                date_phase=watcher.dates.phases.get,
-                research=watcher.dates.reports.get,
-                ir_note=watcher.dates.ir_notes.get,
-                cache_notes=watcher.dates.cache_notes.get,
-                cache_caveats=watcher.dates.cache_caveats.get,
-                priority=priority,
-                settled=watcher.dates.settled,
-                research_paused=lambda: watcher.research_paused() or watcher.chrome_live(),
-                in_window=watcher.in_window,
-                research_mode=watcher.research_mode,
-                research_deferred=fetcher.research_deferred,
-                profile_note=profiles.notes.get if profiles else None,
-            )
-            watcher.dates.on_progress = watcher.progress.changed.set
-            watcher.progress.follow_calendar()
+            for server, cards in zip(servers, server_progress, strict=True):
+                dates = server.dates
+                assert dates is not None
+                server.progress = TrackProgress(
+                    server.calendar,
+                    cards,
+                    progress_channel if server is servers[0] else server.channel or channel,
+                    author_id,
+                    lambda: watcher.planned,
+                    journal.now,
+                    watcher.busy,
+                    partial(
+                        audit_sources, fetcher, directory, benchmark=benchmark, sixk=watcher.sixk
+                    ),
+                    date_phase=dates.phases.get,
+                    research=dates.reports.get,
+                    ir_note=dates.ir_notes.get,
+                    cache_notes=dates.cache_notes.get,
+                    cache_caveats=dates.cache_caveats.get,
+                    priority=priority,
+                    settled=dates.settled,
+                    research_paused=lambda: watcher.research_paused() or watcher.chrome_live(),
+                    in_window=watcher.in_window,
+                    research_mode=watcher.research_mode,
+                    research_deferred=fetcher.research_deferred,
+                    profile_note=profiles.notes.get if profiles else None,
+                )
+                dates.on_progress = server.progress.changed.set
+                server.progress.follow_calendar()
+            watcher.progress = servers[0].progress
             ready(watcher)
             status(f"{STARTED} · {release_version()} · `{directory.name}/`", start=True)
             tasks = [
                 asyncio.create_task(recover_pending()),
-                asyncio.create_task(watcher.progress.run()),
+                *(asyncio.create_task(s.progress.run()) for s in servers if s.progress),
             ]
             if status_channel is not None:
                 tasks.append(asyncio.create_task(report(status_channel)))

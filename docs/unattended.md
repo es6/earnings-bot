@@ -142,6 +142,14 @@ for per-release schedule settings.
   `DISCORD_STATUS_CHANNEL_ID` to a channel in the same server for scorecards and
   window reports; it can be the alerts' own channel. With only the earnings channel
   configured, scorecards appear there and window reports remain in the journal.
+- Set `DISCORD_SERVER_CHANNEL_IDS` to other servers' alert channels, comma-separated,
+  to post in more than one server. Only the deployment's owner adds a server, here.
+  The bot registers its commands in each of them. Each server has its own `/track`
+  list, `/upcoming`, `/status` and scorecards (in its alert channel). A company several
+  servers track gets one window, one set of polls and one summary, and its alert goes
+  to each of them at once. A schedule file's release goes to the deployment's own
+  server unless another server tracks the company too. A command in a server that
+  isn't configured says so.
 - Changing `DISCORD_CHANNEL_ID` moves the calendar with it at the next start: the
   tracked companies, their research, the alerts and windows already done, and the
   scorecards' records, from the channel that tracked the most companies.

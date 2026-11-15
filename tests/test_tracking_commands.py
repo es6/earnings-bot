@@ -30,7 +30,12 @@ from earnings_bot.release_cards import release_content
 from earnings_bot.source_audit import Speed
 from earnings_bot.sources import PR_NEWSWIRE_EARNINGS, EdgarFilings
 from earnings_bot.track_progress import TrackProgress
-from earnings_bot.tracking_commands import OFFLINE, TrackingCommands, upcoming_embed
+from earnings_bot.tracking_commands import (
+    NOT_CONNECTED,
+    OFFLINE,
+    TrackingCommands,
+    upcoming_embed,
+)
 from earnings_bot.unattended import DirectoryWatcher, _Window
 from tests.burst_replay import LocalClock
 from tests.fakes import RoutedFetcher, embed_text
@@ -367,10 +372,11 @@ async def test_one_member_can_track_six_tickers_in_one_day(
 async def test_commands_from_another_server_or_with_the_watcher_off_answer_offline(
     watcher: DirectoryWatcher, commands: TrackingCommands
 ) -> None:
+    # A server the bot doesn't post to is told so
     other = GUILD + 1
-    assert await call(commands.track, "NVDA", guild=other) == OFFLINE
-    assert await call(commands.upcoming, guild=other) == OFFLINE
-    assert await call(commands.untrack, "NVDA", admin=True, guild=other) == OFFLINE
+    assert await call(commands.track, "NVDA", guild=other) == NOT_CONNECTED
+    assert await call(commands.upcoming, guild=other) == NOT_CONNECTED
+    assert await call(commands.untrack, "NVDA", admin=True, guild=other) == NOT_CONNECTED
     assert tracked(watcher) == []
 
     stopped = TrackingCommands(lambda: None)
