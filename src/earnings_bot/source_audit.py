@@ -61,7 +61,7 @@ def _timings(rows: object) -> list[Timing]:
 
 # The release history's version. 2 (v0.21.23) reads releases whose headlines don't say results
 # and GlobeNewswire's listings: WeRide's went from one release to four.
-HISTORY_VERSION = 3
+HISTORY_VERSION = 4
 
 
 @dataclass(frozen=True)
