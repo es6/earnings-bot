@@ -67,6 +67,92 @@ def test_a_comparative_table_without_column_periods_is_not_assigned_the_headline
     assert not report(document, amount="80").facts
 
 
+@pytest.mark.parametrize("comparison", ["up 28% from", "compared with", "versus"])
+def test_a_prior_year_comparison_does_not_relabel_the_current_amount(comparison: str) -> None:
+    document = document_from_text(
+        "Third quarter 2026 results\n"
+        f"Sales in the quarter were $8.9 billion, {comparison} the third quarter of 2025."
+    )
+    assert report(document, "Sales", amount="8.9", scale="billion").facts
+    for changes in (
+        {"period": "Q3 2025"},
+        {"period": "Q4 2026"},
+        {"duration": "year"},
+        {"currency": "EUR"},
+    ):
+        assert not report(document, "Sales", amount="8.9", scale="billion", **changes).facts
+
+
+def test_an_explicit_old_period_before_the_amount_is_never_replaced_by_the_release_year() -> None:
+    document = document_from_text(
+        "Third quarter 2026 results\n"
+        "Sales in the third quarter of 2025 were $8.9 billion, "
+        "up 28% from the third quarter of 2024."
+    )
+    assert not report(document, "Sales", amount="8.9", scale="billion").facts
+
+
+def test_a_comparator_without_a_numeric_year_cannot_be_called_the_current_amount() -> None:
+    document = document_from_text(
+        "Q3 2026 USD\nRevenue was $100 million compared with $80 million last year."
+    )
+    assert report(document, amount="100").facts
+    assert not report(document, amount="80").facts
+
+
+def test_a_new_metric_does_not_inherit_the_previous_metrics_year_ago_label() -> None:
+    document = document_from_text(
+        "Q3 2026 USD\nGAAP EPS was $0.40 compared to $0.51 a year ago, "
+        "and adjusted EPS was $0.73 for the period, compared to $0.75 a year ago."
+    )
+    assert report(
+        document, "Adjusted EPS", amount="0.73", scale="one", unit="per share", basis="adjusted"
+    ).facts
+    assert not report(
+        document, "Adjusted EPS", amount="0.75", scale="one", unit="per share", basis="adjusted"
+    ).facts
+
+
+def test_a_prior_year_amount_needs_its_own_source_period_and_never_borrows_the_current_amount() -> (
+    None
+):
+    document = document_from_text(
+        "Q3 2026 USD\nRevenue was $100 million compared with $80 million last year."
+    )
+    block = document.blocks[-1]
+    ref = {
+        "document_sha256": document.sha256,
+        "block_id": block.id,
+        "cell_ids": [],
+        "quote": block.text,
+    }
+    for amount, kept in [("80", True), ("100", False)]:
+        data = fact(
+            current_actual=value(evidence=[ref]),
+            prior_year_actual=value(
+                amount=amount,
+                period="Q3 2025",
+                basis="",
+                evidence=[ref],
+            ),
+        )
+        candidate = parse_referenced_brief(
+            json.dumps({"schema_version": "source-values/1", "facts": [data]}), document
+        )
+        bound = bind_brief(candidate, document)
+        assert bound.facts
+        assert (bound.facts[0].fact.prior_year_actual is not None) == kept
+    document = document_from_text(
+        "Q3 2026 USD\nRevenue rose from $80 million last year to $100 million."
+    )
+    assert report(document, amount="100").facts
+    assert not report(document, amount="80").facts
+    document = document_from_text(
+        "Sales in the quarter were $8.9 billion, up 28% from the third quarter of 2025."
+    )
+    assert not report(document, "Sales", amount="8.9", scale="billion").facts
+
+
 def test_split_accounting_signs_are_kept_and_cannot_turn_a_loss_positive() -> None:
     document = document_from_html("""<p>Q3 2026 USD millions</p><table>
     <tr><th>Metric</th><th colspan="4">Q3 2026</th></tr>
