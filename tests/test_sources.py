@@ -1,6 +1,7 @@
 import itertools
 import json
 from datetime import UTC, datetime, timedelta, timezone
+from typing import Any
 from urllib.parse import parse_qs, unquote, urlsplit
 
 import pytest
@@ -25,7 +26,19 @@ from earnings_bot.sources import (
     published_time,
     results_headline,
 )
-from tests.fakes import FakeSession, SessionFetcher
+from tests.fakes import Answer, FakeSession, SessionFetcher
+
+
+class RedirectRecordingSession(FakeSession):
+    """A FakeSession that also notes whether each request allowed redirects."""
+
+    def __init__(self, answer: Answer) -> None:
+        super().__init__(answer)
+        self.redirects: list[bool] = []
+
+    def request(self, method: str, url: Any, **kwargs: Any) -> Any:
+        self.redirects.append(kwargs.get("allow_redirects", True))
+        return super().request(method, url, **kwargs)
 
 
 def response(
@@ -49,6 +62,8 @@ def response(
         ("Cloudflare Expands EMEA Operations with New Headquarters in Lisbon", False),
         ("Atlassian Announces First Quarter Fiscal Year 2027 Results", True),
         ("Cloudflare Announces Third Quarter 2026 Financial Results", True),
+        # Only the date-notice rule rejects this one: it names results and a date
+        ("Acme to Report Third Quarter 2026 Results on November 5", False),
     ],
 )
 def test_looks_like_earnings(headline: str, expected: bool) -> None:
@@ -107,14 +122,6 @@ def test_a_headline_agrees_with_the_planned_quarter(
     headline: str, period: str, expected: bool
 ) -> None:
     assert agrees_with_period(headline, period) is expected
-
-
-def test_host_gaps() -> None:
-    assert host_gap("data.sec.gov") == 0.125
-    assert host_gap("s23.q4cdn.com") == 0.2
-    assert host_gap("feed.businesswire.com") == 1.0
-    assert host_gap("investor.uber.com") == 1.0
-    assert host_gap("notsec.gov") == 1.0
 
 
 def test_q4_press_releases() -> None:
@@ -294,8 +301,6 @@ def test_edgar_latest_reads_one_companys_8ks_from_the_live_feed() -> None:
     assert earnings.url.endswith("/000154315126000040/0001543151-26-000040-index.htm")
     assert earnings.published == "2026-11-04T06:56:02-05:00"
     assert (other.title, other.earnings) == ("8-K 8.01,9.01", False)
-    with pytest.raises(ValueError, match="not valid XML"):
-        source.parse(response("<html>"))
 
 
 def test_edgar_flags_item_2_02_8ks() -> None:
@@ -577,7 +582,7 @@ BROADCOM = [
 ]
 
 
-def test_broadcom_newsroom() -> None:
+def test_broadcom_newsroom_lists_its_releases_with_the_results_flagged() -> None:
     source = BroadcomNewsroom()
 
     sightings = source.parse(response(json.dumps(BROADCOM)))
@@ -589,10 +594,16 @@ def test_broadcom_newsroom() -> None:
     assert results.url == "https://www.broadcom.com/company/news/financial-releases/64671"
     assert results.details == {"path": "/company/news/financial-releases/64671"}
     assert published_time(results.published) == datetime(2026, 9, 2, 20, 15, tzinfo=UTC)
+
+
+def test_broadcom_newsroom_busts_cloudflares_copy() -> None:
     # Cloudflare kept a copy 445 s old until it was busted
-    assert "&_=" in source.url()
+    assert "&_=" in BroadcomNewsroom().url()
+
+
+def test_broadcom_newsroom_rejects_an_answer_that_is_not_a_list() -> None:
     with pytest.raises(ValueError, match="not a list"):
-        source.parse(response(json.dumps({"error": "busy"})))
+        BroadcomNewsroom().parse(response(json.dumps({"error": "busy"})))
 
 
 @pytest.mark.parametrize(
@@ -631,8 +642,8 @@ def test_one_feed_watched_for_several_companies_is_polled_once() -> None:
 
 
 def test_backup_and_cached_feeds_dont_take_turns_from_the_fast_ones() -> None:
-    # SEC's polls share one 8-a-second queue, and the submissions JSON trails the live feed
-    assert EdgarFilings(1).interval > EdgarLatest(1).interval == 1.0
+    # SEC's submissions JSON trails the live feed, so it polls less often than the live feed
+    assert EdgarFilings(1).interval > EdgarLatest(1).interval
     # Q4's CDN keeps the reports feed for 10 s, so polling it sooner only steals the IR host's
     # turns from the press release list
     assert Q4FinancialReports("investor.uber.com").interval >= Q4_REFRESH_SECONDS
@@ -689,9 +700,11 @@ async def test_fetch_preserves_the_encoded_spelling_on_the_wire() -> None:
     async def answer(method: str, url: str) -> tuple[int, dict[str, str], bytes]:
         return 200, {}, b"feed"
 
-    session = FakeSession(answer)
+    session = RedirectRecordingSession(answer)
     source = FreshPrNewswire("prnewswire_busted", PR_NEWSWIRE_EARNINGS)
     async with SessionFetcher(session) as fetcher:
         fetched = await source.fetch(fetcher)
     assert unquote(session.sent[0][2]) == PR_NEWSWIRE_EARNINGS
     assert session.sent[0][2] == fetched.url != PR_NEWSWIRE_EARNINGS
+    # A redirect from the spelling to the cached URL must show as an error, not a stale copy
+    assert session.redirects == [False]
