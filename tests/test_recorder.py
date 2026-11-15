@@ -6,11 +6,12 @@ import sys
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
 
-from earnings_bot import clock, fetch
+from earnings_bot import clock, fetch, recorder
 from earnings_bot.clock import Sample
 from earnings_bot.fetch import Fetcher, Response
 from earnings_bot.recorder import (
@@ -725,8 +726,25 @@ def test_new_wire_items_require_a_results_headline_for_the_scheduled_quarter() -
     assert [item.title for item in sightings if item.earnings] == articles[-2:]
 
 
-async def test_resume_enriches_from_a_verified_guessed_page_and_baselines_head_only_urls() -> None:
-    journal = Journal(io.StringIO())
+async def test_resume_enriches_from_a_verified_guessed_page_and_baselines_head_only_urls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = PinnedClock()
+    journal = Journal(io.StringIO(), clock)
+    slept = 0
+    polled = asyncio.Event()
+
+    async def finish_after_both_polls(delay: float) -> None:
+        nonlocal slept
+        slept += 1
+        if slept == 2:
+            clock.anchor += timedelta(hours=1)
+            polled.set()
+        await polled.wait()
+
+    monkeypatch.setattr(
+        recorder, "asyncio", SimpleNamespace(**(vars(asyncio) | {"sleep": finish_after_both_polls}))
+    )
     now = journal.now()
     target = Target(ticker="AAA", cik=7, expected=now, after_minutes=0, period="FY2026Q3")
     report = "https://example.com/third-quarter-2026"
@@ -748,10 +766,14 @@ async def test_resume_enriches_from_a_verified_guessed_page_and_baselines_head_o
         fetcher,
         journal,
         lambda _, __, item: sightings.append(item),
-        longest=timedelta(milliseconds=50),
+        longest=timedelta(minutes=1),
     )
 
     assert [item.url for item in sightings if item.earnings] == [report]
+    assert [(method, url.split("?", 1)[0]) for method, url, _ in fetcher.requests] == [
+        ("GET", report),
+        ("HEAD", file),
+    ]
 
 
 async def test_each_watch_reports_its_progress_for_the_watchdog(

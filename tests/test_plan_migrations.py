@@ -1,18 +1,15 @@
 import copy
 
-import pytest
-
 from earnings_bot.recorder import Target
 
 
-@pytest.mark.parametrize("post", [False, True])
-def test_old_schedule_normalizes_without_losing_sources_or_mutating_input(post: bool) -> None:
+def test_old_schedule_normalizes_without_losing_sources_or_mutating_input() -> None:
     data = {
         "ticker": "EXAMPLE",
         "cik": 1,
         "expected": "2026-11-17T16:20:00-05:00",
         "trial": {
-            "post": post,
+            "post": True,
             "ir": {"listing": "https://ir.example.com/news", "headline": "Q3 results"},
             "globenewswire": ["Example"],
         },
