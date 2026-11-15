@@ -59,6 +59,7 @@ from earnings_bot.known import (
 from earnings_bot.periods import title_period
 from earnings_bot.quarterly_table import quarter_pdf
 from earnings_bot.recorder import ET, PollError, Target, poll
+from earnings_bot.release_band import OPEN_AFTER, OPEN_BEFORE, release_times
 from earnings_bot.sec_results import SixKResults, SixKUnavailable
 from earnings_bot.source_audit import Speed, published_first
 from earnings_bot.sources import BroadcomNewsroom, Q4PressReleases, RssFeed, is_date_notice
@@ -525,6 +526,27 @@ def timed_by_publishers(company: KnownCompany, review: str | None) -> KnownCompa
     local = first.astimezone(ET)
     release = f"{local.hour:02d}:{local.minute - local.minute % 5:02d}"
     return company.model_copy(update={"release_time": release, "release_published": True})
+
+
+def covering_release_times(target: Target, review: str | None) -> Target:
+    """The target with the other times its company's recent releases came out at (Speed.history,
+    release_band.release_times), its window widened to open OPEN_BEFORE the earliest and close
+    OPEN_AFTER the latest. Construction Partners released at 7:00 or 7:30 AM; WeRide anywhere
+    from 4:00 to 7:10 AM."""
+    speed = Speed.from_json(review)
+    times = release_times(speed.history or [] if speed else [], target.expected)
+    minute = timedelta(minutes=1)
+    return target.model_copy(
+        update={
+            "release_times": [moment for moment in times if moment != target.expected],
+            "before_minutes": max(
+                target.before_minutes, (target.expected - times[0] + OPEN_BEFORE) / minute
+            ),
+            "after_minutes": max(
+                target.after_minutes, (times[-1] - target.expected + OPEN_AFTER) / minute
+            ),
+        }
+    )
 
 
 def _weekday_before(day: date) -> date:
@@ -1281,6 +1303,8 @@ class DateDiscovery:
             )
         if row.company.sec_form == "6-K" and target.sec_form != "6-K":
             target = target.model_copy(update={"sec_form": "6-K"})
+        if evidence != MANUAL:
+            target = covering_release_times(target, review)
         # Publish the prepared plan together when there is time. Leave several seconds
         # for the schedule scan and use the available sources if the window is imminent.
         remaining = (target.window[0] - self.now()).total_seconds() - 5

@@ -95,12 +95,15 @@ hour old (error 30046) much harder. Release alerts go first:
    a time outside release windows and refresh after a monitored release.
 4. **Prepare and watch.** The watcher picks up a confirmed window within a few
    seconds. A matching TOML entry supplies its source settings and release key.
-   The configured sources race in parallel. The company's own IR routes are polled every
-   15 seconds until a minute before its usual release time, then at full speed; SEC and
-   newswire feeds keep their speed throughout. The usual time is the earliest of the
-   tightest span holding six of its last eight results 8-Ks (SEC acceptance time, in the
-   same half of the day), or the expected time if earlier. A 6-K filer, a history spread
-   over more than 30 minutes, or a failed lookup keeps every route at full speed.
+   The configured sources race in parallel. Every route but SEC's polls by the release's
+   times: the expected time and the times of day its last four quarterly releases came out
+   at, in the same part of the trading day (the window opens at least 15 minutes before
+   the earliest and closes at least 30 minutes after the latest). A route polls every
+   15 seconds far from those times, every 5 seconds from 5 minutes before one, at full
+   speed from 2 minutes before it to 10 minutes after, and every 5 seconds after the last
+   one. A shared wire feed polls as often as its busiest window needs. SEC keeps its speed
+   throughout: its limit is ten requests a second, and it's the fallback when an IR site
+   refuses us.
    The first verified release sighting
    starts the Discord post, which is edited as links, files and any summary arrive.
    Release posts have a green earnings card, separate from research scorecards.

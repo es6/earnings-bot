@@ -16,6 +16,7 @@ from earnings_bot.date_discovery import (
     FMP_EARNINGS,
     DateDiscovery,
     calendar_date,
+    covering_release_times,
     event_target,
     find_date,
     parse_notice,
@@ -747,6 +748,66 @@ def test_a_window_is_placed_by_recent_quarterly_releases_not_a_preliminary_one()
     assert result[0].window[0] == datetime(2026, 11, 19, 6, tzinfo=ET)
     # Without a history, the last release still places it
     assert timed_by_publishers(road, last.to_json()).release_time == "08:30"
+
+
+def test_a_window_covers_each_recent_release_time() -> None:
+    """WeRide released at 4:00, 7:10, 5:40 and 7:00 AM ET in its last four quarters."""
+    expected = datetime(2026, 11, 20, 7, tzinfo=ET)
+    target = Target(
+        ticker="WRD", cik=1867729, expected=expected, before_minutes=60, after_minutes=155
+    )
+    history = [
+        datetime(2026, 8, 12, 7, 0, 18, tzinfo=ET),
+        datetime(2026, 5, 13, 5, 40, tzinfo=ET),
+        datetime(2026, 3, 23, 7, 10, tzinfo=ET),
+        datetime(2025, 11, 24, 4, 0, tzinfo=ET),
+    ]
+    review = Speed(None, form="6-K", history=history).to_json()
+
+    covered = covering_release_times(target, review)
+
+    assert covered.release_times == [
+        expected.replace(hour=h, minute=m) for h, m in ((4, 0), (5, 40), (7, 10))
+    ]
+    assert covered.window == (
+        expected.replace(hour=3, minute=45),
+        expected + timedelta(minutes=155),
+    )
+    # Without a history, only the expected time
+    bare = covering_release_times(target, None)
+    assert (bare.release_times, bare.window) == ([], target.window)
+
+
+async def test_a_tracked_window_is_widened_by_the_saved_release_history(tmp_path: Path) -> None:
+    now = datetime(2026, 11, 14, 21, tzinfo=ET)
+    company = AMAT.model_copy(
+        update={
+            "checks": [SourceCheck(source="SEC 8-K filings", watch=True, why="Filed here")],
+            "investigation": INVESTIGATION,
+            "investigated": now.date(),
+            "sec_form": "8-K",
+        }
+    )
+    expected = datetime(2026, 11, 19, 7, tzinfo=ET)
+    saved = to_target("ROAD", expected, 2026, 4, company)
+    saved.before_minutes, saved.after_minutes = 60, 195
+    history = [datetime(2026, 8, 7, 7, tzinfo=ET), datetime(2026, 2, 5, 7, 30, tzinfo=ET)]
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        calendar = Calendar(store)
+        calendar.add("ROAD", company)
+        calendar.set_target(saved, "Issuer's earnings event")
+        calendar.save_review(company.cik, now, Speed(None, history=history).to_json())
+        [row] = calendar.entries()
+        dates = DateDiscovery(calendar, RoutedFetcher({}), lambda: now, lambda: False, print)
+        await dates._check(row)
+        [row] = calendar.entries()
+
+    assert row.target is not None
+    assert row.target.release_times == [expected.replace(minute=30)]
+    assert row.target.window == (
+        expected - timedelta(minutes=60),
+        expected + timedelta(minutes=195),
+    )
 
 
 def test_the_first_plan_uses_the_verified_article_time_before_the_audit() -> None:
