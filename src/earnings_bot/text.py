@@ -503,6 +503,10 @@ async def release_document(
             html = await _edgar_exhibit(fetcher, sighting) if sighting.earnings else None
         elif isinstance(source, GuessedFile | RssFeed):
             url = urlsplit(sighting.url)
+            from earnings_bot.wire_mirror import identity, recover
+
+            if isinstance(source, RssFeed) and identity(sighting.url):
+                return await recover(fetcher, sighting)
             if isinstance(source, RssFeed) and (article := globe_article_url(sighting.url)):
                 # The publisher's feed hostname serves the same article. Keep the original
                 # URL for Discord and skip the main hostname's 403 on the body request.
