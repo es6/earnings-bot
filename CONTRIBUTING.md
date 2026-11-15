@@ -36,3 +36,17 @@ Record evidence and unresolved freshness questions using its case template.
 
 Never commit a Discord token or any other credential. `.env` is gitignored for this reason.
 If you leak a token by accident, reset it in the Discord Developer Portal right away.
+
+## Release versions
+
+Run one version bump for each PR that changes what gets deployed. `uv version` updates both
+`pyproject.toml` and `uv.lock` so the package, Discord and CLI use the same version.
+
+| Change | Command | Example |
+| --- | --- | --- |
+| Breaking change | `uv version --bump major` | `0.2.1` → `1.0.0` |
+| New feature or major bug fix | `uv version --bump minor` | `0.2.1` → `0.3.0` |
+| Routine fix, maintenance, or dependency update | `uv version --bump patch` | `0.2.1` → `0.2.2` |
+
+CI checks the bump against the PR's base. If another release lands first, update from `main` and
+pick the next version. Docs and tests can change on their own without a version bump.

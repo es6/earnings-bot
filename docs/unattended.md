@@ -170,7 +170,7 @@ for per-release schedule settings.
   in the schedule directory. These hold calendar and delivery state, scorecard
   delivery state, and timing history respectively. Keep any optional TOML
   schedules there as well.
-- On Windows, `scripts/install-tasks.ps1` [registers the scheduled tasks](../README.md#run-continuously-on-windows)
+- On Windows, `scripts/install-tasks.ps1` [registers the scheduled tasks](#run-continuously-on-windows)
   that run the supervisors. They start at logon and every 5 minutes, without a window.
   `scripts/run-bot.ps1` restarts the bot after an exit
   and writes console logs to `recordings/`. `scripts/update-bot.ps1` moves the
@@ -203,3 +203,80 @@ database is busy, is logged and the next one runs 30 seconds later. On Windows,
 Watchdog", at logon), restarts it after any exit, and writes `recordings/watchdog-<date>.log`.
 `scripts/update-bot.ps1` restarts that task after it restarts the bot, so the watchdog
 always runs the same code.
+
+## Run continuously on Windows
+
+Run `uv run earnings-bot schedules` to watch every TOML in the directory. Edits and new files
+are picked up within a few seconds. A malformed edit keeps the last valid version active.
+Use `/status` (formerly `/watch_status`, which still works) for health: the running release
+version and Git build, the last schedule scan, the next watch start, how many scorecards are
+ready, whether live summaries are on, and problems. The release version also appears on scorecards, at startup, and in
+`uv run earnings-bot --version`. Set `DISCORD_STATUS_CHANNEL_ID` to receive window reports in
+a channel, which can be the alerts' own. Reports are also written to `schedules/watch.jsonl`.
+
+Window reports use **@earnings_guy** as the main external speed benchmark. The runner
+checks a shared public RSS timeline during release windows and verifies candidate results
+posts through X's public embed service. It compares the X post's creation time with the
+actual Discord alert time. The most recent comparison is in `/status`. The journal
+records the X link, first sighting and when usable release text arrived. The status distinguishes
+an unmatched post from an unavailable lookup or an unverified candidate. Benchmark requests
+run alongside the release watchers.
+
+Give the bot **Read Message History** in the earnings and status channels. Keep
+`schedules/.earnings-state.sqlite3` and `schedules/.tracking-progress.sqlite3` with the
+schedules so a restart resumes alerts and scorecards. New TOML entries should specify
+`period = "FY2027Q3"` (using
+the issuer's fiscal year and quarter) so moving a window to another day keeps the same
+identity. Older entries use the issuer's CIK and Eastern release date.
+
+To run the bot and its watchdog from Task Scheduler, run `.\scripts\install-tasks.ps1` as the
+Windows user that owns the checkout, its `.env` and `uv`. Add `-WhatIf` to see what it would
+register. It registers two tasks:
+
+- **"Earnings Bot"** runs `scripts/run-bot.ps1`.
+- **"Earnings Bot Watchdog"** runs `scripts/run-watchdog.ps1`.
+
+Each task:
+
+- runs only while that user is signed in, which Chrome needs;
+- starts at logon and again every 5 minutes. A copy that's already running ignores the extra
+  start, since each script holds a lock;
+- runs without a window, through `conhost.exe --headless`.
+
+The repeating start covers a logon that starts nothing: on Nov 13, 2026, the logon after a
+restart left the bot down for 13 hours. The hidden window means a Windows Terminal tab can't be
+closed by mistake, which stopped the bot twice on Nov 9.
+
+The script refuses to change the tasks while a release window is open. A bot already running
+keeps its old task definition until `.\scripts\update-bot.ps1 -Restart`. The scripts restart a
+bot or watchdog that exits, and write their console output to `recordings/`.
+
+To put the latest `main` on the running bot, run `.\scripts\update-bot.ps1`. It refuses if
+the checkout isn't a clean `main`, or if a release window is open, or opens within 5 minutes,
+with its alert not posted yet. Otherwise it stops the bot, fast-forwards to `main`, starts the
+scheduled task again, waits until the bot says monitoring has started, then restarts the
+watchdog task so it runs the new code too. Add `-Wait` to
+restart as soon as the window allows, `-Restart` to restart with nothing new, or `-Force` to
+restart during a window.
+
+[Chrome IR sources](browser-ir.md) can be prepared by the planner or configured per release.
+They record timing by default. Chrome needs the signed-in session the tasks above run in.
+Other sources keep running if Chrome cannot start.
+
+## Latency recorder
+
+To measure which source shows a release first, the recorder polls every source around a
+scheduled release and logs when each one first lists it:
+
+```bash
+uv run earnings-bot-record schedules/2026-11-02.toml
+```
+
+The plan file lists each release's expected time (US Eastern) and where to look. The recorder
+waits for each window, prints new items as they appear, and prints a summary table when the window
+closes. Every event is appended to a JSON Lines log next to the plan (`schedules/*.jsonl`, not
+committed). It needs `SEC_USER_AGENT` in `.env`.
+
+Times don't come from your computer's clock, which can be seconds off. The recorder asks NTP time
+servers (Cloudflare, Google and NIST) when it starts, when each window opens and every five
+minutes during a window, and counts forward from their answer in between.
