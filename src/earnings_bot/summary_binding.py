@@ -1245,6 +1245,30 @@ def _prose_cells(ref: EvidenceRef, table: SourceTable) -> list[EvidenceRef]:
     ]
 
 
+# Measures that count people or things. Duolingo's daily active users and paid subscribers
+# were once claimed in USD; a measure of money about them ("revenue per user", "customer
+# deposits", Interactive Brokers' "customer credits", "Dasher pay") names its money and stays
+# money
+_COUNTED = re.compile(
+    r"\b(?:users?|DAUs?|MAUs?|WAUs?|subscribers?|members?|customers?|accounts?|employees?|"
+    r"headcount|vehicles?|deliveries|stores?|restaurants?|locations?|households?|merchants?|"
+    r"dashers?|drivers?|couriers?|riders?|guests?|visitors?|downloads?|installs?)\b",
+    re.IGNORECASE,
+)
+_MONEY_MEASURE = re.compile(
+    r"\b(?:per|average|ARPU|ARPA|ARPPU|revenues?|sales|income|earnings|spend(?:ing)?|value|"
+    r"costs?|prices?|fees?|bookings|margins?|cash|deposits?|assets|balances?|loans?|GMV|GOV|"
+    r"TPV|volumes?|payments?|profits?|EBITDA|dividends?|equity|debt|capital|ARR|RPO|"
+    r"billings?|orders?|backlog|expenses?|LTV|pay|wages|compensation|tips|credits?|funds?|"
+    r"reserves?|AUM|claims)\b",
+    re.IGNORECASE,
+)
+
+
+def _counted(metric: str) -> bool:
+    return bool(_COUNTED.search(metric)) and not _MONEY_MEASURE.search(metric)
+
+
 def _bind(facts: list[ReferencedFact], document: SourceDocument) -> BindingReport:
     accepted = []
     rejected = []
@@ -1260,6 +1284,11 @@ def _bind(facts: list[ReferencedFact], document: SourceDocument) -> BindingRepor
             if claimed is None:
                 continue
             value = _normal(claimed)
+            if unit_kind(value.unit) == "money" and _counted(fact.metric):
+                # Wherever its number appears, a count of people or things isn't money
+                rejected.append(Rejection(fact.metric, field, ("a count is claimed as money",)))
+                changes[field] = None
+                continue
             failures: list[str] = []
             bound: SourcedValue | None = None
             resolvable = [ref for ref in value.evidence if not _reference_issues(ref, document)]
