@@ -202,6 +202,7 @@ class Fetcher:
     """Use as `async with Fetcher(...) as fetcher:` so the connection pool gets closed."""
 
     def __init__(self, sec_user_agent: str, timeout: float = 10.0) -> None:
+        self._created_at = time.monotonic()
         self._sec_user_agent = sec_user_agent
         self._timeout = aiohttp.ClientTimeout(total=timeout)
         self._session: aiohttp.ClientSession | None = None
@@ -219,7 +220,13 @@ class Fetcher:
         """The pause shared by every loop that polls `route`, such as an IR listing's URL."""
         return self._route_pauses.setdefault(route, RoutePause())
 
+    @property
+    def client_age(self) -> float:
+        """Age of this HTTP client's connection pool, not any one TCP connection."""
+        return max(0, time.monotonic() - self._created_at)
+
     async def __aenter__(self) -> Self:
+        self._created_at = time.monotonic()
         self._session = aiohttp.ClientSession(
             timeout=self._timeout,
             max_line_size=MAX_HEADER_BYTES,

@@ -58,7 +58,7 @@ async def test_a_companys_releases_come_from_its_own_organization_page() -> None
     )
     fetcher = RoutedFetcher(
         {
-            "/en/search/keyword/WeRide%20Inc?": (200, search),  # no period, which finds nothing
+            "/en/search/keyword/WeRide?": (200, search),
             "WeRide%2520Inc%C2%A7?page=1": (200, first),
             "WeRide%2520Inc%C2%A7?page=2": (200, second),
         }
@@ -79,9 +79,31 @@ async def test_another_company_with_a_similar_name_isnt_taken_for_it() -> None:
     )
     fetcher = RoutedFetcher(
         {
-            "/en/search/keyword/BROOKFIELD%20Corp?": (200, search),
+            "/en/search/keyword/BROOKFIELD?": (200, search),
             "Brookfield%2520Asset%2520Management%C2%A7": (200, search),
         }
     )
 
     assert await past_releases(fetcher, "BROOKFIELD Corp /ON/") == []
+
+
+async def test_sec_legal_suffix_does_not_hide_an_exact_publisher() -> None:
+    organization = "/en/search/organization/NVIDIA&#167;"
+    page = listing(
+        row(
+            "August 26, 2026 16:20",
+            "NVIDIA",
+            "2026/08/26/3351702",
+            "NVIDIA Announces Financial Results for Second Quarter Fiscal 2027",
+            organization,
+        )
+    )
+    fetcher = RoutedFetcher(
+        {
+            "/en/search/keyword/NVIDIA?": (200, page),
+            "organization/NVIDIA%C2%A7?page=1": (200, page),
+        }
+    )
+    [item] = await past_releases(fetcher, "NVIDIA CORP")
+    assert item.key == "3351702"
+    assert len(fetcher.requests) == 3  # one search and two bounded archive pages
