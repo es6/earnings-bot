@@ -27,9 +27,10 @@ from earnings_bot.track_test import (
     run_track_test,
     save,
 )
-from earnings_bot.unattended import DirectoryWatcher
+from earnings_bot.unattended import DirectoryWatcher, ServerDesk
 
 OFFLINE = "⚠️ The earnings calendar is available when the directory watcher is running."
+NOT_CONNECTED = "⚠️ This server isn't set up for earnings alerts."
 # A debug run stops in time to reply: Discord takes follow-ups for 15 minutes
 TEST_SECONDS = 600
 SCHEDULED = "📄"  # from a schedule file, not tracked with a scorecard
@@ -41,7 +42,7 @@ LEGEND = (
 EMBED_LIMIT = 6000  # Discord's limit for one embed's text
 
 
-def upcoming_embed(watcher: DirectoryWatcher) -> discord.Embed:
+def upcoming_embed(watcher: DirectoryWatcher | ServerDesk) -> discord.Embed:
     """The week's releases as a compact calendar: one line each, grouped by day and market
     session, with the scorecard's readiness. What needs attention comes first; details stay on
     each ticker's scorecard."""
@@ -137,11 +138,16 @@ class TrackingCommands:
             )
         )
 
-    def _watcher(self, interaction: discord.Interaction) -> DirectoryWatcher | None:
+    def _watcher(self, interaction: discord.Interaction) -> ServerDesk | None:
+        """The tracked companies, research and scorecards of the server the command came
+        from. Each server the bot posts to keeps its own."""
         watcher = self.get_watcher()
-        if watcher and watcher.guild_id == interaction.guild_id:
-            return watcher
-        return None
+        return watcher.desk(interaction.guild_id) if watcher else None
+
+    def _unavailable(self) -> str:
+        """Why a command found no list: the watcher isn't running, or this server isn't one
+        the bot posts to."""
+        return NOT_CONNECTED if self.get_watcher() else OFFLINE
 
     @app_commands.guild_only()
     @app_commands.describe(
@@ -177,7 +183,9 @@ class TrackingCommands:
         if watcher is None:
             return OFFLINE
         # Manage Server counts in the bot's own server; the owner counts in any server
-        admin = watcher.guild_id == interaction.guild_id and interaction.permissions.manage_guild
+        admin = (
+            watcher.desk(interaction.guild_id) is not None and interaction.permissions.manage_guild
+        )
         if not admin and not await is_owner(interaction.client, interaction.user):
             return "⚠️ Debug mode is for members with Manage Server and the bot's owner."
         if watcher.research_paused():
@@ -213,7 +221,7 @@ class TrackingCommands:
     ) -> str:
         watcher = self._watcher(interaction)
         if watcher is None:
-            return OFFLINE
+            return self._unavailable()
         now = watcher.journal.now()
         try:
             if when is not None or period is not None:
@@ -263,7 +271,7 @@ class TrackingCommands:
     async def upcoming(self, interaction: discord.Interaction) -> None:
         watcher = self._watcher(interaction)
         if watcher is None:
-            await interaction.response.send_message(OFFLINE, ephemeral=True)
+            await interaction.response.send_message(self._unavailable(), ephemeral=True)
             return
         embed = upcoming_embed(watcher)
         await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -289,7 +297,7 @@ class TrackingCommands:
                 else f"**{ticker}** wasn't on the calendar."
             )
         except LookupError:
-            message = OFFLINE
+            message = self._unavailable()
         except ValueError as error:
             message = f"⚠️ {error}"
         await interaction.response.send_message(message, ephemeral=True)

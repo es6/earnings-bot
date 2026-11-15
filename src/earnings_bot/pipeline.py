@@ -9,7 +9,7 @@ import re
 import secrets
 import time
 from abc import ABC, abstractmethod
-from collections.abc import Awaitable, Callable, Coroutine, Iterable
+from collections.abc import Awaitable, Callable, Coroutine, Iterable, Sequence
 from dataclasses import replace
 from datetime import datetime, timedelta
 from functools import partial
@@ -325,6 +325,51 @@ class DurableDiscordPoster(DiscordPoster):
             release_content(self._sent()),
             retry_after_replacement=True,
         )
+
+
+class FanOutPoster(Poster):
+    """One release posted to every server that tracks the company: each step goes to every
+    channel at once, so no server's alert waits on another's. The first poster's channel is the
+    one whose times the journal records. A step one channel refuses is raised after the others
+    have had theirs; trying it again is safe, since each durable poster keeps its own message."""
+
+    def __init__(self, posters: Sequence[Poster]) -> None:
+        if not posters:
+            raise ValueError("A release needs somewhere to post")
+        self.posters = list(posters)
+
+    async def _each(
+        self, step: Callable[[Poster], Coroutine[Any, Any, datetime | None]]
+    ) -> datetime | None:
+        for poster in self.posters:
+            poster.first_seen = self.first_seen
+        results = await asyncio.gather(
+            *(step(poster) for poster in self.posters), return_exceptions=True
+        )
+        # Resumed only when every server's alert was already up
+        self.resumed = all(poster.resumed for poster in self.posters)
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
+        first = results[0]
+        return first if isinstance(first, datetime) else None
+
+    async def send(self, content: str) -> datetime | None:
+        return await self._each(lambda poster: poster.send(content))
+
+    async def edit(self, content: str) -> datetime | None:
+        return await self._each(lambda poster: poster.edit(content))
+
+    async def attach(self, name: str, data: bytes) -> datetime | None:
+        return await self._each(lambda poster: poster.attach(name, data))
+
+    async def set_summary(self, text: str, footer: str) -> datetime | None:
+        return await self._each(lambda poster: poster.set_summary(text, footer))
+
+
+def fan_out(posters: Sequence[Poster]) -> Poster:
+    """One server's poster as it is; several behind a FanOutPoster."""
+    return posters[0] if len(posters) == 1 else FanOutPoster(posters)
 
 
 def describe_source(source: Source) -> str:
