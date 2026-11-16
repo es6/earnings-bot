@@ -1,6 +1,7 @@
 """Writing an earnings brief: Muse Ember selects structured facts, code checks each one against
 the release and lays out the ones it confirms."""
 
+import asyncio
 import hashlib
 import json
 from dataclasses import dataclass, fields
@@ -16,6 +17,7 @@ from earnings_bot.summary_format import discord_brief
 from earnings_bot.summary_policy import EMBER, SummaryFact
 from earnings_bot.summary_request import referenced_request, structured_request
 from earnings_bot.summary_validation import validate_facts
+from earnings_bot.summary_verify import verify_facts
 
 MODEL = EMBER.model
 EFFORT = EMBER.effort
@@ -47,6 +49,7 @@ def summarizer_from(settings: Settings) -> "Summarizer | None":
     return Summarizer(
         settings.meta_model_api_key.get_secret_value(),
         references=settings.source_referenced_summaries,
+        verified=settings.verified_summaries,
     )
 
 
@@ -60,8 +63,19 @@ def _fact(line: dict[str, Any]) -> SummaryFact:
 
 
 class Summarizer:
-    def __init__(self, api_key: str, base_url: str = META_API, *, references: bool = False) -> None:
+    references = False
+    verified = False
+
+    def __init__(
+        self,
+        api_key: str,
+        base_url: str = META_API,
+        *,
+        references: bool = False,
+        verified: bool = False,
+    ) -> None:
         self.references = references
+        self.verified = verified
         # One retry at most: a later source's text can start its own attempt
         self.client = anthropic.AsyncAnthropic(
             api_key=api_key,
@@ -81,6 +95,9 @@ class Summarizer:
         """Reference binding is separately opt-in; default requests remain unchanged."""
         if self.references:
             return await self._write_referenced(ticker, document, seconds, context)
+        if self.verified:
+            # The release as read, tables included, is what the facts are checked against
+            return await self._write_facts(ticker, document.text, seconds, context, document)
         return (
             await self.write(ticker, document.text, seconds, context=context)
             if context
@@ -101,6 +118,16 @@ class Summarizer:
             except ValueError as error:
                 raise SummaryError(str(error)) from error
             return await self._write_referenced(ticker, document, seconds, context)
+        return await self._write_facts(ticker, release, seconds, context, None)
+
+    async def _write_facts(
+        self,
+        ticker: str,
+        release: str,
+        seconds: float,
+        context: dict[str, Any] | None,
+        document: SourceDocument | None,
+    ) -> Summary:
         # No consensus estimates: the tested setting had none, and the brief never calls a beat
         # or miss without a matching estimate
         try:
@@ -121,6 +148,19 @@ class Summarizer:
             raise SummaryError(
                 f"none of {WRITER}'s {len(facts)} facts could be confirmed in the release"
             )
+        if self.verified:
+            try:
+                source = document or document_from_text(release)
+            except ValueError as error:
+                raise SummaryError(str(error)) from error
+            # Up to about a second of parsing on a large release (measured 0.26 s median):
+            # off the event loop, which also carries other releases' alerts
+            accepted, dropped = await asyncio.to_thread(verify_facts, accepted, source)
+            rejected = [*rejected, *dropped]
+            if not accepted:
+                raise SummaryError(
+                    f"the release confirmed none of {WRITER}'s facts' measure, period and basis"
+                )
         return Summary(
             text=discord_brief(accepted),
             unverified=rejected,

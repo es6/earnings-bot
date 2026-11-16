@@ -275,7 +275,22 @@ class _Terms:
 _NO_TERMS = _Terms()
 
 
+_TERMS: dict[str, _Terms] = {}
+
+
 def _terms(document: SourceDocument) -> _Terms:
+    """Read once per release version: a live summary binds each fact against the same one."""
+    # Summaries run on worker threads: read the cache once, never after another may clear it
+    terms = _TERMS.get(document.sha256)
+    if terms is None:
+        terms = _read_terms(document)
+        if len(_TERMS) > 16:
+            _TERMS.clear()
+        _TERMS[document.sha256] = terms
+    return terms
+
+
+def _read_terms(document: SourceDocument) -> _Terms:
     acronyms: dict[str, str] = {}
     for match in _DEFINED.finditer(document.text):
         names = match[1].split()

@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     live_driver_profiles: bool = False
     # Separately opt in to the experimental source-reference writer; never automatic.
     source_referenced_summaries: bool = False
+    # Check each live summary fact against the release before it is shown, and drop what the
+    # release doesn't confirm (summary_verify). Local, with no extra model call.
+    verified_summaries: bool = False
     meta_model_api_key: SecretStr | None = None
     fmp_api_key: SecretStr | None = None  # earnings-calendar lookups
 
