@@ -1336,3 +1336,164 @@ def test_a_prior_column_is_never_new_guidance() -> None:
         value_qualifier="approximately",
         **year,
     )
+
+
+# Headline facts in tables and segment sections (Nov 16)
+SEGMENT_TABLE = (
+    "<p>JPMorganChase reports third-quarter 2026 results</p><p>NYSE symbol: JPM</p>"
+    "<p>Commercial & Investment Bank (CIB) results follow.</p>"
+    "<table><tr><td>Results for CIB</td><td>2Q26</td><td>3Q25</td></tr>"
+    "<tr><td>($ millions)</td><td>3Q26</td><td>2Q26</td><td>3Q25</td></tr>"
+    "<tr><td>Net revenue</td><td>22,734</td><td>24,853</td><td>19,878</td></tr></table>"
+    "<table><tr><td>Results for JPM</td><td>2Q26</td><td>3Q25</td></tr>"
+    "<tr><td>($ millions, except per share data)</td><td>3Q26</td><td>2Q26</td><td>3Q25</td></tr>"
+    "<tr><td>Net income</td><td>15,276</td><td>14,987</td><td>14,393</td></tr></table>"
+)
+
+
+def table_cell(document: SourceDocument, text: str, metric: str, group: str = "", **changes: Any):
+    table = next(t for t in document.tables if any(c.text == text for c in t.cells))
+    cell = next(c for c in table.cells if c.text == text)
+    ref = {
+        "document_sha256": document.sha256,
+        "block_id": table.id,
+        "cell_ids": [cell.id],
+        "quote": text,
+    }
+    data = fact(metric=metric, group=group, current_actual=value(**({"evidence": [ref]} | changes)))
+    report = bind_answer(
+        json.dumps({"schema_version": "source-values/1", "facts": [data]}), document
+    )
+    return report.facts[0].fact if report.facts else None
+
+
+def test_a_section_titled_by_a_table_names_its_rows() -> None:
+    """JPM's "Results for CIB | 2Q26 | 3Q25" titles a segment table; "Results for JPM" is the
+    whole company, its ticker given only as "NYSE symbol: JPM"."""
+    document = document_from_html(SEGMENT_TABLE)
+    cib = {"amount": "22.7", "scale": "billion", "basis": "", "period": "3Q26"}
+
+    assert table_cell(document, "22,734", "CIB net revenue", **cib)
+    kept = table_cell(
+        document, "22,734", "Net revenue", group="Commercial & Investment Bank (CIB)", **cib
+    )
+    assert kept and kept.group == "Commercial & Investment Bank (CIB)"
+    # Not the company's net revenue, another segment's, or the prior quarter's
+    assert not table_cell(document, "22,734", "Net revenue", **cib)
+    assert not table_cell(document, "22,734", "CCB net revenue", **cib)
+    assert table_cell(
+        document, "15,276", "Net income", amount="15.3", scale="billion", basis="", period="3Q26"
+    )
+
+
+def test_a_company_named_by_its_legal_name_is_no_segment() -> None:
+    document = document_from_text(
+        QUARTER + "JPMorgan Chase & Co. reported:\nNet income was $15.3 billion, up 6%."
+    )
+    income = {"amount": "15.3", "scale": "billion"}
+
+    assert bound(document, "Net income", group="JPMorgan Chase & Co.", **income)
+
+
+def test_a_column_header_states_the_scale_nearest_its_value() -> None:
+    """ServiceNow's reconciliation: "Amount ($ millions)" above the value, and "Amount ($
+    billions)" for another section further down."""
+    document = document_from_html(
+        "<p>ServiceNow reports third quarter 2026 results</p><table>"
+        "<tr><td></td><td>Third Quarter 2026 GAAP Results</td>"
+        "<td>Third Quarter 2026 Non-GAAP Results</td></tr>"
+        "<tr><td></td><td>Amount ($ millions)</td><td>Amount ($ millions)</td></tr>"
+        "<tr><td>Income from operations</td><td>385</td><td>1,338</td></tr>"
+        "<tr><td></td><td>Amount ($ billions)</td><td>Amount ($ billions)</td></tr>"
+        "<tr><td>cRPO</td><td>13.65</td><td>13.65</td></tr></table>"
+    )
+    operating = {"scale": "million", "period": "Q3 2026"}
+
+    assert table_cell(
+        document,
+        "1,338",
+        "Non-GAAP income from operations",
+        amount="1338",
+        basis="non-GAAP",
+        **operating,
+    )
+    assert table_cell(
+        document, "385", "Income from operations", amount="385", basis="", **operating
+    )
+    assert not table_cell(
+        document, "1,338", "Income from operations", amount="1338", basis="", **operating
+    )
+
+
+def test_a_reconciliation_heading_names_no_segment() -> None:
+    document = document_from_html(
+        "<p>Interactive Brokers reports third quarter 2026 results</p><table>"
+        "<tr><td>(in millions)</td><td>Three Months Ended September 30, 2026</td></tr>"
+        "<tr><td>Non-GAAP adjustments</td></tr>"
+        "<tr><td>Adjusted net revenues</td><td>$1,872</td></tr></table>"
+    )
+
+    assert table_cell(
+        document,
+        "$1,872",
+        "Adjusted net revenues",
+        amount="1872",
+        basis="adjusted",
+        period="Q3 2026",
+    )
+
+
+def test_a_categorys_label_names_no_segment() -> None:
+    document = document_from_text(
+        QUARTER + "Key operating metrics\nBookings increased 12% to $316.1 million."
+    )
+
+    assert bound(document, "Total bookings", group="Operating Metrics", amount="316.1")
+
+
+def test_managed_basis_is_checked_where_the_clause_names_it() -> None:
+    """JPMorgan reports revenue on a managed basis: "managed revenue of $50.9 billion"."""
+    named = document_from_text(
+        QUARTER + "Reported revenue of $50.2 billion and managed revenue of $50.9 billion"
+    )
+    unnamed = document_from_text(QUARTER + "Net revenue was $50.9 billion, up 8%.")
+    revenue = {"amount": "50.9", "scale": "billion"}
+
+    assert bound(named, "Net revenue - managed", **revenue)
+    assert not bound(unnamed, "Net revenue - managed", **revenue)
+
+
+def test_an_amount_the_source_states_excluding_items_is_not_the_reported_one() -> None:
+    """JPM's "ROTCE of 21%, excluding discretionary investment securities losses": reported
+    ROTCE was 20%."""
+    document = document_from_text(
+        QUARTER + "The Firm generated an ROTCE of 21%, excluding discretionary investment "
+        "securities losses."
+    )
+    rate = {"amount": "21", "unit": "%", "scale": "one", "currency": ""}
+
+    assert not bound(document, "ROTCE", **rate)
+    assert bound(document, "ROTCE", **rate, basis="excluding investment securities losses")
+
+
+def test_a_definition_in_parentheses_is_not_part_of_the_measure() -> None:
+    document = document_from_text(QUARTER + "Operating margin was 13.7%, a decrease from 15.9%.")
+    margin = {"amount": "13.7", "unit": "%", "scale": "one", "currency": ""}
+
+    assert bound(
+        document,
+        "Operating margin (income from operations as a percentage of total revenue)",
+        **margin,
+    )
+    # A parenthetical that qualifies the number, or states numbers, stays required
+    assert not bound(document, "Operating margin (excluding litigation)", **margin)
+    assert not bound(document, "Operating margin (down from 15.9% a year ago)", **margin)
+
+
+def test_bank_return_measures_are_named_by_their_abbreviations() -> None:
+    document = document_from_text(QUARTER + "ROE of 17% and ROTCE of 20%.")
+    rate = {"unit": "%", "scale": "one", "currency": ""}
+
+    assert bound(document, "Return on tangible common equity", amount="20", **rate)
+    assert bound(document, "Return on equity", amount="17", **rate)
+    assert not bound(document, "Return on equity", amount="20", **rate)
