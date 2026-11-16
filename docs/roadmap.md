@@ -4,14 +4,27 @@ What's left before 1.0 and what comes after, as agreed with the owner. Status as
 November 15, 2026. Times are US Eastern.
 
 See the [implementation handoff](completion-2026-11-15.md) for the completed work,
-preserved evidence and remaining release-time gates. International implementation is held.
+preserved evidence and remaining release-time gates.
+
+**Live since November 15, 18:16:** v0.21.43, everything merged through the test audit fixes
+(#154), deployed with the owner's yes. That includes the Chrome limits (#135), `/track`
+debug mode (#140) and the multiple-server code (#136 to #138), which runs as one server until
+a second is configured.
+
+| Area | Where it stands |
+|---|---|
+| Live streak | Next, Nov 17 to 20. The only open 1.0 gate |
+| Multiple servers | Live, not set up: no second server configured yet |
+| Verified summaries | Merged but off: the quality gate is unmet, summaries stay Beta |
+| International tickers | Not started beyond the plan and debug mode |
+| Load on the PC | Limits live; measured from the streak's `resources` records |
 
 ## The 1.0 gate (agreed November 12)
 
 | # | Item | Status |
 |---|---|---|
 | 1 | A route that dies mid-window is loud | Done: the watchdog alarms when a window's polling stops or a route is refused, and names it (#90, #91). `/status` and the window report show a degraded route (#100) |
-| 2 | Polling is gentler far from the release time | Done: 15 s far from a release time, 5 s from 5 minutes before, full speed from 2 minutes before to 10 after (#92, #128). Not yet seen on a live release |
+| 2 | Polling is gentler far from the release time | Done: 15 s far from a release time, 5 s from 5 minutes before, full speed from 2 minutes before to 10 after (#92, #128). Live, not yet seen on a live release |
 | 3 | A live streak | Next. HD, KLAR and NVDA on Tue Nov 17, ROAD on Thu Nov 19, WRD on Fri Nov 20. Every IR route stays alive (or recovers and says so), the alert posts, and the summary comes from the first available text. Each is written up from the journal the same day, and a failure restarts the streak |
 | 4 | Failure-replay tests | Done. A refusal mid-window (`test_recorder`), repeated timeouts as a release goes live (#93, #101), a wire alert with no readable article, a restart after delivery not summarizing again, and Discord refusing a post or edit (#123) |
 | 5 | Summaries labeled beta until plan item 6 ships | Done: the footer starts "Beta · Summary by ..." (#132) |
@@ -23,7 +36,7 @@ From the earlier 1.0 list:
 | Crash cleanup | Done: Chrome ends with the bot, and the bot clears Chrome and profiles a previous run left (#133) |
 | Load and failure replay | Done: a 20-release burst replay and the failure replays above |
 | Soak | Done for fixture replay and passive monitoring: 6,660 replay alerts and four hours of live-process counters. No sustained Chrome or real Discord claim; see [scope and results](soak-2026-11-15.md) |
-| Chrome limits, telemetry | Implemented: byte caps, shared pacing, below-normal priority, an 8 GiB job memory ceiling and per-window resource records (#135). Sustained real-browser evidence remains open |
+| Chrome limits, telemetry | Live since Nov 15: byte caps, shared pacing, below-normal priority, an 8 GiB job memory ceiling and per-window resource records (#135). Sustained real-browser evidence remains open |
 | Whether the first missed IR page had the same cause as Nebius's | Investigated: On/Sea had no HTTP refusal/timeout or route retirement. Missing historical bodies limit attribution; [architecture](architecture.md) records evidence and existing fixes. Nebius now has direct/fallback diagnostics (#146) |
 
 ## Added before 1.0 (November 15)
@@ -52,7 +65,8 @@ The full plan is [international.md](international.md); the debug mode it's built
      exchange.
   5. Live checks as each market reports.
 
-  The company-key change waits until the streak ends and the multiple-servers PRs merge.
+  Only the plan and debug mode exist so far. The company-key change waits until the streak
+  ends (the multiple-server work it depended on is merged and live).
 
 ### Multiple Discord servers
 
@@ -60,8 +74,11 @@ Decided Nov 15: each server tracks its own companies; only the owner adds a serv
 config; each server sees scorecards for its own companies; a server tracking a company
 another already researched may import that research after a quick check.
 
-1. Several alert channels from config, own lists, alerts fanned out (merged #136; deployment
-   held through the streak). `DISCORD_SERVER_CHANNEL_IDS`; commands registered in each
+All three steps are live since the Nov 15 deploy (v0.21.43). `DISCORD_SERVER_CHANNEL_IDS` is
+empty, so the bot still serves one server; adding a server is a config change and a restart.
+
+1. Several alert channels from config, own lists, alerts fanned out (merged #136).
+   `DISCORD_SERVER_CHANNEL_IDS`; commands registered in each
    server; one window, one set of polls and one summary per release; the alert goes to every
    server tracking the company at once.
 2. Research once per company across servers, written to each server that tracks it (merged
@@ -71,8 +88,8 @@ another already researched may import that research after a quick check.
 3. Importing another server's research at `/track`, after a quick check that it's current
    (merged #138, with current-profile, successful-response and date checks).
 
-Open: Discord's rate limits with many servers posting the same release (one send per server,
-then its edits), to be measured.
+Open: after the streak, configure a second server and measure Discord's rate limits with
+several servers posting the same release (one send per server, then its edits).
 
 ### Load on the PC from `/track` and live releases
 
@@ -98,6 +115,8 @@ Done:
 
 Open:
 - Read the `resources` records from the live streak (Nov 17 to 20).
+- Keep heavy work off this PC during release windows. At 17:30 on Nov 15, while six agents
+  ran test suites, the bot's Discord connection fell 41.4 s behind (measured, from the log).
 - Sustained real-Chrome release-window behavior. The completed fixture/passive soaks and
   reusable runners are in [soak results](soak-2026-11-15.md); neither substitutes for this.
 - When many releases land at once, one release's text can wait seconds behind the others'
@@ -113,9 +132,8 @@ Agreed with the owner on Nov 15:
 2. **Verified summaries:** integration, offline studies and temporal-binding improvements
    are merged (#141, #149). The quality gate is unmet; reference mode and driver profiles
    remain off and summaries remain Beta. See [the measured limits](summaries.md).
-3. **After the streak (Nov 20), with deployment authorization:** deploy the reviewed main
-   changes, including merged multiple-server work (#136 to #138), then measure Discord's
-   rate limits with several servers. No live restart or configuration change was made here.
+3. **Multiple servers:** deployed early, on Nov 15 with the owner's yes. After the streak
+   (Nov 20), configure a second server and measure Discord's rate limits.
 4. **International tickers:** the foundations, identification, then a dedicated source
    per market ([international.md](international.md)), each going live once its answer
    keys pass one-shot.
@@ -133,12 +151,15 @@ Agreed with the owner on Nov 15:
   (#144), bounded profile diagnostics (#146) and publisher timestamp recovery (#148) are
   merged. HubSpot profile-dependent access is verified; no new publication-speed lead is
   proven. See [diagnostics](source-diagnostics.md) and [inert event drafts](trial-plans/README.md).
-- [Test audit](test-audit/README.md) completed and corrected (#147): 737 functions at its
-  dated base, including 33 omitted from the original groups. Candidate mutation survivors
-  need suite-wide confirmation before remediation; they are not 32 established bugs.
+- [Test audit](test-audit/README.md): fixes merged (#154, #155). Every candidate survivor was
+  checked against the whole suite: 27 gaps closed, 5 already caught elsewhere, 1 equivalent.
+  The serial suite went from 93.8 s to 34.0 s (measured). Leftovers (misplaced tests,
+  private-method calls, `test_summary_binding.py` merges) are in progress.
 - [Astra task priorities](astra-tasks.md) record the next bounded reasoning/research jobs.
-- Owner: pause Windows Update before Nov 17, and decide on Dependabot #119 (Docker
-  Python 3.15).
+- Owner: pause Windows Update before Nov 17.
+- Dependabot #119 (Docker Python 3.15) closed Nov 15: it moved only the runtime stage, so
+  the 3.13 virtualenv wouldn't start. A Python upgrade moves both Docker stages,
+  `.python-version` and CI together, after 1.0.
 
 ## After 1.0
 

@@ -5,6 +5,10 @@ merged through v0.21.39. Deployment remains held: the running checkout is still 
 No international implementation, live restart, schedule/config change, manual Discord post
 or additional paid model call was made during the final continuation.
 
+**Later the same night:** with the owner's yes, main through v0.21.43 (#154) was deployed at
+18:16, so the "awaiting deployment" and "live code remains unchanged" notes below are history.
+Dependabot #119 was closed. Current state is in the [roadmap](roadmap.md).
+
 | Work | Result |
 |---|---|
 | Trial correctness and backoff | Per-entry identity prevents cross-item sightings; HTTP-date Retry-After and reserved connection retries are accounted for (#142). Nested JPM manifests now produce the exact validated press-release PDF identity |
