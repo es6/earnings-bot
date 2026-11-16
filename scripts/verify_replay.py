@@ -33,6 +33,18 @@ from earnings_bot.summary_policy import SummaryFact
 from earnings_bot.summary_validation import validate_facts
 
 RUNS = ("ember-effort-2026-11-12", "ember-fresh-effort-2026-11-12")
+# Wrong facts the live checker shows (docs/summaries.md): Netflix's 12% reported growth labeled
+# F/X neutral, Synopsys's nine-month cash flow labeled Q3, Duolingo's users and subscribers in
+# USD, and DoorDash's cash labeled year over year
+KNOWN_WRONG = (
+    ("NFLX-low-1", "Revenue growth"),
+    ("SNPS-low-1", "Operating cash flow"),
+    ("SNPS-low-2", "Operating cash flow"),
+    ("DUOL-low-1", "Daily Active Users"),
+    ("DUOL-low-1", "Paid Subscribers"),
+    ("DUOL-low-2", "Paid Subscribers at period end"),
+    ("DASH-low-2", "Cash and cash equivalents"),
+)
 _SCALES = {
     "trillion": "trillion",
     "t": "trillion",
@@ -243,7 +255,43 @@ def verdict(fact: SummaryFact, document: SourceDocument) -> dict[str, object]:
     else:
         outcome = "confirmed" if all(kept.get(s) for s in claimed) else "main confirmed"
     reasons = {r.field: list(r.reasons) for r in report.rejected}
-    return {"verdict": outcome, "refused_fields": reasons}
+    row: dict[str, object] = {"verdict": outcome, "refused_fields": reasons}
+    if outcome == "refused" and main in claimed:
+        row["cited"] = cited_reasons(built, main, fact.source, document)
+    return row
+
+
+def cited_reasons(
+    built: ReferencedFact, slot: str, quote: str, document: SourceDocument
+) -> dict[str, object]:
+    """Why the passage the live answer quoted didn't bind its main value. The refusal lists
+    every reason from every passage holding the number; this one is the cause to read."""
+    value = getattr(built, slot)
+    wanted = " ".join(quote.split())[:80]
+    best: dict[str, object] = {"passage": "", "reasons": ["the quoted passage holds no match"]}
+    fewest = 10**6
+    for ref in value.evidence:
+        if ref.document_sha256 != document.sha256:
+            continue  # the number is nowhere in the release
+        block = document.resolve(ref.document_sha256, ref.block_id)
+        holds = wanted and wanted in " ".join(block.text.split())
+        alone = built.model_copy(update={slot: value.model_copy(update={"evidence": (ref,)})})
+        report = bind_brief(
+            UnverifiedBrief(schema_version="source-values/1", facts=(alone,)), document
+        )
+        found = [r for r in report.rejected if r.field == slot]
+        issues = list(found[0].reasons) if found else []
+        # The quoted passage first; otherwise the passage that came closest
+        rank = (0 if holds else 1, len(issues))
+        if rank < (0 if best.get("quoted") else 1, fewest):
+            fewest = len(issues)
+            best = {
+                "quoted": bool(holds),
+                "table": hasattr(block, "cells"),
+                "passage": " ".join(block.text.split())[:300],
+                "reasons": issues,
+            }
+    return best
 
 
 def main() -> None:
@@ -290,6 +338,7 @@ def main() -> None:
                         "id": call["id"],
                         "ticker": ticker,
                         "metric": fact.metric,
+                        "group": fact.group,
                         "kind": fact.kind,
                         "period": fact.period,
                         "basis": fact.basis,
@@ -308,6 +357,19 @@ def main() -> None:
     for ticker in sorted(documents):
         mine = Counter(str(row["verdict"]) for row in rows if row["ticker"] == ticker)
         print(f"  {ticker:5} {dict(mine)}")
+    cited = Counter(
+        reason
+        for row in rows
+        for reason in row.get("cited", {}).get("reasons", [])  # type: ignore[union-attr]
+    )
+    print("Why the quoted passage refused the main value:")
+    for reason, count in cited.most_common(8):
+        print(f"  {count:4} {reason}")
+    print("Known wrong facts (the Nov 12 study), which must stay refused:")
+    for ident, metric in KNOWN_WRONG:
+        found = [str(r["verdict"]) for r in rows if r["id"] == ident and r["metric"] == metric]
+        status = "refused" if found and set(found) == {"refused"} else f"NOT REFUSED {found}"
+        print(f"  {ident} {metric}: {status}")
 
 
 if __name__ == "__main__":

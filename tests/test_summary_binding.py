@@ -431,6 +431,7 @@ def bound(
     field: str = "current_actual",
     *,
     group: str = "",
+    kind: str = "actual",
     **changes: Any,
 ):
     """Bind one value of a fact, cited by the document's last block, through bind_answer."""
@@ -441,7 +442,7 @@ def bound(
         "cell_ids": [c.id for c in block.cells] if isinstance(block, SourceTable) else [],
         "quote": block.text,
     }
-    data = fact(metric=metric, current_actual=None, group=group)
+    data = fact(metric=metric, current_actual=None, group=group, kind=kind)
     data[field] = value(**({"basis": "", "evidence": [ref]} | changes))
     report = bind_answer(
         json.dumps({"schema_version": "source-values/1", "facts": [data]}), document
@@ -844,3 +845,179 @@ def test_a_count_of_people_or_things_is_never_bound_as_money() -> None:
         "<p>Third quarter 2026 results.</p><p>Customer credits were $186.2 billion.</p>"
     )
     assert bound(credits, "Customer credits", amount="186.2", scale="billion")
+
+
+# Right values the binder refused in the Nov 12 live answers, reduced to their phrasing (Nov 16
+# replay). Each binds now; the safety cases after them stay refused.
+QUARTER = "Acme reports third quarter 2026 results\n"
+BILLION = {"scale": "billion"}
+PERCENT = {"unit": "%", "scale": "one", "currency": ""}
+
+
+@pytest.mark.parametrize(
+    ("text", "metric", "field", "group", "kind", "changes"),
+    [
+        pytest.param(
+            "Fourth quarter 2026 outlook:\n•Revenue of between $2.649 - $2.653 billion.",
+            "Revenue",
+            "new_guidance",
+            "",
+            "guide",
+            BILLION | {"amount": "2.649", "upper": "2.653", "period": "Q4 2026"},
+            id="range-with-a-dash-and-one-scale",
+        ),
+        pytest.param(
+            "•Closed $1.463 billion of U.S. commercial TCV, up 11% year-over-year",
+            "U.S. commercial TCV closed",
+            "current_actual",
+            "",
+            "actual",
+            BILLION | {"amount": "1.463"},
+            id="measure-after-of",
+        ),
+        pytest.param(
+            "•Closed total contract value (“TCV”) of $2.918 billion, up 6% year-over-year",
+            "Total contract value closed",
+            "current_actual",
+            "",
+            "actual",
+            BILLION | {"amount": "2.918"},
+            id="verb-first",
+        ),
+        pytest.param(
+            "Pretax income was $5.0 billion.",
+            "Pre-tax income",
+            "current_actual",
+            "",
+            "actual",
+            BILLION | {"amount": "5.0"},
+            id="fused-prefix",
+        ),
+        pytest.param(
+            "Net interest income increased 19% to $1.15 billion.",
+            "Net interest income",
+            "current_actual",
+            "Total net interest income",
+            "segment",
+            BILLION | {"amount": "1.15"},
+            id="group-repeats-the-measure",
+        ),
+        pytest.param(
+            "Customer margin loans increased 36% to $105.2 billion.",
+            "Customer margin loans",
+            "current_actual",
+            "Customer balances",
+            "actual",
+            BILLION | {"amount": "105.2"},
+            id="category-the-release-never-says",
+        ),
+        pytest.param(
+            "Commission revenue increased 12% to $602 million.",
+            "Commission revenue",
+            "current_actual",
+            "Commissions",
+            "segment",
+            {"amount": "602"},
+            id="segment-in-another-form",
+        ),
+        pytest.param(
+            "U.S. revenue grew 119% year-over-year to $1.937 billion.",
+            "U.S. revenue",
+            "current_actual",
+            "U.S. total",
+            "segment",
+            BILLION | {"amount": "1.937"},
+            id="segment-with-a-filler-word",
+        ),
+        pytest.param(
+            "• Adobe AI-first ARR grew more than 150% year over year",
+            "AI-first ARR growth",
+            "reported_growth",
+            "Adobe AI-first ARR",
+            "actual",
+            PERCENT | {"amount": "150", "value_qualifier": "more_than", "comparison": "YoY"},
+            id="group-is-the-whole-measure",
+        ),
+        pytest.param(
+            "Total MAUs grew 11% Y/Y to 788 million.",
+            "Monthly active users",
+            "current_actual",
+            "",
+            "actual",
+            {"amount": "788", "unit": "users", "currency": ""},
+            id="common-abbreviation",
+        ),
+    ],
+)
+def test_a_right_value_binds_however_the_release_phrases_it(
+    text: str, metric: str, field: str, group: str, kind: str, changes: dict[str, str]
+) -> None:
+    document = document_from_text(QUARTER + text)
+
+    assert bound(document, metric, field, group=group, kind=kind, **changes)
+
+
+def test_a_measure_abbreviation_the_release_defines_names_that_measure() -> None:
+    """Netflix's "Free cash flow (FCF)" made "FCF forecast" its forecast. The abbreviation is
+    expanded everywhere but where it is defined, which would name the measure twice."""
+    defined = document_from_text(
+        QUARTER + "We define free cash flow (FCF) as operating cash flow less capital "
+        "expenditures.\nIn the third quarter of 2026, FCF was $2.9 billion."
+    )
+    at_definition = document_from_text(
+        QUARTER + "Remaining performance obligations (RPO) of $29.7 billion as of Q3 2026"
+    )
+
+    assert bound(defined, "Free cash flow", amount="2.9", scale="billion")
+    assert bound(
+        at_definition, "Remaining performance obligations (RPO)", amount="29.7", scale="billion"
+    )
+
+
+def test_a_phrase_after_of_must_be_the_measure_itself() -> None:
+    document = document_from_text(QUARTER + "We realized $300 million of revenue synergies.")
+
+    assert bound(document, "Revenue", amount="300") is None
+    assert bound(document, "Revenue synergies", amount="300")
+    for part in ("Cloud accounted for", "Cloud contributed", "Cloud represented"):
+        share = document_from_text(QUARTER + f"{part} $4.5 billion of revenue.")
+        assert bound(share, "Revenue", amount="4.5", scale="billion") is None, part
+
+
+def test_a_segment_the_release_never_names_is_still_required() -> None:
+    """Only a fact the model doesn't call a segment loses a category label the release never
+    uses; a segment has to be established."""
+    document = document_from_text(
+        QUARTER + "Customer margin loans increased 36% to $105.2 billion."
+    )
+    loans = {"amount": "105.2", "scale": "billion"}
+
+    assert not bound(
+        document, "Customer margin loans", group="Asia Pacific", kind="segment", **loans
+    )
+    assert bound(document, "Customer margin loans", group="Asia Pacific", **loans)
+
+
+def test_currency_neutral_growth_keeps_its_label_and_is_never_shown_as_reported() -> None:
+    """Visa's payments volume grew 9% on a constant-dollar basis (Nov 13 held-out answer). The
+    label was dropped, which shows it as the reported growth, like Netflix's F/X-neutral 11%."""
+    document = document_from_text(
+        QUARTER + "Payments volume for the three months ended September 30, 2026 increased 9% "
+        "over the prior year on a constant-dollar basis."
+    )
+    growth = {"amount": "9", "unit": "%", "scale": "one", "currency": "", "comparison": "YoY"}
+
+    kept = bound(document, "Payments volume", "reported_growth", **growth, basis="Constant-dollar")
+    assert kept and "constant" in kept.comparison_qualifier.casefold()
+    assert bound(document, "Payments volume", "reported_growth", **growth) is None
+
+
+def test_an_amount_written_as_money_is_shown_as_money() -> None:
+    """Booking's gross bookings were claimed in a unit named after the measure and shown without
+    their dollar sign."""
+    document = document_from_text(QUARTER + "Gross bookings were $54.5 billion.")
+    claim = {"amount": "54.5", "scale": "billion", "unit": "gross bookings", "currency": ""}
+
+    kept = bound(document, "Gross bookings", **claim)
+
+    assert kept and kept.unit == "money" and kept.currency == "USD"
