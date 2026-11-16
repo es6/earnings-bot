@@ -1,7 +1,7 @@
 # Roadmap
 
 What's left before 1.0 and what comes after, as agreed with the owner. Status as of
-November 15, 2026. Times are US Eastern.
+November 16, 2026. Times are US Eastern.
 
 See the [implementation handoff](completion-2026-11-15.md) for the completed work,
 preserved evidence and remaining release-time gates.
@@ -13,7 +13,8 @@ a second is configured.
 
 | Area | Where it stands |
 |---|---|
-| Live streak | Next, Nov 17 to 20. The only open 1.0 gate |
+| Live streak | Next, Nov 17 to 20 |
+| Python maintainability | Added Nov 16: full code-quality review before 1.0; initial scan and standards recorded, sign-off open |
 | Multiple servers | Live, not set up: no second server configured yet |
 | Verified summaries | Merged but off: the quality gate is unmet, summaries stay Beta |
 | International tickers | Not started beyond the plan and debug mode |
@@ -28,6 +29,7 @@ a second is configured.
 | 3 | A live streak | Next. HD, KLAR and NVDA on Tue Nov 17, ROAD on Thu Nov 19, WRD on Fri Nov 20. Every IR route stays alive (or recovers and says so), the alert posts, and the summary comes from the first available text. Each is written up from the journal the same day, and a failure restarts the streak |
 | 4 | Failure-replay tests | Done. A refusal mid-window (`test_recorder`), repeated timeouts as a release goes live (#93, #101), a wire alert with no readable article, a restart after delivery not summarizing again, and Discord refusing a post or edit (#123) |
 | 5 | Summaries labeled beta until plan item 6 ships | Done: the footer starts "Beta · Summary by ..." (#132) |
+| 6 | Python maintainability review (added November 16) | Open: review readability, names, comments, module structure, task/resource ownership, types and operations. Resolve concrete findings and document justified deferrals. See [the standards, diagrams and initial scan](python-quality.md) |
 
 From the earlier 1.0 list:
 
@@ -134,10 +136,13 @@ Agreed with the owner on Nov 15:
    remain off and summaries remain Beta. See [the measured limits](summaries.md).
 3. **Multiple servers:** deployed early, on Nov 15 with the owner's yes. After the streak
    (Nov 20), configure a second server and measure Discord's rate limits.
-4. **International tickers:** the foundations, identification, then a dedicated source
+4. **Python maintainability review:** apply the [review standard](python-quality.md), complete
+   the whole-codebase findings register and review the final verified-summary implementation
+   after its active changes settle. Preserve the release behavior with focused PRs.
+5. **International tickers:** the foundations, identification, then a dedicated source
    per market ([international.md](international.md)), each going live once its answer
    keys pass one-shot.
-5. **After 1.0:** `/transcript`.
+6. **After 1.0:** `/transcript`.
 
 ## Other open work
 
