@@ -98,3 +98,16 @@ def test_a_live_value_is_read_as_one_number_or_a_range_as_written() -> None:
     assert parse("-3.0 to -1.0")[:2] == ("-3.0", "-1.0")  # type: ignore[index]
     assert parse("(3.0) to (1.0)%")[:2] == ("-3.0", "-1.0")  # type: ignore[index]
     assert parse("~$12.0B vs $12.5B previously") == ("12.0", None, "billion", "approximately")
+
+
+def test_a_fact_with_several_values_is_dropped_as_only_one_could_be_checked() -> None:
+    document = document_from_text(RELEASE)
+    combined = fact(
+        "Revenue and free cash flow",
+        "Revenue $6.76 billion; free cash flow $1.9 billion",
+        REVENUE.source,
+    )
+
+    shown, dropped = verify_facts([combined], document)
+
+    assert shown == [] and dropped[0].endswith("several values in one fact")

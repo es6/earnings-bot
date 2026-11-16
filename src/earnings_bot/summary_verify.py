@@ -97,6 +97,13 @@ def parse(text: str) -> tuple[str, str | None, str, str] | None:
     return amounts[0], None, scale, qualifier
 
 
+def _several(value: str) -> bool:
+    """Whether a value states more amounts than it is read as: not one, nor one range."""
+    parsed = parse(value)
+    stated = len(_NUMBER.findall(value))
+    return parsed is not None and stated > (2 if parsed[1] is not None else 1)
+
+
 def unit_of(fact: SummaryFact, value: str) -> str:
     text = f"{value} {fact.unit}".casefold()
     if "bps" in text or "basis point" in text:
@@ -287,6 +294,11 @@ def verify_facts(
     for fact in facts:
         if fact.kind == "update" and not fact.value.strip():
             shown.append(fact)
+            continue
+        if _several(fact.value):
+            # "Total Customer Group $6.56B; Creative & Marketing Professionals $4.65B; ...":
+            # only the first amount could be checked, and the rest would show unchecked
+            dropped.append(f"{fact.metric}: several values in one fact")
             continue
         kept, reasons = check(fact, document)
         if not kept:
