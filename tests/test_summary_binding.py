@@ -1126,3 +1126,213 @@ def test_a_segment_table_names_its_segment_when_the_quote_is_only_the_value() ->
     assert [(b.fact.group, b.fact.reported_growth is not None) for b in report.facts] == [
         ("Walmart U.S.", True)
     ]
+
+
+# Guidance the binder refused in the Nov 12 live answers (Nov 16)
+GUIDE = {"unit": "%", "scale": "one", "currency": ""}
+
+
+def test_guidance_is_named_anywhere_in_its_clause_before_the_number() -> None:
+    """ASML's "ASML expects Q4 2026 total net sales between..." and Adobe's "Targets assume
+    non-GAAP operating margin of ~44.0%" were refused: only two words before the measure's
+    name were read, and "fourth-quarter" wasn't a quarter."""
+    expects = document_from_text(
+        QUARTER + "ASML expects Q4 2026 total net sales between €14.2 billion and €15.2 billion."
+    )
+    hyphenated = document_from_text(
+        QUARTER + "We expect fourth-quarter 2026 total net sales between €14.2 billion and "
+        "€15.2 billion."
+    )
+    sales = {"amount": "14.2", "upper": "15.2", "scale": "billion", "currency": "EUR"}
+
+    for document in (expects, hyphenated):
+        assert bound(
+            document, "Total net sales", "new_guidance", kind="guide", **sales, period="Q4 2026"
+        )
+    assert not bound(expects, "Total net sales", **sales, period="Q3 2026")
+
+
+def test_an_approximate_source_amount_is_shown_as_approximate() -> None:
+    document = document_from_text(
+        QUARTER + "We expect 2026 stock-based compensation expense of approximately $1.2 billion."
+    )
+    claim = {"amount": "1.2", "scale": "billion", "period": "FY 2026", "duration": "twelve months"}
+
+    kept = bound(
+        document, "Stock-based compensation expense", "new_guidance", kind="guide", **claim
+    )
+
+    assert kept and kept.value_qualifier == "approximately"
+    # A different bound is a different claim
+    assert not bound(
+        document,
+        "Stock-based compensation expense",
+        "new_guidance",
+        kind="guide",
+        **claim,
+        value_qualifier="more_than",
+    )
+
+
+def test_in_excess_of_is_more_than() -> None:
+    document = document_from_text(
+        QUARTER + "We are raising our U.S. commercial revenue guidance to in excess of $3.559 "
+        "billion."
+    )
+    claim = {
+        "amount": "3.559",
+        "scale": "billion",
+        "period": "FY 2026",
+        "duration": "twelve months",
+    }
+
+    assert bound(
+        document,
+        "U.S. commercial revenue",
+        "new_guidance",
+        kind="guide",
+        **claim,
+        value_qualifier="more_than",
+    )
+    assert not bound(document, "U.S. commercial revenue", "new_guidance", kind="guide", **claim)
+
+
+GUIDANCE_TABLE = (
+    "<p>Walmart reports second quarter fiscal 2027 results</p><table>"
+    "<tr><td colspan='3'>The Company's third quarter fiscal 2027 guidance is based on the "
+    "following Q3 FY26 figures: net sales of $177.8 billion.</td></tr>"
+    "<tr><td>Consolidated metric</td><td>Q3 FY27</td></tr>"
+    "<tr><td>Net sales (cc)</td><td>Increase 3.0% to 3.75%</td></tr>"
+    "<tr><td>Operating income (cc)</td><td>Decrease 1.0% to 2.0%</td></tr>"
+    "</table>"
+    "<table><tr><td colspan='4'>Fiscal year 2027</td></tr>"
+    "<tr><td colspan='4'>The Company's fiscal year guidance is based on the following FY26 "
+    "figures: net sales of $706.4 billion.</td></tr>"
+    "<tr><td>Consolidated metric</td><td>Original from 2.19.2026</td>"
+    "<td>As of 5.21.2026</td><td>As of 8.20.2026</td></tr>"
+    "<tr><td>Net sales (cc)</td><td>Increase 3.5% to 4.5%</td><td>Unchanged</td>"
+    "<td>Increase 4.0% to 5.0%</td></tr>"
+    "</table>"
+)
+
+
+def guidance_cell(document: SourceDocument, text: str, metric: str, field: str, **changes: Any):
+    table = next(t for t in document.tables if any(c.text == text for c in t.cells))
+    cell = next(c for c in table.cells if c.text == text)
+    ref = {
+        "document_sha256": document.sha256,
+        "block_id": table.id,
+        "cell_ids": [cell.id],
+        "quote": text,
+    }
+    data = fact(metric=metric, kind="guide", current_actual=None)
+    data[field] = value(**(GUIDE | {"basis": "", "evidence": [ref]} | changes))
+    report = bind_answer(
+        json.dumps({"schema_version": "source-values/1", "facts": [data]}), document
+    )
+    return next((getattr(b.fact, field) for b in report.facts if getattr(b.fact, field)), None)
+
+
+def test_a_guidance_table_states_growth_ranges_as_increases() -> None:
+    """Walmart's outlook table: "Net sales (cc) | Increase 3.0% to 3.75%", under a paragraph
+    laid out in the table that says it is guidance and names last year's figures."""
+    document = document_from_html(GUIDANCE_TABLE)
+    q3 = {"amount": "3.0", "upper": "3.75", "period": "Q3 FY27"}
+    cc = {"basis": "constant currency"}
+
+    assert guidance_cell(
+        document, "Increase 3.0% to 3.75%", "Net sales growth", "new_guidance", **q3, **cc
+    )
+    # The row is constant-currency growth, so a claim without that label is refused
+    assert not guidance_cell(
+        document, "Increase 3.0% to 3.75%", "Net sales growth", "new_guidance", **q3
+    )
+    # A decrease is never read as a plain number, which would lose its sign
+    assert not guidance_cell(
+        document,
+        "Decrease 1.0% to 2.0%",
+        "Operating income growth",
+        "new_guidance",
+        amount="1.0",
+        upper="2.0",
+        period="Q3 FY27",
+        **cc,
+    )
+
+
+def test_original_guidance_is_never_new_guidance() -> None:
+    document = document_from_html(GUIDANCE_TABLE)
+    cc = {"basis": "constant currency", "period": "FY27", "duration": "twelve months"}
+
+    assert guidance_cell(
+        document,
+        "Increase 4.0% to 5.0%",
+        "Net sales growth",
+        "new_guidance",
+        amount="4.0",
+        upper="5.0",
+        **cc,
+    )
+    assert not guidance_cell(
+        document,
+        "Increase 3.5% to 4.5%",
+        "Net sales growth",
+        "new_guidance",
+        amount="3.5",
+        upper="4.5",
+        **cc,
+    )
+
+
+def test_guidance_takes_the_period_of_the_nearest_outlook_heading() -> None:
+    """Palantir lists its Q4 outlook, then "For full year 2026:"; the full-year bullet is not
+    a quarter's because a Q4 heading sits above it, nor because the title names a quarter."""
+    document = document_from_text(
+        QUARTER + "For Q4 2026, we expect:\n•Revenue of between $2.649 - $2.653 billion.\n"
+        "For full year 2026:\n•We are raising our revenue guidance to between $8.530 - $8.534 "
+        "billion."
+    )
+    full_year = {"amount": "8.530", "upper": "8.534", "scale": "billion", "period": "FY 2026"}
+
+    assert bound(
+        document, "Revenue", "new_guidance", kind="guide", **full_year, duration="twelve months"
+    )
+    assert not bound(
+        document, "Revenue", "new_guidance", kind="guide", **full_year, duration="three months"
+    )
+    # Right under the title, whose "third quarter" is the results' period, not the outlook's
+    under_title = document_from_text(
+        QUARTER + "We are raising our revenue guidance to between $8.530 - $8.534 billion."
+    )
+    assert bound(
+        under_title, "Revenue", "new_guidance", kind="guide", **full_year, duration="twelve months"
+    )
+
+
+def test_a_prior_column_is_never_new_guidance() -> None:
+    """Coca-Cola's outlook table: "Organic revenues | At least 5% growth | Approx. 5% growth"
+    under "Current | Prior"."""
+    document = document_from_html(
+        "<p>Coca-Cola reports third quarter 2026 results</p><p>2026 Outlook</p><table>"
+        "<tr><td></td><td>Current</td><td>Prior</td></tr>"
+        "<tr><td>Organic revenues growth</td><td>At least 5% growth</td>"
+        "<td>Approx. 5% growth</td></tr></table>"
+    )
+    year = {"period": "FY 2026", "duration": "twelve months", "amount": "5"}
+
+    assert guidance_cell(
+        document,
+        "At least 5% growth",
+        "Organic revenues growth",
+        "new_guidance",
+        value_qualifier="at_least",
+        **year,
+    )
+    assert not guidance_cell(
+        document,
+        "Approx. 5% growth",
+        "Organic revenues growth",
+        "new_guidance",
+        value_qualifier="approximately",
+        **year,
+    )

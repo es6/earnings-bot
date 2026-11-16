@@ -36,6 +36,7 @@ from earnings_bot.binding_text import (
     qualifier_issues,
     quarter,
     reporting_year,
+    source_qualifiers,
     source_scale,
     stem,
     stems,
@@ -121,7 +122,12 @@ _GUIDANCE = re.compile(
     re.IGNORECASE,
 )
 _DECREASE = re.compile(r"\b(?:decrease|decreased|decline|declined|down|lower|fell|drop|dropped)\b")
-_PREVIOUS = re.compile(r"previous|prior (?:guidance|outlook)|old guidance|initial", re.IGNORECASE)
+# Earlier guidance, as a column or clause names it: Walmart's "Original from 2.19.2026"
+_PREVIOUS = re.compile(
+    r"previous|prior (?:guidance|outlook)|old guidance|initial|\boriginal\b|"
+    r"\bprior\b(?![- ](?:year|period|quarter))",  # Coca-Cola's "Current | Prior" columns
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -352,8 +358,10 @@ _COMPARED = r"(?:year[- ]over[- ]year|yoy|y/y|growth|increase|decrease|sequentia
 
 def _numeric_text(text: str) -> bool:
     text = re.sub(
+        # An increase reads as the number it states ("Increase 3.0% to 3.75%"); a decrease
+        # would need its sign, so it is never read as a plain number
         r"^(?:nearly|almost|about|approximately|roughly|around|more than|at least|"
-        r"less than|up to|at most|over|under|>=|<=|>|<|~)\s*",
+        r"less than|up to|at most|over|under|increase(?: of)?|up|growth of|>=|<=|>|<|~)\s*",
         "",
         text.strip(),
         flags=re.IGNORECASE,
@@ -411,6 +419,9 @@ def _column_headers(table: SourceTable, value: SourceCell) -> list[str]:
                 cell.scope != "row"
                 and (cell.header or not data_row)
                 and (cell.column <= value.column < cell.column + cell.colspan)
+                # A paragraph laid out across the table heads no column: Walmart's "guidance
+                # reflects the Company's expectations as of August 20, 2026"
+                and not _prose(cell)
             )
         )
     return headers
@@ -455,8 +466,9 @@ def _heading(table: SourceTable, value: SourceCell) -> str:
 
 
 def _generic_heading(text: str) -> bool:
-    """A table's corner cell that names no segment: "Metric", "($ in millions)"."""
-    plain = words(text)
+    """A table's corner cell that names no segment: "Metric", "Consolidated metric", "($ in
+    millions)"."""
+    plain = re.sub(r"^(?:(?:consolidated|total|company|group|firmwide)\s+)+", "", words(text))
     return (
         not plain
         or plain
@@ -500,7 +512,9 @@ def _label_and_group(table: SourceTable, value: SourceCell) -> tuple[str, str]:
         cells = [c for c in _row(table, row) if c.text.strip()]
         if not cells or cells[0].column != 0 or _numeric(cells[0]):
             continue
-        if len(cells) == 1 and cells[0].colspan == 1:
+        if len(cells) == 1 and cells[0].colspan == 1 and not _prose(cells[0]):
+            # A heading, not a paragraph laid out in the table ("...guidance is based on the
+            # following Q3 FY26 figures")
             section = cells[0].text
         elif (
             not _generic_heading(cells[0].text)
@@ -772,6 +786,11 @@ def _table_binding(
         # A label that names the claim binds on its own ("Gain on business divestitures"); a
         # segment's label ("North America") binds with the measure its table states
         measure = _row_measure(table, cell, label, section, frame.lead)
+        slot = _slot_stems(field)
+        if kind == "%" and re.search(r"\bincrease|\bgrowth\b|\bgrow\b", raw, re.IGNORECASE):
+            # The cell says the rate is a growth rate: "Net sales (cc) | Increase 3.0% to
+            # 3.75%" is net sales growth
+            slot |= _CHANGE_STEMS
         issues: list[str] = []
         for name in dict.fromkeys((label, f"{label} {measure}".strip())):
             issues = _identity_issues(
@@ -779,7 +798,7 @@ def _table_binding(
                 name,
                 group,
                 value.unit,
-                slot=_slot_stems(field),
+                slot=slot,
                 terms=terms,
             )
             if not issues:
@@ -866,9 +885,19 @@ def _table_binding(
         )
         issues.extend(basis_issues)
         issues.extend(qualifier_issues(value, f"{raw}"))
+        if (
+            kind == "%"
+            and _NEUTRAL.search(f"{label} {headers} {raw}")
+            and not _NEUTRAL.search(f"{value.comparison_qualifier} {fact.metric}")
+        ):
+            # "Net sales (cc) | Increase 3.0% to 3.75%" is constant-currency growth
+            issues.append("the source rate excludes currency moves, the claim doesn't")
         status = headers
         if field in ("previous_guidance", "new_guidance") and not _GUIDANCE.search(headers):
-            status = f"{headers} {frame.near}"
+            # A heading above the table, or a paragraph laid out in it above the value ("The
+            # Company's third quarter fiscal 2027 guidance is based on...")
+            above = " ".join(c.text for c in table.cells if c.row < cell.row and _prose(c))
+            status = f"{headers} {frame.near} {above}"
         issues.extend(_slot_issues(field, value, status, fact.metric))
         shown = value
         if field in ("reported_growth", "comparable_growth"):
@@ -1179,12 +1208,23 @@ def _paragraph_binding(
             )
             if group and not _clause_names(group, text) and not _names_itself(fact, group, text):
                 issues.append("segment/group is absent from the claim clause")
-            issues.extend(qualifier_issues(value, text[max(0, token[0] - 20) : after_end]))
+            bounds = text[max(0, token[0] - 20) : after_end]
+            # "approximately $1.2 billion" claimed as "$1.2 billion" is shown as the source
+            # words it; any other difference in a bound is a different claim
+            approximate = value.value_qualifier == "exact" and source_qualifiers(bounds) == {
+                "approximately"
+            }
+            if not approximate:
+                issues.extend(qualifier_issues(value, bounds))
             span = f"{local} {text[token[0] : after_end]} {after}"
             if growth_slot:
                 span = f"{span} {text[after_end:following]}"
-            elif field in ("previous_guidance", "new_guidance") and not _GUIDANCE.search(span):
-                span = f"{span} {frame.near}"  # an "Outlook" heading above the bullet
+            elif field in ("previous_guidance", "new_guidance"):
+                # Anywhere in the clause before it: "ASML expects Q4 2026 total net sales
+                # between", "Targets assume non-GAAP operating margin of ~44.0%"
+                span = f"{prefix} {span}"
+                if not _GUIDANCE.search(span):
+                    span = f"{span} {frame.near}"  # an "Outlook" heading above the bullet
             issues.extend(_slot_issues(field, value, span, fact.metric))
             if field not in ("previous_guidance", "new_guidance", "prior_year_actual") and (
                 _guidance_heading(frame.near)
@@ -1235,6 +1275,8 @@ def _paragraph_binding(
             _, unit = _unit_issues(value, f"{fact.metric} {text}")
             if money:
                 shown = shown.model_copy(update={"unit": "money"})
+            if approximate:
+                shown = shown.model_copy(update={"value_qualifier": "approximately"})
             if not issues:
                 kept = shown.model_copy(update={"basis": basis})
                 return [], ref.block_id, _accepted(kept, currency, unit)
