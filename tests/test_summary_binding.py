@@ -1674,3 +1674,185 @@ def test_a_transposed_outlook_table_names_its_measure_in_the_column() -> None:
         period="Q1 2027",
         **gov,
     )
+
+
+# Tuned on the unseen issuers (KO, MCO, ETN, BSX), measured on the untouched held-out set
+def test_a_percent_written_once_is_both_ends_of_a_range() -> None:
+    """Eaton's "Organic growth of 13-15%", Boston Scientific's "decline ... by approximately
+    (3.0) to (1.0) percent"."""
+    eaton = document_from_text(
+        "Eaton reports third quarter 2026 results\nFor the full year 2026, the company "
+        "anticipates:\n•Organic growth of 13-15%"
+    )
+    boston = document_from_text(
+        QUARTER + "The company estimates net sales to decline in the fourth quarter of 2026, "
+        "versus the prior year period, by approximately (3.0) to (1.0) percent on a reported "
+        "basis."
+    )
+    rate = {"unit": "%", "scale": "one", "currency": ""}
+
+    assert bound(
+        eaton,
+        "Organic growth",
+        "new_guidance",
+        kind="guide",
+        amount="13",
+        upper="15",
+        period="FY 2026",
+        duration="twelve months",
+        **rate,
+    )
+    assert bound(
+        boston,
+        "Net sales growth",
+        "new_guidance",
+        kind="guide",
+        amount="-3.0",
+        upper="-1.0",
+        value_qualifier="approximately",
+        period="Q4 2026",
+        duration="three months",
+        **rate,
+    )
+
+
+KO_OUTLOOK = (
+    "<p>Coca-Cola reports third quarter 2026 results</p><p>2026 Outlook</p><table>"
+    "<tr><td></td><td>Current</td><td>Prior</td></tr>"
+    "<tr><td>Comparable EPS (non-GAAP)</td><td>At least 11% growth, which includes: "
+    "Approx. 3% currency tailwind</td><td>9% to 10% growth, which includes: Approx. 3% "
+    "currency tailwind</td></tr>"
+    "<tr><td>Free cash flow (non-GAAP)</td><td>At least $13.0 billion, consisting of: At least "
+    "$15.2 billion of cash from operations</td><td>Approx. $12.4 billion, consisting of: "
+    "Approx. $14.6 billion of cash from operations</td></tr></table>"
+)
+
+
+def test_an_outlook_cell_states_its_value_before_its_breakdown() -> None:
+    """Coca-Cola's "Current | Prior" outlook: each cell gives the value, then what it
+    includes; the columns are guidance versions, not periods."""
+    document = document_from_html(KO_OUTLOOK)
+    year = {"period": "FY 2026", "duration": "twelve months", "basis": "non-GAAP"}
+    eps = {"unit": "%", "scale": "one", "currency": ""}
+    flow = {"scale": "billion", "unit": "money", "currency": "USD"}
+
+    assert guidance_cell(
+        document,
+        KO_CELL_EPS,
+        "Comparable EPS growth",
+        "new_guidance",
+        amount="11",
+        value_qualifier="at_least",
+        **eps,
+        **year,
+    )
+    assert guidance_cell(
+        document,
+        KO_CELL_PRIOR_EPS,
+        "Comparable EPS growth",
+        "previous_guidance",
+        amount="9",
+        upper="10",
+        **eps,
+        **year,
+    )
+    assert guidance_cell(
+        document,
+        KO_CELL_PRIOR_FLOW,
+        "Free cash flow",
+        "previous_guidance",
+        amount="12.4",
+        value_qualifier="approximately",
+        **flow,
+        **year,
+    )
+    # The prior column is never the new guidance
+    assert not guidance_cell(
+        document,
+        KO_CELL_PRIOR_FLOW,
+        "Free cash flow",
+        "new_guidance",
+        amount="12.4",
+        value_qualifier="approximately",
+        **flow,
+        **year,
+    )
+
+
+KO_CELL_EPS = "At least 11% growth, which includes: Approx. 3% currency tailwind"
+KO_CELL_PRIOR_EPS = "9% to 10% growth, which includes: Approx. 3% currency tailwind"
+KO_CELL_PRIOR_FLOW = (
+    "Approx. $12.4 billion, consisting of: Approx. $14.6 billion of cash from operations"
+)
+
+
+def test_a_period_written_year_first_or_with_its_comparison_is_read() -> None:
+    """Moody's and Coca-Cola answers wrote "2026Q3", and a growth's period as "Q3 2026 vs Q3
+    2025"."""
+    document = document_from_text(QUARTER + "Revenue was $2,023 million, up 1%.")
+
+    assert bound(document, "Revenue", amount="2023", period="2026Q3")
+    growth = {"unit": "%", "scale": "one", "currency": "", "comparison": "YoY"}
+    assert bound(
+        document, "Revenue", "reported_growth", amount="1", period="Q3 2026 vs Q3 2025", **growth
+    )
+    assert not bound(document, "Revenue", amount="2023", period="2025Q3")
+
+
+def test_a_qualifier_is_stated_by_its_words_in_any_order_and_form() -> None:
+    """Moody's "3% on an organic constant currency basis" for a qualifier "constant currency,
+    organic"; Eaton's "up 22% organically" for "organic"."""
+    moody = document_from_text(
+        QUARTER + "Revenue of $2.0 billion increased 1% from the prior-year period and 3% on an "
+        "organic constant currency basis."
+    )
+    eaton = document_from_text(QUARTER + "Sales were $4.2 billion, up 22% organically.")
+    growth = {"unit": "%", "scale": "one", "currency": "", "comparison": "YoY"}
+
+    assert bound(
+        moody,
+        "Revenue",
+        "comparable_growth",
+        amount="3",
+        comparison_qualifier="constant currency, organic",
+        **growth,
+    )
+    assert bound(
+        eaton, "Sales", "comparable_growth", amount="22", comparison_qualifier="organic", **growth
+    )
+    assert not bound(
+        moody,
+        "Revenue",
+        "comparable_growth",
+        amount="3",
+        comparison_qualifier="organic, excluding acquisitions",
+        **growth,
+    )
+
+
+def test_a_forecast_decline_is_never_bound_as_a_rise() -> None:
+    document = document_from_text(
+        QUARTER + "The company estimates net sales to decline in the fourth quarter of 2026 by "
+        "approximately 3 to 1 percent."
+    )
+    rate = {"unit": "%", "scale": "one", "currency": "", "value_qualifier": "approximately"}
+    q4 = {"period": "Q4 2026", "duration": "three months"}
+
+    assert not bound(
+        document,
+        "Net sales growth",
+        "new_guidance",
+        kind="guide",
+        amount="1",
+        upper="3",
+        **rate,
+        **q4,
+    )
+    # Stated with its sign it binds as the decline it is, and only so
+    stated = document_from_text(
+        QUARTER + "The company estimates net sales to decline in the fourth quarter of 2026 by "
+        "approximately (3.0) to (1.0) percent."
+    )
+    decline = {"metric": "Net sales growth", "field": "new_guidance", "kind": "guide"}
+    assert bound(stated, **decline, amount="-3.0", upper="-1.0", **rate, **q4)
+    assert not bound(stated, **decline, amount="1.0", upper="3.0", **rate, **q4)

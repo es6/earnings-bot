@@ -497,6 +497,40 @@ the rules were tuned on. Releases never used for tuning (the live streak's, from
 17) decide whether it holds, and every value they keep is to be read before "Beta" is
 removed.
 
+### Generalizing beyond the tuned replay (Nov 16, v0.21.49, measured)
+
+The reference sets keep fewer values by role than the live replay (every value of a fact
+counts: current, prior year, growth). Headline values kept: held out 78/131 (60%), unseen
+280/456 (61%); guidance 28/53 and 133/375. This round was tuned only on the unseen issuers
+(KO, MCO, ETN, BSX) and only measured on the 16 held-out releases. Fixes, general:
+
+- **A unit written once in a range**: "Organic growth of 13-15%", "decline ... by
+  approximately (3.0) to (1.0) percent". A negative end's parenthesis between the ends no
+  longer breaks the range.
+- **A forecast rate stated as a change** ("net sales to decline ... by") is that measure's
+  growth guidance. A stated decline is never bound as a rise.
+- **Outlook cells with a breakdown** ("At least $13.0 billion, consisting of: ...", "9% to
+  10% growth, which includes: ..."); "Approx."; an EPS row's percentage is EPS growth;
+  "Current | Prior" guidance columns are versions, not periods.
+- **Periods written "2026Q3"**, and a growth's period with its comparison ("Q3 2026 vs Q3
+  2025").
+- **A comparison qualifier stated in any order and form**: "organic, constant currency" by
+  "on an organic constant currency basis"; "organic" by "organically".
+
+| Values kept, by role | Held out (not tuned) | Unseen (tuned on) | Live replay |
+|---|---|---|---|
+| Headline, before | 78/131 (60%) | 280/456 (61%) | 99/106 |
+| Headline, after | 82/131 (63%) | 328/456 (72%) | 99/106 |
+| Guidance, before | 28/53 (53%) | 133/375 (35%) | 104/126 |
+| Guidance, after | 29/53 (55%) | 309/375 (82%) | 107/126 |
+
+All 7 known wrong facts stay refused; no value was lost on any set; every newly kept value
+was read against its passage, row and column (Coca-Cola's guidance binds from "Current", its
+previous guidance from "Prior"; Eaton's full-year and fourth-quarter lists each to their own
+period). **The held-out set barely moved.** The unseen gains are mostly layouts those four
+issuers share with few others, so a release unlike any seen so far still keeps about 60% of
+its headline values. The live streak is the measure that decides.
+
 ## Live summaries (v0.13.0)
 
 `summary_bound_format.py` supplies the item 6 presentation path for `BindingReport`

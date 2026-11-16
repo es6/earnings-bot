@@ -394,11 +394,24 @@ def _context(document: SourceDocument, block_id: str) -> _Context:
 _COMPARED = r"(?:year[- ]over[- ]year|yoy|y/y|growth|increase|decrease|sequentially|qoq|q/q)"
 
 
+# A cell's value, then its breakdown: Coca-Cola's "At least $13.0 billion, consisting of: At
+# least $15.2 billion of cash from operations ..."
+_BREAKDOWN = re.compile(
+    r",?\s*(?:which includes|which consists of|consisting of|including)\b.*$",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _value_part(text: str) -> str:
+    return _BREAKDOWN.sub("", text)
+
+
 def _numeric_text(text: str) -> bool:
+    text = _value_part(text)
     text = re.sub(
         # An increase reads as the number it states ("Increase 3.0% to 3.75%"); a decrease
         # would need its sign, so it is never read as a plain number
-        r"^(?:nearly|almost|about|approximately|roughly|around|more than|at least|"
+        r"^(?:nearly|almost|about|approximately|approx\.?|roughly|around|more than|at least|"
         r"less than|up to|at most|over|under|increase(?: of)?|up|growth of|>=|<=|>|<|~)\s*",
         "",
         text.strip(),
@@ -752,6 +765,9 @@ def _guidance_heading(text: str) -> bool:
     )
 
 
+_QUALIFIER_FILLER = frozenset(stem(w) for w in ("basis", "the", "and", "growth", "yoy", "rate"))
+
+
 def _comparison(field: str, value: SourcedValue, local: str) -> tuple[list[str], SourcedValue]:
     """A comparison label the source doesn't state is dropped, not shown; a comparable
     growth rate whose exclusions it doesn't state is rejected."""
@@ -766,7 +782,18 @@ def _comparison(field: str, value: SourcedValue, local: str) -> tuple[list[str],
     }
     if value.comparison and not re.search(patterns[value.comparison], text):
         value = value.model_copy(update={"comparison": ""})
-    if value.comparison_qualifier and words(value.comparison_qualifier) not in words(text):
+    # Each word the qualifier names, in any order: "organic, constant currency" is stated by
+    # "on an organic constant currency basis"
+    stated = set(stems(words(text)))
+    named = {
+        w
+        for w in stems(words(value.comparison_qualifier))
+        if len(w) > 2 and w not in _QUALIFIER_FILLER
+    }
+    if value.comparison_qualifier and not all(
+        any(said.startswith(word) for said in stated)
+        for word in named  # "organically"
+    ):
         if field == "comparable_growth":
             return ["comparison qualifier is not established"], value
         value = value.model_copy(update={"comparison_qualifier": ""})
@@ -838,6 +865,7 @@ def _table_binding(
         if cell.id not in ref.cell_ids or cell.header or not _numeric(cell):
             continue
         prefix, body = _prefixed(cell)
+        body = _value_part(body)
         row = _row(table, cell.row)
         index = row.index(cell)
         left, right = index, index + 1
@@ -952,7 +980,11 @@ def _table_binding(
         # A count unit of the model's own ("gross bookings") on an amount the cell writes as
         # money is shown as the money it is, never without its currency
         money = kind == "count" and bool(_MONEY_MARK.search(raw))
-        if re.search(r"per share|\beps\b", normalized(label)) and kind != "per share":
+        if re.search(r"per share|\beps\b", normalized(label)) and kind not in (
+            "per share",
+            "%",  # EPS growth: Coca-Cola's "Comparable EPS | At least 11% growth"
+            "bps",
+        ):
             issues.append("per-share unit is missing")
         # Other values in the row are other periods unless their own labels set them apart
         # ("GAAP: $4.65 to $4.70 | Non-GAAP: $6.30 to $6.35")
@@ -968,7 +1000,16 @@ def _table_binding(
         change_column = field in ("reported_growth", "comparable_growth") and bool(
             _GROWTH.search(headers)
         )
-        comparative = bool(others) and not years(headers) and not change_column
+        # Guidance columns named as versions ("Current | Prior", "Original | As of ...") are
+        # not periods
+        versions = field in ("previous_guidance", "new_guidance") and bool(
+            re.search(
+                r"\bcurrent\b|\bprior\b|\bprevious\b|\boriginal\b|\bupdated\b|\brevised\b",
+                headers,
+                re.IGNORECASE,
+            )
+        )
+        comparative = bool(others) and not years(headers) and not change_column and not versions
         issues.extend(
             period_issues(
                 value,
@@ -1221,7 +1262,9 @@ def _paragraph_binding(
             ):
                 continue
             if len(run) == 2 and not re.fullmatch(
-                r"\s*(?:to|-|–|—|and)\s*[$€£¥]?\s*", text[run[0][1] : run[1][0]]
+                # "(3.0) to (1.0) percent": a negative end's parenthesis sits between them
+                r"\s*(?:to|-|–|—|and)\s*[$€£¥(]*\s*",
+                text[run[0][1] : run[1][0]],
             ):
                 continue
             issues: list[str] = []
@@ -1233,6 +1276,23 @@ def _paragraph_binding(
                 # billion") is checked there, not as part of the measure's name
                 claim = [w for w in claim if w != _MANAGED] or claim
                 required = [w for w in required if w != _MANAGED] or required
+            if (
+                field in ("previous_guidance", "new_guidance")
+                and kind in ("%", "bps")
+                and re.search(r"\b(?:declin|decreas|increas|grow|growth)", prefix)
+            ):
+                # A forecast rate the clause states as a change: "net sales to decline ... by
+                # (3.0) to (1.0) percent" is net sales growth guidance
+                claim = [w for w in claim if w not in _CHANGE_STEMS] or claim
+                required = [w for w in required if w not in _CHANGE_STEMS] or required
+                if (
+                    re.search(r"\b(?:declin|decreas)", prefix[-80:])
+                    and not re.search(r"\b(?:increas|grow)", prefix[-80:])
+                    and any(amount > 0 for amount, _ in claims)
+                ):
+                    # "to decline ... by 3 to 1 percent" is never a rise of 3% to 1%
+                    failures.append("the source states a decline, the claim a rise")
+                    continue
             window = _metric_window(claim, prefix)
             if window is None and required != claim:
                 window = _metric_window(required, prefix)
