@@ -77,9 +77,9 @@ Details: [command reference](docs/unattended.md#commands).
 
 ## Status
 
-Before 1.0. The polling, failure handling and crash cleanup are done. What's left is a live
-streak of releases, verified summaries, then tickers outside the US (ASX, Hong Kong, Tokyo,
-Toronto and Europe). See the [roadmap](docs/roadmap.md).
+Before 1.0. The polling, failure handling, crash cleanup and verified summaries are done.
+What's left is a live streak of releases, a code-quality review, then tickers outside the US
+(ASX, Hong Kong, Tokyo, Toronto and Europe). See the [roadmap](docs/roadmap.md).
 
 ## Run your own copy
 

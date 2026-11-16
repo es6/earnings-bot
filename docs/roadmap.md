@@ -6,10 +6,24 @@ November 16, 2026. Times are US Eastern.
 See the [implementation handoff](completion-2026-11-15.md) for the completed work,
 preserved evidence and remaining release-time gates.
 
-**Live since November 16, 06:21:** v0.21.51 with verified summaries on; before that, from November 15, 18:16, v0.21.43, everything merged through the test audit fixes
-(#154), deployed with the owner's yes. That includes the Chrome limits (#135), `/track`
-debug mode (#140) and the multiple-server code (#136 to #138), which runs as one server until
-a second is configured.
+**Live since November 16, 06:21:** v0.21.51, everything merged through #166, with verified
+summaries on, deployed with the owner's authorization. That includes the Chrome limits
+(#135), `/track` debug mode (#140) and the multiple-server code (#136 to #138), which runs as
+one server until a second is configured.
+
+## Where 1.0 stands
+
+1.0 needs everything in the gate below and the sections added before 1.0. As of Nov 16:
+
+- **Done:** loud route failures, gentler polling, failure replays, crash cleanup, the Beta
+  label, Chrome limits, and verified summaries live.
+- **This week:** the live streak (Nov 17 to 20). After it: read the streak's verified
+  summaries value by value before "Beta" comes off, and read its `resources` records.
+- **Open, bounded:** the Python maintainability review (one reproduced lifecycle finding to
+  fix, then sign-off); a second Discord server configured and its rate limits measured;
+  the name and identity decision.
+- **Open, largest:** international tickers. Only the plan and debug mode exist, so this is
+  most of the remaining work.
 
 | Area | Where it stands |
 |---|---|
@@ -19,6 +33,7 @@ a second is configured.
 | Verified summaries | Live since Nov 16 (v0.21.51), labeled Beta until the streak is read |
 | International tickers | Not started beyond the plan and debug mode |
 | Load on the PC | Limits live; measured from the streak's `resources` records |
+| Name and identity | Added Nov 16: GitHub rename, and possibly a logo and a new name for the whole bot |
 
 ## The 1.0 gate (agreed November 12)
 
@@ -28,7 +43,7 @@ a second is configured.
 | 2 | Polling is gentler far from the release time | Done: 15 s far from a release time, 5 s from 5 minutes before, full speed from 2 minutes before to 10 after (#92, #128). Live, not yet seen on a live release |
 | 3 | A live streak | Next. HD, KLAR and NVDA on Tue Nov 17, ROAD on Thu Nov 19, WRD on Fri Nov 20. Every IR route stays alive (or recovers and says so), the alert posts, and the summary comes from the first available text. Each is written up from the journal the same day, and a failure restarts the streak |
 | 4 | Failure-replay tests | Done. A refusal mid-window (`test_recorder`), repeated timeouts as a release goes live (#93, #101), a wire alert with no readable article, a restart after delivery not summarizing again, and Discord refusing a post or edit (#123) |
-| 5 | Summaries labeled beta until plan item 6 ships | Done: the footer starts "Beta · Summary by ..." (#132) |
+| 5 | Summaries labeled beta until verified summaries are confirmed on live releases | Done: the footer starts "Beta · Summary by ..." (#132) |
 | 6 | Python maintainability review (added November 16) | Open: review readability, names, comments, module structure, task/resource ownership, types and operations. Resolve concrete findings and document justified deferrals. See [the standards, diagrams and initial scan](python-quality.md) |
 
 From the earlier 1.0 list:
@@ -125,6 +140,29 @@ Open:
   parsing (a PDF read took 0.3 s alone and up to 4 s among 40). That costs summary speed, not
   responsiveness. A separate process for parsing would fix it at some memory cost.
 
+### Name and identity
+
+Added by the owner on Nov 16. The repository is `earnings-bot`, the Discord application shows
+as "Instantaneous Earnings", and nothing has a logo. Decide before 1.0, because every rename
+gets more expensive once other people run copies.
+
+Three sizes, each including the one before:
+
+1. **GitHub rename.** GitHub redirects the old URLs, so existing clones keep working. Update
+   the remote, the CI badges, the clone and Docker commands in the README, and links in the
+   docs.
+2. **A logo and a display name.** The owner sets the Discord application's name and avatar in
+   the Developer Portal; the repository gets the logo for its README and social preview.
+3. **The whole bot.** Also the Python package (`earnings_bot`), the commands
+   (`earnings-bot`, `earnings-bot-record`, `earnings-bot-replay`), the Docker image, and the
+   Task Scheduler tasks ("Earnings Bot", "Earnings Bot Watchdog"). The tasks are system
+   settings, so renaming them needs the owner's yes, and the live checkout's path and saved
+   `schedules/` files must keep working through the switch. Do it in one PR, outside a
+   release window.
+
+Open: the owner picks the name and the size. Step 3 is safest after the streak and before the
+international work starts, so the new modules are written under the final name.
+
 ## Order of work
 
 Agreed with the owner on Nov 15:
@@ -142,16 +180,25 @@ Agreed with the owner on Nov 15:
 4. **Python maintainability review:** apply the [review standard](python-quality.md), complete
    the whole-codebase findings register and review the final verified-summary implementation
    after its active changes settle. Preserve the release behavior with focused PRs.
-5. **International tickers:** the foundations, identification, then a dedicated source
+5. **Name and identity:** the owner's choice of name and size; a full rename lands after the
+   streak, before the international work.
+6. **International tickers:** the foundations, identification, then a dedicated source
    per market ([international.md](international.md)), each going live once its answer
    keys pass one-shot.
-6. **After 1.0:** `/transcript`.
+7. **After 1.0:** `/transcript`.
 
 ## Other open work
 
-- Mon Nov 16: review GlobeNewswire's two record-only batch runs (06:58 and 15:58) before NVDA's
-  first live article guessing at 16:18 on Tue Nov 17. NVDA's SEC directory trial runs at
-  16:19:30 that day.
+- GlobeNewswire article guessing. The 06:58 record-only batch on Nov 16 found 51 pages with no
+  refusal (measured). GlobeNewswire opened the 07:00 burst in number order, about one page
+  every 2 s over 85 s, and the guesser stayed within a few seconds of each page. The 15:58
+  batch also runs a candidate design alongside, for the same burst: most requests on the next
+  number, the following number requested as soon as one opens, at the same 1.5 requests a
+  second. NVDA's guessing on Tue Nov 17 (16:18) is record-only; its GlobeNewswire pages carry
+  the `Nasdaq:NVDA` tag it matches on. NVDA's SEC directory trial runs at 16:19:30 that day.
+  After the streak: match by company name when a page has no ticker tag, report a guesser
+  that stops (refused or out of budget) in `/status` and the window report, and adopt the
+  candidate design if the head-to-head supports it.
 - Summary quality: the reference-bound writer retains 790/1,869 selected values (42%) in
   the frozen corpus; this is retention, not an accuracy score. Driver profiles showed no
   gain. Both remain off pending independently audited improvement on new releases.
@@ -159,10 +206,10 @@ Agreed with the owner on Nov 15:
   (#144), bounded profile diagnostics (#146) and publisher timestamp recovery (#148) are
   merged. HubSpot profile-dependent access is verified; no new publication-speed lead is
   proven. See [diagnostics](source-diagnostics.md) and [inert event drafts](trial-plans/README.md).
-- [Test audit](test-audit/README.md): fixes merged (#154, #155). Every candidate survivor was
+- [Test audit](test-audit/README.md): done (#154, #155, #157). Every candidate survivor was
   checked against the whole suite: 27 gaps closed, 5 already caught elsewhere, 1 equivalent.
-  The serial suite went from 93.8 s to 34.0 s (measured). Leftovers (misplaced tests,
-  private-method calls, `test_summary_binding.py` merges) are in progress.
+  The serial suite went from 93.8 s to 34.0 s (measured). The leftovers (misplaced tests,
+  private-method calls, a test file merge) were finished in #157.
 - [Astra task priorities](astra-tasks.md) record the next bounded reasoning/research jobs.
 - Owner: pause Windows Update before Nov 17.
 - Dependabot #119 (Docker Python 3.15) closed Nov 15: it moved only the runtime stage, so
