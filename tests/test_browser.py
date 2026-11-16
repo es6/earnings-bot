@@ -11,6 +11,7 @@ from earnings_bot.browser import (
     DesktopChrome,
     RenderedPage,
     _Tab,
+    browser_host,
 )
 from earnings_bot.quarterly_table import rendered_pdf
 from tests.fakes import FakeTabSocket
@@ -283,3 +284,56 @@ async def test_an_urgent_read_cancels_lower_priority_speculative_pacing(
     assert cancelled.is_set() and not chrome._prewarming
     assert turns == [HOST, HOST]  # navigation and article use the same budget
     assert result.status == 200 and HOST + URGENT_LANE in chrome._locks
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://ir.lucidmotors.com/press-releases",
+        "https://investor.example.co.uk/news?page=2",
+        "https://IR.Example.com:443/news",
+        "https://8.8.8.8/news",
+    ],
+)
+def test_chrome_may_open_any_public_https_page(url: str) -> None:
+    assert browser_host(url) == url.split("/")[2]
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://ir.example.com/news",
+        "https://localhost/",
+        "https://127.0.0.1/",
+        "https://10.0.0.5/admin",
+        "https://192.168.1.1/",
+        "https://[::1]/",
+        "https://169.254.169.254/latest/meta-data",
+        "https://printer.local/",
+        "https://nas.home.arpa/",
+        "https://router/",
+        "https://ir.example.com:8443/news",
+        "https://user@ir.example.com/news",
+        "https://ir.example.com/news#latest",
+        "https://ir.example.com",
+    ],
+    ids=[
+        "http",
+        "localhost",
+        "loopback",
+        "private",
+        "home-router",
+        "ipv6-loopback",
+        "link-local",
+        "mdns",
+        "home-arpa",
+        "single-label",
+        "other-port",
+        "login",
+        "fragment",
+        "no-path",
+    ],
+)
+def test_chrome_never_opens_this_pc_or_its_network(url: str) -> None:
+    with pytest.raises(ValueError, match="Not a public https page"):
+        browser_host(url)

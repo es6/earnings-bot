@@ -9,6 +9,7 @@ from earnings_bot import issuers
 from earnings_bot.fetch import Response
 from earnings_bot.issuers import (
     Issuers,
+    fiscal_year_end,
     profile,
     release_time,
     symbol,
@@ -280,3 +281,15 @@ async def test_something_that_isnt_a_symbol_isnt_looked_up(typed: str) -> None:
     with pytest.raises(ValueError, match=exactly("Enter a ticker symbol, such as NVDA.")):
         await Issuers(fetcher).company(typed, TODAY)
     assert fetcher.requests == []
+
+
+def test_a_fiscal_year_end_from_the_latest_annual_report_when_sec_gives_none() -> None:
+    # Alibaba: SEC's fiscalYearEnd is empty, its 20-F covers the year to March 31
+    submissions = {
+        "fiscalYearEnd": None,
+        "filings": {
+            "recent": {"form": ["6-K", "20-F", "6-K"], "reportDate": ["", "2026-03-31", ""]}
+        },
+    }
+    assert fiscal_year_end(submissions) == "0331"
+    assert fiscal_year_end({"fiscalYearEnd": "1231"}) == "1231"

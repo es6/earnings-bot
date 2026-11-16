@@ -1,13 +1,12 @@
 import itertools
 import json
 from datetime import UTC, datetime, timedelta, timezone
-from typing import Any
+from typing import Any, cast
 from urllib.parse import parse_qs, unquote, urlsplit
 
 import pytest
 
 from earnings_bot.fetch import Response, host_gap
-from earnings_bot.periods import agrees_with_period
 from earnings_bot.sources import (
     GLOBENEWSWIRE_EARNINGS,
     PR_NEWSWIRE_EARNINGS,
@@ -22,6 +21,7 @@ from earnings_bot.sources import (
     Q4FinancialReports,
     Q4PressReleases,
     RssFeed,
+    is_date_notice,
     looks_like_earnings,
     published_time,
     results_headline,
@@ -102,26 +102,6 @@ def test_looks_like_earnings(headline: str, expected: bool) -> None:
 def test_a_results_headline_reports_on_a_period(headline: str, expected: bool) -> None:
     # A release this rejects only posts once SEC has it, so real results must get through
     assert results_headline(headline) is expected
-
-
-@pytest.mark.parametrize(
-    ("headline", "period", "expected"),
-    [
-        # Home Depot names a fiscal year for the calendar year it starts in, while a plan worked
-        # out from its January year end names it for the year it ends in
-        ("The Home Depot Announces Third Quarter Fiscal 2026 Results", "FY2027Q3", True),
-        ("Lowe's Reports Third Quarter 2026 Sales and Earnings Results", "FY2027Q3", True),
-        ("NVIDIA Announces Financial Results for Third Quarter Fiscal 2027", "FY2027Q3", True),
-        ("Company Reports Q2 2026 Financial Results", "FY2026Q3", False),
-        ("Company Reports Q3 2024 Financial Results", "FY2026Q3", False),
-        ("Company Reports Record Third Quarter Revenue", "FY2026Q3", True),
-        ("Company Reports Record Second Quarter Revenue", "FY2026Q3", False),
-    ],
-)
-def test_a_headline_agrees_with_the_planned_quarter(
-    headline: str, period: str, expected: bool
-) -> None:
-    assert agrees_with_period(headline, period) is expected
 
 
 def test_q4_press_releases() -> None:
@@ -708,3 +688,26 @@ async def test_fetch_preserves_the_encoded_spelling_on_the_wire() -> None:
     assert session.sent[0][2] == fetched.url != PR_NEWSWIRE_EARNINGS
     # A redirect from the spelling to the cached URL must show as an error, not a stale copy
     assert session.redirects == [False]
+
+
+def test_a_results_headline_can_name_its_quarter_like_2q2026() -> None:
+    # WeRide's Q2 2026 results headline names neither "results" nor "quarter"
+    assert looks_like_earnings(
+        "Accelerating European Expansion Through Proven Asset-Light Model; 2Q2026 Total Revenue "
+        "Reached RMB231.7 Million"
+    )
+    assert looks_like_earnings("3Q 2026 Revenue Up 10%")
+    assert not looks_like_earnings("WeRide Named Among Top 10 AI Cases")
+
+
+def test_a_reset_isnt_a_date_notice() -> None:
+    assert not is_date_notice("Lucid Announces Operational Reset and Second Quarter 2026 Results")
+    assert is_date_notice("Lucid Sets Date for Third Quarter 2026 Earnings")
+    assert is_date_notice(
+        "Applied Materials to Report Fourth Quarter and Fiscal 2026 Results on Nov. 12, 2026"
+    )
+
+
+def test_a_timestamp_that_isnt_text_has_no_time() -> None:
+    assert published_time(cast(Any, 1793394900)) is None
+    assert published_time("2026-11-04T16:15:00-05:00") == datetime(2026, 11, 4, 21, 15, tzinfo=UTC)

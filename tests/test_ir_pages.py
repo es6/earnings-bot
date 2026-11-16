@@ -18,9 +18,7 @@ from earnings_bot.ir_pages import (
     upcoming,
 )
 from earnings_bot.ir_research import prior_period, quarter_headline
-from earnings_bot.issuers import fiscal_year_end
 from earnings_bot.recorder import ET
-from earnings_bot.sources import looks_like_earnings
 from tests.builders import AMAT
 from tests.fakes import rendered
 
@@ -268,16 +266,6 @@ async def test_a_page_chrome_cant_open_is_named_in_the_reading() -> None:
     )
 
 
-def test_a_results_headline_can_name_its_quarter_like_2q2026() -> None:
-    # WeRide's Q2 2026 results headline names neither "results" nor "quarter"
-    assert looks_like_earnings(
-        "Accelerating European Expansion Through Proven Asset-Light Model; 2Q2026 Total Revenue "
-        "Reached RMB231.7 Million"
-    )
-    assert looks_like_earnings("3Q 2026 Revenue Up 10%")
-    assert not looks_like_earnings("WeRide Named Among Top 10 AI Cases")
-
-
 ACME = AMAT.model_copy(
     update={"sec_form": "8-K", "release_time": "16:05", "fiscal_year_end": "0930"}
 )
@@ -382,18 +370,6 @@ async def test_glued_dates_still_show_which_notices_are_old() -> None:
     target, _ = result
     assert target.expected.date() == date(2026, 11, 19)
     assert target.period == "FY2027Q2"
-
-
-def test_a_fiscal_year_end_from_the_latest_annual_report_when_sec_gives_none() -> None:
-    # Alibaba: SEC's fiscalYearEnd is empty, its 20-F covers the year to March 31
-    submissions = {
-        "fiscalYearEnd": None,
-        "filings": {
-            "recent": {"form": ["6-K", "20-F", "6-K"], "reportDate": ["", "2026-03-31", ""]}
-        },
-    }
-    assert fiscal_year_end(submissions) == "0331"
-    assert fiscal_year_end({"fiscalYearEnd": "1231"}) == "1231"
 
 
 async def test_a_notice_dated_ahead_is_read_before_undated_ones() -> None:

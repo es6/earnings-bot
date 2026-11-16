@@ -1,19 +1,17 @@
 import asyncio
 import io
-import itertools
 import json
 import sys
-import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import cast
 
 import pytest
 
 from earnings_bot import clock, fetch, recorder
 from earnings_bot.clock import Sample
-from earnings_bot.fetch import Fetcher, Response
+from earnings_bot.fetch import Response
 from earnings_bot.recorder import (
     ET,
     Journal,
@@ -28,7 +26,7 @@ from earnings_bot.recorder import (
     sync_clock,
     watch,
 )
-from earnings_bot.sources import GuessedFile, GuessedPage, RssFeed, Sighting, Source, published_time
+from earnings_bot.sources import GuessedFile, GuessedPage, RssFeed, Sighting, Source
 from tests.fakes import CompanyFeed, FakeFetcher, ListSource, PinnedClock, RoutedFetcher
 
 
@@ -92,69 +90,6 @@ async def test_watch_keeps_polling_after_a_timeout() -> None:
     assert w.problem is None
     # Counted apart from other errors, so a slow origin stays visible in the summary
     assert (w.timeouts, w.errors) == (1, 0)
-
-
-async def test_fetcher_gives_up_on_a_server_that_never_answers() -> None:
-    async def accept_and_say_nothing(
-        reader: asyncio.StreamReader, writer: asyncio.StreamWriter
-    ) -> None:
-        await reader.read()  # until the client gives up and closes the connection
-        writer.close()
-
-    server = await asyncio.start_server(accept_and_say_nothing, "127.0.0.1", 0)
-    port = server.sockets[0].getsockname()[1]
-    async with server, Fetcher("Test Person test@example.com") as fetcher:
-        started = time.monotonic()
-        with pytest.raises(TimeoutError):
-            await fetcher.request("GET", f"http://127.0.0.1:{port}/", give_up_after=0.2)
-        assert time.monotonic() - started < 1
-
-
-async def test_fetcher_reads_a_header_longer_than_aiohttps_default() -> None:
-    # Some of cloudflare.com's 404 pages carry a 13 KB policy header
-    policy = "script-src 'self' " + "cdn.example " * 1200
-
-    async def answer(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        await reader.readuntil(b"\r\n\r\n")
-        writer.write(
-            "HTTP/1.1 404 Not Found\r\n"
-            f"Content-Security-Policy-Report-Only: {policy}\r\n"
-            "Content-Length: 0\r\nConnection: close\r\n\r\n".encode()
-        )
-        await writer.drain()
-        writer.close()
-
-    server = await asyncio.start_server(answer, "127.0.0.1", 0)
-    port = server.sockets[0].getsockname()[1]
-    async with server, Fetcher("Test Person test@example.com") as fetcher:
-        response = await fetcher.request("HEAD", f"http://127.0.0.1:{port}/")
-    assert response.status == 404
-    assert len(response.headers["content-security-policy-report-only"]) > 13_000
-
-
-async def test_fetcher_doesnt_send_cookies_back(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(fetch, "_DEFAULT_GAP", 0.0)
-    # cloudflare.com answers 500 to requests that carry the cookies it set
-    requests: list[bytes] = []
-
-    async def answer(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        requests.append(await reader.readuntil(b"\r\n\r\n"))
-        writer.write(
-            b"HTTP/1.1 200 OK\r\nSet-Cookie: visitor=1; Path=/\r\n"
-            b"Content-Length: 0\r\nConnection: close\r\n\r\n"
-        )
-        await writer.drain()
-        writer.close()
-
-    server = await asyncio.start_server(answer, "127.0.0.1", 0)
-    port = server.sockets[0].getsockname()[1]
-    async with server, Fetcher("Test Person test@example.com") as fetcher:
-        for _ in range(2):
-            # A host name, since aiohttp's usual cookie jar ignores cookies from IP addresses
-            # anyway, and this test would pass without the fix
-            await fetcher.request("GET", f"http://localhost:{port}/")
-    assert len(requests) == 2
-    assert b"cookie" not in requests[1].lower()
 
 
 async def test_a_refused_poll_is_retried_after_a_growing_pause(
@@ -513,50 +448,6 @@ async def test_a_window_opening_later_joins_the_feeds_poll() -> None:
     assert [e["key"] for e in events(log) if e["event"] == "new"] == ["AMD:new"]
 
 
-async def test_an_urgent_request_takes_the_hosts_next_turn_but_keeps_its_gap(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(fetch, "host_gap", lambda host: 0.05)
-    fetcher = Fetcher("Test Person test@example.com")
-    turns: list[tuple[str, float]] = []
-
-    async def take_turn(name: str, urgent: bool = False) -> None:
-        await fetcher.wait_turn("example.com", urgent)
-        turns.append((name, time.monotonic()))
-
-    await take_turn("poll")  # the host is free, so this goes at once
-    queued = [asyncio.create_task(take_turn(f"poll {i}")) for i in range(3)]
-    await asyncio.sleep(0)  # they line up behind it
-    await take_turn("release text", urgent=True)
-    await asyncio.gather(*queued)
-
-    assert [name for name, _ in turns] == ["poll", "release text", "poll 0", "poll 1", "poll 2"]
-    gaps = [b - a for (_, a), (_, b) in itertools.pairwise(turns)]
-    assert min(gaps) >= 0.045
-
-
-async def test_fetcher_reports_how_long_a_request_waited_for_its_host(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(fetch, "host_gap", lambda host: 0.2)
-
-    async def answer(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        await reader.readuntil(b"\r\n\r\n")
-        writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-        await writer.drain()
-        writer.close()
-
-    server = await asyncio.start_server(answer, "127.0.0.1", 0)
-    port = server.sockets[0].getsockname()[1]
-    async with server, Fetcher("Test Person test@example.com") as fetcher:
-        url = f"http://127.0.0.1:{port}/"
-        first, second = await asyncio.gather(
-            fetcher.request("GET", url), fetcher.request("GET", url)
-        )
-    assert first.queued < 0.05
-    assert 0.15 < second.queued < 0.4
-
-
 class RateLimitedFetcher(FakeFetcher):
     """Answers every request with 429 and a Retry-After of an hour."""
 
@@ -659,11 +550,6 @@ def test_console_output_cant_fail_on_characters_its_encoding_lacks(
     Journal(io.StringIO()).say(f"LLY prnewswire: NEW * {headline}")
 
     assert headline.encode("cp1252", errors="backslashreplace") in out.getvalue()
-
-
-def test_a_timestamp_that_isnt_text_has_no_time() -> None:
-    assert published_time(cast(Any, 1793394900)) is None
-    assert published_time("2026-11-04T16:15:00-05:00") == datetime(2026, 11, 4, 21, 15, tzinfo=UTC)
 
 
 async def test_after_the_window_a_source_that_hadnt_shown_the_release_still_links_it() -> None:

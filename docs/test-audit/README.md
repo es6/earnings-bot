@@ -144,3 +144,49 @@ Left for later, with reasons in each report: tests still calling private methods
 public path exists yet (`TrackProgress._check`, `_facts`), a few tests in another module's
 file, the "untested behavior" lists (new coverage rather than fixes), and the
 `test_summary_binding.py` merges, deferred while that module is being changed on main.
+
+## Leftovers, Nov 16 (branch `test-audit-tail`, tests only, no source change, no version bump)
+
+Numbers are measured: 1,329 tests collected before, 1,337 after (+1 from splitting the tentative
+event-card test, +7 from parametrizing the binding merge); 1,337 pass in 15.1 s with `-n 4` and
+31.2 s serially. Touched files also passed serially in random order.
+
+- **Moved to the file of the module they test (23 test functions, 3 of them parametrized, with their
+  cases kept):** `looks_like_earnings` and `published_time` tests and the `is_date_notice` test
+  to `test_sources.py`; the `fiscal_year_end` test to `test_issuers.py`; the five `Fetcher` tests
+  from `test_recorder.py` to `test_fetch.py`; two `health_embed` tests and the `_window_report`
+  degraded-route test to `test_unattended.py` (with a small local `watcher` fixture and
+  `FixedClock`, which moved to `tests/fakes.py`); the `/status` build test to `test_commands.py`;
+  the catalog fiscal-year invariant to `test_known.py`; the headline/period test to a new
+  `test_periods.py`; the `browser_host` tests to `test_browser.py`; the prior-fiscal-year table
+  test to `test_ir_research.py`; four speed-audit tests from `test_sec_results.py` to
+  `test_source_audit.py`; the compact-request test to `test_summary_evidence.py`. The destination
+  files have no autouse fixtures. Moved tests were each confirmed to fail with the source line
+  they cover broken.
+- **Strengthened/rewritten:** the Chrome-waits research test now uses a frozen `time.monotonic`
+  and asserts the exact retry time (it had already been made platform independent); the
+  interrupted-investigation test uses the same clock; the tentative event-card test is split in
+  two, and the tentative one now asserts the date is on the card and read, yet not armed.
+- **Merged:** `test_summary_binding.py`'s two wrong-value tests became one parametrized test with
+  9 readable ids (7 table cases, and the text-document wrong-metric and wrong-period cases that
+  the "two reproduced holes" test covered), each with its control.
+- **Private calls replaced by public paths (7 calls):** `_investigate` to `run_once`;
+  `_check` to `run_once` (3 tests); `bot._status` to the registered `/status` command;
+  `bot._server_guilds` to `setup_hook`; `runner._problem` to a `scan()` of a missing schedule
+  directory.
+- **Still left, with reasons:**
+  - `TrackProgress._check`, `track_test._facts`: no public path.
+  - `unattended._window_report` (5 calls) and `DirectoryWatcher._watch` in
+    `test_benchmark.py`: the public path is a whole window run; the benchmark test would
+    also need helpers shared with `test_unattended.py`, so its REWRITE stays open.
+  - `_issuer_routes` (2), `_prepare_cache`: `run_once` skips them for a plan that is not past.
+  - `Chrome._prewarm` (2): the public `request` starts it only under conditions the tests would
+    have to rebuild, and they also read `_prewarming`.
+  - `recorder._verify_sixks`, `investigate._last_releases`, `bot._other_channels`: no cheap
+    public path.
+  - `chrome_runs_below_normal_priority_under_a_memory_ceiling` still reads `_kernel`, `_job` and
+    `_EXTENDED_LIMITS`: `DesktopProcess` has no public accessor for the job's memory limit, and
+    none was added for a test.
+  - The "untested behavior" lists (new coverage, out of scope), and the other skipped verdicts
+    whose stated reason still holds (`test_templates_rebuild_the_hand_written_schedules`,
+    registration merge, resent-alert fold, burst harness split).

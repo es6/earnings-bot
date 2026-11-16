@@ -45,6 +45,15 @@ class PinnedClock(TrustedClock):
         return self.anchor + timedelta(seconds=time.monotonic() - self.started)
 
 
+class FixedClock(TrustedClock):
+    def __init__(self, now: datetime) -> None:
+        super().__init__(servers=())
+        self.moment = now
+
+    def now(self) -> datetime:
+        return self.moment
+
+
 class _Anchors(HTMLParser):
     _BLOCKS = frozenset({"div", "li", "tr", "article", "section"})
 

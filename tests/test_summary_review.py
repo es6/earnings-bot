@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from earnings_bot.source_document import document_from_html, document_from_text
+from earnings_bot.source_document import document_from_text
 from earnings_bot.summary_binding import BindingReport, Rejection
 from earnings_bot.summary_request import referenced_request
 from earnings_bot.summary_review import (
@@ -31,24 +31,6 @@ def test_request_variants_preserve_default_and_add_only_opted_in_review() -> Non
     assert review_variant(baseline) == baseline  # caller-owned nested request wasn't mutated
     assert json.dumps(baseline, sort_keys=True) == frozen
     assert {example["ticker"] for example in BRIEF_EXAMPLES} == {"FICO", "UBER"}
-
-
-def test_compact_requests_preserve_original_coordinates_and_all_nonempty_evidence() -> None:
-    document = document_from_html(
-        "<p>Q3 2026 results, in millions of USD.</p>"
-        "<table><tr><th>Metric</th><th></th><th>Q3 2026</th></tr>"
-        "<tr><th>Revenue</th><td></td><td>100</td></tr></table>"
-    )
-    before = document.to_json()
-    content = json.loads(referenced_request("TEST", document)["messages"][0]["content"])
-    cells = content["source_document"]["tables"][0]["cells"]
-    assert len(cells) == 4 and len(document.tables[0].cells) == 6
-    assert cells[-1] == ["t1r1c2", 1, 2, 1, 1, False, "", "100"]
-    assert document.resolve(document.sha256, "t1r1c1").text == ""
-    assert document.to_json() == before
-    assert [cell[0] for cell in cells] == [
-        cell.id for cell in document.tables[0].cells if cell.text.strip()
-    ]
 
 
 @pytest.mark.parametrize("role", ["headline", "guidance", "supporting"])

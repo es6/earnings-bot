@@ -1,6 +1,7 @@
 import asyncio
 import io
 import json
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
@@ -8,20 +9,27 @@ from typing import Any, cast
 import discord
 import pytest
 
-from earnings_bot import delivery, pipeline, unattended
+from earnings_bot import delivery, pipeline, recorder, unattended
+from earnings_bot.browser_sources import BrowserRelease
 from earnings_bot.delivery import DeliveryStore
-from earnings_bot.fetch import Fetcher
+from earnings_bot.fetch import Fetcher, Response
+from earnings_bot.formatting import AMBER, clock, day
+from earnings_bot.known import to_target
 from earnings_bot.pipeline import Release, Releases
 from earnings_bot.recorder import ET, Journal, OnNew, Polls, Target, Watch
 from earnings_bot.release_cards import release_content
 from earnings_bot.sources import EdgarFilings, EdgarLatest, GuessedFile, RssFeed, Sighting
 from earnings_bot.track_progress import TrackProgress
+from earnings_bot.unattended import DirectoryWatcher, _Window
+from tests.builders import TRACKING_NOW as NOW
 from tests.builders import uber
 from tests.fakes import (
     FakeDiscord,
     FakePoster,
+    FixedClock,
     PinnedClock,
     RoutedFetcher,
+    embed_text,
 )
 
 
@@ -420,8 +428,10 @@ async def test_calendar_updates_edit_one_card_and_keep_their_log(
             assert channel.attempts == 1 and message.edited_at is not None
             assert message.embed and "New time" in (message.embed.description or "")
             # Errors still get their own notification.
-            runner._problem("feed", "unavailable")
-            assert standalone == ["⚠️ **feed**: unavailable"]
+            runner.directory = tmp_path / "gone"
+            await runner.scan()
+            [problem] = standalone
+            assert problem.startswith("⚠️ **Schedule directory**: ")
         finally:
             for window in runner.windows.values():
                 window.task.cancel()
@@ -767,3 +777,94 @@ async def test_a_resumed_alert_doesnt_attach_its_file_again(tmp_path: Path) -> N
 
     [alert] = channel.messages.values()
     assert [a.filename for a in alert.attachments] == ["Nebius_Q3_2026_Results.pdf"]
+
+
+@pytest.fixture
+def watcher(tmp_path: Path) -> Iterator[DirectoryWatcher]:
+    """A directory watcher with no schedule files, as the bot builds it, at a fixed time."""
+    fetcher = RoutedFetcher({})
+    journal = Journal(io.StringIO(), FixedClock(NOW))
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        yield DirectoryWatcher(
+            tmp_path,
+            fetcher,
+            journal,
+            Releases(FakePoster, fetcher, journal, None),
+            store,
+            lambda message: None,
+        )
+
+
+async def test_watch_status_shows_each_releases_time_beside_when_its_watch_opens(
+    watcher: DirectoryWatcher,
+) -> None:
+    # ONON, Nov 10: /watch_status said "from 5:10 AM" and /upcoming "6:10 AM", which read as a
+    # disagreement. One was the watch opening, the other the release.
+    onon = to_target("HD", NOW + timedelta(hours=2), 2026, 3)
+    onon.before_minutes, onon.after_minutes = 60, 90
+    task = asyncio.create_task(asyncio.sleep(3600))
+    watcher.windows[onon.release_key] = _Window(onon, task)
+    try:
+        embed = watcher.health_embed("v0.8.0", "abc1234")
+    finally:
+        task.cancel()
+
+    # /status is health: the next watch's start, not a second calendar (that's /upcoming)
+    text = embed_text(embed)
+    assert embed.title == "Earnings Bot v0.8.0 · status"
+    assert f"⏭️ Next watch: **HD** from {day(onon.window[0])}, {clock(onon.window[0])}" in text
+    assert "results about" not in text
+    assert "📝 Live summaries off" in text
+    assert embed.footer.text == "Build abc1234"
+
+
+def test_a_route_that_went_quiet_marks_the_window_report_degraded() -> None:
+    """Nebius's newsroom was refused at 6:59 AM on Nov 12 and went unanswered for the rest of
+    the window. A route dying mid-window must be loud (the 1.0 gate)."""
+    expected = datetime(2026, 11, 12, 8, 0, tzinfo=ET)
+    target = to_target("HD", expected, 2026, 3)
+    start = target.window[0]
+    listing = BrowserRelease("https://ir.example.com/news", "third quarter")
+    quiet = Watch("HD", listing, target.window, previous=start)
+    edgar = Watch("HD", EdgarFilings(354950), target.window, previous=start)
+    answers = (
+        (quiet, [start + timedelta(seconds=s) for s in (1, 2, 200)]),
+        (edgar, [start + timedelta(seconds=s) for s in range(1, 200, 3)]),
+    )
+    for w, times in answers:
+        for sent in times:
+            recorder.take(
+                w, sent, Response("", 200, {}, b"", 0.01), Journal(io.StringIO()), items=[]
+            )
+
+    report = unattended._window_report(target, [quiet, edgar])
+
+    assert report.splitlines()[0] == "🏁 **HD Q3 FY26 window closed** · ⚠️ degraded"
+    assert (
+        "⚠️ Went without an answer for up to: IR press release page, read in Chrome 3m 18s" in report
+    )
+    assert "SEC 8-K" not in report.splitlines()[-1]
+
+
+async def test_status_names_a_degraded_route_while_its_window_is_open(
+    watcher: DirectoryWatcher,
+) -> None:
+    target = to_target("HD", NOW + timedelta(minutes=5), 2026, 3)
+    start = target.window[0]
+    refused = "HTTP 403: the site refused us. Trying again after a pause"
+    listing = Watch("HD", BrowserRelease("https://ir.example.com/news", "q3"), target.window)
+    listing.previous, listing.problem = start, refused
+    edgar = Watch("HD", EdgarFilings(354950), target.window, previous=NOW)
+    task = asyncio.create_task(asyncio.sleep(3600))
+    watcher.windows[target.release_key] = _Window(target, task)
+    watcher.live_watches[target.release_key] = [listing, edgar]
+    try:
+        embed = watcher.health_embed("v0.19.5", None)
+    finally:
+        task.cancel()
+
+    text = embed_text(embed)
+    assert "⚠️ Degraded: IR press release page, read in Chrome, no answer for" in text
+    assert refused in text
+    assert "Degraded: SEC" not in text
+    assert embed.color is not None and embed.color.value == AMBER

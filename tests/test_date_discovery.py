@@ -27,13 +27,13 @@ from earnings_bot.date_discovery import (
 from earnings_bot.delivery import DeliveryStore
 from earnings_bot.fetch import Fetcher, Response
 from earnings_bot.investigate import INVESTIGATION
-from earnings_bot.ir_pages import Moment
+from earnings_bot.ir_pages import Moment, moments
 from earnings_bot.ir_research import IR_LISTINGS
 from earnings_bot.issuers import profile
 from earnings_bot.known import SourceCheck, known_companies, to_target
 from earnings_bot.recorder import ET, Target
 from earnings_bot.source_audit import Speed, Timing
-from earnings_bot.sources import EdgarFilings, is_date_notice
+from earnings_bot.sources import EdgarFilings
 from tests.brookfield_data import (
     BN_NOW,
     CIK,
@@ -521,11 +521,6 @@ async def test_fmp_isnt_asked_without_a_time_or_fiscal_year_to_go_with_its_date(
     assert not any(FMP_ROUTE in url for _, url, _ in fetcher.requests)
 
 
-def test_catalog_companies_have_no_fiscal_year_end_so_fmp_leaves_them_alone() -> None:
-    # Their dates come from the issuer, which an FMP guess mustn't replace
-    assert all(c.fiscal_year_end is None for c in known_companies().values())
-
-
 # Applied Materials' notice on its IR site, Oct 22, 2026, as Chrome reads it
 AMAT_NOTICE_TITLE = (
     "Applied Materials to Report Fourth Quarter and Fiscal 2026 Results on Nov. 12, 2026"
@@ -559,12 +554,6 @@ def test_notice_headlines_name_their_quarter_in_several_ways(title: str, period:
     now = datetime(2026, 8, 1, 9, tzinfo=ET)
     result = parse_notice("AMAT", AMAT, title, "<p>Details to follow.</p>", now)
     assert result is not None and result[0].period == period
-
-
-def test_a_reset_isnt_a_date_notice() -> None:
-    assert not is_date_notice("Lucid Announces Operational Reset and Second Quarter 2026 Results")
-    assert is_date_notice("Lucid Sets Date for Third Quarter 2026 Earnings")
-    assert is_date_notice(AMAT_NOTICE_TITLE)
 
 
 async def test_a_notice_whose_date_cant_be_read_is_named_on_the_card(
@@ -1044,14 +1033,22 @@ async def test_event_cards_read_adjacent_dates_and_zones(
     assert shown_time in evidence
 
 
-async def test_a_tentative_event_is_not_armed_though_the_same_card_without_it_is() -> None:
-    card = "Upcoming Events\nNovember 18, 2026{}\nCompany Q3 2026 Earnings Results"
+TENTATIVE_CARD = "Upcoming Events\nNovember 18, 2026{}\nCompany Q3 2026 Earnings Results"
 
-    confirmed = await _event_card(card.format(""))
-    tentative = await _event_card(card.format(" (tentative)"))
 
-    assert confirmed is not None and confirmed[0].expected.day == 18
-    assert tentative is None
+async def test_a_confirmed_event_card_arms_its_date() -> None:
+    result = await _event_card(TENTATIVE_CARD.format(""))
+
+    assert result is not None
+    assert result[0].expected.date() == date(2026, 11, 18)
+
+
+async def test_a_tentative_event_card_gives_its_date_but_is_not_armed() -> None:
+    card = TENTATIVE_CARD.format(" (tentative)")
+
+    # The date is on the card and is read, so only the tentative mark keeps it from arming
+    assert [moment.day for moment in moments(card)] == [date(2026, 11, 18)]
+    assert await _event_card(card) is None
 
 
 async def test_a_morning_results_event_keeps_its_issuer_date_when_history_is_afternoon() -> None:

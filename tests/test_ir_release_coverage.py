@@ -192,7 +192,7 @@ async def test_a_new_publication_audit_replans_before_the_hourly_check(
             )
 
         monkeypatch.setattr(dates, "_issuer_date", notice)
-        await dates._check(row)
+        await dates.run_once(row)
         first = calendar.entries()[0].target
         assert first and first.expected.hour == 6
         dates.checked[row.cik] = time.monotonic() + 3600

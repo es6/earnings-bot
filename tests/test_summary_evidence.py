@@ -237,3 +237,21 @@ def test_offline_preparation_uses_html_when_saved_and_plain_blocks_otherwise(
     assert html["document_sha256"] == source["sha256"] != plain["document_sha256"]
     with pytest.raises(ValueError, match="Ember only"):
         prepare(["TEST"], tmp_path, include_haiku=True, references=True)
+
+
+def test_compact_requests_preserve_original_coordinates_and_all_nonempty_evidence() -> None:
+    document = document_from_html(
+        "<p>Q3 2026 results, in millions of USD.</p>"
+        "<table><tr><th>Metric</th><th></th><th>Q3 2026</th></tr>"
+        "<tr><th>Revenue</th><td></td><td>100</td></tr></table>"
+    )
+    before = document.to_json()
+    content = json.loads(referenced_request("TEST", document)["messages"][0]["content"])
+    cells = content["source_document"]["tables"][0]["cells"]
+    assert len(cells) == 4 and len(document.tables[0].cells) == 6
+    assert cells[-1] == ["t1r1c2", 1, 2, 1, 1, False, "", "100"]
+    assert document.resolve(document.sha256, "t1r1c1").text == ""
+    assert document.to_json() == before
+    assert [cell[0] for cell in cells] == [
+        cell.id for cell in document.tables[0].cells if cell.text.strip()
+    ]

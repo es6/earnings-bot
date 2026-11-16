@@ -10,6 +10,7 @@ from earnings_bot.ir_research import (
     matches_release,
     quarter_headline,
     verified_browser_source,
+    verified_results_table,
 )
 from tests.fakes import RoutedFetcher
 
@@ -138,3 +139,15 @@ async def test_no_chrome_or_no_page_says_so(monkeypatch: pytest.MonkeyPatch) -> 
         None,
         "No press release page found for it",
     )
+
+
+async def test_a_prior_fiscal_year_table_cannot_arm_the_next_year() -> None:
+    page = "https://issuer.example/financials/2026"
+    pdf = "https://issuer.example/Q4-2026-ER.pdf"
+    body = b"""<table><tr><th></th><th>Q1</th><th>Q2</th><th>Q3</th><th>Q4</th></tr>
+        <tr><td>Earnings Release</td><td></td><td></td><td></td>
+            <td><a href="/Q4-2026-ER.pdf">PDF</a></td></tr></table>"""
+    fetcher = RoutedFetcher({page: (200, body), pdf: (200, b"%PDF-1.6")})
+
+    assert await verified_results_table(fetcher, page, "FY2027Q1") == {}
+    assert not fetcher.requests

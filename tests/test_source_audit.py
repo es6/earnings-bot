@@ -5,6 +5,7 @@ from pathlib import Path
 from earnings_bot.issuers import profile, usual_release_time
 from earnings_bot.known import KnownCompany, known_companies
 from earnings_bot.recorder import ET
+from earnings_bot.sec_results import SixKResults
 from earnings_bot.source_audit import (
     Speed,
     Timing,
@@ -12,9 +13,14 @@ from earnings_bot.source_audit import (
     _measurements,
     audit_sources,
     release_history,
+    site_local_time,
 )
-from tests.builders import listing, row
+from tests.brookfield_data import CIK, RELEASE, RESULT, filings, fixtures, folder
+from tests.builders import listing, row, sec_filing_detail
 from tests.fakes import RoutedFetcher
+
+NOW = datetime(2026, 11, 9, 17, tzinfo=ET)
+LATER = "0001171843-26-005999"
 
 
 def test_last_release_ranks_body_separately_from_headline(tmp_path: Path) -> None:
@@ -413,3 +419,74 @@ def test_a_check_saved_by_an_older_release_history_reads_back_without_it() -> No
     assert Speed.from_json(json.dumps(saved)).history == history  # type: ignore[union-attr]
     del saved["history_version"]
     assert Speed.from_json(json.dumps(saved)).history is None  # type: ignore[union-attr]
+
+
+async def test_source_audit_anchors_on_verified_6k(tmp_path: Path) -> None:
+    data = filings()
+    company = profile("BN", CIK, "Brookfield Corporation", data, NOW.date())
+    fetcher = RoutedFetcher(fixtures(data))
+    speed = await audit_sources(fetcher, tmp_path, "BN", company, NOW, None, SixKResults(fetcher))
+    assert speed.day == date(2026, 8, 13) and speed.confident and speed.form == "6-K"
+    assert [timing.source for timing in speed.archive] == ["SEC 6-K acceptance"]
+
+
+async def test_the_ir_sites_own_time_for_the_release_joins_the_comparison(
+    tmp_path: Path,
+) -> None:
+    data = filings()
+    company = profile("BN", CIK, "Brookfield Corporation", data, NOW.date()).model_copy(
+        update={
+            "ir_posted": datetime(2026, 8, 13, 6, 40, tzinfo=ET),
+            "ir_release": "https://bn.brookfield.com/q2",
+        }
+    )
+    fetcher = RoutedFetcher(fixtures(data))
+    speed = await audit_sources(fetcher, tmp_path, "BN", company, NOW, None, SixKResults(fetcher))
+    _, order = speed.fastest()
+    assert next((t.source, t.url) for t in order) == ("browser-ir", "https://bn.brookfield.com/q2")
+    assert [t.source for t in order] == ["browser-ir", "SEC 6-K acceptance"]
+
+    # A time for another release doesn't count
+    company = company.model_copy(update={"ir_posted": datetime(2026, 5, 14, 6, 40, tzinfo=ET)})
+    speed = await audit_sources(fetcher, tmp_path, "BN", company, NOW, None, SixKResults(fetcher))
+    assert [t.source for t in speed.archive] == ["SEC 6-K acceptance"]
+
+
+async def test_the_speed_review_times_sec_by_the_days_first_results_6k(tmp_path: Path) -> None:
+    # Like WeRide on Aug 12: the press release at 9:22 AM, the Hong Kong filing at 4:03 PM
+    data = {
+        "fiscalYearEnd": "1231",
+        "filings": {
+            "recent": {
+                "accessionNumber": [LATER, RESULT],
+                "form": ["6-K", "6-K"],
+                "items": ["", ""],
+                "acceptanceDateTime": ["2026-08-13T20:03:22Z", "2026-08-13T10:45:04Z"],
+                "primaryDocument": ["cover.htm", "cover.htm"],
+            }
+        },
+    }
+    routes = {f"CIK{CIK:010d}.json": (200, json.dumps(data).encode())}
+    for key in (LATER, RESULT):
+        base = folder(key)
+        routes[f"{base}/{key}-index.htm"] = (
+            200,
+            sec_filing_detail(f"{base}/cover.htm", "exh_991.htm"),
+        )
+        routes[f"{base}/exh_991.htm"] = (200, RELEASE.encode())
+    company = profile("BN", CIK, "Brookfield Corporation", data, NOW.date())
+    fetcher = RoutedFetcher(routes)
+
+    speed = await audit_sources(fetcher, tmp_path, "BN", company, NOW, None, SixKResults(fetcher))
+
+    [sec] = [timing for timing in speed.archive if timing.source == "SEC 6-K acceptance"]
+    assert sec.at == datetime(2026, 8, 13, 10, 45, 4, tzinfo=UTC)
+
+
+def test_a_q4_time_counts_as_eastern_only_when_sec_confirms_it() -> None:
+    sec = [Timing("SEC 8-K acceptance", datetime(2026, 8, 13, 16, 3, 36, tzinfo=ET))]
+    assert site_local_time("08/13/2026 16:01:00", sec) == datetime(2026, 8, 13, 16, 1, tzinfo=ET)
+    # In another zone, or on another day, it doesn't line up with SEC's time
+    assert site_local_time("08/13/2026 22:01:00", sec) is None
+    assert site_local_time("08/13/2026 06:01:00", sec) is None
+    assert site_local_time("08/13/2026 16:01:00", []) is None
