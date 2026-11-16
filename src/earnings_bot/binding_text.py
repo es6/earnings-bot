@@ -260,8 +260,13 @@ def count_words(unit: str) -> list[str]:
     return [w for w in words(text).split() if w not in ("of", "the", "a")]
 
 
+def _compact(text: str) -> str:
+    """A period written year first, "2026Q3", as "Q3 2026"."""
+    return re.sub(r"\b(20\d{2})\s?([QH][1-4])\b", r"\2 \1", text, flags=re.IGNORECASE)
+
+
 def quarter(text: str) -> set[str]:
-    text = normalized(text)
+    text = normalized(_compact(text))
     for word, number in _QUARTERS.items():
         text = re.sub(rf"\b{word}[- ]quarter\b", f"q{number}", text, flags=re.IGNORECASE)
     text = re.sub(r"\bfq([1-4])\b", r"q\1", text)
@@ -276,6 +281,7 @@ def quarter(text: str) -> set[str]:
 def years(text: str) -> set[str]:
     """Four-digit years, with FY27 / Q3'26 / fiscal 27 read as 2027 / 2026. A footnote digit
     after a year ("July 31, 20261") is not part of it."""
+    text = _compact(text)
     found = set(re.findall(r"(?<![\d.,$])(20\d{2})(?=\d?(?:\b|$))(?!\d{2})", text))
     found |= {
         f"20{y}"
@@ -411,6 +417,10 @@ def period_issues(
     the reporting period's. A passage naming several durations decides none. A fiscal label
     is compared with calendar dates through the release's own fiscal offset."""
     issues = []
+    # A growth rate's period can name what it is compared with: "Q3 2026 vs Q3 2025"
+    own = re.split(r"\b(?:vs\.?|versus|compared (?:with|to))\b", value.period)[0]
+    if own.strip() and own != value.period:
+        value = value.model_copy(update={"period": own})
     claimed = years(value.period)
 
     def reporting(found: set[str]) -> set[str]:
@@ -610,10 +620,12 @@ def number_tokens(text: str, caption: str = "") -> list[tuple[int, int, Decimal,
         )
         if dash:
             negative = False
-        if suffix in ("%", "percent"):
-            dimension = "%"
-        elif suffix in ("bps", "basis points"):
-            dimension = "bps"
+        if suffix in ("%", "percent", "bps", "basis points"):
+            dimension = "%" if suffix in ("%", "percent") else "bps"
+            if ranged and unscaled and found[-1][4] == "number":
+                # "13-15%", "(3.0) to (1.0) percent": the unit written once is both ends'
+                start, end, low, low_step, _ = found[-1]
+                found[-1] = (start, end, low, low_step, dimension)
         else:
             dimension = "number"
             named = _SUFFIX_SCALE.get(suffix)
