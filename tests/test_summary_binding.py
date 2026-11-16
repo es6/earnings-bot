@@ -1497,3 +1497,180 @@ def test_bank_return_measures_are_named_by_their_abbreviations() -> None:
     assert bound(document, "Return on tangible common equity", amount="20", **rate)
     assert bound(document, "Return on equity", amount="17", **rate)
     assert not bound(document, "Return on equity", amount="20", **rate)
+
+
+# Guidance in prose and outlook tables, as releases lay it out (Nov 16)
+YEAR = {"period": "FY 2026", "duration": "twelve months"}
+
+
+def test_a_forecast_is_read_before_its_number_not_in_the_reasons_after_it() -> None:
+    """Netflix: "We have adjusted our expected 2026 FCF forecast to approximately $12.0B (vs.
+    our prior projection of $12.5B) due primarily to ... a real estate transaction in Q4." The
+    prior projection is the comparator's, the Q4 the reason's; the forecast is the year's."""
+    document = document_from_text(
+        QUARTER + "Free cash flow (FCF) in Q3'26 totaled $2.9B vs. $2.7B in Q3'25. We have "
+        "adjusted our expected 2026 FCF forecast to approximately $12.0B (vs. our prior "
+        "projection of $12.5B) due primarily to the expected closing of a real estate "
+        "transaction in Q4."
+    )
+    flow = {"scale": "billion", "value_qualifier": "approximately", **YEAR}
+
+    assert bound(document, "Free cash flow", "new_guidance", kind="guide", amount="12.0", **flow)
+    assert not bound(
+        document, "Free cash flow", "new_guidance", kind="guide", amount="12.5", **flow
+    )
+
+
+def test_guidance_words_glued_to_a_footnote_or_an_ad_still_count() -> None:
+    targets = document_from_text(
+        QUARTER + "1Targets assume non-GAAP operating margin of ~44.0% for fourth quarter FY2026."
+    )
+    ads = document_from_text(QUARTER + "We currently expect 2026 ad revenue of ~$2.7B.")
+
+    assert bound(
+        targets,
+        "Non-GAAP operating margin",
+        "new_guidance",
+        kind="guide",
+        amount="44.0",
+        unit="%",
+        scale="one",
+        currency="",
+        value_qualifier="approximately",
+        period="Q4 FY2026",
+        basis="non-GAAP",
+    )
+    assert bound(
+        ads,
+        "Advertising revenue",
+        "new_guidance",
+        kind="guide",
+        amount="2.7",
+        scale="billion",
+        value_qualifier="approximately",
+        **YEAR,
+    )
+
+
+def test_an_outlook_heading_dates_the_list_below_it() -> None:
+    """Chipotle's "For 2027, management is anticipating the following:" and a count whose
+    measure is named in full after it, "in the U.S. and Canada"."""
+    document = document_from_text(
+        QUARTER + "For 2027, management is anticipating the following:\n340 to 360 new "
+        "company-owned restaurant openings in the U.S. and Canada"
+    )
+    openings = {
+        "amount": "340",
+        "upper": "360",
+        "unit": "restaurants",
+        "scale": "one",
+        "currency": "",
+        "period": "FY 2027",
+        "duration": "twelve months",
+    }
+
+    assert bound(
+        document,
+        "New company-owned restaurant openings in U.S. and Canada",
+        "new_guidance",
+        kind="guide",
+        **openings,
+    )
+
+
+def test_an_outlook_heading_stays_in_view_below_the_rows_of_its_table() -> None:
+    """Spotify's outlook, read from its PDF: "Outlook for Q4'26", "...reflect Spotify's
+    expectations for Q4 2026", then a row per measure, each naming "the quarter"."""
+    document = document_from_text(
+        QUARTER + "Outlook for Q4'26\nThe following forward-looking statements reflect "
+        "Spotify's expectations for Q4 2026\nTotal MAUs 818 million Implies the addition of "
+        "approximately 30 million net new MAUs in the quarter\nTotal Premium Subscribers 316 "
+        "million Implies the addition of approximately 10 million net new subscribers in the "
+        "quarter\nGross Margin 33.8% Primarily driven by Y/Y favorability"
+    )
+
+    assert bound(
+        document,
+        "Gross margin",
+        "new_guidance",
+        kind="guide",
+        amount="33.8",
+        unit="%",
+        scale="one",
+        currency="",
+        period="Q4 2026",
+    )
+
+
+OUTLOOK_TABLE = (
+    "<p>ServiceNow reports third quarter 2026 results</p><table>"
+    "<tr><td></td><td>Fourth Quarter 2026 GAAP Guidance</td>"
+    "<td>Fourth Quarter 2026 Non-GAAP Guidance</td></tr>"
+    "<tr><td></td><td>Year/Year Growth (%)</td><td>Constant Currency Year/Year Growth (%)</td>"
+    "</tr><tr><td>cRPO</td><td>18.5%</td><td>18.0%</td></tr>"
+    "<tr><td></td><td></td><td>Margin (%)</td></tr>"
+    "<tr><td>Income from operations</td><td></td><td>32%</td></tr></table>"
+)
+
+
+def test_a_column_header_says_what_a_rate_in_an_outlook_table_is() -> None:
+    """ServiceNow: "cRPO" under "Year/Year Growth (%)" is cRPO growth, under the constant
+    currency column its constant currency growth; "Income from operations" under "Margin (%)",
+    below those growth columns, is the operating margin and no currency-neutral rate."""
+    document = document_from_html(OUTLOOK_TABLE)
+    q4 = {"period": "Q4 2026"}
+
+    assert guidance_cell(document, "18.5%", "cRPO growth", "new_guidance", amount="18.5", **q4)
+    assert not guidance_cell(document, "18.0%", "cRPO growth", "new_guidance", amount="18.0", **q4)
+    assert guidance_cell(
+        document,
+        "32%",
+        "Non-GAAP operating margin",
+        "new_guidance",
+        amount="32",
+        basis="non-GAAP",
+        **q4,
+    )
+
+
+def test_a_transposed_outlook_table_names_its_measure_in_the_column() -> None:
+    """DoorDash: "Period | Marketplace GOV | Adjusted EBITDA" over "Q4 2026 | $35.4 billion -
+    $36.4 billion | $900 million - $1,100 million"."""
+    document = document_from_html(
+        "<p>DoorDash reports third quarter 2026 results</p><p>Outlook</p><table>"
+        "<tr><td>Period</td><td>Marketplace GOV</td><td>Adjusted EBITDA</td></tr>"
+        "<tr><td>Q4 2026</td><td>$35.4 billion - $36.4 billion</td>"
+        "<td>$900 million - $1,100 million</td></tr></table>"
+    )
+    gov = {
+        "amount": "35.4",
+        "upper": "36.4",
+        "unit": "money",
+        "scale": "billion",
+        "currency": "USD",
+    }
+
+    assert guidance_cell(
+        document,
+        "$35.4 billion - $36.4 billion",
+        "Marketplace GOV",
+        "new_guidance",
+        period="Q4 2026",
+        **gov,
+    )
+    assert not guidance_cell(
+        document,
+        "$35.4 billion - $36.4 billion",
+        "Adjusted EBITDA",
+        "new_guidance",
+        period="Q4 2026",
+        **gov,
+    )
+    assert not guidance_cell(
+        document,
+        "$35.4 billion - $36.4 billion",
+        "Marketplace GOV",
+        "new_guidance",
+        period="Q1 2027",
+        **gov,
+    )
