@@ -15,22 +15,18 @@ request's text as the live bot reads a PDF.
 
 import argparse
 import json
-import re
 from collections import Counter
-from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
-from earnings_bot.binding_text import number_tokens
 from earnings_bot.source_document import SourceDocument, document_from_html, document_from_text
 from earnings_bot.summary_binding import bind_brief
 from earnings_bot.summary_evidence import (
-    EvidenceRef,
     ReferencedFact,
-    SourcedValue,
     UnverifiedBrief,
 )
 from earnings_bot.summary_policy import SummaryFact
 from earnings_bot.summary_validation import validate_facts
+from earnings_bot.summary_verify import SLOTS, candidate
 
 RUNS = ("ember-effort-2026-11-12", "ember-fresh-effort-2026-11-12")
 # Wrong facts the live checker shows (docs/summaries.md): Netflix's 12% reported growth labeled
@@ -45,197 +41,6 @@ KNOWN_WRONG = (
     ("DUOL-low-2", "Paid Subscribers at period end"),
     ("DASH-low-2", "Cash and cash equivalents"),
 )
-_SCALES = {
-    "trillion": "trillion",
-    "t": "trillion",
-    "billion": "billion",
-    "bn": "billion",
-    "b": "billion",
-    "million": "million",
-    "mn": "million",
-    "m": "million",
-    "thousand": "thousand",
-    "k": "thousand",
-}
-_FACTOR = {"one": 1, "thousand": 10**3, "million": 10**6, "billion": 10**9, "trillion": 10**12}
-_NUMBER = re.compile(
-    r"(?P<neg>[-\u2212\u2013]|\()?\s*[$€£¥]?\s*(?P<num>\d[\d,]*(?:\.\d+)?)\s*"
-    r"(?P<scale>trillion|billion|million|thousand|bn|mn|[tbmk](?![a-z]))?",
-    re.IGNORECASE,
-)
-# A minus written as a hyphen, a minus sign or an en dash, or a parenthesis
-DASHES = ("-", "\u2212", "\u2013", "(")
-_QUALIFIERS = (
-    (("approximately", "about", "~", "roughly", "around"), "approximately"),
-    (("more than", "in excess of", "over ", ">", "above"), "more_than"),
-    (("nearly", "almost"), "nearly"),
-    (("at least",), "at_least"),
-    (("less than", "under ", "below", "<"), "less_than"),
-    (("up to", "at most"), "at_most"),
-)
-ROLES = {"headline", "driver", "guidance", "material_context", "update", "supporting"}
-SLOTS = ("current_actual", "new_guidance", "reported_growth", "prior_year_actual")
-
-
-def parse(text: str) -> tuple[str, str | None, str, str] | None:
-    """Amount, range end, scale and qualifier of a live value such as "$6.76 billion"."""
-    text = text.strip()
-    lowered = text.casefold()
-    qualifier = next(
-        (name for words, name in _QUALIFIERS if any(w in lowered for w in words)), "exact"
-    )
-    found = list(_NUMBER.finditer(text))
-    if not found or len(found) > 2:
-        return None
-    amounts, scale = [], "one"
-    for index, match in enumerate(found):
-        # A dash between two numbers is a range, not a minus
-        negative = match["neg"] in DASHES and not (len(found) == 2 and index == 1)
-        amounts.append(("-" if negative else "") + match["num"].replace(",", ""))
-        if match["scale"]:
-            scale = _SCALES[match["scale"].casefold()]
-    try:
-        values = sorted(Decimal(a) for a in amounts)
-    except InvalidOperation:
-        return None
-    if len(values) == 2:
-        return str(values[0]), str(values[1]), scale, qualifier
-    return amounts[0], None, scale, qualifier
-
-
-def unit_of(fact: SummaryFact, value: str) -> str:
-    text = f"{value} {fact.unit}".casefold()
-    if "bps" in text or "basis point" in text:
-        return "bps"
-    if "%" in text or "percent" in text:
-        return "%"
-    named = f"{fact.unit} {fact.metric}".casefold()
-    if re.search(r"per (?:diluted |basic )?share|/share|per ads|\beps\b", named):
-        return "per share"
-    if fact.currency or re.search(r"[$€£¥]", value) or re.search(r"\b(?:usd|eur|dollars?)\b", text):
-        return "money"
-    unit = re.sub(
-        r"\b(?:thousands?|millions?|billions?|trillions?)\b", "", fact.unit, flags=re.IGNORECASE
-    )
-    return unit.strip() or "units"
-
-
-def duration_of(period: str) -> str:
-    text = period.casefold()
-    for pattern, duration in (
-        (r"\bq[1-4]\b|quarter", "three months"),
-        (r"nine|9m|ytd", "nine months"),
-        (r"\bh[12]\b|half|six months", "six months"),
-        (r"\bfy|full[- ]year|year", "twelve months"),
-    ):
-        if re.search(pattern, text):
-            return duration
-    return ""
-
-
-def _near(source: Decimal, claim: Decimal, unit: str) -> bool:
-    """Whether a number in the release could be the claim, at any scale (the verifier decides)."""
-    if unit in ("%", "bps", "per share"):
-        return abs(source - claim) <= max(Decimal("0.051"), claim * Decimal("0.01"))
-    return any(
-        claim and abs(source * factor - claim) <= claim * Decimal("0.06")
-        for factor in (1, 10**3, 10**6, 10**9, 10**12)
-    )
-
-
-def evidence(document: SourceDocument, amount: str, scale: str, unit: str) -> list[EvidenceRef]:
-    claim = abs(Decimal(amount)) * (1 if unit in ("%", "bps", "per share") else _FACTOR[scale])
-    tables = {table.id: table for table in document.tables}
-    refs = []
-    for block in document.blocks:
-        table = tables.get(block.id)
-        if table is not None:
-            cells = tuple(
-                cell.id
-                for cell in table.cells
-                if not table.nested
-                and not cell.header
-                and any(_near(abs(t[2]), claim, unit) for t in number_tokens(cell.text))
-            )
-            if cells:
-                quote = table.text.strip()[:200]
-                refs.append(
-                    EvidenceRef(
-                        document_sha256=document.sha256,
-                        block_id=table.id,
-                        cell_ids=cells,
-                        quote=quote,
-                    )
-                )
-        elif any(_near(abs(t[2]), claim, unit) for t in number_tokens(block.text)):
-            refs.append(
-                EvidenceRef(
-                    document_sha256=document.sha256,
-                    block_id=block.id,
-                    cell_ids=(),
-                    quote=block.text,
-                )
-            )
-    return refs
-
-
-def sourced(
-    fact: SummaryFact, value: str, document: SourceDocument, comparison: str = ""
-) -> SourcedValue | None:
-    parsed = parse(value)
-    if parsed is None:
-        return None
-    amount, upper, scale, qualifier = parsed
-    unit = unit_of(fact, value)
-    scale = "one" if unit in ("%", "bps", "per share") else scale
-    refs = evidence(document, amount, scale, unit) or [
-        # Nowhere in the release: the verifier refuses it as unresolvable
-        EvidenceRef(document_sha256="none", block_id="none", cell_ids=(), quote="none")
-    ]
-    money = unit in ("money", "per share")
-    return SourcedValue(
-        amount=amount,
-        upper=upper,
-        unit=unit,
-        scale=scale,  # type: ignore[arg-type]
-        currency=(fact.currency or ("USD" if "$" in value else "")) if money else "",
-        value_qualifier=qualifier,  # type: ignore[arg-type]
-        period=fact.period,
-        duration=duration_of(fact.period),
-        basis=fact.basis,
-        comparison=comparison,  # type: ignore[arg-type]
-        comparison_qualifier="",
-        evidence=tuple(refs),
-    )
-
-
-def candidate(fact: SummaryFact, document: SourceDocument) -> ReferencedFact | None:
-    kind = fact.kind if fact.kind in ("actual", "segment", "guide", "update") else "actual"
-    guide = kind == "guide"
-    main = sourced(fact, fact.value, document) if fact.value.strip() else None
-    stated = fact.comparison if fact.comparison in ("YoY", "QoQ", "versus prior guidance") else ""
-    growth = sourced(fact, fact.change, document, stated or "YoY") if "%" in fact.change else None
-    prior = sourced(fact, fact.prior, document) if fact.prior.strip() and not guide else None
-    if main is None and growth is None:
-        return None
-    try:
-        return ReferencedFact(
-            metric=fact.metric,
-            kind=kind,  # type: ignore[arg-type]
-            role=fact.role if fact.role in ROLES else "supporting",  # type: ignore[arg-type]
-            group=fact.group,
-            relevance="",
-            current_actual=None if guide else main,
-            prior_year_actual=prior,
-            reported_growth=growth,
-            comparable_growth=None,
-            previous_guidance=None,
-            new_guidance=main if guide else None,
-            update="",
-            update_evidence=(),
-        )
-    except ValueError:
-        return None
 
 
 def verdict(fact: SummaryFact, document: SourceDocument) -> dict[str, object]:

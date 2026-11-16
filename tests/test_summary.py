@@ -136,3 +136,8 @@ def test_summaries_need_the_switch_and_the_key() -> None:
     assert summarizer is not None
     assert str(summarizer.client.base_url).rstrip("/") == META_API
     assert SecretStr("key").get_secret_value() == summarizer.client.api_key
+    assert not summarizer.verified  # checking facts is its own switch
+    checked = summarizer_from(
+        settings(live_summaries=True, meta_model_api_key="key", verified_summaries=True)
+    )
+    assert checked is not None and checked.verified

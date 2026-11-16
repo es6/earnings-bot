@@ -1,5 +1,34 @@
 # Summaries and shared rules
 
+## Verified live summaries (`VERIFIED_SUMMARIES`, v0.21.50)
+
+With `VERIFIED_SUMMARIES=true`, each fact of the live summary is checked by the source binder
+before it is shown (`summary_verify.py`). The live writer is unchanged: Muse Ember (low)
+selects facts as text, and the quote check keeps those whose numbers appear in their quoted
+passage. Each kept fact then becomes a binder candidate from its own fields, offered every
+paragraph and table cell of the release (as the bot read it, tables included) that holds its
+number. The binder keeps a value only where the release states that measure, for that period
+and basis. A fact whose main value is not confirmed is dropped, and so is a growth rate or
+prior-year value that is not; a fact with no number (a strategy update) keeps its quoted
+words. No model call is added, and the check runs off the event loop.
+
+Measured on the 36 saved Ember-low answers of November 12 (15 releases):
+
+| | Without | With |
+|---|---|---|
+| Facts shown | 619 | 431 |
+| Known wrong facts shown (of 7) | 7 | 0 |
+| Right headline facts shown (of 104) | 104 | 99 |
+| Right guidance facts shown (of 112) | 112 | 107 |
+| Summaries left empty | 0 | 0 |
+| Time added per summary | 0 | 0.26 s median, 0.88 s max |
+
+The facts it drops are mostly secondary (drivers, supporting detail), which keeps the summary
+to what the release states plainly. The rates hold for releases like these; on releases
+unlike any seen so far, about 60% of headline values bind (the held-out measure below), so a
+summary of an unfamiliar layout can come out shorter. Summaries stay labeled Beta until the
+live streak's releases have been read value by value.
+
 ## Source references: extraction and durable runtime handoff
 
 `source_document.py` adds a version-scoped evidence representation. Retrieval now carries
