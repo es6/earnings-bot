@@ -154,6 +154,9 @@ Two command-line tools come with it:
 
 ## Development
 
+The [Python quality guide](docs/python-quality.md) explains the project's conventions,
+structure, resource ownership and pre-1.0 maintainability review, with diagrams and references.
+
 ```bash
 uv sync               # install
 uv run ruff check .   # lint

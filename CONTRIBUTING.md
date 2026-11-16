@@ -12,6 +12,10 @@ larger changes before you start on them.
 
 ## Making a change
 
+Read the [Python conventions and pre-1.0 quality review](docs/python-quality.md) for naming,
+comments, module boundaries and task/resource ownership. It includes the current structure
+diagrams, primary references and concrete review findings.
+
 For IR discovery, blocked sites, or stale `/track` sources, read the
 [IR access experiment playbook](docs/ir-access-playbook.md) before investigating.
 Record evidence and unresolved freshness questions using its case template.
