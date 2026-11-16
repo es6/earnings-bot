@@ -25,7 +25,10 @@ _QUARTERS = {"first": "1", "second": "2", "third": "3", "fourth": "4"}
 _SCALE = re.compile(
     r"\b(?:in|USD|US\$|EUR|GBP|CAD|RMB)\s*\$?\s*(thousands|millions|billions)\b"
     r"|\((thousands|millions|billions)(?: of (?:U\.?S\.? )?dollars)?\)"
-    r"|\b(?:dollars|amounts?) in (thousands|millions|billions)\b",
+    r"|\b(?:dollars|amounts?) in (thousands|millions|billions)\b"
+    # ServiceNow's column header "Amount ($ millions)", JPM's "($ millions, except per share
+    # data)"
+    r"|\(\s*[$€£¥]\s*(thousands|millions|billions)\b",
     re.IGNORECASE,
 )
 _ADJUSTED = re.compile(r"non[- ]?(?:gaap|ifrs)|\badjusted\b|\badj\.?(?=\s)", re.IGNORECASE)
@@ -105,6 +108,11 @@ MEASURES = {
     "obligations",
     "deposits",
     "loans",
+    # Banks' return and capital ratios, as their releases abbreviate them
+    "roe",
+    "rotce",
+    "roa",
+    "cet1",
 }
 _ALIASES = [
     (r"\bearnings per diluted (?:ordinary |common )?share\b", "diluted eps"),
@@ -121,6 +129,9 @@ _ALIASES = [
     (r"\bnet cash provided by operating activities\b", "operating cash flow"),
     (r"\bcash flows? from operations\b", "operating cash flow"),
     (r"\bcash flows? from operating activities\b", "operating cash flow"),
+    (r"\breturn on (?:average )?tangible common equity\b", "rotce"),
+    (r"\breturn on (?:average )?(?:common )?equity\b", "roe"),
+    (r"\bcommon equity tier 1\b", "cet1"),
     (r"\bmaus?\b", "monthly active users"),
     (r"\bdaus?\b", "daily active users"),
     (r"\byear[- ]over[- ]year\b|\by/y\b", "yoy"),
@@ -181,6 +192,17 @@ def metric_words(metric: str) -> list[str]:
     """The words that identify a measure, in order and stemmed, without its basis, period
     or abbreviation."""
     text = re.sub(r"\(([A-Za-z]{2,6})\)", "", metric)  # "(RPO)", "(ARR)"
+    # A definition in parentheses: "Operating margin (income from operations as a percentage
+    # of total revenue)". One that qualifies the number ("excluding Deliveroo") or states
+    # numbers of its own ("-$50m, offset by +$36m") stays, as nothing else would check it.
+    text = re.sub(
+        r"\((?![^()]*\d)(?![^()]*\b(?:exclud\w*|ex|before|after|organic|constant|neutral|cc|"
+        r"adjusted|"
+        r"non-?gaap|gaap|ifrs|reported|underlying|comparable|pro forma)\b)[^()]{16,}\)",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
     text = re.sub(r"(?<=\))\d{1,2}\b", "", text)  # a footnote mark: "(non-GAAP)3"
     text = re.sub(
         r"\((?:non-?gaap|gaap|ifrs|non-?ifrs|adjusted|reported)\)", "", text, flags=re.IGNORECASE
@@ -491,7 +513,7 @@ def currencies(text: str) -> set[str]:
 def source_scale(text: str, per_share: bool = False) -> str | None:
     if per_share:
         return "one"
-    scales = {(a or b or c).casefold() for a, b, c in _SCALE.findall(text)}
+    scales = {"".join(found).casefold() for found in _SCALE.findall(text)}
     if len(scales) > 1:
         return "ambiguous"
     return next(iter(scales)).removesuffix("s") if scales else None

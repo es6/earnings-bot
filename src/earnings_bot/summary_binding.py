@@ -178,6 +178,7 @@ _LISTED = re.compile(
     r"((?:[\w'’&.,-]+\s+){0,5}[\w'’&.,-]+)\s*\((?:NYSE|NASDAQ|Nasdaq|NYSE American)\s*:\s*"
     r"([A-Z][A-Z.]{0,5})\)"
 )
+_SYMBOL = re.compile(r"\b(?:NYSE|NASDAQ|Nasdaq) symbols?\s*:\s*([A-Z][A-Z.]{0,5})\b")
 _LEGAL = {"plc", "inc", "inc.", "co", "co.", "ltd", "ltd.", "corp", "corp.", "n.v.", "s.a.", "ag"}
 # Group words that name no segment: the whole company, or the role a fact plays
 _NOT_SEGMENT = {
@@ -212,6 +213,17 @@ _NOT_SEGMENT = {
     "revenue",
     "revenues",
     "earnings",
+    # Categories a summary sorts facts into: "Operating Metrics", "Key business drivers",
+    # "Balance sheet and liquidity"
+    "operating",
+    "data",
+    "business",
+    "drivers",
+    "balance",
+    "sheet",
+    "liquidity",
+    "statistics",
+    "indicators",
 }
 # Words that name the slot a value fills, not its measure: "EPS guidance", "Revenue growth"
 _GUIDANCE_STEMS = frozenset(stem(w) for w in ("guidance", "outlook", "forecast", "target"))
@@ -298,6 +310,8 @@ def _terms(document: SourceDocument) -> _Terms:
                 break
             name.append(word)
         issuer |= set(words(" ".join(name)).split()) | {match[2].casefold()}
+    # JPMorgan's letterhead: "NYSE symbol: JPM"
+    issuer |= {ticker.casefold() for ticker in _SYMBOL.findall(document.text[:10_000])}
     return _Terms(
         tuple(acronyms.items()),
         distinct,
@@ -520,7 +534,11 @@ def _label_and_group(table: SourceTable, value: SourceCell) -> tuple[str, str]:
             not _generic_heading(cells[0].text)
             and not any(_numeric(c) and not c.header for c in cells[1:])
             and any(
-                re.search(r"\bQ[1-4]\b|\bFY|20\d{2}|months|quarter", c.text, re.IGNORECASE)
+                re.search(
+                    r"\bQ[1-4]\b|\b[1-4]Q\d{2}\b|\bFY|20\d{2}|months|quarter",
+                    c.text,
+                    re.IGNORECASE,
+                )
                 for c in cells[1:]
             )
         ):
@@ -532,9 +550,11 @@ def _label_and_group(table: SourceTable, value: SourceCell) -> tuple[str, str]:
 def _group(fact: ReferencedFact, terms: _Terms) -> str:
     """The fact's segment, or none when its group names the whole company (its name or
     ticker: "MCO") or only the role the fact plays ("guidance", "headline")."""
-    named = set(words(fact.group).split())
+    named = set(words(fact.group).split()) - {"and", "of", "the"}
     if words(fact.group) in _NEUTRAL_GROUPS or named <= _NOT_SEGMENT | terms.issuer:
         return ""
+    if fact.group.split() and fact.group.split()[-1].casefold() in _LEGAL:
+        return ""  # a company's legal name, "JPMorgan Chase & Co.", is the whole company
     grouped = set(metric_words(terms.expand(fact.group)))
     if grouped & MEASURE_STEMS and grouped <= set(metric_words(terms.expand(fact.metric))):
         # It repeats the measure ("Total net interest income" for net interest income), where
@@ -554,11 +574,26 @@ def _group(fact: ReferencedFact, terms: _Terms) -> str:
     return fact.group
 
 
+def _group_forms(group: str) -> list[str]:
+    """A group as written, and by its name or its abbreviation alone when it gives both:
+    "Commercial & Investment Bank (CIB)" is named by "Results for CIB"."""
+    found = re.fullmatch(r"\s*(.+?)\s*\(\s*([A-Za-z&]{2,6})\s*\)\s*", group)
+    return [group, found[1], found[2]] if found else [group]
+
+
+def _names_group(group: str, text: str) -> bool:
+    return any(words(form) and words(form) in words(text) for form in _group_forms(group))
+
+
 def _clause_names(group: str, text: str) -> bool:
     """Whether a clause names a segment: its words in order, in any form ("Commissions" in
     "Commission revenue"), without the words that name no segment ("U.S. total" is U.S.)."""
-    named = [stem(w) for w in words(normalized(group)).split() if w not in _NOT_SEGMENT]
-    return not named or f" {' '.join(named)} " in f" {' '.join(stems(words(normalized(text))))} "
+    said = f" {' '.join(stems(words(normalized(text))))} "
+    for form in _group_forms(group):
+        named = [stem(w) for w in words(normalized(form)).split() if w not in _NOT_SEGMENT]
+        if not named or f" {' '.join(named)} " in said:
+            return True
+    return False
 
 
 def _unit_note(note: str, unit: str) -> bool:
@@ -792,7 +827,17 @@ def _table_binding(
             # 3.75%" is net sales growth
             slot |= _CHANGE_STEMS
         issues: list[str] = []
-        for name in dict.fromkeys((label, f"{label} {measure}".strip())):
+        # A section the row sits in is part of its name: "Net revenue" under "Results for
+        # CIB" is CIB net revenue
+        titled = re.sub(
+            r"\b(?:results?|highlights?|summary|selected)\b(?:\s+for)?",
+            "",
+            section,
+            flags=re.IGNORECASE,
+        ).strip()
+        for name in dict.fromkeys(
+            (label, f"{label} {measure}".strip(), f"{titled} {label}".strip())
+        ):
             issues = _identity_issues(
                 terms.expand(fact.metric),
                 name,
@@ -810,7 +855,7 @@ def _table_binding(
         sectioned = bool(words(section)) and words(section) not in _NEUTRAL_GROUPS
         if (
             group
-            and not (words(group) in words(section) or words(group) in words(label))
+            and not _names_group(group, f"{section} | {label}")
             and (sectioned or not _names_itself(fact, group, label))
         ):
             issues.append("segment/group is not established by the source row")
@@ -818,11 +863,23 @@ def _table_binding(
             not group
             and words(section)
             and words(section) not in _NEUTRAL_GROUPS
-            and not set(metric_words(section)) <= set(metric_words(fact.metric))
+            # "Results for CIB" is the CIB section; "Results for JPM" is the whole company
+            and not set(metric_words(section)) - _SECTION_WORDS - terms.issuer
+            <= set(metric_words(fact.metric))
+            # A reconciliation's heading ("Non-GAAP adjustments") names a basis, no segment
+            and not re.fullmatch(
+                r"(?:non gaap |gaap |ifrs )*(?:adjustments?|reconciliations?|measures?)",
+                words(section),
+            )
         ):
             issues.append("the row belongs to a section the claim doesn't name")
         per_share = kind == "per share" or bool(re.search(r"per share|\beps\b", normalized(label)))
-        caption = source_scale(f"{label} {headers}", per_share)
+        # The header nearest above the value states its scale; a table can restate its
+        # headers further down for another section ("Amount ($ billions)")
+        scaled = next(
+            (h for h in reversed(_column_headers(table, cell)) if source_scale(h)), headers
+        )
+        caption = source_scale(f"{label} {scaled} {prefix}", per_share)
         if caption is None and kind == "money":
             caption = source_scale(context) or source_scale(table.text[:400])
         if caption == "ambiguous":
@@ -955,6 +1012,8 @@ def _metric_window(claim: list[str], prefix: str) -> tuple[int, int] | None:
 # A basis can sit inside the measure's name after a number: "19% growth in organic sales".
 # The basis check, not the name, decides whether it is the claimed one.
 _BASIS_STEMS = frozenset(stem(w) for w in ("organic", "comparable", "reported", "adjusted"))
+_SECTION_WORDS = frozenset(stem(w) for w in ("results", "highlights", "summary", "selected"))
+_MANAGED = stem("managed")  # JPMorgan's managed basis: "managed revenue of $50.9 billion"
 
 
 def _named_after(claim: list[str], following: str, kind: str, growth: bool, prefix: str) -> bool:
@@ -1087,6 +1146,7 @@ def _paragraph_binding(
     claim = [w for w in measure if w not in set(metric_words(group))] or measure
     # "Net sales" is named by "Sales in the quarter were", unless the release tells them apart
     required = [w for w in claim if w not in terms.optional(set(claim))] or claim
+    named_claim, named_required = claim, required
     failures: list[str] = []
     for clause in _CLAUSES.split(ref.quote):
         text = normalized(terms.expand(clause))
@@ -1112,6 +1172,12 @@ def _paragraph_binding(
             issues: list[str] = []
             prefix = text[: token[0]]
             following = text[run[-1][1] :]
+            claim, required = named_claim, named_required
+            if _MANAGED in claim and re.search(r"\bmanaged\b", prefix[-60:]):
+                # A basis the clause names next to the measure ("managed revenue of $50.9
+                # billion") is checked there, not as part of the measure's name
+                claim = [w for w in claim if w != _MANAGED] or claim
+                required = [w for w in required if w != _MANAGED] or required
             window = _metric_window(claim, prefix)
             if window is None and required != claim:
                 window = _metric_window(required, prefix)
@@ -1190,6 +1256,16 @@ def _paragraph_binding(
             )
             basis_issues, basis = _basis_issues(fact, value, basis_source)
             issues.extend(basis_issues)
+            if re.match(
+                r"[\s,]*(?:excluding|exclusive of|before|ex-)\b", text[after_end:following]
+            ) and not re.search(
+                r"exclud|\bex-|before|adjusted|non-gaap|underlying",
+                f"{fact.metric} {value.basis} {value.comparison_qualifier}",
+                re.IGNORECASE,
+            ):
+                # "ROTCE of 21%, excluding discretionary investment securities losses" is not
+                # the reported ROTCE (20%)
+                issues.append("the source value excludes items the claim doesn't")
             neutral_source = bool(
                 _NEUTRAL.search(text[after_end:following])
                 or _NEUTRAL.search(text[max(0, window[0] - 30) : token[0]])
@@ -1417,8 +1493,8 @@ def bind_brief(candidate: UnverifiedBrief, document: SourceDocument) -> BindingR
 def _group_stated(fact: ReferencedFact, document: SourceDocument, terms: _Terms) -> bool:
     """Whether the evidence of every kept value names the fact's group: in its passage, or
     for a cell in the row's label or the section above it."""
-    group = words(terms.expand(fact.group))
-    if not group:
+    group = terms.expand(fact.group)
+    if not words(group):
         return True
     for value in fact.values():
         if value is None:
@@ -1431,10 +1507,10 @@ def _group_stated(fact: ReferencedFact, document: SourceDocument, terms: _Terms)
                 # in a cell names it in its own text
                 if cells and not _prose(cells[0]):
                     label, section = _label_and_group(block, cells[0])
-                    if group not in words(terms.expand(f"{label} {section}")):
+                    if not _names_group(group, terms.expand(f"{label} | {section}")):
                         return False
                     continue
-            if group not in words(terms.expand(ref.quote)):
+            if not _names_group(group, terms.expand(ref.quote)):
                 return False
     return True
 

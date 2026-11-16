@@ -410,6 +410,48 @@ table read from PDF text, DoorDash's table with the period in the row and the me
 column, ServiceNow's margin rows labeled "Income from operations", and guidance without a
 number ("low single digit range").
 
+### Headline facts reach the gate on this replay (Nov 16, v0.21.47, measured)
+
+Of 106 headline facts in the live answers, 2 are wrong claims the verifier must refuse
+(Duolingo's users in USD, ASML's net income given as a bare "4960"). The other 104 were
+confirmed 88 times. Fixes, general:
+
+- **Segment tables.** JPMorgan titles them "Results for CIB | 2Q26 | 3Q25": "2Q26" now dates
+  a title row, the title's section counts as part of each row's name ("Net revenue" there is
+  CIB net revenue), and "Results for JPM", the issuer's own ticker, is the whole company (a
+  ticker given as "NYSE symbol: JPM" is now read). A group given with its abbreviation,
+  "Commercial & Investment Bank (CIB)", is named by either.
+- **Scales in column headers.** "Amount ($ millions)" and "($ millions, except per share
+  data)" state a scale; the header nearest above a value decides, as a table can restate
+  its headers in "$ billions" further down.
+- **Labels that name no segment.** A company's legal name ("JPMorgan Chase & Co."), a
+  reconciliation heading ("Non-GAAP adjustments"), and categories such as "Operating
+  Metrics" or "Balance sheet and liquidity".
+- **JPMorgan's managed basis** binds where the clause says it ("managed revenue of $50.9
+  billion"), never where it doesn't.
+- **A definition in parentheses** ("Operating margin (income from operations as a percentage
+  of total revenue)") is not part of the measure. One that qualifies the number ("excluding
+  litigation") or states numbers of its own stays required.
+- **Bank ratios.** ROTCE, ROE and CET1 are their long names, and count as measures, so "ROE
+  of 17% and ROTCE of 20%" can't give return on equity 20%.
+- **Safety:** "ROTCE of 21%, excluding discretionary investment securities losses" is not the
+  reported ROTCE (20%). A value the source states excluding items is refused unless the claim
+  says so.
+
+| Measure | v0.21.46 | v0.21.47 |
+|---|---|---|
+| Headline facts confirmed, of 104 right claims | 88 (85%) | 99 (95%) |
+| Live facts refused (of 619) | 237 | 221 |
+| Development / held-out / unseen values kept | 96 / 173 / 819 | 101 / 177 / 819 |
+
+All 7 known wrong facts stay refused; no live fact lost; every newly kept value read against
+its passage, row and column header. The 5 headline claims still refused: DoorDash's total
+orders under the model's group "Marketplace" (also the name of its measures), two JPM claims
+reworded beyond what the release supports ("excluding significant item"), JPM's ROTCE in a
+cell that holds two ratios, and Chipotle's "new" restaurant openings. Guidance stays at
+81 of 126 (64%); the 90% target needs the outlook tables of Spotify (PDF text), DoorDash
+(period in the row) and ServiceNow.
+
 ## Live summaries (v0.13.0)
 
 `summary_bound_format.py` supplies the item 6 presentation path for `BindingReport`
