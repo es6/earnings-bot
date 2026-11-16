@@ -257,6 +257,67 @@ yet filter the live summaries. Next: raise what it confirms among the right fact
 the 6 known errors stay refused, measured on this replay and then on releases it was never
 tuned on.
 
+### Fewer right facts refused (Nov 16, v0.21.44, measured, offline)
+
+The replay now names, for each refused fact, why the passage the answer quoted refused it
+(before, a refusal listed every reason from every passage holding the number). In 241 of
+the 299 refusals one reason decides, and the largest was "metric is absent from the cited
+claim clause" (112): right facts phrased in ways the binder didn't read. The fixes are
+general, not per issuer:
+
+- **Ranges:** "$2.649 - $2.653 billion" read as $2.649 and minus $2.653 billion. A dash right
+  after an amount now separates a range, and a scale written once at the end applies to both
+  ends ("$(1.2)-$(1.3)B" too). A minus anywhere else stays.
+- **The measure after "of":** "Closed $1.463 billion of U.S. commercial TCV", "repurchased
+  $110.0 million of stock". As with "in", the phrase must be exactly the measure; a claimed
+  word it leaves out must be the verb just before the number, and a verb that makes the
+  amount a part ("Cloud accounted for $4.5 billion of revenue") binds nothing; that gap was
+  open for "in" too. A name ending in its verb ("Total contract value closed") also matches
+  the release's verb-first order.
+- **Spelling:** prefixes releases fuse ("pre-tax" and "Pretax", "e-commerce") are one word;
+  other hyphens stay apart ("ex-fuel" and "ex. fuel"). "SG&A" and "R&D" are one word. A list of
+  footnote marks ("LTM12,13") is dropped, and an amount glued to a currency code ("EUR1.2
+  billion") is no longer read as a footnote.
+- **Abbreviations:** a measure's abbreviation the release defines ("Free cash flow (FCF)")
+  names that measure, except where it is defined; MAU and DAU are monthly and daily active
+  users.
+- **Groups:** a group that repeats the measure ("Total net interest income") is no segment. A
+  category the release never says ("Backlog", "Customer balances") is dropped from a fact
+  the model doesn't call a segment; a segment, or a group with the issuer's name in it
+  ("Acme Analytics"), must still be established. A segment is found in any form
+  ("Commissions" in "Commission revenue") and without filler words ("U.S. total" is U.S.).
+- **Labels kept, not lost.** Two held-out values bound only once their group was handled,
+  and both exposed a display error that the old refusal had hidden by accident:
+  - Visa's payments volume grew 9% on a constant-dollar basis and was shown as "+9% YoY". A
+    constant-dollar label is now kept and shown, and a growth rate the source calls
+    currency-neutral is refused when the claim isn't, the same rule as for adjusted values.
+  - Booking's free cash flow was claimed in the unit "free cash flow" and shown as "1.1B".
+    An amount the source writes with a currency sign is shown as money ("$1.1B").
+
+| Set (Ember-low answers) | Before | After |
+|---|---|---|
+| Live facts, Nov 12 (the 619 of the replay above): refused | 299 | 262 |
+| Development, the six of Nov 13: values kept | 78/184 | 85/184 |
+| Held out, 16 releases never used for tuning | 148/398 | 163/398 |
+| Unseen issuers KO, MCO, ETN, BSX, 60 answers | 790/1,869 | 800/1,869 |
+
+- **No known error kept.** All 7 known wrong facts above stay refused.
+- **Every newly kept value was read against its passage:** the 38 live facts and the 32
+  values of the other sets. None was wrong. The unseen study's frozen known-value checks find
+  0 wrong among 279 checked values (272 before).
+- **One right fact lost:** Chipotle's 0.8% increase in transactions, quoted without the
+  words "comparable restaurant" its metric names. It had bound only because the model's group
+  exempted those words. A group's words now never stand in for a measure's.
+- **What's still refused, by the quoted passage's reason:** the measure absent from the
+  clause (96: paraphrases such as "Net payout ratio" for "Net payout", "Share repurchases"
+  for "repurchased ... of stock", a segment named only in a heading above the text), the cell
+  not holding the value (42), the row not naming the measure (40, mostly tables whose
+  headers sit in a separate header table), and the number not in the quoted passage (34).
+- The held-out gain is smaller than the tuning set's, as expected. Retention is still below
+  what filtering the live summaries needs, so summaries stay Beta and reference mode stays
+  off. Reproduce: `scripts/verify_replay.py` (live facts, with the known-error check) and
+  `scripts/binding_replay.py` (the three reference sets, listing every kept value).
+
 ## Live summaries (v0.13.0)
 
 `summary_bound_format.py` supplies the item 6 presentation path for `BindingReport`

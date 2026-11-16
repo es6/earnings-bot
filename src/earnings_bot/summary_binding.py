@@ -19,7 +19,9 @@ from decimal import Decimal
 from pydantic import ValidationError
 
 from earnings_bot.binding_text import (
+    FUSED,
     MEASURE_STEMS,
+    WORD,
     basis_of,
     claimed_amounts,
     count_words,
@@ -154,6 +156,9 @@ _DEFINED = re.compile(
     r"((?:(?:[A-Z][\w'’&.-]*|of|and|on|for|the|&)\s+){0,5}[A-Z][\w'’&.-]*)"
     r"\s*\(\s*[\"“]?([A-Z]{2,5})[\"”]?\s*\)"
 )
+_DEFINED_MEASURE = re.compile(
+    r"((?:[A-Za-z][\w'’&-]*\s+){0,5}[A-Za-z][\w'’&-]*)\s*\(\s*[\"“]?([A-Z]{2,5})[\"”]?\s*\)"
+)
 # Abbreviations of an accounting basis, period or market, never expanded
 _NOT_NAMES = {"GAAP", "IFRS", "SEC", "YTD", "LTM", "TTM", "YOY", "QOQ", "NYSE", "NASDAQ", "USD"}
 # A word that can be left out of a measure's name without changing the measure: "net sales"
@@ -215,10 +220,19 @@ class _Terms:
     # (word, measure) pairs the release lists separately: "net sales" and "sales" rows
     distinct: frozenset[tuple[str, str]] = frozenset()
     issuer: frozenset[str] = frozenset()  # the words of the issuer's name and its ticker
+    vocabulary: str = ""  # every word of the release, in order, padded with spaces
+
+    def names(self, phrase: str) -> bool:
+        """Whether the release says this phrase anywhere, as written or as defined."""
+        return any(
+            words(normalized(form)) and f" {words(normalized(form))} " in self.vocabulary
+            for form in (phrase, self.expand(phrase))
+        )
 
     def expand(self, text: str) -> str:
         for short, name in self.acronyms:
-            text = re.sub(rf"\b{short}\b", lambda _, name=name: name, text)
+            # Not where it is defined: "Remaining performance obligations (RPO)"
+            text = re.sub(rf"(?<![(\"“])\b{short}\b(?![)\"”])", lambda _, name=name: name, text)
         return text
 
     def optional(self, measure: set[str]) -> set[str]:
@@ -246,6 +260,18 @@ def _terms(document: SourceDocument) -> _Terms:
                 if match[2] not in _NOT_NAMES and not set(metric_words(name)) & MEASURE_STEMS:
                     acronyms.setdefault(match[2], name)
                 break
+    # A measure's own abbreviation, in any case: "Free cash flow (FCF)" makes "FCF forecast"
+    # a forecast of free cash flow
+    for match in _DEFINED_MEASURE.finditer(document.text):
+        names = match[1].split()
+        for start in range(len(names)):
+            tail = [w for w in names[start:] if w.casefold() not in ("of", "and", "the", "&")]
+            if not tail or "".join(w[0].upper() for w in tail) != match[2]:
+                continue
+            name = " ".join(names[start:])
+            if match[2] not in _NOT_NAMES and set(metric_words(name)) & MEASURE_STEMS:
+                acronyms.setdefault(match[2], name)
+            break
     # Row labels only: a column header ("Reported Net Revenues") describes other rows
     labels = set()
     for table in document.tables:
@@ -266,7 +292,12 @@ def _terms(document: SourceDocument) -> _Terms:
                 break
             name.append(word)
         issuer |= set(words(" ".join(name)).split()) | {match[2].casefold()}
-    return _Terms(tuple(acronyms.items()), distinct, frozenset(issuer))
+    return _Terms(
+        tuple(acronyms.items()),
+        distinct,
+        frozenset(issuer),
+        f" {words(normalized(document.text))} ",
+    )
 
 
 def _slot_stems(field: str) -> frozenset[str]:
@@ -490,7 +521,30 @@ def _group(fact: ReferencedFact, terms: _Terms) -> str:
     named = set(words(fact.group).split())
     if words(fact.group) in _NEUTRAL_GROUPS or named <= _NOT_SEGMENT | terms.issuer:
         return ""
+    grouped = set(metric_words(terms.expand(fact.group)))
+    if grouped & MEASURE_STEMS and grouped <= set(metric_words(terms.expand(fact.metric))):
+        # It repeats the measure ("Total net interest income" for net interest income), where
+        # a segment in the metric's name ("Walmart U.S." comp sales) stays a segment
+        return ""
+    if (
+        fact.kind != "segment"
+        and terms.vocabulary
+        and not named & terms.issuer
+        and not terms.names(fact.group)
+    ):
+        # A category of the model's own ("Backlog", "Operating data") on a fact it doesn't
+        # call a segment. The release never says it, so it is no segment of this release.
+        # A group with the issuer's name in it ("Acme Analytics") claims a business unit,
+        # and stays to be established
+        return ""
     return fact.group
+
+
+def _clause_names(group: str, text: str) -> bool:
+    """Whether a clause names a segment: its words in order, in any form ("Commissions" in
+    "Commission revenue"), without the words that name no segment ("U.S. total" is U.S.)."""
+    named = [stem(w) for w in words(normalized(group)).split() if w not in _NOT_SEGMENT]
+    return not named or f" {' '.join(named)} " in f" {' '.join(stems(words(normalized(text))))} "
 
 
 def _unit_note(note: str, unit: str) -> bool:
@@ -629,15 +683,26 @@ def _comparison(field: str, value: SourcedValue, local: str) -> tuple[list[str],
     return [], value
 
 
+# A growth rate with currency moves taken out: "9% on a constant-dollar basis", "up 5.1% in
+# constant currency", "+11% on a foreign exchange (F/X) neutral basis"
+_NEUTRAL = re.compile(
+    r"constant[- ](?:currency|dollars?)|(?:fx|f/x|foreign exchange)(?:\s*\(f/x\))?[- ]neutral|"
+    r"currency[- ]neutral|excluding (?:the impact of )?(?:foreign )?(?:currency|exchange)|"
+    r"\bex[- ]?fx\b|\(cc\)",
+    re.IGNORECASE,
+)
+
+
+_MONEY_MARK = re.compile(r"US\$|C\$|A\$|[$€£¥]")
+
+
 def _normal(value: SourcedValue) -> SourcedValue:
     """Model metadata reduced to what binding checks: a basis tag only when it is a basis, a
     comparison qualifier the model put in `basis`."""
     qualifier = value.comparison_qualifier
-    if not qualifier and re.search(
-        r"constant currency|organic|ex-?\s?acquisitions?|excluding|fx[- ]neutral|"
-        r"currency[- ]neutral|comparable",
-        value.basis,
-        re.IGNORECASE,
+    if not qualifier and (
+        re.search(r"organic|ex-?\s?acquisitions?|excluding|comparable", value.basis, re.IGNORECASE)
+        or _NEUTRAL.search(value.basis)
     ):
         qualifier = value.basis
     basis = "non-GAAP" if "adjusted" in basis_of(value.basis) else ""
@@ -749,6 +814,9 @@ def _table_binding(
             matches(claim, token[2], token[3]) for claim, token in zip(claims, found, strict=False)
         ):
             issues.append("value/sign/scale/unit does not match the cited cell")
+        # A count unit of the model's own ("gross bookings") on an amount the cell writes as
+        # money is shown as the money it is, never without its currency
+        money = kind == "count" and bool(_MONEY_MARK.search(raw))
         if re.search(r"per share|\beps\b", normalized(label)) and kind != "per share":
             issues.append("per-share unit is missing")
         # Other values in the row are other periods unless their own labels set them apart
@@ -799,11 +867,13 @@ def _table_binding(
             issues.extend(compared)
         currency_issues, currency = (
             _currency_issues(value, f"{raw} {label} {headers}", f"{context} {table.text[:400]}")
-            if kind in ("money", "per share")
+            if kind in ("money", "per share") or money
             else ([], "")
         )
         issues.extend(currency_issues)
         _, unit = _unit_issues(value, f"{fact.metric} {label} {headers} {context}")
+        if money:
+            shown = shown.model_copy(update={"unit": "money"})
         if not issues:
             candidates.append(
                 (cell.id, _accepted(shown.model_copy(update={"basis": basis}), currency, unit))
@@ -824,8 +894,8 @@ _CLAUSES = re.compile(r"(?<=[.;!?])\s+(?=[A-Z(\"“•])|;\s*|\n+|\s+•\s+")
 def _metric_window(claim: list[str], prefix: str) -> tuple[int, int] | None:
     """The last place before a number where the claimed measure is named: all its words,
     in order, within a few words of each other."""
-    tokens = [(m.start(), m.end(), m[0]) for m in re.finditer(r"[a-z0-9&]+", prefix)]
-    names = [stem(t[2]) for t in tokens]
+    tokens = [(m.start(), m.end(), m[0]) for m in re.finditer(rf"{FUSED}{WORD}", prefix)]
+    names = [stem(t[2].replace("-", "")) for t in tokens]
     for end in range(len(tokens) - 1, -1, -1):
         if names[end] != claim[-1]:
             continue
@@ -848,19 +918,32 @@ def _metric_window(claim: list[str], prefix: str) -> tuple[int, int] | None:
 _BASIS_STEMS = frozenset(stem(w) for w in ("organic", "comparable", "reported", "adjusted"))
 
 
-def _named_after(claim: list[str], following: str, kind: str, growth: bool) -> bool:
+def _named_after(claim: list[str], following: str, kind: str, growth: bool, prefix: str) -> bool:
     """An amount or a growth rate can name its measure right after it: "delivered $1.1 billion
-    in revenue", "up 28%, with 19% growth in organic sales". The phrase after "in" must be the
-    claimed measure, no more: "$5 million in revenue synergies" is not revenue."""
-    lead = r"\s*in\s+" if kind == "money" else r"\s*(?:growth|increase|decrease|decline)\s+in\s+"
+    in revenue", "closed $1.463 billion of U.S. commercial TCV", "up 28%, with 19% growth in
+    organic sales". The phrase after "in" or "of" must be the claimed measure, no more: "$5
+    million in revenue synergies" is not revenue. A claimed word the phrase leaves out must be
+    the verb just before the number: "repurchased $110.0 million of stock" is stock
+    repurchased."""
+    lead = (
+        r"\s*(?:in|of)\s+"
+        if kind == "money"
+        else r"\s*(?:growth|increase|decrease|decline)\s+in\s+"
+    )
     if kind != "money" and not growth:
         return False
-    found = re.match(lead + r"([a-z&\- ]+)", following)
+    if re.search(
+        r"\b(?:accounted for|contribut\w*|represent\w*|comprised|of which)[\s$€£¥(]*$", prefix
+    ):
+        return False  # a part of the measure: "Cloud accounted for $4.5 billion of revenue"
+    found = re.match(lead + r"([a-z&\-.' ]+)", following)
     if found is None:
         return False
-    phrase = re.split(r"\b(?:and|or|compared|from|versus|vs|to|on|over|for)\b", found[1])[0]
-    named = stems(phrase)
-    return bool(named) and named[-1] == claim[-1] and set(named) - set(claim) <= _BASIS_STEMS
+    phrase = re.split(r"\b(?:and|or|compared|from|versus|vs|to|on|over|for|at)\b", found[1])[0]
+    named = stems(phrase.rstrip(". "))
+    if not named or named[-1] not in claim or set(named) - set(claim) > _BASIS_STEMS:
+        return False
+    return set(claim) - set(named) <= set(stems(prefix)[-2:])
 
 
 def _per_share_window(claim: list[str], prefix: str, following: str) -> tuple[int, int] | None:
@@ -952,16 +1035,17 @@ def _paragraph_binding(
     group = terms.expand(_group(fact, terms))
     metric = terms.expand(fact.metric)
     context = str(frame)
-    claim = [w for w in metric_words(metric) if w not in set(metric_words(group))] or (
-        metric_words(metric)
-    )
+    measure = metric_words(metric)
     growth_slot = field in ("reported_growth", "comparable_growth")
     if growth_slot:
         # The slot says it is a growth rate: "ARR growth" is named by "ARR grew"
-        claim = [w for w in claim if w not in _CHANGE_STEMS] or claim
+        measure = [w for w in measure if w not in _CHANGE_STEMS] or measure
     elif field in ("previous_guidance", "new_guidance"):
         # And that it is guidance: "EPS guidance" is named by "expects adjusted EPS between"
-        claim = [w for w in claim if w not in _GUIDANCE_STEMS] or claim
+        measure = [w for w in measure if w not in _GUIDANCE_STEMS] or measure
+    # The group's words are checked as the group; when they are all the measure has
+    # ("Adobe AI-first ARR" growth), the measure is named in full
+    claim = [w for w in measure if w not in set(metric_words(group))] or measure
     # "Net sales" is named by "Sales in the quarter were", unless the release tells them apart
     required = [w for w in claim if w not in terms.optional(set(claim))] or claim
     failures: list[str] = []
@@ -1004,8 +1088,12 @@ def _paragraph_binding(
                     following_words
                 ) | set(preceding_words):
                     window = (token[0], token[0])
-            if window is None and _named_after(required, following, kind, growth_slot):
+            if window is None and _named_after(required, following, kind, growth_slot, prefix):
                 window = (token[0], token[0])
+            if window is None and len(claim) > 1 and re.search(r"[a-z]ed$", fact.metric.casefold()):
+                # A name ending in its verb reads verb first in a release: "Total contract value
+                # closed" is "Closed total contract value of $2.918 billion"
+                window = _metric_window(claim[-1:] + claim[:-1], prefix)
             if window is None and kind == "per share":
                 window = _per_share_window(required, prefix, following)
             if window is None:
@@ -1063,7 +1151,21 @@ def _paragraph_binding(
             )
             basis_issues, basis = _basis_issues(fact, value, basis_source)
             issues.extend(basis_issues)
-            if group and words(group) not in words(text) and not _names_itself(fact, group, text):
+            if (
+                growth_slot
+                and (
+                    _NEUTRAL.search(text[after_end:following])
+                    or _NEUTRAL.search(text[max(0, window[0] - 30) : token[0]])
+                )
+                and not _NEUTRAL.search(f"{value.comparison_qualifier} {fact.metric}")
+            ):
+                # Like an adjusted value claimed as reported: "9% on a constant-dollar basis"
+                # is not the reported growth
+                issues.append("the source growth excludes currency moves, the claim doesn't")
+            money = kind == "count" and bool(
+                _MONEY_MARK.search(text[max(0, token[0] - 4) : token[0] + 1])
+            )
+            if group and not _clause_names(group, text) and not _names_itself(fact, group, text):
                 issues.append("segment/group is absent from the claim clause")
             issues.extend(qualifier_issues(value, text[max(0, token[0] - 20) : after_end]))
             span = f"{local} {text[token[0] : after_end]} {after}"
@@ -1114,11 +1216,13 @@ def _paragraph_binding(
             )
             currency_issues, currency = (
                 _currency_issues(value, clause, context)
-                if kind in ("money", "per share")
+                if kind in ("money", "per share") or money
                 else ([], "")
             )
             issues.extend(currency_issues)
             _, unit = _unit_issues(value, f"{fact.metric} {text}")
+            if money:
+                shown = shown.model_copy(update={"unit": "money"})
             if not issues:
                 kept = shown.model_copy(update={"basis": basis})
                 return [], ref.block_id, _accepted(kept, currency, unit)

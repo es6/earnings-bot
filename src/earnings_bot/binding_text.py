@@ -121,19 +121,31 @@ _ALIASES = [
     (r"\bnet cash provided by operating activities\b", "operating cash flow"),
     (r"\bcash flows? from operations\b", "operating cash flow"),
     (r"\bcash flows? from operating activities\b", "operating cash flow"),
+    (r"\bmaus?\b", "monthly active users"),
+    (r"\bdaus?\b", "daily active users"),
     (r"\byear[- ]over[- ]year\b|\by/y\b", "yoy"),
     (r"\bquarter[- ]over[- ]quarter\b|\bq/q\b", "qoq"),
 ]
 
 
+# A word, with an ampersand inside it kept: "sg&a", "r&d", but not "engines & services"
+WORD = r"[a-z0-9]+(?:&[a-z0-9]+)*"
+# A prefix that is also written fused: "pre-tax" is "pretax", "e-commerce" is "ecommerce".
+# Others stay apart, as releases write them both ways ("ex-fuel", "ex. fuel")
+_PREFIXES = r"pre|post|co|after|multi|e"
+_COMPOUND = re.compile(rf"\b({_PREFIXES})-(?=[a-z])")
+FUSED = rf"(?:\b(?:{_PREFIXES})-)?"  # a fused prefix before a WORD, for spans of the text
+
+
 def words(text: str) -> str:
-    return " ".join(re.findall(r"[a-z0-9]+", text.casefold()))
+    return " ".join(re.findall(WORD, _COMPOUND.sub(r"\1", text.casefold())))
 
 
 def normalized(text: str) -> str:
     """Lower case, footnote digits dropped (share1 -> share), aliases applied."""
-    # A footnote digit follows a word of at least three letters; Q3 and FY27 keep theirs
-    text = re.sub(r"(?<=[A-Za-z]{3})\d{1,2}\b|\(\d{1,2}\)|\*+", "", text)
+    # A footnote digit follows a word of at least three letters, alone or in a list
+    # ("LTM12,13"); Q3 and FY27 keep theirs, and so does an amount ("EUR1.2 billion")
+    text = re.sub(r"(?<=[A-Za-z]{3})\d{1,2}(?:,\d{1,2})*\b(?![.,]\d)|\(\d{1,2}\)|\*+", "", text)
     text = text.casefold().replace("’", "'")
     for pattern, alias in _ALIASES:
         text = re.sub(pattern, alias, text)
@@ -152,7 +164,7 @@ def stem(word: str) -> str:
 
 
 def stems(text: str) -> list[str]:
-    return [stem(w) for w in re.findall(r"[a-z0-9&]+", text)]
+    return [stem(w) for w in re.findall(WORD, _COMPOUND.sub(r"\1", text))]
 
 
 MEASURE_STEMS = frozenset(stem(w) for w in MEASURES)
@@ -518,7 +530,8 @@ def number_tokens(text: str, caption: str = "") -> list[tuple[int, int, Decimal,
     """Each number in a text: start, end, amount in base units, its precision in base units,
     and dimension (number, %, or bps). "(37.5)" and "-37.5" are negative; a caption's scale
     applies to numbers that state none; bare years are skipped."""
-    found = []
+    found: list[tuple[int, int, Decimal, Decimal, str]] = []
+    unscaled = False  # the previous number stated no scale of its own
     for match in _TOKEN.finditer(text):
         raw = match["num"].replace(",", "")
         suffix = (match["suffix"] or "").casefold()
@@ -531,15 +544,35 @@ def number_tokens(text: str, caption: str = "") -> list[tuple[int, int, Decimal,
             amount, step = Decimal(raw), _step(raw)
         except InvalidOperation:
             continue
+        hyphen = "-" in (match["neg"] or "", match["neg2"] or "")
+        sign = match.start("neg") if match["neg"] else match.start("neg2")
+        # "$2.649 - $2.653 billion": a hyphen right after another number is a range's dash,
+        # not a minus, and the scale written once at the end is both ends' scale
+        dash = hyphen and bool(found) and not text[found[-1][1] : sign].strip()
+        ranged = dash or (
+            bool(found)
+            and bool(re.fullmatch(r"\s*(?:to|and|-|–|—)\s*", text[found[-1][1] : match.start()]))
+        )
+        if dash:
+            negative = False
         if suffix in ("%", "percent"):
             dimension = "%"
         elif suffix in ("bps", "basis points"):
             dimension = "bps"
         else:
             dimension = "number"
-            scale = SCALES.get(_SUFFIX_SCALE.get(suffix) or caption or "one", Decimal(1))
+            named = _SUFFIX_SCALE.get(suffix)
+            scale = SCALES.get(named or caption or "one", Decimal(1))
             amount, step = amount * scale, step * scale
-        start = match.start("neg") if match["neg"] else match.start("num")
+            if ranged and named and unscaled and found[-1][4] == "number":
+                start, end, low, low_step, _ = found[-1]
+                found[-1] = (start, end, low * scale, low_step * scale, "number")
+        unscaled = dimension == "number" and not suffix and not caption
+        start = (
+            match.start("num")
+            if dash
+            else (match.start("neg") if match["neg"] else match.start("num"))
+        )
         found.append((start, match.end(), -amount if negative else amount, step, dimension))
     return found
 
