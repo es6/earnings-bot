@@ -420,7 +420,12 @@ def period_issues(
             if not found or mapped != reporting(found):
                 issues.append("period year is not established by the source")
     claimed_q = quarter(value.period)
-    source_q = quarter(local) or quarter(near) or quarter(far)
+    # Text near the value that names several quarters ("second quarter results ... guidance
+    # for Q3") decides none for an actual; the release's own reporting quarter does
+    near_q = quarter(near)
+    source_q = (
+        quarter(local) or (near_q if len(near_q) == 1 or guide else set()) or quarter(far) or near_q
+    )
     if claimed_q and (len(claimed_q) != 1 or (source_q and claimed_q - source_q)):
         issues.append("fiscal quarter conflicts with the source")
     if claimed_q and not source_q and not years(local):
@@ -435,6 +440,9 @@ def period_issues(
     source = _one(durations_in(local))
     if source is None and not durations_in(local):
         source = _one(durations_in(near))
+    if expected in (6, 9) and not durations_in(f"{local}\n{near}"):
+        # A year-to-date amount needs the source to say so; a highlight states the quarter
+        issues.append("a year-to-date duration is not established by the source")
     # A balance at the quarter's end belongs to that quarter
     if (
         source is not None

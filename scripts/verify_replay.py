@@ -339,6 +339,7 @@ def main() -> None:
                         "ticker": ticker,
                         "metric": fact.metric,
                         "group": fact.group,
+                        "role": fact.role,
                         "kind": fact.kind,
                         "period": fact.period,
                         "basis": fact.basis,

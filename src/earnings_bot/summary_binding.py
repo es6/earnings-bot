@@ -644,10 +644,19 @@ def _slot_issues(field: str, value: SourcedValue, local: str, metric: str = "") 
         ):
             issues.append("comparable growth needs its source exclusions")
     elif guidance or (
-        growth and unit_kind(value.unit) in ("%", "bps") and "margin" not in local.lower()
+        growth
+        and unit_kind(value.unit) in ("%", "bps")
+        and "margin" not in local.lower()
+        and not _growth_measure(metric)
     ):
         issues.append("actual is attached to a guidance/growth column")
     return issues
+
+
+def _growth_measure(metric: str) -> bool:
+    """A measure that is itself a rate of growth: "Comparable restaurant sales increased 2.1%"
+    states its value with a growth word."""
+    return bool(re.search(r"comparable|same[- ]store|\bcomps?\b", metric, re.IGNORECASE))
 
 
 def _guidance_heading(text: str) -> bool:
@@ -888,7 +897,8 @@ def _table_binding(
     return [], candidates[0][0], candidates[0][1]
 
 
-_CLAUSES = re.compile(r"(?<=[.;!?])\s+(?=[A-Z(\"“•])|;\s*|\n+|\s+•\s+")
+# A bullet starts a clause, spaced or not: "(cc)1 •Operating income growth of 28.8%"
+_CLAUSES = re.compile(r"(?<=[.;!?])\s+(?=[A-Z(\"“•])|;\s*|\n+|\s*[•◦▪]\s*")
 
 
 def _metric_window(claim: list[str], prefix: str) -> tuple[int, int] | None:
@@ -1151,17 +1161,19 @@ def _paragraph_binding(
             )
             basis_issues, basis = _basis_issues(fact, value, basis_source)
             issues.extend(basis_issues)
-            if (
-                growth_slot
-                and (
-                    _NEUTRAL.search(text[after_end:following])
-                    or _NEUTRAL.search(text[max(0, window[0] - 30) : token[0]])
-                )
-                and not _NEUTRAL.search(f"{value.comparison_qualifier} {fact.metric}")
-            ):
+            neutral_source = bool(
+                _NEUTRAL.search(text[after_end:following])
+                or _NEUTRAL.search(text[max(0, window[0] - 30) : token[0]])
+            )
+            neutral_claim = bool(_NEUTRAL.search(f"{value.comparison_qualifier} {fact.metric}"))
+            if growth_slot and neutral_source and not neutral_claim:
                 # Like an adjusted value claimed as reported: "9% on a constant-dollar basis"
                 # is not the reported growth
                 issues.append("the source growth excludes currency moves, the claim doesn't")
+            rate = field == "current_actual" and kind == "%" and _growth_measure(fact.metric)
+            if rate and neutral_source != neutral_claim:
+                # A rate such as comparable sales is either the currency-neutral one or not
+                issues.append("currency-neutral basis differs between the claim and the source")
             money = kind == "count" and bool(
                 _MONEY_MARK.search(text[max(0, token[0] - 4) : token[0] + 1])
             )
@@ -1373,7 +1385,9 @@ def _group_stated(fact: ReferencedFact, document: SourceDocument, terms: _Terms)
             block = document.resolve(ref.document_sha256, ref.block_id)
             if isinstance(block, SourceTable):
                 cells = [c for c in block.cells if c.id in ref.cell_ids]
-                if cells and not ref.quote.startswith(cells[0].text):
+                # A value cell names its segment by its row and section; a paragraph laid out
+                # in a cell names it in its own text
+                if cells and not _prose(cells[0]):
                     label, section = _label_and_group(block, cells[0])
                     if group not in words(terms.expand(f"{label} {section}")):
                         return False
@@ -1388,10 +1402,12 @@ def _prose_cells(ref: EvidenceRef, table: SourceTable) -> list[EvidenceRef]:
     return [
         ref.model_copy(update={"cell_ids": (cell.id,), "quote": cell.text})
         for cell in table.cells
-        if cell.id in ref.cell_ids
-        and len(cell.text) > 40
-        and len(re.findall(r"[A-Za-z]{3,}", cell.text)) >= 6
+        if cell.id in ref.cell_ids and _prose(cell)
     ]
+
+
+def _prose(cell: SourceCell) -> bool:
+    return len(cell.text) > 40 and len(re.findall(r"[A-Za-z]{3,}", cell.text)) >= 6
 
 
 # Measures that count people or things. Duolingo's daily active users and paid subscribers
@@ -1414,6 +1430,13 @@ _MONEY_MEASURE = re.compile(
 )
 
 
+_ANNOUNCED_QUARTER = re.compile(
+    r"\b(?:reports?|reported|announces?|announced)\b[^.\n]{0,40}?\b(first|second|third|fourth)"
+    r"[- ]quarter\b"
+)
+_QUARTER_NUMBER = {"first": 1, "second": 2, "third": 3, "fourth": 4}
+
+
 def _counted(metric: str) -> bool:
     return bool(_COUNTED.search(metric)) and not _MONEY_MEASURE.search(metric)
 
@@ -1424,6 +1447,12 @@ def _bind(facts: list[ReferencedFact], document: SourceDocument) -> BindingRepor
     offset = fiscal_offset(document.text[:20_000])
     reported = reporting_year(document.text[:20_000])
     named_period = reported_period(document.text[:20_000])
+    if named_period is None and reported:
+        # "Walmart reports second quarter results": the quarter announced without a year,
+        # in the year the release reports
+        announced = set(_ANNOUNCED_QUARTER.findall(document.text[:600].casefold()))
+        if len(announced) == 1:
+            named_period = (int(reported[0]), _QUARTER_NUMBER[announced.pop()])
     terms = _terms(document)
     shown_updates: set[str] = set()
     for fact in facts:
