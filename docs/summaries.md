@@ -318,6 +318,57 @@ general, not per issuer:
   off. Reproduce: `scripts/verify_replay.py` (live facts, with the known-error check) and
   `scripts/binding_replay.py` (the three reference sets, listing every kept value).
 
+### The gate for verified summaries, and headline facts (Nov 16, v0.21.45, measured)
+
+Zero refusals is not the goal. A refusal is right when a fact is wrong, computed by the
+model, or not supported by its quote, and dropping an unsupported secondary line also keeps a
+summary short. Verified summaries are ready to drop "Beta" when, on releases never used for
+tuning (the live streak's and later ones):
+
+1. **No wrong fact is shown.** Every kept value is read against its passage.
+2. **The headline facts survive:** revenue, EPS, guidance and the KPIs that move the stock.
+   The target is about 95% of the headline facts the live summary shows today.
+3. **No added delay.** Filtering the live answer runs locally, with no extra model call.
+
+Headline facts, the facts the live answers mark `headline`, were confirmed 81 of 106 times
+(76%); guidance 69 of 126 (55%). This round fixes the headline refusals that were binder
+gaps:
+
+- **A quarter announced without a year.** "Walmart reports second quarter results" gives no
+  year, so nothing set the reporting quarter, and Walmart's revenue and adjusted EPS were
+  refused. The announced quarter now takes the year the release reports.
+- **Glued bullets.** "$0.81 •Company issues guidance for Q3" put the outlook's Q3 in the EPS
+  clause; any bullet now starts a clause.
+- **Several quarters nearby.** When the text around an actual names more than one quarter
+  (the title's second quarter and the outlook's Q3), the release's reporting quarter decides.
+  Before, a Q3 label on Walmart's Q2 EPS passed.
+- **Comparable sales.** "Comparable restaurant sales increased 2.1%" states a growth measure's
+  value with a growth word; it was refused as a growth rate in an actual's slot. Such a rate
+  must also claim the currency basis the source gives it.
+- **A segment dropped from its value.** When the model quoted only a cell ("3.5%"), the
+  segment check looked for the segment in that quote instead of the row and the table's
+  header, dropped the group, and showed Walmart U.S. and Walmart International net sales
+  growth as the company's. On main, International's 12.8% was shown that way. Both now keep
+  their segment.
+- **Year-to-date labels need the source.** A six- or nine-month claim with no duration in
+  its passage is refused. Walmart's operating and free cash flow in a highlights list were
+  claimed as six months; the label was right, but nothing there said so, and a quarterly label
+  would have passed just as well.
+
+| Measure | v0.21.44 | v0.21.45 |
+|---|---|---|
+| Live facts confirmed, headline role | 81/106 (76%) | 88/106 (83%) |
+| Live facts refused (of 619) | 262 | 255 |
+| Development values kept | 85/184 | 91/184 |
+| Held-out values kept | 163/398 | 166/398 |
+| Unseen values kept | 800/1,869 | 800/1,869 |
+
+All 7 known wrong facts stay refused. Every newly kept value was read against its passage;
+none is wrong. Two right facts are now refused, Walmart's unlabeled year-to-date cash flows.
+Still refused among headline facts: values in tables whose layout the binder can't read
+(reconciliation columns, JPM's segment tables), JPM's "managed" revenue, and a group of the
+model's that the release uses elsewhere. Guidance (55%) is the next gap.
+
 ## Live summaries (v0.13.0)
 
 `summary_bound_format.py` supplies the item 6 presentation path for `BindingReport`

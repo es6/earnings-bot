@@ -1021,3 +1021,108 @@ def test_an_amount_written_as_money_is_shown_as_money() -> None:
     kept = bound(document, "Gross bookings", **claim)
 
     assert kept and kept.unit == "money" and kept.currency == "USD"
+
+
+# Headline facts the binder refused in Walmart's and Chipotle's Nov 12 live answers (Nov 16)
+WALMART = (
+    "Walmart reports second quarter results\n"
+    "•Revenue of $187.9 billion, up 5.9% •GAAP EPS of $0.80; Adjusted EPS of $0.81 "
+    "•Company issues guidance for Q3; raises outlook for FY27"
+)
+
+
+def test_a_quarter_announced_without_a_year_is_the_reporting_years() -> None:
+    """Walmart's title gives the quarter but no year; its fiscal year is stated further on.
+    A bullet glued to the next ("$0.81 •Company issues guidance for Q3") is its own clause."""
+    document = document_from_text(WALMART)
+    eps = {"amount": "0.81", "unit": "per share", "scale": "one", "basis": "adjusted"}
+
+    assert bound(document, "Adjusted EPS", **eps, period="Q2 FY27")
+    assert bound(document, "Revenue", amount="187.9", scale="billion", period="Q2 FY27")
+    assert not bound(document, "Adjusted EPS", **eps, period="Q3 FY27")
+
+
+def test_comparable_sales_growth_is_the_measure_itself() -> None:
+    document = document_from_text(
+        QUARTER + "Comparable restaurant sales increased 2.1%, including a 1.3% increase in "
+        "average check and a 0.8% increase in transactions."
+    )
+    rate = {"unit": "%", "scale": "one", "currency": ""}
+
+    assert bound(document, "Comparable restaurant sales", amount="2.1", **rate)
+    # A rate that isn't itself a growth measure still can't be an actual
+    assert not bound(document, "Average check", amount="1.3", **rate)
+
+
+def test_comparable_sales_claim_the_currency_basis_the_source_states() -> None:
+    document = document_from_text(
+        QUARTER + "Comparable sales increased 4.6%, or 4.1% in constant currency."
+    )
+    rate = {"unit": "%", "scale": "one", "currency": ""}
+
+    assert bound(document, "Comparable sales", amount="4.6", **rate)
+    assert not bound(document, "Comparable sales", amount="4.1", **rate)
+    assert bound(document, "Comparable sales", amount="4.1", **rate, basis="constant currency")
+
+
+def test_a_year_to_date_amount_needs_the_source_to_say_so() -> None:
+    """Walmart's "Operating cash flow of $19.7 billion" sits in a highlights list with no
+    period; a six-month label there was the model's, as a quarterly one would have been."""
+    # Walmart's layout: the title well above, under lines that state no period
+    second = (
+        "Acme reports second quarter 2026 results\nDollars in billions\n"
+        "Dollars in billions, except per share data\n"
+    )
+    unstated = document_from_text(second + "•Operating cash flow of $19.7 billion")
+    stated = document_from_text(
+        second + "Operating cash flow for the six months ended June 30, 2026 was $19.7 billion."
+    )
+    flow = {"amount": "19.7", "scale": "billion", "duration": "six months"}
+
+    assert not bound(unstated, "Operating cash flow", **flow, period="Six months ended Q2 2026")
+    assert bound(stated, "Operating cash flow", **flow, period="Six months ended Q2 2026")
+
+
+def test_a_segment_table_names_its_segment_when_the_quote_is_only_the_value() -> None:
+    """Walmart's segment tables carry the segment in their header ("Walmart U.S. | Q2 FY27 |
+    Q2 FY26"). The model quoted only "3.5%", and the segment was dropped: Walmart U.S. net
+    sales growth was shown as the company's."""
+    document = document_from_html(
+        "<p>Walmart reports second quarter fiscal 2027 results</p><table>"
+        "<tr><th>Walmart U.S.</th><th>Q2 FY27</th><th>Q2 FY26</th><th>Change</th></tr>"
+        "<tr><td>Net sales</td><td>$125.2</td><td>$120.9</td><td>3.5%</td></tr></table>"
+    )
+    table = document.tables[0]
+    cell = next(c for c in table.cells if c.text == "3.5%")
+    growth = value(
+        amount="3.5",
+        unit="%",
+        scale="one",
+        currency="",
+        basis="",
+        period="Q2 FY27",
+        comparison="YoY",
+        evidence=[
+            {
+                "document_sha256": document.sha256,
+                "block_id": table.id,
+                "cell_ids": [cell.id],
+                "quote": "3.5%",
+            }
+        ],
+    )
+    data = fact(
+        metric="Net sales",
+        kind="segment",
+        group="Walmart U.S.",
+        current_actual=None,
+        reported_growth=growth,
+    )
+
+    report = bind_answer(
+        json.dumps({"schema_version": "source-values/1", "facts": [data]}), document
+    )
+
+    assert [(b.fact.group, b.fact.reported_growth is not None) for b in report.facts] == [
+        ("Walmart U.S.", True)
+    ]
