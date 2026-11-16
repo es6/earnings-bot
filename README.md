@@ -43,9 +43,10 @@ to a summary.
   data) as they appear.
 - When summaries are on, a summary written by Muse Ember (low effort) is edited into the
   alert from the first readable text: headline results, guidance and the KPIs that matter for
-  that company. Every number must appear in a quoted passage of the release. Summaries are
-  labeled **Beta** until each number's measure and period are verified too
-  ([summaries.md](docs/summaries.md)).
+  that company. Every number must appear in a quoted passage of the release, and with
+  `VERIFIED_SUMMARIES=true` each fact's measure, period and basis must also be stated there,
+  in the release's text or tables, or the fact is left out. Summaries stay labeled **Beta**
+  until live releases have confirmed the check ([summaries.md](docs/summaries.md)).
 - Several Discord servers can each keep their own tracked list. A company that several of
   them track is watched once and posted to each.
 
