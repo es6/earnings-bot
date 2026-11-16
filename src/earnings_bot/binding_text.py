@@ -238,7 +238,7 @@ def count_words(unit: str) -> list[str]:
 def quarter(text: str) -> set[str]:
     text = normalized(text)
     for word, number in _QUARTERS.items():
-        text = re.sub(rf"\b{word} quarter\b", f"q{number}", text, flags=re.IGNORECASE)
+        text = re.sub(rf"\b{word}[- ]quarter\b", f"q{number}", text, flags=re.IGNORECASE)
     text = re.sub(r"\bfq([1-4])\b", r"q\1", text)
     return {
         a or b
@@ -312,6 +312,8 @@ def duration(text: str) -> int | None:
     explicit = re.search(r"\b(three|six|nine|twelve|3|6|9|12)[ -]*months?\b", text, re.IGNORECASE)
     if explicit:
         return _duration(explicit[0])
+    if re.search(r"\byear end(?:ed|ing)\b", text, re.IGNORECASE):
+        return 12  # "Year ending December 31, 2026" is a year, not a balance at its end
     if re.search(
         r"\bas of\b|\bas at\b|point.in.time|quarter.end|\bexit(?:ing)?\b|\bending\b|"
         r"end of (?:the )?(?:quarter|period|year)|balance",
@@ -355,7 +357,7 @@ def durations_in(text: str) -> set[int]:
     if re.search(r"\byear[- ]to[- ]date\b|\bytd\b|\bfirst half\b", text):
         found.add(-1)  # some year-to-date span
     if re.search(
-        r"\b(?:full|fiscal)[- ]year\b|\byear ended\b|\bfy ?\d{2,4}\b(?! q)", text
+        r"\b(?:full|fiscal)[- ]year\b|\byear end(?:ed|ing)\b|\bfy ?\d{2,4}\b(?! q)", text
     ) and not (re.search(r"\bq[1-4] ?fy", text)):
         found.add(12)
     return found
@@ -438,6 +440,20 @@ def period_issues(
     ):
         issues.append("fiscal year label conflicts with the claimed subannual duration")
     source = _one(durations_in(local))
+    if guide:
+        # For guidance, the cited passage's own period ("Full year 2026 earnings per share
+        # expected..."), then the nearest heading with one ("For full year 2026:" below "For
+        # Q4 2026, we expect:"), never the release title's "third quarter ... results"
+        lines = near.splitlines()
+        near = next(
+            (
+                line
+                for line in lines[:1] + lines[:0:-1]
+                if durations_in(line)
+                and not re.search(r"\b(?:reports?|announces?|results)\b", line, re.IGNORECASE)
+            ),
+            "",
+        )
     if source is None and not durations_in(local):
         source = _one(durations_in(near))
     if expected in (6, 9) and not durations_in(f"{local}\n{near}"):
@@ -484,14 +500,15 @@ def source_scale(text: str, per_share: bool = False) -> str | None:
 _QUALIFIERS = {
     "approximately": r"\b(?:about|approximately|roughly|around|approx\.?)\b|~",
     "nearly": r"\b(?:nearly|almost)\b",
-    "more_than": r"\b(?:over|more than|exceed(?:ed|ing)?|above)\b|(?<![<>=])>(?!=)",
+    "more_than": r"\b(?:over|more than|in excess of|exceed(?:ed|ing)?|above)\b|(?<![<>=])>(?!=)",
     "at_least": r"\bat least\b|>=",
     "less_than": r"\b(?:under|less than|below)\b|(?<![<>=])<(?!=)",
     "at_most": r"\b(?:up to|at most)\b|<=",
 }
 
 
-def qualifier_issues(value: SourcedValue, text: str) -> list[str]:
+def source_qualifiers(text: str) -> set[str]:
+    """The bounds or approximations a text puts on a number: "about", "more than", "up to"."""
     # "year-over-year" and "quarter-over-quarter" say nothing about a bound
     text = re.sub(
         r"(?:year|quarter|month|period)[- ]over[- ](?:year|quarter|month|period)",
@@ -499,9 +516,11 @@ def qualifier_issues(value: SourcedValue, text: str) -> list[str]:
         text,
         flags=re.IGNORECASE,
     )
-    observed = {
-        key for key, pattern in _QUALIFIERS.items() if re.search(pattern, text, re.IGNORECASE)
-    }
+    return {key for key, pattern in _QUALIFIERS.items() if re.search(pattern, text, re.IGNORECASE)}
+
+
+def qualifier_issues(value: SourcedValue, text: str) -> list[str]:
+    observed = source_qualifiers(text)
     expected = set() if value.value_qualifier == "exact" else {value.value_qualifier}
     return (
         [] if observed == expected else ["bound/approximation qualifier conflicts with the source"]

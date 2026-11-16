@@ -67,7 +67,7 @@ _NUMBER = re.compile(
 DASHES = ("-", "\u2212", "\u2013", "(")
 _QUALIFIERS = (
     (("approximately", "about", "~", "roughly", "around"), "approximately"),
-    (("more than", "over ", ">", "above"), "more_than"),
+    (("more than", "in excess of", "over ", ">", "above"), "more_than"),
     (("nearly", "almost"), "nearly"),
     (("at least",), "at_least"),
     (("less than", "under ", "below", "<"), "less_than"),

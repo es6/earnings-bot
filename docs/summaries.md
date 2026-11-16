@@ -369,6 +369,47 @@ Still refused among headline facts: values in tables whose layout the binder can
 (reconciliation columns, JPM's segment tables), JPM's "managed" revenue, and a group of the
 model's that the release uses elsewhere. Guidance (55%) is the next gap.
 
+### Guidance (Nov 16, v0.21.46, measured)
+
+Guidance facts of the live answers were confirmed 69 of 126 times (55%). The refusals were
+mostly guidance the binder couldn't read, fixed generally:
+
+- **The guidance word anywhere before the number.** Only the two words before a measure's
+  name were read, so "ASML expects Q4 2026 total net sales between..." and Adobe's "Targets
+  assume non-GAAP operating margin of ~44.0%" weren't guidance; "fourth-quarter" with a
+  hyphen wasn't a quarter.
+- **Bounds.** "In excess of" is "more than". A source's "approximately $1.2 billion" claimed
+  as "$1.2 billion" is shown as approximate; any other difference in a bound is refused.
+- **Guidance tables.** Walmart's "Net sales (cc) | Increase 3.0% to 3.75%" is a range of
+  increases (a "Decrease" cell isn't read, as its sign would be lost); the cell's "Increase"
+  says the rate is growth; a row marked "(cc)" must be claimed as constant currency. A
+  paragraph laid out across the table is no column header (its "Q3 FY26 figures" and "as of
+  August 20, 2026" had set the period) but does say the table is guidance.
+- **Earlier guidance.** A column headed "Original" or "Prior" is earlier guidance, never the
+  new: Walmart's "Original from 2.19.2026" 3.5% to 4.5% beside "As of 8.20.2026" 4.0% to
+  5.0%, Coca-Cola's "Current | Prior".
+- **The guidance's period.** The cited passage's own period decides, then the nearest heading
+  that has one ("For full year 2026:" below "For Q4 2026, we expect:"), never the release
+  title's "third quarter ... results". "Year ending December 31, 2026" is a year, not a
+  balance at its end.
+
+| Measure | v0.21.45 | v0.21.46 |
+|---|---|---|
+| Live facts confirmed, guidance role | 69/126 (55%) | 82/126 (65%) |
+| Live facts confirmed, headline role | 88/106 | 88/106 |
+| Live facts refused (of 619) | 255 | 237 |
+| Development values kept | 91/184 | 96/184 |
+| Held-out values kept | 166/398 | 173/398 |
+| Unseen values kept | 800/1,869 | 819/1,869 |
+
+All 7 known wrong facts stay refused, and no live fact was lost. Every newly kept value was
+read against its passage and column header; none is wrong (for example Walmart's full-year
+guidance binds from "As of 8.20.2026", its earlier range only as previous guidance, and
+Coca-Cola's "at least 5%" from "Current"). Still refused among guidance: Spotify's outlook
+table read from PDF text, DoorDash's table with the period in the row and the measure in the
+column, ServiceNow's margin rows labeled "Income from operations", and guidance without a
+number ("low single digit range").
+
 ## Live summaries (v0.13.0)
 
 `summary_bound_format.py` supplies the item 6 presentation path for `BindingReport`

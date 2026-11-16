@@ -45,3 +45,8 @@ def test_footnote_marks_go_but_amounts_glued_to_a_currency_stay() -> None:
 def test_prefixes_written_fused_are_one_word_and_an_ampersand_joins_a_word() -> None:
     assert words("Pre-tax e-commerce ex-fuel non-GAAP") == "pretax ecommerce ex fuel non gaap"
     assert words("SG&A costs, Engines & Services") == "sg&a costs engines services"
+
+
+def test_a_year_ending_on_a_date_is_a_year() -> None:
+    assert duration("Year ending December 31, 2026") == 12
+    assert duration("Quarter ending September 30") == 0  # a balance at the quarter's end
