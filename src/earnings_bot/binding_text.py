@@ -132,6 +132,9 @@ _ALIASES = [
     (r"\breturn on (?:average )?tangible common equity\b", "rotce"),
     (r"\breturn on (?:average )?(?:common )?equity\b", "roe"),
     (r"\bcommon equity tier 1\b", "cet1"),
+    (r"\bads? revenues?\b", "advertising revenue"),
+    (r"\bincome from operations\b", "operating income"),
+    (r"\boperating income margin\b", "operating margin"),
     (r"\bmaus?\b", "monthly active users"),
     (r"\bdaus?\b", "daily active users"),
     (r"\byear[- ]over[- ]year\b|\by/y\b", "yoy"),
@@ -462,6 +465,9 @@ def period_issues(
     ):
         issues.append("fiscal year label conflicts with the claimed subannual duration")
     source = _one(durations_in(local))
+    if guide and source is None and years(local) and not quarter(local) and not durations_in(local):
+        # A forecast named by its year alone is the year's: "our expected 2026 FCF forecast"
+        source = 12
     if guide:
         # For guidance, the cited passage's own period ("Full year 2026 earnings per share
         # expected..."), then the nearest heading with one ("For full year 2026:" below "For

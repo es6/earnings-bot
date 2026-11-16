@@ -452,6 +452,51 @@ cell that holds two ratios, and Chipotle's "new" restaurant openings. Guidance s
 81 of 126 (64%); the 90% target needs the outlook tables of Spotify (PDF text), DoorDash
 (period in the row) and ServiceNow.
 
+### Guidance reaches the gate on this replay (Nov 16, v0.21.48, measured)
+
+Of 126 guidance facts in the live answers, 14 can't or shouldn't verify: guidance with no
+number ("low single digit range", "similar to Q3"), values given without a unit (ASML's
+"14.2-15.2"), a value folded together with the prior guidance ("~$12.0B vs $12.5B
+previously"), GE's backlog (an actual), and Chipotle's tax rate claimed without its "before
+discrete items". The other 112 were confirmed 81 times. Fixes, general:
+
+- **Prose forecasts.** A forecast's period is named up to its number and just after it, not
+  in the reasons that follow (Netflix's "...$12.0B ... due primarily to a real estate
+  transaction in Q4"); a forecast named by its year alone is the year's. Whether new
+  guidance is old is read before its number, as what follows belongs to the comparator
+  ("(vs. our prior projection of $12.5B)").
+- **Guidance words.** "Expectations" and "forward-looking"; a footnote mark glued to a word
+  ("1Targets assume") no longer hides it; "ad revenue" is advertising revenue.
+- **Outlook headings.** "For 2027, management is anticipating the following:" dates the list
+  below it, and an outlook heading stays in view below the rows of its table (Spotify's
+  "Outlook for Q4'26" above rows that each say "in the quarter"). A count names its measure
+  to the clause's end ("340 to 360 new company-owned restaurant openings in the U.S. and
+  Canada").
+- **Outlook tables.** A column header says what a rate is: "cRPO" under "Year/Year Growth
+  (%)" is cRPO growth, and "Income from operations" under "Margin (%)" is the operating
+  margin ("income from operations" is operating income). The header nearest a value decides
+  whether it is a constant-currency rate, as ServiceNow's margin rows sit below its constant
+  currency growth columns. A table with the period in the row and the measure in the column
+  (DoorDash's "Period | Marketplace GOV | Adjusted EBITDA") is read that way round.
+
+| Measure | v0.21.47 | v0.21.48 |
+|---|---|---|
+| Guidance confirmed, of 112 right claims | 81 (72%) | 104 (93%) |
+| Headline confirmed, of 104 right claims | 99 (95%) | 99 (95%) |
+| Live facts refused (of 619) | 221 | 191 |
+| Development / held-out / unseen values kept | 101 / 177 / 819 | 102 / 187 / 831 |
+
+All 7 known wrong facts stay refused, and no live fact was lost. Every newly kept value was
+read against its passage, row and column header; none is wrong (DoorDash's outlook binds to
+its own column and quarter, ServiceNow's cRPO growth to the reported, not the constant
+currency, column).
+
+**Where the gate stands.** On these replays both targets are met: 95% of right headline
+claims and 93% of right guidance claims, with no known wrong fact kept. That is the replay
+the rules were tuned on. Releases never used for tuning (the live streak's, from November
+17) decide whether it holds, and every value they keep is to be read before "Beta" is
+removed.
+
 ## Live summaries (v0.13.0)
 
 `summary_bound_format.py` supplies the item 6 presentation path for `BindingReport`

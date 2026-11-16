@@ -116,9 +116,18 @@ _GROWTH = re.compile(
     r"o/\(u\)|over/\(under\)|\bvariance\b",
     re.IGNORECASE,
 )
+# The words of a period label and nothing else: "Q4 2026", "FY27", "Full year 2026"
+_PERIOD_ONLY = re.compile(
+    r"\b(?:q[1-4]|[1-4]q|fy|h[12]|fiscal|full|year|quarter|first|second|third|fourth|"
+    r"20\d{2}|'?\d{2})\b|’\d{2}",
+    re.IGNORECASE,
+)
+_OUTLOOK_HEADING = re.compile(
+    r"\b(?:outlook|guidance|forecast|expectations|forward-looking)\b", re.IGNORECASE
+)
 _GUIDANCE = re.compile(
-    r"guidance|outlook|forecast|\bexpects?\b|\bexpected\b|\btargets?\b|\banticipat|"
-    r"\bprojects?\b|\bwill be\b|\bestimat|\bplans? (?:to|for)\b",
+    r"guidance|outlook|forecast|\bexpects?\b|\bexpected\b|\bexpectations?\b|\btargets?\b|"
+    r"\banticipat|\bprojects?\b|\bwill be\b|\bestimat|\bplans? (?:to|for)\b|forward-looking",
     re.IGNORECASE,
 )
 _DECREASE = re.compile(r"\b(?:decrease|decreased|decline|declined|down|lower|fell|drop|dropped)\b")
@@ -151,7 +160,9 @@ class BindingReport:
 
 _METADATA = re.compile(
     r"quarter|\bQ[1-4]\b|\bFY\s*\d|fiscal year|full.year|months ended|"
-    r"\bin (?:USD |US\$ )?(?:millions|thousands|billions)|targets?|outlook|guidance"
+    r"\bin (?:USD |US\$ )?(?:millions|thousands|billions)|targets?|outlook|guidance|"
+    # Chipotle's "For 2027, management is anticipating the following:"
+    r"anticipat|\bfor (?:fiscal )?20\d{2}\b"
     r"|(?:USD|EUR|GBP|CAD|RMB)\s+(?:millions|thousands|billions)?",
     re.IGNORECASE,
 )
@@ -361,7 +372,20 @@ def _context(document: SourceDocument, block_id: str) -> _Context:
             opening.append(block.text)
             local.append(block.text)
     # A bullet's period can be in a heading several paragraphs up
-    near = [line for line in local[-10:] if _METADATA.search(line)][-2:]
+    lines = [line for line in local[-10:] if _METADATA.search(line)]
+    near = lines[-2:]
+    # And an outlook's heading stays in view below the rows of its table: Spotify's "Outlook
+    # for Q4'26" above "Total MAUs ... in the quarter", "Total Premium Subscribers ..."
+    outlook = next(
+        (
+            line
+            for line in reversed(lines[:-2])
+            if _OUTLOOK_HEADING.search(line) and len(line) <= 100  # a heading, not prose
+        ),
+        None,
+    )
+    if outlook:
+        near = [outlook, *near]
     far = [line for line in opening[:12] if _METADATA.search(line)]
     return _Context("\n".join(near), "\n".join(far), lead=lead)
 
@@ -675,9 +699,17 @@ _COMPARABLE_METRIC = re.compile(
 )
 
 
-def _slot_issues(field: str, value: SourcedValue, local: str, metric: str = "") -> list[str]:
+def _slot_issues(
+    field: str, value: SourcedValue, local: str, metric: str = "", before: str | None = None
+) -> list[str]:
+    """`before` is the text ahead of a number in running text: whether new guidance is old is
+    read there, as what follows belongs to its comparator ("...$12.0B (vs. our prior
+    projection of $12.5B)")."""
+    local = re.sub(r"(?<=\d)(?=[A-Za-z])", " ", local)  # a footnote mark: "1Targets assume"
     guidance = bool(_GUIDANCE.search(local))
-    old = bool(_PREVIOUS.search(local))
+    old = bool(
+        _PREVIOUS.search(before if before is not None and field == "new_guidance" else local)
+    )
     growth = bool(_GROWTH.search(local))
     issues = []
     if field in ("previous_guidance", "new_guidance"):
@@ -818,14 +850,30 @@ def _table_binding(
         )
         label, section = (terms.expand(t) for t in _label_and_group(table, cell))
         headers = f"{_headers(table, cell)} {prefix}".strip()
+        named = _PERIOD_ONLY.sub("", headers).strip(" -:|")
+        if label.strip() and not _PERIOD_ONLY.sub("", label).strip(" -:|") and named:
+            # A table laid out the other way: DoorDash's outlook "Period | Marketplace GOV |
+            # Adjusted EBITDA" over "Q4 2026 | $35.4 billion - ..." names its measure in the
+            # column and its period in the row
+            label, headers = named, f"{label} {prefix}".strip()
         # A label that names the claim binds on its own ("Gain on business divestitures"); a
         # segment's label ("North America") binds with the measure its table states
         measure = _row_measure(table, cell, label, section, frame.lead)
         slot = _slot_stems(field)
-        if kind == "%" and re.search(r"\bincrease|\bgrowth\b|\bgrow\b", raw, re.IGNORECASE):
-            # The cell says the rate is a growth rate: "Net sales (cc) | Increase 3.0% to
-            # 3.75%" is net sales growth
+        column = _headers(table, cell)
+        if kind == "%" and re.search(
+            r"\bincrease|\bgrowth\b|\bgrow\b", f"{raw} {column}", re.IGNORECASE
+        ):
+            # The cell or its column says the rate is a growth rate: "Net sales (cc) |
+            # Increase 3.0% to 3.75%", "cRPO" under "Year/Year Growth (%)"
             slot |= _CHANGE_STEMS
+        # A column of margins: "Income from operations" under "Margin (%)" is the operating
+        # margin
+        margin = (
+            f"{label} margin"
+            if kind == "%" and re.search(r"\bmargin", column, re.IGNORECASE)
+            else ""
+        )
         issues: list[str] = []
         # A section the row sits in is part of its name: "Net revenue" under "Results for
         # CIB" is CIB net revenue
@@ -836,8 +884,10 @@ def _table_binding(
             flags=re.IGNORECASE,
         ).strip()
         for name in dict.fromkeys(
-            (label, f"{label} {measure}".strip(), f"{titled} {label}".strip())
+            (label, f"{label} {measure}".strip(), f"{titled} {label}".strip(), margin)
         ):
+            if not name:
+                continue
             issues = _identity_issues(
                 terms.expand(fact.metric),
                 name,
@@ -918,7 +968,7 @@ def _table_binding(
         change_column = field in ("reported_growth", "comparable_growth") and bool(
             _GROWTH.search(headers)
         )
-        comparative = bool(others) and not years(_headers(table, cell)) and not change_column
+        comparative = bool(others) and not years(headers) and not change_column
         issues.extend(
             period_issues(
                 value,
@@ -944,7 +994,12 @@ def _table_binding(
         issues.extend(qualifier_issues(value, f"{raw}"))
         if (
             kind == "%"
-            and _NEUTRAL.search(f"{label} {headers} {raw}")
+            # The nearest header decides, as for scale: ServiceNow's "Margin (%)" rows sit
+            # below its "Constant Currency Year/Year Growth" rows in one column
+            and _NEUTRAL.search(
+                f"{label} {([h for h in _column_headers(table, cell) if h.strip()] or [''])[-1]}"
+                f" {raw}"
+            )
             and not _NEUTRAL.search(f"{value.comparison_qualifier} {fact.metric}")
         ):
             # "Net sales (cc) | Increase 3.0% to 3.75%" is constant-currency growth
@@ -1187,7 +1242,9 @@ def _paragraph_binding(
                 # A count can name what it counts after its number ("repurchased 9.5 million
                 # shares", "1 billion monthly active users"), and a share what it is a share of
                 # ("represented 38.8% of total food and beverage revenue")
-                following_words = stems(following)[:7]
+                # To the clause's end: "340 to 360 new company-owned restaurant openings in the
+                # U.S. and Canada"
+                following_words = stems(following)[:14]
                 preceding_words = stems(prefix)[-6:]
                 if set(required) & set(following_words) and set(required) <= set(
                     following_words
@@ -1301,7 +1358,7 @@ def _paragraph_binding(
                 span = f"{prefix} {span}"
                 if not _GUIDANCE.search(span):
                     span = f"{span} {frame.near}"  # an "Outlook" heading above the bullet
-            issues.extend(_slot_issues(field, value, span, fact.metric))
+            issues.extend(_slot_issues(field, value, span, fact.metric, before=prefix[-120:]))
             if field not in ("previous_guidance", "new_guidance", "prior_year_actual") and (
                 _guidance_heading(frame.near)
             ):
@@ -1311,6 +1368,10 @@ def _paragraph_binding(
                 compared, shown = _comparison(field, value, f"{text[after_end:following]} {text}")
                 issues.extend(compared)
             period_text = text
+            if field in ("previous_guidance", "new_guidance"):
+                # A forecast's period is named up to its number and just after it, not in the
+                # reasons that follow ("...$12.0B ... due primarily to a transaction in Q4")
+                period_text = f"{text[:after_end]} {after}"
             period_near = f"{ref.quote}\n{frame.near}"
             if field == "current_actual" and frame.reported:
                 # A year attached to an explicit comparison after this amount describes its
