@@ -3,10 +3,10 @@ capacity. It stops in the minutes a release is most likely, never touches a comp
 own window is open, runs behind the polls, and leaves Chrome to live windows that use it."""
 
 import io
-import time
 from collections.abc import AsyncIterator
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -184,6 +184,8 @@ async def test_research_that_needs_chrome_waits_without_retrying_every_scan(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(date_discovery, "chrome_available", lambda: True)
+    # A frozen monotonic clock, so the retry time is exact instead of a window around it
+    monkeypatch.setattr(date_discovery, "time", SimpleNamespace(monotonic=lambda: 5000.0))
     with DeliveryStore(tmp_path / "state.db", 7) as store:
         calendar = Calendar(store)
         # Last investigated months ago, so an investigation is due
@@ -193,13 +195,16 @@ async def test_research_that_needs_chrome_waits_without_retrying_every_scan(
         dates = DateDiscovery(
             calendar, fetcher, lambda: datetime.now(UTC), lambda: False, lambda _: None
         )
-        dates.checked[row.cik] = time.monotonic() + 3600
+        dates.checked[row.cik] = 5000.0 + 3600
         with fetcher.background(chrome=False):
-            assert await dates._investigate(row) == row
+            await dates.run_once(row)
+
         # Retried in 10 minutes, not on the next 60-second scan, and not in an hour either
-        wait = dates.checked[row.cik] - time.monotonic()
-        assert 500 < wait <= 600
-        assert dates.phases[row.cik] == "Investigation waits for live Chrome windows to close"
+        assert dates.checked[row.cik] == 5000.0 + 10 * 60
+        assert dates.phases[row.cik] == "Research yielded to monitoring; retrying in 10 minutes"
+        # Nothing was investigated, so the old profile stays
+        saved = calendar.find("SE")
+        assert saved is not None and saved.company.investigated == date(2026, 6, 1)
 
 
 @pytest.mark.parametrize(
@@ -217,6 +222,7 @@ async def test_an_interrupted_investigation_does_not_save_a_partial_profile(
     chrome_research: bool,
 ) -> None:
     monkeypatch.setattr(date_discovery, "chrome_available", lambda: chrome_research)
+    monkeypatch.setattr(date_discovery, "time", SimpleNamespace(monotonic=lambda: 5000.0))
     state = {"live": False}
     with DeliveryStore(tmp_path / "state.db", 7) as store:
         calendar = Calendar(store)
@@ -230,7 +236,7 @@ async def test_an_interrupted_investigation_does_not_save_a_partial_profile(
             lambda: False,
             lambda _: None,
         )
-        dates.checked[row.cik] = time.monotonic() + 3600
+        dates.checked[row.cik] = 5000.0 + 3600
 
         async def interrupted(*args: object, **kwargs: object):
             if interruption == "chrome":
@@ -244,10 +250,10 @@ async def test_an_interrupted_investigation_does_not_save_a_partial_profile(
         if interruption == "http":
             await fetcher.wait_turn("investors.example.com")
         with fetcher.background(chrome=lambda: not state["live"]):
-            assert await dates._investigate(row) == row
+            await dates.run_once(row)
         saved = calendar.find("SE")
         assert saved is not None and saved.company.investigated == date(2026, 6, 1)
-        assert 500 < dates.checked[row.cik] - time.monotonic() <= 600
+        assert dates.checked[row.cik] == 5000.0 + 10 * 60
 
 
 def test_a_window_whose_routes_use_chrome_is_recognized() -> None:

@@ -364,7 +364,7 @@ async def test_a_company_two_servers_track_is_researched_once_for_both(tmp_path:
         bot.dates.now = lambda: now
         [row] = bot.dates.calendar.entries()
 
-        await bot.dates._check(row)
+        await bot.dates.run_once(row)
 
         # The one check wrote what it found to both servers
         for server in servers:
@@ -564,7 +564,17 @@ async def test_primary_server_commands_are_registered_without_a_test_guild_setti
         8: Mock(spec=discord.TextChannel, guild=Mock(id=OTHER_GUILD)),
     }
     monkeypatch.setattr(bot, "fetch_channel", AsyncMock(side_effect=channels.__getitem__))
-    assert await bot._server_guilds() == [GUILD, OTHER_GUILD]
+    synced: list[int] = []
+
+    async def sync(*, guild: discord.abc.Snowflake | None = None) -> list[object]:
+        synced.append(guild.id if guild else 0)
+        return []
+
+    monkeypatch.setattr(bot.tree, "sync", sync)
+
+    await bot.setup_hook()
+
+    assert synced == [GUILD, OTHER_GUILD]
 
 
 async def test_debug_managers_are_scoped_to_configured_servers_and_owner_stays_global(

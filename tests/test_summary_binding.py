@@ -1,6 +1,7 @@
 """Adversarial source bindings, always with supported controls."""
 
 import json
+from collections.abc import Callable
 from typing import Any
 
 import pytest
@@ -14,6 +15,14 @@ from earnings_bot.source_document import (
 from earnings_bot.summary_binding import bind_answer, bind_brief
 from earnings_bot.summary_evidence import parse_referenced_brief
 from tests.builders import TABLE, fact, value
+
+
+def html_table() -> SourceDocument:
+    return document_from_html(TABLE)
+
+
+def plain_text() -> SourceDocument:
+    return document_from_text(TEXT)
 
 
 def report(document: SourceDocument, metric: str = "Revenue", **changes: Any):
@@ -31,27 +40,40 @@ def report(document: SourceDocument, metric: str = "Revenue", **changes: Any):
     return bind_brief(candidate, document)
 
 
-def test_wrong_row_wrong_period_wrong_sign_wrong_scale_and_wrong_unit_are_rejected() -> None:
-    document = document_from_html(TABLE)
-    assert len(report(document).facts) == 1
-    for metric, changes in [
-        ("Operating income", {}),
-        ("Revenue", {"period": "Q4 2026"}),
-        ("Revenue", {"period": "Q3 2025"}),
-        ("Revenue", {"amount": "-100"}),
-        ("Revenue", {"scale": "one"}),
-        ("Revenue", {"unit": "%", "currency": ""}),
-        ("Revenue", {"currency": "EUR"}),
-    ]:
-        result = report(document, metric, **changes)
-        assert not result.facts and result.rejected, (metric, changes)
+TEXT = "Q3 2026 USD\nRevenue was $10 billion."
+TEXT_CONTROL = {"amount": "10", "scale": "billion"}
 
 
-def test_the_two_reproduced_semantic_holes_are_closed_with_a_valid_control() -> None:
-    document = document_from_text("Q3 2026 USD\nRevenue was $10 billion.")
-    assert report(document, amount="10", scale="billion").facts
-    assert not report(document, "Operating income", amount="10", scale="billion").facts
-    assert not report(document, amount="10", scale="billion", period="Q4 2026").facts
+@pytest.mark.parametrize(
+    ("make_document", "control", "metric", "changes"),
+    [
+        pytest.param(html_table, {}, "Operating income", {}, id="table-wrong-row"),
+        pytest.param(html_table, {}, "Revenue", {"period": "Q4 2026"}, id="table-future-period"),
+        pytest.param(html_table, {}, "Revenue", {"period": "Q3 2025"}, id="table-prior-period"),
+        pytest.param(html_table, {}, "Revenue", {"amount": "-100"}, id="table-wrong-sign"),
+        pytest.param(html_table, {}, "Revenue", {"scale": "one"}, id="table-wrong-scale"),
+        pytest.param(
+            html_table, {}, "Revenue", {"unit": "%", "currency": ""}, id="table-wrong-unit"
+        ),
+        pytest.param(html_table, {}, "Revenue", {"currency": "EUR"}, id="table-wrong-currency"),
+        pytest.param(plain_text, TEXT_CONTROL, "Operating income", {}, id="text-wrong-metric"),
+        pytest.param(
+            plain_text, TEXT_CONTROL, "Revenue", {"period": "Q4 2026"}, id="text-wrong-period"
+        ),
+    ],
+)
+def test_a_value_that_the_source_does_not_support_is_rejected_but_the_right_one_binds(
+    make_document: Callable[[], SourceDocument],
+    control: dict[str, str],
+    metric: str,
+    changes: dict[str, str],
+) -> None:
+    document = make_document()
+    assert len(report(document, **control).facts) == 1
+
+    result = report(document, metric, **(control | changes))
+
+    assert not result.facts and result.rejected
 
 
 def test_a_comparative_table_without_column_periods_is_not_assigned_the_headline_period() -> None:

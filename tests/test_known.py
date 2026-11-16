@@ -261,3 +261,8 @@ def test_a_planned_period_is_named_as_the_company_names_it(
     )
     assert planned_period(company, released) == period
     assert planned_period(company.model_copy(update={"fiscal_year_end": None}), released) is None
+
+
+def test_catalog_companies_have_no_fiscal_year_end_so_fmp_leaves_them_alone() -> None:
+    # Their dates come from the issuer, which an FMP guess mustn't replace
+    assert all(c.fiscal_year_end is None for c in known_companies().values())

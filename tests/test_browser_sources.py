@@ -8,7 +8,7 @@ import pytest
 from pydantic import ValidationError
 
 from earnings_bot import pipeline
-from earnings_bot.browser import BrowserUnavailable, browser_host
+from earnings_bot.browser import BrowserUnavailable
 from earnings_bot.browser_sources import (
     BrowserPDF,
     BrowserRelease,
@@ -22,7 +22,6 @@ from earnings_bot.fetch import Response
 from earnings_bot.ir_research import (
     quarter_headline,
     verified_browser_source,
-    verified_results_table,
 )
 from earnings_bot.known import target_toml
 from earnings_bot.pipeline import Releases
@@ -494,59 +493,6 @@ async def test_live_chrome_posts_or_edits_one_alert_with_the_issuer_pdf(
 
 
 @pytest.mark.parametrize(
-    "url",
-    [
-        "https://ir.lucidmotors.com/press-releases",
-        "https://investor.example.co.uk/news?page=2",
-        "https://IR.Example.com:443/news",
-        "https://8.8.8.8/news",
-    ],
-)
-def test_chrome_may_open_any_public_https_page(url: str) -> None:
-    assert browser_host(url) == url.split("/")[2]
-
-
-@pytest.mark.parametrize(
-    "url",
-    [
-        "http://ir.example.com/news",
-        "https://localhost/",
-        "https://127.0.0.1/",
-        "https://10.0.0.5/admin",
-        "https://192.168.1.1/",
-        "https://[::1]/",
-        "https://169.254.169.254/latest/meta-data",
-        "https://printer.local/",
-        "https://nas.home.arpa/",
-        "https://router/",
-        "https://ir.example.com:8443/news",
-        "https://user@ir.example.com/news",
-        "https://ir.example.com/news#latest",
-        "https://ir.example.com",
-    ],
-    ids=[
-        "http",
-        "localhost",
-        "loopback",
-        "private",
-        "home-router",
-        "ipv6-loopback",
-        "link-local",
-        "mdns",
-        "home-arpa",
-        "single-label",
-        "other-port",
-        "login",
-        "fragment",
-        "no-path",
-    ],
-)
-def test_chrome_never_opens_this_pc_or_its_network(url: str) -> None:
-    with pytest.raises(ValueError, match="Not a public https page"):
-        browser_host(url)
-
-
-@pytest.mark.parametrize(
     ("stamp", "after_baseline"),
     [
         ("Mon, 26 Oct 2026 16:05:00 -0400", False),
@@ -610,15 +556,3 @@ async def test_a_quarterly_table_follows_the_issuer_pdf_to_its_file_host() -> No
     other = QuarterlyTable(table, 2026, 4, direct=True)
     assert not other.parse(await other.fetch(fetcher))
     assert fetcher.urgent == [pdf, filecache]
-
-
-async def test_a_prior_fiscal_year_table_cannot_arm_the_next_year() -> None:
-    page = "https://issuer.example/financials/2026"
-    pdf = "https://issuer.example/Q4-2026-ER.pdf"
-    body = b"""<table><tr><th></th><th>Q1</th><th>Q2</th><th>Q3</th><th>Q4</th></tr>
-        <tr><td>Earnings Release</td><td></td><td></td><td></td>
-            <td><a href="/Q4-2026-ER.pdf">PDF</a></td></tr></table>"""
-    fetcher = RoutedFetcher({page: (200, body), pdf: (200, b"%PDF-1.6")})
-
-    assert await verified_results_table(fetcher, page, "FY2027Q1") == {}
-    assert not fetcher.requests

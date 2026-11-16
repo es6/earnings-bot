@@ -1090,7 +1090,7 @@ async def test_amat_notice_in_chrome_saves_the_window_and_prepares_live_ir(
         calendar = Calendar(store)
         row, _ = calendar.add("AMAT", company)
         dates = DateDiscovery(calendar, fetcher, lambda: NOW, lambda: False, lambda _: None)
-        await dates._check(row)
+        await dates.run_once(row)
         [planned] = calendar.entries()
 
     assert planned.target is not None

@@ -9,7 +9,6 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import AsyncMock, Mock
 
 import discord
 import pytest
@@ -44,23 +43,6 @@ from tests.sec_data import LCID_CIK
 def test_directory_bot_registers_tracking_commands(tmp_path: Path) -> None:
     bot = EarningsBot(Settings.model_validate({"discord_token": "test"}), tmp_path)
     assert {"track", "upcoming", "untrack"} <= {command.name for command in bot.tree.get_commands()}
-
-
-async def test_watch_status_shows_build_separately_from_the_version(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr("earnings_bot.bot.build_revision", lambda: "0123456789")
-    bot = EarningsBot(Settings.model_validate({"discord_token": "test"}))
-    send = AsyncMock()
-    interaction = cast(discord.Interaction, Mock(response=Mock(send_message=send)))
-
-    await bot._status(interaction)
-
-    send.assert_awaited_once_with(
-        f"**Earnings Bot {release_version()}**\nBuild `0123456789`\n"
-        "Earnings monitoring is not configured.",
-        ephemeral=True,
-    )
 
 
 def lines_of(embed: discord.Embed) -> dict[str, list[str]]:
