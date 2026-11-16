@@ -6,7 +6,7 @@ November 16, 2026. Times are US Eastern.
 See the [implementation handoff](completion-2026-11-15.md) for the completed work,
 preserved evidence and remaining release-time gates.
 
-**Live since November 15, 18:16:** v0.21.43, everything merged through the test audit fixes
+**Live since November 16, 06:21:** v0.21.51 with verified summaries on; before that, from November 15, 18:16, v0.21.43, everything merged through the test audit fixes
 (#154), deployed with the owner's yes. That includes the Chrome limits (#135), `/track`
 debug mode (#140) and the multiple-server code (#136 to #138), which runs as one server until
 a second is configured.
@@ -16,7 +16,7 @@ a second is configured.
 | Live streak | Next, Nov 17 to 20 |
 | Python maintainability | Added Nov 16: full code-quality review before 1.0; initial scan and standards recorded, sign-off open |
 | Multiple servers | Live, not set up: no second server configured yet |
-| Verified summaries | Merged but off: the quality gate is unmet, summaries stay Beta |
+| Verified summaries | Live since Nov 16 (v0.21.51), labeled Beta until the streak is read |
 | International tickers | Not started beyond the plan and debug mode |
 | Load on the PC | Limits live; measured from the streak's `resources` records |
 
@@ -131,9 +131,12 @@ Agreed with the owner on Nov 15:
 
 1. **`/track` debug mode** ([track-testing.md](track-testing.md)). Built in v0.21.28 for US
    tickers; it adds an option to `/track` and changes nothing else live.
-2. **Verified summaries:** integration, offline studies and temporal-binding improvements
-   are merged (#141, #149). The quality gate is unmet; reference mode and driver profiles
-   remain off and summaries remain Beta. See [the measured limits](summaries.md).
+2. **Verified summaries:** live since Nov 16 (v0.21.51, `VERIFIED_SUMMARIES=true`, the
+   owner's authorization). Each live summary fact is checked against the release before it
+   is shown; on the Nov 12 replay it keeps 95% of right headline facts and 96% of right
+   guidance, and none of the 7 known wrong facts. Releases unlike any seen keep about 60% of
+   headline values, so the streak's summaries are read value by value before "Beta" comes
+   off. See [summaries.md](summaries.md).
 3. **Multiple servers:** deployed early, on Nov 15 with the owner's yes. After the streak
    (Nov 20), configure a second server and measure Discord's rate limits.
 4. **Python maintainability review:** apply the [review standard](python-quality.md), complete
