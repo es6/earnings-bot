@@ -2,7 +2,7 @@
 
 import pytest
 
-from earnings_bot.periods import agrees_with_period
+from first_print.periods import agrees_with_period
 
 
 @pytest.mark.parametrize(

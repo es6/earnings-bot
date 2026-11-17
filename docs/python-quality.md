@@ -17,7 +17,7 @@ one application architecture, a maximum function length, or a target comment per
 | Readability | Keep the configured 100-character format. Use descriptive names, straightforward control flow and small cohesive operations. Shorten code when that improves comprehension. | [PEP 8](https://peps.python.org/pep-0008/), [PEP 20](https://peps.python.org/pep-0020/) |
 | Comments | Delete narration of visible operations and stale development notes. Keep reasons, external constraints, units and invariants. Move long incident accounts to linked docs. Rename confusing code before adding explanatory narration. | [PEP 8 comments](https://peps.python.org/pep-0008/#comments) |
 | Docstrings | Explain a module's responsibility and the contract of meaningful public operations: inputs, result, side effects, errors and ownership where relevant. Avoid repeating the signature in prose. | [PEP 257](https://peps.python.org/pep-0257/) |
-| Structure | Keep `src/earnings_bot`, `tests`, `scripts`, `docs` and `pyproject.toml`. Group modules when they share a responsibility and a clear interface. | [PyPA layout discussion](https://packaging.python.org/en/latest/discussions/src-layout-vs-flat-layout/) |
+| Structure | Keep `src/first_print`, `tests`, `scripts`, `docs` and `pyproject.toml`. Group modules when they share a responsibility and a clear interface. | [PyPA layout discussion](https://packaging.python.org/en/latest/discussions/src-layout-vs-flat-layout/) |
 | Types | Describe internal data precisely; validate untrusted data at entry. Use `Any` deliberately at JSON/SDK boundaries. Prefer a small named record or protocol when it clarifies an actual contract. | [Python typing](https://docs.python.org/3.13/library/typing.html), [typing best practices](https://typing.python.org/en/latest/reference/best_practices.html) |
 | Async ownership | Give every task an owner, observe failures and finish cleanup. Propagate cancellation after cleanup. Use a task group for related tasks with a shared lifetime when its failure behavior fits. | [Python 3.13 asyncio](https://docs.python.org/3.13/library/asyncio-task.html#task-cancellation) |
 | Resources | Make the lifetime of clients, files, connections and Chrome processes explicit. A SQLite transaction context does not close the connection. | [SQLite contexts](https://docs.python.org/3.13/library/sqlite3.html#how-to-use-the-connection-context-manager) |
@@ -51,9 +51,9 @@ requirements and large modules; their directory trees are examples, not universa
 The current root layout is appropriate:
 
 ```text
-earnings-bot/
+first-print/
   pyproject.toml             package, dependencies and tool settings
-  src/earnings_bot/          application and its domain-specific modules
+  src/first_print/          application and its domain-specific modules
   tests/                    behavioral tests, shared fakes, fixtures and replays
   scripts/                  maintenance, evaluation and Windows operations
   docs/                     architecture, operator guidance and dated evidence
@@ -122,7 +122,7 @@ line-by-line sign-off of every module.
 
 | Finding | Evidence and recommended action | Priority / status |
 |---|---|---|
-| A cancelled scorecard caller can leave request cleanup running without its owner waiting | [`EditPriority.card`](../src/earnings_bot/edit_priority.py) cancels in `finally` and drops the task from `_cards` without awaiting its completion. A gated async cleanup probe reproduced a completed caller with a still-pending request. Drain it with an appropriate cleanup deadline, or give its remaining cleanup an explicit supervisor. Preserve alert priority and add one regression that fails on this behavior. | Required resolution before sign-off; reproduced, not fixed by this docs change |
+| A cancelled scorecard caller can leave request cleanup running without its owner waiting | [`EditPriority.card`](../src/first_print/edit_priority.py) cancels in `finally` and drops the task from `_cards` without awaiting its completion. A gated async cleanup probe reproduced a completed caller with a still-pending request. Drain it with an appropriate cleanup deadline, or give its remaining cleanup an explicit supervisor. Preserve alert priority and add one regression that fails on this behavior. | Required resolution before sign-off; reproduced, not fixed by this docs change |
 | Discovery combines several responsibilities | `date_discovery.py` is 1,475 lines. `_check` selects evidence, formats missing-date status, prepares routes/cache and commits the plan. `investigate.py::investigate` spans 255 lines. Consider extraction by phase, preserving source precedence and deadline/untrack checks. Length selects review candidates; it does not mandate splitting. | Refactor candidate after behavior review |
 | Delivery combines transport and orchestration | `pipeline.py` is 1,335 lines and contains Discord poster implementations and release orchestration. Review a poster-module extraction before changing the state machine. Preserve successful bytes, deduplication, edit priority and durable retry semantics. | Refactor candidate; compare release replays |
 | Two deferred dependency pairs | The literal import graph contains `browser` / `fetch` and `text` / `wire_mirror` pairs. They do not form eager import cycles. A small response-type boundary and a pure report-validation boundary could remove those dependencies if this improves change isolation. | Design review; not a demonstrated runtime failure |

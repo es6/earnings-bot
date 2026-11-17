@@ -5,10 +5,10 @@ from typing import Any
 
 import pytest
 
-from earnings_bot.source_document import document_from_html
-from earnings_bot.summary_binding import BindingReport, BoundFact, bind_brief
-from earnings_bot.summary_bound_format import display_facts, render_bound, value_text
-from earnings_bot.summary_evidence import ReferencedFact, parse_referenced_brief
+from first_print.source_document import document_from_html
+from first_print.summary_binding import BindingReport, BoundFact, bind_brief
+from first_print.summary_bound_format import display_facts, render_bound, value_text
+from first_print.summary_evidence import ReferencedFact, parse_referenced_brief
 from tests.builders import TABLE, fact, value
 
 

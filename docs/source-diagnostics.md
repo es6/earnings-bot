@@ -20,7 +20,7 @@ under **Nov 10, On and Sea**. Upload/Last-Modified stamps do not establish avail
 Run only off-window after checking the live schedule:
 
 ```powershell
-uv run --with curl-cffi==0.17.0 python -m earnings_bot.transport_probe plan.json --out recordings/profile-pilot
+uv run --with curl-cffi==0.17.0 python -m first_print.transport_probe plan.json --out recordings/profile-pilot
 ```
 
 The optional library is not a production dependency. A plan supplies `off_window_confirmed`,

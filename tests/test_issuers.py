@@ -5,9 +5,9 @@ from datetime import date, datetime
 
 import pytest
 
-from earnings_bot import issuers
-from earnings_bot.fetch import Response
-from earnings_bot.issuers import (
+from first_print import issuers
+from first_print.fetch import Response
+from first_print.issuers import (
     Issuers,
     fiscal_year_end,
     profile,
@@ -16,9 +16,9 @@ from earnings_bot.issuers import (
     usual_release_time,
     wire_names,
 )
-from earnings_bot.known import known_companies, to_target
-from earnings_bot.recorder import ET
-from earnings_bot.sources import PR_NEWSWIRE_EARNINGS, RssFeed
+from first_print.known import known_companies, to_target
+from first_print.recorder import ET
+from first_print.sources import PR_NEWSWIRE_EARNINGS, RssFeed
 from tests.fakes import RoutedFetcher
 from tests.sec_data import (
     LCID_CIK,

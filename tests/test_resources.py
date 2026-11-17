@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from earnings_bot import recorder
-from earnings_bot.recorder import Journal, Target
-from earnings_bot.resources import MB, snapshot
+from first_print import recorder
+from first_print.recorder import Journal, Target
+from first_print.resources import MB, snapshot
 from tests.fakes import FakeFetcher
 
 
@@ -65,7 +65,7 @@ def test_chrome_runs_below_normal_priority_under_a_memory_ceiling() -> None:
     """So the owner's own programs come first, and a runaway page can't use up the PC's memory."""
     if sys.platform != "win32":  # the marker skips it; this tells the type checker
         pytest.skip("Windows only")
-    from earnings_bot._windows_desktop import CHROME_MEMORY_LIMIT, DesktopProcess
+    from first_print._windows_desktop import CHROME_MEMORY_LIMIT, DesktopProcess
 
     try:
         child = DesktopProcess(Path(sys.executable), ["-c", "import time; time.sleep(30)"])
@@ -79,7 +79,7 @@ def test_chrome_runs_below_normal_priority_under_a_memory_ceiling() -> None:
         kernel.CloseHandle(ctypes.c_void_p(handle))
         used = child.usage()
         assert used is not None and used[0] == 1
-        from earnings_bot._windows_desktop import _EXTENDED_LIMITS, _ExtendedLimits
+        from first_print._windows_desktop import _EXTENDED_LIMITS, _ExtendedLimits
 
         limits = _ExtendedLimits()
         assert child._kernel.QueryInformationJobObject(

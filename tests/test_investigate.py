@@ -9,13 +9,13 @@ from typing import Self, cast
 
 import pytest
 
-from earnings_bot import date_discovery, investigate, ir_research
-from earnings_bot.browser import RenderedPage
-from earnings_bot.calendar import Calendar, describe
-from earnings_bot.date_discovery import DateDiscovery
-from earnings_bot.delivery import DeliveryStore
-from earnings_bot.fetch import Response
-from earnings_bot.investigate import (
+from first_print import date_discovery, investigate, ir_research
+from first_print.browser import RenderedPage
+from first_print.calendar import Calendar, describe
+from first_print.date_discovery import DateDiscovery
+from first_print.delivery import DeliveryStore
+from first_print.fetch import Response
+from first_print.investigate import (
     INVESTIGATION,
     due,
     feed_links,
@@ -24,11 +24,11 @@ from earnings_bot.investigate import (
     wire_seen,
     with_wire,
 )
-from earnings_bot.issuers import profile
-from earnings_bot.known import SourceCheck, known_companies, to_target
-from earnings_bot.recorder import ET
-from earnings_bot.sec_results import SixKResults
-from earnings_bot.sources import Sighting
+from first_print.issuers import profile
+from first_print.known import SourceCheck, known_companies, to_target
+from first_print.recorder import ET
+from first_print.sec_results import SixKResults
+from first_print.sources import Sighting
 from tests.builders import AMAT, AMAT_NOTICE_BODY, filing_routes, sec_filing_detail
 from tests.fakes import RoutedFetcher, rendered
 from tests.results_data import (

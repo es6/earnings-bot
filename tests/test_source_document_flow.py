@@ -6,13 +6,13 @@ import sqlite3
 from contextlib import closing
 from pathlib import Path
 
-from earnings_bot.delivery import DeliveryStore
-from earnings_bot.pipeline import Release
-from earnings_bot.recorder import Journal
-from earnings_bot.source_document import SourceDocument, document_from_text
-from earnings_bot.sources import GuessedPage, RssFeed, Sighting
-from earnings_bot.summary import Summary
-from earnings_bot.text import pdf_text, release_document
+from first_print.delivery import DeliveryStore
+from first_print.pipeline import Release
+from first_print.recorder import Journal
+from first_print.source_document import SourceDocument, document_from_text
+from first_print.sources import GuessedPage, RssFeed, Sighting
+from first_print.summary import Summary
+from first_print.text import pdf_text, release_document
 from tests.builders import IR_PAGE, pdf_sighting, uber
 from tests.fakes import FakePoster, FakeSummarizer, RoutedFetcher
 

@@ -3,7 +3,7 @@
 ## Reporting a vulnerability
 
 Please don't open a public issue for security problems. Use GitHub's private
-[vulnerability reporting](https://github.com/es6/earnings-bot/security/advisories/new) instead.
+[vulnerability reporting](https://github.com/es6/first-print/security/advisories/new) instead.
 You should hear back within a week.
 
 ## Leaked tokens

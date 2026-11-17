@@ -3,7 +3,7 @@ param(
     [int]$RestartSeconds = 15
 )
 
-# Keeps the watchdog (earnings_bot.watchdog) running apart from the bot, for its own scheduled
+# Keeps the watchdog (first_print.watchdog) running apart from the bot, for its own scheduled
 # task: restarts it after any exit and writes its output to recordings/watchdog-<date>.log.
 $ErrorActionPreference = "Stop"
 $repo = Split-Path -Parent $PSScriptRoot
@@ -17,7 +17,7 @@ try {
         $ownsLock = $true
     }
     if (-not $ownsLock) {
-        throw "An earnings-bot watchdog is already running on this PC."
+        throw "A First Print watchdog is already running on this PC."
     }
     $schedule = (Resolve-Path -LiteralPath $ScheduleDirectory).Path
     $uv = (Get-Command uv -CommandType Application).Source
@@ -33,7 +33,7 @@ try {
         $env:EARNINGS_BOT_LOG = $log
         [System.IO.File]::AppendAllText($log, "[$(Get-Date -Format o)] Starting the watchdog`r`n", $utf8)
         # --no-sync: the running bot holds the environment's files
-        cmd.exe --% /d /s /c ""%EARNINGS_BOT_UV%" run --no-sync python -m earnings_bot.watchdog "%EARNINGS_BOT_SCHEDULE%" >> "%EARNINGS_BOT_LOG%" 2>&1"
+        cmd.exe --% /d /s /c ""%EARNINGS_BOT_UV%" run --no-sync python -m first_print.watchdog "%EARNINGS_BOT_SCHEDULE%" >> "%EARNINGS_BOT_LOG%" 2>&1"
         $code = $LASTEXITCODE
         [System.IO.File]::AppendAllText($log, "[$(Get-Date -Format o)] Watchdog exited ($code); restarting`r`n", $utf8)
         Start-Sleep -Seconds $RestartSeconds

@@ -6,8 +6,8 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 import pytest
 
-from earnings_bot.fetch import Response, host_gap
-from earnings_bot.sources import (
+from first_print.fetch import Response, host_gap
+from first_print.sources import (
     GLOBENEWSWIRE_EARNINGS,
     PR_NEWSWIRE_EARNINGS,
     PR_NEWSWIRE_SEMICONDUCTORS,

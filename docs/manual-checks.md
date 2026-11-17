@@ -2,7 +2,7 @@
 
 Some IR sites block the default HTTP client. The [Chrome IR source](browser-ir.md) covers
 selected issuer sources. These manual checks fill gaps listed as `todo` in
-`src/earnings_bot/companies.toml` and record historical release timing.
+`src/first_print/companies.toml` and record historical release timing.
 
 Use your normal browser, Chrome or Edge. All times are US Eastern.
 

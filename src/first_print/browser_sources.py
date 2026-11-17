@@ -1,0 +1,713 @@
+"""Issuer listings and PDFs read through HTTP or desktop Chrome."""
+
+import hashlib
+import json
+import os
+import re
+import time
+from dataclasses import replace
+from datetime import date
+from html.parser import HTMLParser
+from typing import Self
+from urllib.parse import urldefrag, urljoin, urlsplit
+
+import aiohttp
+from pydantic import BaseModel, Field, model_validator
+
+from first_print.browser import BrowserError, DesktopChrome, RenderedPage, browser_host
+from first_print.fetch import Fetcher, Response
+from first_print.issuer_news import IssuerNews, IssuerResults
+from first_print.quarterly_table import quarter_pdf, rendered_pdf
+from first_print.sources import (
+    GuessedFile,
+    RssFeed,
+    Sighting,
+    Source,
+    Spellings,
+    bust_cache,
+    looks_like_earnings,
+    published_time,
+)
+from first_print.text import MIN_RELEASE_CHARS, html_to_text, verified_report
+
+_TESLA_AGENT = "earnings-bot/0.1 (public earnings release monitor)"
+_TESLA_PATH = re.compile(r"/tesla-contents/IR/TSLA-Q[1-4]-\d{4}-Update\.pdf")
+_HEADING = re.compile(r"h[1-6]")
+_RESULT_LEDE = re.compile(
+    r"\b(?:today\s+)?(?:announced|reported|released|published)\b[^.!?]{0,120}"
+    r"\b(?:financial results|quarterly results|results for|earnings)\b",
+    re.IGNORECASE,
+)
+
+
+def _check_pdf(url: str, warmup: str) -> None:
+    if browser_host(url) != browser_host(warmup) or not urlsplit(url).path.lower().endswith(
+        (".pdf", "/pdf")
+    ):
+        raise ValueError("Each browser PDF must point to a PDF on its warmup page's host")
+
+
+def _check_tesla(url: str) -> None:
+    parts = urlsplit(url)
+    if (
+        parts.scheme != "https"
+        or parts.netloc != "assets-ir.tesla.com"
+        or not _TESLA_PATH.fullmatch(parts.path)
+    ):
+        raise ValueError("Tesla deck URLs must point to an official quarterly update")
+
+
+class IRSource(BaseModel):
+    """A schedule must explicitly specify the current release or exact file candidates."""
+
+    listing: str | None = None
+    rss: str | None = None
+    news_api: str | None = None
+    results_api: str | None = None
+    results_table: str | None = None
+    table_http: bool = False
+    table_rendered: bool = False
+    table_period: str | None = Field(default=None, pattern=r"^FY\d{4}Q[1-4]$")
+    cache_bust_urls: list[str] = []
+    # Polled with a new spelling of the path each time: their caches ignore query strings
+    spelled_urls: list[str] = []
+    headline: str | None = None
+    verify_text: bool = False
+    http_first: bool = False
+    warmup: str | None = None
+    pdfs: list[str] = []
+    tesla_deck: str | None = None
+
+    @model_validator(mode="after")
+    def check_sources(self) -> Self:
+        if bool(self.listing or self.rss or self.news_api or self.results_api) != bool(
+            self.headline
+        ):
+            raise ValueError(
+                "An IR listing or feed requires a headline regex for the scheduled quarter"
+            )
+        if self.listing:
+            browser_host(self.listing)
+        if self.news_api:
+            browser_host(self.news_api)
+        if self.results_api:
+            browser_host(self.results_api)
+        if self.results_table:
+            browser_host(self.results_table)
+        if (self.table_http or self.table_rendered or self.table_period) and not self.results_table:
+            raise ValueError("Table polling requires an issuer results table")
+        if self.table_http and self.table_rendered:
+            raise ValueError("A rendered results table uses Chrome")
+        if any(
+            url not in (self.listing, self.news_api, self.results_api, self.rss, self.results_table)
+            for url in self.cache_bust_urls
+        ):
+            raise ValueError("A cache-busted URL must be a configured listing, API or feed")
+        if any(
+            url not in (self.listing, self.news_api, self.results_api, self.rss, self.results_table)
+            for url in self.spelled_urls
+        ):
+            raise ValueError("A spelled URL must be a configured listing, API or feed")
+        if self.http_first and not self.listing:
+            raise ValueError("Direct HTTP requires an issuer listing")
+        if self.headline:
+            try:
+                re.compile(self.headline)
+            except re.error as error:
+                raise ValueError(f"Invalid earnings headline regex: {error}") from error
+        if self.warmup:
+            browser_host(self.warmup)
+        if self.rss and browser_host(self.rss) != browser_host(self._warmup() or self.rss):
+            raise ValueError("The IR feed must stay on its warmup page's host")
+        if self.pdfs:
+            warmup = self._warmup()
+            if not warmup:
+                raise ValueError("Browser PDFs require a same-host warmup page")
+            for url in self.pdfs:
+                _check_pdf(url, warmup)
+        if self.tesla_deck:
+            _check_tesla(self.tesla_deck)
+        if not (
+            self.listing
+            or self.rss
+            or self.news_api
+            or self.results_api
+            or self.results_table
+            or self.pdfs
+            or self.tesla_deck
+        ):
+            raise ValueError("An IR source must have a listing, feed or at least one PDF")
+        return self
+
+    def _warmup(self) -> str | None:
+        return self.warmup or self.listing or (urljoin(self.rss, "/") if self.rss else None)
+
+    def sources(self, day: date | None = None, period: str | None = None) -> list[Source]:
+        sources: list[Source] = []
+        if self.listing and self.headline:
+            reader = HttpRelease if self.http_first else BrowserRelease
+            sources.append(
+                reader(
+                    self.listing,
+                    self.headline,
+                    verify_text=self.verify_text,
+                    cache_bust=self.listing in self.cache_bust_urls,
+                    spell=self.listing in self.spelled_urls,
+                )
+            )
+        if self.news_api and self.headline:
+            sources.append(
+                IssuerNews(
+                    self.news_api,
+                    self.headline,
+                    day,
+                    cache_bust=self.news_api in self.cache_bust_urls,
+                    spell=self.news_api in self.spelled_urls,
+                )
+            )
+        if self.results_api and self.results_api != self.news_api and self.headline:
+            sources.append(
+                IssuerResults(
+                    self.results_api,
+                    self.headline,
+                    day,
+                    cache_bust=self.results_api in self.cache_bust_urls,
+                    spell=self.results_api in self.spelled_urls,
+                )
+            )
+        period = period or self.table_period
+        if self.results_table and period:
+            sources.append(
+                QuarterlyTable(
+                    self.results_table,
+                    int(period[2:6]),
+                    int(period[-1]),
+                    direct=self.table_http,
+                    rendered=self.table_rendered,
+                    cache_bust=self.results_table in self.cache_bust_urls,
+                    spell=self.results_table in self.spelled_urls,
+                )
+            )
+        warmup = self._warmup()
+        if warmup:
+            if self.rss and self.headline:
+                sources.append(
+                    BrowserRss(
+                        self.rss,
+                        warmup,
+                        self.headline,
+                        cache_bust=self.rss in self.cache_bust_urls,
+                        spell=self.rss in self.spelled_urls,
+                    )
+                )
+                if self.listing and browser_host(self.listing) == browser_host(self.rss):
+                    # Both discovery routes share this host's one-request-per-second budget.
+                    for source in sources:
+                        source.interval = 2.0
+            sources.extend(BrowserPDF(url, warmup) for url in self.pdfs)
+        if self.tesla_deck:
+            sources.append(TeslaDeck(self.tesla_deck))
+        return sources
+
+
+def _structured_links(script: str) -> list[tuple[str, str]]:
+    """An issuer can expose older articles in its public JSON-LD list."""
+    try:
+        data = json.loads(script)
+    except (ValueError, RecursionError):
+        return []
+    if isinstance(data, dict):
+        data = data.get("@graph", [data])
+    links = []
+    for node in data if isinstance(data, list) else []:
+        if not isinstance(node, dict) or node.get("@type") != "ItemList":
+            continue
+        items = node.get("itemListElement")
+        for row in items if isinstance(items, list) else []:
+            if not isinstance(row, dict):
+                continue
+            item = row.get("item", row)
+            if isinstance(item, dict):
+                title, url = item.get("name") or item.get("headline"), item.get("url")
+                if isinstance(url, str) and isinstance(title, str):
+                    links.append((url, " ".join(title.split())))
+    return links
+
+
+class _ReleaseLinks(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.links: list[tuple[str, str]] = []
+        self.structured: list[tuple[str, str]] = []
+        self._href: str | None = None
+        self._text: list[str] = []
+        self._heading: list[str] = []
+        self._in_heading = False
+        self._json_ld = False
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag == "a":
+            self._href = dict(attrs).get("href")
+            self._text.clear()
+            self._heading.clear()
+            self._in_heading = False
+        elif self._href and _HEADING.fullmatch(tag):
+            self._in_heading = True
+        elif tag == "script":
+            self._json_ld = dict(attrs).get("type") == "application/ld+json"
+
+    def handle_data(self, data: str) -> None:
+        if self._json_ld:
+            self.structured.extend(_structured_links(data))
+        elif self._href:
+            self._text.append(data)
+            if self._in_heading:
+                self._heading.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "script":
+            self._json_ld = False
+        elif _HEADING.fullmatch(tag):
+            self._in_heading = False
+        elif tag == "a" and self._href:
+            title = " ".join("".join(self._heading or self._text).split())
+            self.links.append((self._href, title))
+            self._href = None
+
+
+class BrowserRelease(Source):
+    """Read the result article after a scheduled-quarter link appears on the listing."""
+
+    name = "browser-ir"
+    interval = 1.0
+    report_initial = True
+    stop_when_found = True
+    ok_statuses = frozenset({200, 404})
+
+    def __init__(
+        self,
+        listing: str,
+        headline: str,
+        *,
+        verify_text: bool = False,
+        cache_bust: bool = False,
+        spell: bool = False,
+    ) -> None:
+        self.listing = listing
+        self.verify_text = verify_text
+        self.cache_bust = cache_bust
+        self.spellings = Spellings(listing) if spell else None
+        self._host = browser_host(listing)
+        self._headline = re.compile(headline, re.IGNORECASE)
+        self._candidate: Sighting | None = None
+        self.listing_poll: tuple[Response, float] | None = None
+        self.transport = "chrome"
+        self.listing_transport = "chrome"
+        self.request_diagnostics: dict[str, object] = {}
+        self.listing_diagnostics: dict[str, object] = {}
+
+    @property
+    def matched_listing(self) -> bool:
+        return self._candidate is not None
+
+    def url(self) -> str:
+        return self.listing
+
+    @property
+    def pause_route(self) -> str:
+        # The window's watcher and a release's recovery read poll the same listing
+        return self.listing
+
+    async def request_page(self, fetcher: Fetcher, url: str, *, urgent: bool = False) -> Response:
+        self.transport = "chrome"
+        return await fetcher.browser_request(url, self.listing, self.timeout, urgent=urgent)
+
+    def listing_url(self) -> str:
+        """The listing as this poll asks for it: a new spelling, a unique query, or plain."""
+        if self.spellings:
+            return self.spellings.next()
+        return bust_cache(self.listing) if self.cache_bust else self.listing
+
+    async def fetch(self, fetcher: Fetcher) -> Response:
+        self._candidate = None
+        self.listing_poll = None
+        listing = await self.request_page(fetcher, self.listing_url())
+        self.listing_diagnostics = self.request_diagnostics.copy()
+        self.listing_transport = self.transport
+        self.listing_poll = replace(listing, body=b""), time.monotonic()
+        if listing.status != 200:
+            return listing
+        parser = _ReleaseLinks()
+        parser.feed(listing.body.decode(errors="replace"))
+        for href, headline in [*parser.links, *parser.structured]:
+            if not self._headline.fullmatch(headline) or not looks_like_earnings(headline):
+                continue
+            try:
+                url = urldefrag(urljoin(self.listing, href)).url
+                parts = urlsplit(url)
+            except ValueError:
+                continue
+            if parts.scheme != "https" or parts.netloc != self._host or url == self.listing:
+                continue
+            self._candidate = Sighting(
+                key=url,
+                title=headline,
+                url=url,
+                earnings=True,
+                details={"listing_ms": str(round(listing.elapsed * 1000))},
+            )
+            response = await self.request_page(fetcher, url, urgent=True)
+            self._candidate.details["transport"] = self.transport
+            return response
+        return listing
+
+    def parse(self, response: Response) -> list[Sighting]:
+        candidate = self._candidate
+        if candidate is None or response.status != 200 or response.url != candidate.url:
+            return []
+        if not article_matches(
+            candidate.title, response.body, verify_text=self.verify_text, article=candidate.url
+        ):
+            return []
+        return [replace(candidate, body=response.body)]
+
+
+class HttpRelease(BrowserRelease):
+    """Use the same verified issuer parser over HTTP, with Chrome available on Windows."""
+
+    name = "http-ir"
+
+    def __init__(
+        self,
+        listing: str,
+        headline: str,
+        *,
+        verify_text: bool = False,
+        cache_bust: bool = False,
+        spell: bool = False,
+        chrome_fallback: bool | None = None,
+    ) -> None:
+        super().__init__(
+            listing, headline, verify_text=verify_text, cache_bust=cache_bust, spell=spell
+        )
+        self.chrome_fallback = os.name == "nt" if chrome_fallback is None else chrome_fallback
+        self._chrome_until = 0.0
+        # Why the last direct request gave way to Chrome, for the journal
+        self.http_failure: str | None = None
+        self._http_calls = 0
+        self._source_started = time.monotonic()
+
+    async def request_page(self, fetcher: Fetcher, url: str, *, urgent: bool = False) -> Response:
+        try_http = time.monotonic() >= self._chrome_until
+        self.http_failure = None
+        started = time.monotonic()
+        self.request_diagnostics = {
+            "variant_sha256": hashlib.sha256(url.encode()).hexdigest()[:16],
+            "client_age_s": round(fetcher.client_age, 2),
+            "source_age_s": round(started - self._source_started, 2),
+            "direct_http": try_http,
+        }
+        if try_http:
+            self._http_calls += 1
+            self.request_diagnostics["http_calls"] = self._http_calls
+            try:
+                response = await fetcher.request(
+                    "GET",
+                    url,
+                    {"Cache-Control": "no-cache"},
+                    give_up_after=self.timeout,
+                    urgent=urgent,
+                    allow_redirects=False,
+                )
+            except (aiohttp.ClientError, TimeoutError) as error:
+                self.request_diagnostics["http_error"] = type(error).__name__
+                if not self.chrome_fallback:
+                    raise
+                self.http_failure = type(error).__name__
+            else:
+                self.request_diagnostics["http_status"] = response.status
+                self.request_diagnostics["http_ms"] = round((time.monotonic() - started) * 1000)
+                sample = response.body[:16384].lower()
+                self.request_diagnostics["markers"] = [
+                    label
+                    for label, marker in (
+                        ("cloudflare-challenge", b"cf-chl-"),
+                        ("akamai-reference", b"errors.edgesuite.net"),
+                        ("access-denied", b"access denied"),
+                    )
+                    if marker in sample
+                ]
+                if (
+                    not self.chrome_fallback
+                    or response.status == 200
+                    or (response.status == 404 and urgent)
+                ):
+                    self.transport = "http"
+                    return response
+                self.http_failure = f"HTTP {response.status}"
+        try:
+            response = await super().request_page(fetcher, url, urgent=urgent)
+        except (aiohttp.ClientError, BrowserError, TimeoutError) as error:
+            self.request_diagnostics["chrome_error"] = type(error).__name__
+            self.request_diagnostics["total_ms"] = round((time.monotonic() - started) * 1000)
+            self._chrome_until = 0.0
+            raise
+        self.request_diagnostics["chrome_status"] = response.status
+        self.request_diagnostics["total_ms"] = round((time.monotonic() - started) * 1000)
+        if response.status != 200:
+            self._chrome_until = 0.0
+        elif try_http:
+            # A block can last several polls. Keep using the working browser for a short time.
+            self._chrome_until = time.monotonic() + 30
+        return response
+
+
+class QuarterlyTable(HttpRelease):
+    """Poll the specific quarter's earnings-release cell and download its PDF once."""
+
+    name = "issuer-table"
+
+    def __init__(
+        self,
+        listing: str,
+        year: int,
+        quarter: int,
+        *,
+        direct: bool,
+        rendered: bool = False,
+        cache_bust: bool = False,
+        spell: bool = False,
+        browser: DesktopChrome | None = None,
+    ) -> None:
+        super().__init__(listing, "", cache_bust=cache_bust, spell=spell)
+        self.year, self.quarter, self.direct = year, quarter, direct
+        self.rendered, self.browser = rendered, browser
+        if rendered:
+            self.interval = 6.0
+
+    async def request_page(self, fetcher: Fetcher, url: str, *, urgent: bool = False) -> Response:
+        if self.direct:
+            return await super().request_page(fetcher, url, urgent=urgent)
+        if self.browser is not None:
+            return await self.browser.request(url, self.listing, self.timeout, fetcher.wait_turn)
+        return await BrowserRelease.request_page(self, fetcher, url, urgent=urgent)
+
+    async def fetch(self, fetcher: Fetcher) -> Response:
+        self._candidate = None
+        self.listing_poll = None
+        url = self.listing_url()
+        if self.rendered:
+            sent = time.monotonic()
+
+            def ready(page: RenderedPage) -> bool:
+                return (
+                    page.status == 200 and rendered_pdf(page, self.year, self.quarter) is not None
+                )
+
+            page = (
+                await self.browser.render(url, 10, fetcher.wait_turn, ready=ready)
+                if self.browser
+                else await fetcher.browser_render(url, 10, ready=ready)
+            )
+            listing = Response(url, page.status, {}, b"", time.monotonic() - sent)
+            self.listing_transport = "chrome-rendered"
+            link = rendered_pdf(page, self.year, self.quarter) if page.status == 200 else None
+        else:
+            listing = await self.request_page(fetcher, url)
+            self.listing_transport = self.transport
+            link = (
+                quarter_pdf(self.listing, listing.body, self.year, self.quarter)
+                if listing.status == 200
+                else None
+            )
+        self.listing_poll = replace(listing, body=b""), time.monotonic()
+        if not link:
+            return listing
+        title = f"Q{self.quarter} {self.year} Earnings Release"
+        self._candidate = Sighting(link, title, link, earnings=True)
+        return await self._pdf(fetcher, link)
+
+    async def _pdf(self, fetcher: Fetcher, link: str) -> Response:
+        # InvestorRoom's same-host PDF links redirect to its dedicated file host.
+        if self.direct or browser_host(link) != browser_host(self.listing):
+            response = await fetcher.request(
+                "GET", link, give_up_after=self.timeout, urgent=True, allow_redirects=False
+            )
+            if response.status in (301, 302, 303, 307, 308):
+                location = response.headers.get("location", "")
+                if not location:
+                    return response
+                destination = urljoin(link, location)
+                try:
+                    host = browser_host(destination)
+                except ValueError:
+                    return response
+                if host not in (browser_host(self.listing), "filecache.investorroom.com"):
+                    return response
+                if (
+                    urlsplit(destination).path.rsplit("/", 1)[-1]
+                    != urlsplit(link).path.rsplit("/", 1)[-1]
+                ):
+                    return response
+                response = await fetcher.request(
+                    "GET",
+                    destination,
+                    give_up_after=self.timeout,
+                    urgent=True,
+                    allow_redirects=False,
+                )
+                return replace(response, url=link)
+            return response
+        return await self.request_page(fetcher, link, urgent=True)
+
+    def parse(self, response: Response) -> list[Sighting]:
+        candidate = self._candidate
+        if (
+            candidate
+            and response.url == candidate.url
+            and response.status == 200
+            and response.body.startswith(b"%PDF-")
+        ):
+            return [replace(candidate, body=response.body)]
+        return []
+
+
+class BrowserRss(Source):
+    """Read an issuer's release feed in one Chrome request. The article can follow the alert."""
+
+    name = "browser-rss"
+    interval = 1.0
+    stop_when_found = True
+
+    def __init__(
+        self,
+        url: str,
+        warmup: str,
+        headline: str,
+        *,
+        cache_bust: bool = False,
+        spell: bool = False,
+    ) -> None:
+        self.feed = RssFeed(self.name, url, bust_cache=cache_bust, spell=spell)
+        self.spellings = self.feed.spellings
+        self.warmup = warmup
+        self._host = browser_host(url)
+        if browser_host(warmup) != self._host:
+            raise ValueError("The IR feed must stay on its warmup page's host")
+        self._headline = re.compile(headline, re.IGNORECASE)
+
+    def url(self) -> str:
+        return self.feed.url()
+
+    async def fetch(self, fetcher: Fetcher) -> Response:
+        return await fetcher.browser_request(self.url(), self.warmup, self.timeout)
+
+    def parse(self, response: Response) -> list[Sighting]:
+        items = []
+        for item in self.feed.parse(response):
+            if not (
+                item.earnings
+                and self._headline.fullmatch(item.title)
+                and published_time(item.published)
+            ):
+                continue
+            try:
+                if browser_host(item.url) == self._host:
+                    items.append(item)
+            except ValueError:
+                continue
+        return items
+
+
+def article_matches(
+    title: str, body: bytes, *, verify_text: bool, article: str | None = None
+) -> bool:
+    text = html_to_text(body.decode(errors="replace"))
+    flattened = " ".join(text.split())
+    start = flattened.casefold().find(title.casefold())
+    if len(text) < MIN_RELEASE_CHARS or start < 0:
+        return False
+    return bool(
+        not verify_text
+        or verified_report(text)
+        or (
+            article
+            and _RESULT_LEDE.search(flattened[start : start + 1800])
+            and issuer_pdf_url(article, body, title=title)
+        )
+    )
+
+
+def issuer_pdf_url(article: str, body: bytes, *, title: str = "") -> str | None:
+    parser = _ReleaseLinks()
+    parser.feed(body.decode(errors="replace"))
+    host = browser_host(article).removeprefix("www.")
+    for href, label in parser.links:
+        try:
+            url = urldefrag(urljoin(article, href)).url
+            if label.casefold() == "pdf version":
+                _check_pdf(url, article)
+                return url
+            if title and label.casefold().removesuffix(" (opens in a new tab)") == title.casefold():
+                asset = browser_host(url)
+                if (asset == host or asset.endswith(f".{host}")) and urlsplit(
+                    url
+                ).path.lower().endswith(".pdf"):
+                    return url
+        except ValueError:
+            continue
+    return None
+
+
+class _VerifiedPDF(GuessedFile):
+    """A single GET both detects the PDF and provides its attachment bytes."""
+
+    method = "GET"
+    report_initial = True
+
+    def __init__(self, url: str, source_prefix: str) -> None:
+        super().__init__(url)
+        self.name = source_prefix + self.name.removeprefix("guess:")
+
+    def parse(self, response: Response) -> list[Sighting]:
+        if response.status != 200 or not response.body.startswith(b"%PDF-"):
+            return []
+        return [
+            Sighting(
+                key=self.file_url,
+                title=self.name.split(":", 1)[-1],
+                url=self.file_url,
+                published=response.headers.get("last-modified"),
+                earnings=True,
+                details={"size": str(len(response.body))},
+                body=response.body,
+            )
+        ]
+
+
+class BrowserPDF(_VerifiedPDF):
+    # A manual Fetch redirect is opaque (status 0). Some sites redirect missing PDFs.
+    ok_statuses = frozenset({0, 200, 404})
+
+    def __init__(self, url: str, warmup: str) -> None:
+        super().__init__(url, "browser-pdf:")
+        _check_pdf(url, warmup)
+        self._warmup = warmup
+
+    async def fetch(self, fetcher: Fetcher) -> Response:
+        return await fetcher.browser_request(self.url(), self._warmup, self.timeout)
+
+
+class TeslaDeck(_VerifiedPDF):
+    def __init__(self, url: str) -> None:
+        super().__init__(url, "tesla-pdf:")
+        _check_tesla(url)
+
+    async def fetch(self, fetcher: Fetcher) -> Response:
+        return await fetcher.request(
+            self.method,
+            self.url(),
+            {"User-Agent": _TESLA_AGENT},
+            give_up_after=self.timeout,
+            allow_redirects=False,
+        )

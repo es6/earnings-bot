@@ -3,7 +3,7 @@
 import json
 from datetime import datetime
 
-from earnings_bot.recorder import ET
+from first_print.recorder import ET
 from tests.builders import sec_filing_detail
 
 RESULT = "0001171843-26-005474"

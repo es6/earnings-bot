@@ -6,15 +6,15 @@ from typing import Any
 
 import pytest
 
-from earnings_bot import investigate
-from earnings_bot.fetch import Response
-from earnings_bot.ir_research import quarter_headline
-from earnings_bot.issuer_history import listing_history, listing_rows
-from earnings_bot.issuer_news import IssuerNews, discover_manifest, news_records
-from earnings_bot.known import known_companies
-from earnings_bot.recorder import ET
-from earnings_bot.source_audit import release_history
-from earnings_bot.sources import Sighting
+from first_print import investigate
+from first_print.fetch import Response
+from first_print.ir_research import quarter_headline
+from first_print.issuer_history import listing_history, listing_rows
+from first_print.issuer_news import IssuerNews, discover_manifest, news_records
+from first_print.known import known_companies
+from first_print.recorder import ET
+from first_print.source_audit import release_history
+from first_print.sources import Sighting
 from tests.fakes import RoutedFetcher
 
 FIX = Path(__file__).parent / "fixtures" / "issuer-history"

@@ -4,8 +4,8 @@ from dataclasses import replace
 
 import pytest
 
-from earnings_bot.summary_policy import SummaryFact
-from earnings_bot.summary_validation import validate_fact, validate_facts
+from first_print.summary_policy import SummaryFact
+from first_print.summary_validation import validate_fact, validate_facts
 
 # Source: ServiceNow Q3 2026 earnings release, SEC accession0001373715-26-000092.
 NOW = """ServiceNow Q3 2026

@@ -7,9 +7,9 @@ from datetime import datetime
 import pytest
 from pydantic import ValidationError
 
-from earnings_bot import pipeline
-from earnings_bot.browser import BrowserUnavailable
-from earnings_bot.browser_sources import (
+from first_print import pipeline
+from first_print.browser import BrowserUnavailable
+from first_print.browser_sources import (
     BrowserPDF,
     BrowserRelease,
     BrowserRss,
@@ -18,16 +18,16 @@ from earnings_bot.browser_sources import (
     QuarterlyTable,
     TeslaDeck,
 )
-from earnings_bot.fetch import Response
-from earnings_bot.ir_research import (
+from first_print.fetch import Response
+from first_print.ir_research import (
     quarter_headline,
     verified_browser_source,
 )
-from earnings_bot.known import target_toml
-from earnings_bot.pipeline import Releases
-from earnings_bot.recorder import ET, Journal, PollError, Target, Watch, poll, take
-from earnings_bot.sources import RssFeed, Sighting
-from earnings_bot.text import release_text
+from first_print.known import target_toml
+from first_print.pipeline import Releases
+from first_print.recorder import ET, Journal, PollError, Target, Watch, poll, take
+from first_print.sources import RssFeed, Sighting
+from first_print.text import release_text
 from tests.fakes import BrowserFake, FakePoster, RoutedFetcher
 
 FICO = "https://investors.fico.com/news-releases/"
@@ -395,7 +395,7 @@ async def test_planner_prepares_browser_feed_after_reading_a_verified_previous_r
     url = "https://ir.lucidmotors.com/news-releases/q3"
     article = f"<h1>{title}</h1><p>{'Revenue and earnings per share. ' * 120}</p>".encode()
     fetcher = RoutedFetcher({LUCID_RSS: (200, rss(rss_item(title, url))), url: (200, article)})
-    monkeypatch.setattr("earnings_bot.ir_research.chrome_available", lambda: True)
+    monkeypatch.setattr("first_print.ir_research.chrome_available", lambda: True)
 
     source, note = await verified_browser_source(fetcher, LUCID, "FY2026Q4")
 

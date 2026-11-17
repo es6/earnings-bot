@@ -13,7 +13,7 @@ $endAt = [DateTime]::UtcNow.AddHours($Hours)
 while ([DateTime]::UtcNow -lt $endAt) {
     try {
         $inventory = @(Get-CimInstance Win32_Process)
-        $bots = @($inventory | Where-Object { $_.Name -eq 'earnings-bot.exe' -or ($_.Name -match '^python(w)?\.exe$' -and $_.CommandLine -match '-m\s+earnings_bot(?:\s|$)') })
+        $bots = @($inventory | Where-Object { $_.Name -eq 'first-print.exe' -or ($_.Name -match '^python(w)?\.exe$' -and $_.CommandLine -match '-m\s+first_print(?:\s|$)') })
         $ownedIds = @($bots | ForEach-Object { [int]$_.ProcessId })
         $ownedChrome = @($inventory | Where-Object { $_.Name -eq 'chrome.exe' -and $_.CommandLine -match 'earnings-bot-chrome-' })
         $ownedIds += @($ownedChrome | ForEach-Object { [int]$_.ProcessId })

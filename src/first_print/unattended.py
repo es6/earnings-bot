@@ -1,0 +1,1057 @@
+"""Watch a changing schedule directory with one polling and delivery coordinator."""
+
+import asyncio
+import contextlib
+import re
+import sqlite3
+import tomllib
+from collections.abc import Awaitable, Callable, Iterator, Sequence
+from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
+from functools import partial
+from pathlib import Path
+
+import aiohttp
+import discord
+from pydantic import ValidationError
+
+from first_print.benchmark import BenchmarkResult, EarningsBenchmark
+from first_print.browser_sources import BrowserRelease, BrowserRss
+from first_print.calendar import Calendar, SharedCalendar, Tracked
+from first_print.date_discovery import DateDiscovery
+from first_print.delivery import DeliveryStore, retry_delivery
+from first_print.driver_profiles import DriverProfiles, ProfileWriter
+from first_print.edit_priority import EditPriority
+from first_print.fetch import Fetcher
+from first_print.formatting import (
+    AMBER,
+    GREEN,
+    clock,
+    day,
+    duration,
+    period_label,
+    source_label,
+    stamp,
+    truncate,
+)
+from first_print.globe_frontier import GlobeBatch, run_batch
+from first_print.investigate import wire_seen, with_wire
+from first_print.issuers import Issuers
+from first_print.pipeline import (
+    DiscordPoster,
+    DurableDiscordPoster,
+    Poster,
+    Releases,
+    fan_out,
+    keep_warm,
+)
+from first_print.publication_trials import TRIALS_FOLDER, TRIALS_STATE, load_plans, run_trials
+from first_print.recorder import (
+    DEGRADED_AFTER,
+    FOLLOW_UP,
+    Journal,
+    Plan,
+    Polls,
+    Target,
+    Watch,
+    follow_up,
+    followup_end,
+    parse_plan,
+    record_target,
+    route_trouble,
+)
+from first_print.sec_results import SixKResults
+from first_print.source_audit import Speed, audit_sources
+from first_print.sources import EdgarFilings, Sighting, Source
+from first_print.summary import Summarizer
+from first_print.track_progress import REFRESH, TrackProgress
+from first_print.version import release_version
+
+SCAN_SECONDS = 3.0
+
+
+@dataclass
+class _Schedule:
+    data: bytes
+    plan: Plan | None
+    problem: str | None
+
+
+@dataclass
+class _Window:
+    target: Target
+    task: asyncio.Task[None]
+
+
+def _expected(target: Target) -> datetime:
+    return target.expected
+
+
+def _period(target: Target) -> str:
+    return f" {period_label(target.period)}" if target.period else ""
+
+
+# Research pauses from this long before a window's expected time until this long after it
+HOT_BEFORE = timedelta(minutes=10)
+HOT_AFTER = timedelta(minutes=30)
+
+
+def uses_chrome(target: Target) -> bool:
+    """Whether a target watches a route through desktop Chrome, which research would share."""
+    return any(isinstance(source, (BrowserRelease, BrowserRss)) for source in target.sources())
+
+
+@dataclass(eq=False)
+class Server:
+    """A Discord server the bot posts to: its alert channel, the companies it tracks (its own
+    calendar), and their research and scorecards. The first server is the deployment's own: it
+    also gets the schedule files' releases and the bot's status."""
+
+    store: DeliveryStore  # this server's state, kept under its alert channel
+    channel: discord.abc.Messageable | None = None
+    guild_id: int | None = None
+    dates: DateDiscovery | None = None  # set by the watcher
+    progress: TrackProgress | None = None
+    # Whether its calendar follows the bot to a new channel: only the deployment's own server's
+    follow: bool = False
+    calendar: Calendar = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.calendar = Calendar(self.store, follow=self.follow)
+
+    @property
+    def channel_id(self) -> int:
+        return self.store.channel_id
+
+
+# A release date's source, as its evidence names it: "... <https://...>"
+_EVIDENCE_SOURCE = re.compile(r"<(https://[^>\s]+)>")
+
+
+class ServerDesk:
+    """What a command in one server works with: that server's tracked companies, research and
+    scorecards, and the schedule and journal every server shares."""
+
+    def __init__(self, watcher: "DirectoryWatcher", server: Server) -> None:
+        self.watcher = watcher
+        self.server = server
+        self.guild_id = server.guild_id
+
+    @property
+    def _own(self) -> bool:
+        """The deployment's own server, whose parts are the watcher's."""
+        return self.server is self.watcher.servers[0]
+
+    @property
+    def calendar(self) -> Calendar:
+        return self.watcher.calendar if self._own else self.server.calendar
+
+    @property
+    def dates(self) -> DateDiscovery:
+        dates = self.watcher.dates if self._own else self.server.dates
+        assert dates is not None
+        return dates
+
+    @property
+    def progress(self) -> TrackProgress | None:
+        return self.watcher.progress if self._own else self.server.progress
+
+    @property
+    def journal(self) -> Journal:
+        return self.watcher.journal
+
+    @property
+    def issuers(self) -> Issuers:
+        return self.watcher.issuers
+
+    @property
+    def planned(self) -> dict[str, Target]:
+        return {
+            key: target
+            for key, target in self.watcher.planned.items()
+            if self.calendar.contains(target.cik)
+            or (self._own and not self.watcher.tracks(target.cik))
+        }
+
+    def others_record(self, ticker: str) -> tuple[Server, Tracked] | None:
+        """Another server's record of a company, if one tracks it: the deployment's own first."""
+        for server in self.watcher.servers:
+            if server is not self.server and (row := server.calendar.find(ticker)):
+                return server, row
+        return None
+
+    async def import_record(
+        self, source: Server, record: Tracked, now: datetime, *, date: bool = True
+    ) -> str:
+        """Copies another server's release date and speed audit for a company this server has
+        just started tracking, after a quick check that each is still current, and says what it
+        took. The release date counts if its window hasn't closed and the source its evidence
+        names still answers; the speed audit if it's under a day old (REFRESH). Whatever doesn't
+        pass is researched again, as for any newly tracked company."""
+        took: list[str] = []
+        again: list[str] = []
+        target = record.target
+        if date and target and record.evidence and target.window[1] > now:
+            if await self._source_answers(record.evidence):
+                self.calendar.set_target(target, record.evidence)
+                took.append("its release date")
+            else:
+                again.append("its release date, whose source didn't answer")
+        checked, review = source.calendar.review(record.cik)
+        speed = Speed.from_json(review)
+        if (
+            checked
+            and review
+            and timedelta(0) <= now - checked < REFRESH
+            and speed
+            and speed.history is not None
+        ):
+            self.calendar.save_review(record.cik, checked, review)
+            took.append("its speed audit")
+        lines = []
+        if took:
+            lines.append(f"📥 Took another server's research: {' and '.join(took)}.")
+        if again:
+            lines.append(f"🔁 Researching {'; '.join(again)}.")
+        return "\n".join(lines)
+
+    async def _source_answers(self, evidence: str) -> bool:
+        """Require a successful source response before reusing another server's date.
+
+        Missing links, challenges, throttles and outages leave the date for research rather
+        than treating an unavailable source or another server's manual override as checked.
+        This is an availability check, not a new content verification of the saved date.
+        """
+        found = _EVIDENCE_SOURCE.search(evidence)
+        if found is None:
+            return False
+        try:
+            response = await self.watcher.fetcher.request("GET", found[1], give_up_after=5)
+        except (aiohttp.ClientError, OSError, TimeoutError, ValueError):
+            return False
+        return 200 <= response.status < 300 and bool(response.body)
+
+
+class DirectoryWatcher:
+    def __init__(
+        self,
+        directory: Path,
+        fetcher: Fetcher,
+        journal: Journal,
+        releases: Releases,
+        store: DeliveryStore,
+        status: Callable[[str], None],
+        benchmark: EarningsBenchmark | None = None,
+        fmp_api_key: str | None = None,
+        servers: Sequence[Server] = (),
+    ) -> None:
+        self.directory = directory
+        self.fetcher = fetcher
+        self.journal = journal
+        self.sixk = SixKResults(fetcher)
+        self.polls = Polls(fetcher, journal, self.sixk)
+        self.releases = releases
+        self.store = store
+        self.servers = list(servers) or [Server(store, follow=True)]
+        if self.servers[0].store is not store:
+            raise ValueError("The first server's state is the watcher's own")
+        self.calendar = self.servers[0].calendar
+        # Every server's companies as one, for the research they share (SharedCalendar)
+        self.shared = SharedCalendar(lambda: [server.calendar for server in self.servers])
+        # Companies a server's scorecard tracker is auditing now, so no other audits them too
+        self.auditing: set[int] = set()
+        self.audit_next_attempts: dict[int, datetime] = {}
+        self.planned: dict[str, Target] = {}
+        # Record-only publication trials (publication_trials.py), by plan ID
+        self.trials: dict[str, asyncio.Task[None]] = {}
+        self.trial_problems: set[str] = set()
+        self.trial_db: sqlite3.Connection | None = None
+        # One research loop for every server: a company several servers track is researched
+        # once, and what it finds is written to each of them
+        self.dates = DateDiscovery(
+            self.shared if len(self.servers) > 1 else self.calendar,
+            fetcher,
+            journal.now,
+            self.research_paused,
+            self._inline_status,
+            fmp_api_key,
+            sixk=self.sixk,
+            windows_open=self.busy,
+            chrome_live=self.chrome_live,
+            in_window=self.in_window,
+        )
+        for server in self.servers:
+            server.dates = self.dates
+        self.issuers = Issuers(fetcher)
+        self.status = status
+        self.benchmark = benchmark
+        # How long after a window to keep looking for the release's other links; none unless set
+        self.follow_up = timedelta(0)
+        self.latest_benchmark: str | None = None
+        self.progress: TrackProgress | None = None
+        self.summaries = False  # whether release cards get live summaries
+        self.guild_id: int | None = None
+        self.schedules: dict[Path, _Schedule] = {}
+        self.windows: dict[str, _Window] = {}
+        self.problems: dict[str, str] = {}
+        self.last_scan: datetime | None = None
+        self.since = store.last_scan() or journal.now()
+        self.closed: set[tuple[str, datetime]] = set()
+        self.followed: set[tuple[str, datetime]] = set()
+        # Each open window's watches, so /status can name a degraded route while it's open
+        self.live_watches: dict[str, list[Watch]] = {}
+
+    def _inline_status(self, message: str) -> None:
+        """Routine calendar changes belong on the existing scorecard; keep their log too."""
+        self.journal.write("status", message=message, inline=True)
+        self.journal.say(message)
+        if self.progress:
+            self.progress.changed.set()
+
+    def server_for(self, guild_id: int | None) -> Server | None:
+        """The server a command came from, if the bot posts there."""
+        return next((s for s in self.servers if s.guild_id == guild_id), None)
+
+    def desk(self, guild_id: int | None) -> ServerDesk | None:
+        """What a command from this server works with, or None if the bot doesn't post there."""
+        server = self.server_for(guild_id)
+        if server is None and self.guild_id is not None and guild_id == self.guild_id:
+            server = self.servers[0]
+        return ServerDesk(self, server) if server else None
+
+    def subscribers(self, target: Target) -> list[Server]:
+        """The servers a release is posted to: every one tracking the company, or the
+        deployment's own for a release only its schedule files name."""
+        return [s for s in self.servers if s.calendar.contains(target.cik)] or self.servers[:1]
+
+    def claim_audit(self, cik: int) -> bool:
+        """Takes a company for one server's speed audit, unless another's has it."""
+        if cik in self.auditing:
+            return False
+        self.auditing.add(cik)
+        return True
+
+    def tracks(self, cik: int) -> bool:
+        return any(server.calendar.contains(cik) for server in self.servers)
+
+    def open_windows(self) -> Iterator[tuple[datetime, datetime]]:
+        """The windows of the targets being watched, for keep_warm."""
+        return (w.target.window for w in self.windows.values() if not w.task.done())
+
+    def busy(self) -> bool:
+        """Whether a release window is open, or opens within 2 minutes."""
+        return bool(self._open_targets())
+
+    def _open_targets(self) -> list[Target]:
+        now = self.journal.now()
+        return [
+            target
+            for target in self.planned.values()
+            if target.window[0] - timedelta(minutes=2) <= now <= target.window[1]
+        ]
+
+    def research_paused(self) -> bool:
+        """Research stops entirely in the minutes a release is most likely, from HOT_BEFORE
+        a window's expected time to HOT_AFTER it. The rest of a window, it runs behind the
+        polls (Fetcher.background)."""
+        now = self.journal.now()
+        return any(
+            target.expected - HOT_BEFORE <= now <= target.expected + HOT_AFTER
+            for target in self._open_targets()
+        )
+
+    def chrome_live(self) -> bool:
+        """Whether an open window watches a route through desktop Chrome."""
+        return any(uses_chrome(target) for target in self._open_targets())
+
+    def in_window(self, cik: int) -> bool:
+        """Whether this company's own window is open, or opens within HOT_BEFORE."""
+        now = self.journal.now()
+        return any(
+            target.cik == cik and target.window[0] - HOT_BEFORE <= now <= target.window[1]
+            for target in self.planned.values()
+        )
+
+    def research_mode(self) -> contextlib.AbstractContextManager[None]:
+        """How research runs now: in the background while a window is open."""
+        return self.fetcher.background(
+            active=self.busy, paused=self.research_paused, chrome=lambda: not self.chrome_live()
+        )
+
+    def health(self) -> str:
+        now = self.journal.now()
+        running = [w.target for w in self.windows.values() if not w.task.done()]
+        live = [t.ticker for t in running if t.window[0] <= now < t.window[1]]
+        upcoming = [t for t in running if t.window[0] > now]
+        next_window = min(upcoming, key=lambda t: t.window[0], default=None)
+        lines = [
+            f"🟢 **Watching** `{self.directory.name}/` · live now: {', '.join(live) or 'none'}"
+        ]
+        if next_window:
+            start = next_window.window[0]
+            lines.append(
+                f"⏭️ Next: **{next_window.ticker}** from {day(start)}, {clock(start)} "
+                f"({stamp(start, 'R')})"
+            )
+        if self.last_scan:
+            lines.append(f"🕑 Last schedule scan {clock(self.last_scan, seconds=True)}")
+        if self.problems:
+            lines.append(f"⚠️ {len(self.problems)} problem(s). See the status channel.")
+        if self.latest_benchmark:
+            lines.append(f"🏁 {self.latest_benchmark}")
+        return "\n".join(lines)
+
+    def health_embed(
+        self, version: str, revision: str | None, server: Server | None = None
+    ) -> discord.Embed:
+        """/status: whether monitoring is healthy. What's live, when the next watch starts, the
+        scorecards' readiness, summaries and problems. The calendar itself is /upcoming."""
+        now = self.journal.now()
+        running = [w.target for w in self.windows.values() if not w.task.done()]
+        server = server or self.servers[0]
+        running = [target for target in running if server in self.subscribers(target)]
+        live = sorted((t for t in running if t.window[0] <= now < t.window[1]), key=_expected)
+        coming = sorted((t for t in running if t.window[0] > now), key=lambda t: t.window[0])
+        color = AMBER if self.problems else GREEN
+        embed = discord.Embed(title=f"First Print {version} · status", color=color)
+        scan = f" · last scan {clock(self.last_scan, seconds=True)}" if self.last_scan else ""
+        lines = [f"🟢 Watching `{self.directory.name}/`{scan}"]
+        if coming:
+            start = coming[0].window[0]
+            lines.append(
+                f"⏭️ Next watch: **{coming[0].ticker}** from {day(start)}, {clock(start)} "
+                f"({stamp(start, 'R')})"
+            )
+        else:
+            lines.append("⏭️ No watch scheduled")
+        if server.progress:
+            dots = [server.progress.readiness(row.cik) for row in server.calendar.entries()]
+            counts = " · ".join(f"{dot} {dots.count(dot)}" for dot in dict.fromkeys(dots) if dot)
+            lines.append(f"📋 {len(dots)} tracked: {counts}" if dots else "📋 Nothing tracked")
+        lines.append(f"📝 Live summaries {'on' if self.summaries else 'off'}")
+        embed.description = "\n".join(lines)
+        if live:
+            lines = []
+            for t in live:
+                lines.append(
+                    f"**{t.ticker}**{_period(t)} · results expected {clock(t.expected)} · "
+                    f"watching until {clock(t.window[1])}"
+                )
+                for w in self.live_watches.get(t.release_key, []):
+                    if trouble := route_trouble(w, now):
+                        lines.append(f"⚠️ Degraded: {_route_label(w)}, {trouble}")
+                        color = AMBER
+            embed.add_field(name="🔴 Live now", value=truncate("\n".join(lines)), inline=False)
+            embed.color = color
+        if self.problems:
+            problems = [f"**{name}**: {message}" for name, message in self.problems.items()]
+            embed.add_field(name="⚠️ Problems", value=truncate("\n".join(problems)), inline=False)
+        if self.latest_benchmark:
+            embed.add_field(name="🏁 Latest benchmark", value=self.latest_benchmark, inline=False)
+        if revision:
+            embed.set_footer(text=f"Build {revision}")
+        return embed
+
+    def _learn_wire(self, target: Target, watches: list[Watch]) -> None:
+        """Keep the wire a live release came out on, for a tracked company whose research
+        couldn't find it."""
+        seen = sorted(
+            (w for w in watches if w.first or w.caught_up),
+            key=lambda w: w.first or datetime.max.replace(tzinfo=UTC),
+        )
+        found = wire_seen([w.source.name for w in seen])
+        for server in self.servers:
+            row = server.calendar.find(target.ticker)
+            if found and row is not None and row.company.wire == "unknown":
+                server.calendar.save_profile(row.cik, with_wire(row.company, found))
+                self.journal.say(f"{target.ticker}: its releases go out on {found}")
+
+    def _problem(self, name: str, message: str | None) -> None:
+        previous = self.problems.get(name)
+        if message is not None:
+            if message != previous:
+                self.status(f"⚠️ **{name}**: {message}")
+            self.problems[name] = message
+        elif previous is not None:
+            del self.problems[name]
+            self.status(f"✅ **{name}** recovered")
+
+    def _targets(self) -> dict[str, Target] | None:
+        try:
+            paths = sorted(path for path in self.directory.iterdir() if path.suffix == ".toml")
+        except OSError as error:
+            self._problem("Schedule directory", str(error))
+            return None
+        self._problem("Schedule directory", None)
+
+        for path in self.schedules.keys() - set(paths):
+            del self.schedules[path]
+            self._problem(path.name, None)
+        targets: dict[str, Target] = {}
+        duplicates: set[str] = set()
+        for path in paths:
+            current = self.schedules.get(path)
+            try:
+                data = path.read_bytes()
+            except OSError as error:
+                self._problem(path.name, str(error))
+            else:
+                if current is None or data != current.data:
+                    try:
+                        plan = parse_plan(data)
+                    except (UnicodeError, tomllib.TOMLDecodeError, ValidationError) as error:
+                        current = _Schedule(data, current.plan if current else None, str(error))
+                    else:
+                        current = _Schedule(data, plan, None)
+                    self.schedules[path] = current
+                self._problem(path.name, current.problem)
+            if current and current.plan:
+                for target in current.plan.target:
+                    existing = targets.setdefault(target.release_key, target)
+                    if existing != target:
+                        conflict = f"Duplicate {target.release_key}"
+                        duplicates.add(conflict)
+                        self._problem(
+                            conflict,
+                            f"{path.name} also defines {target.ticker}. Using the first schedule.",
+                        )
+        for name in set(self.problems) - duplicates:
+            if name.startswith("Duplicate "):
+                self._problem(name, None)
+        return targets
+
+    def _scan_trials(self) -> None:
+        """Starts each record-only publication trial in `trials/` once, on this bot's fetcher
+        and journal, so its requests take turns behind monitoring in the same host queues."""
+        plans, problems = load_plans(self.directory)
+        for problem in problems:
+            if problem not in self.trial_problems:
+                self.trial_problems.add(problem)
+                self.journal.write(
+                    "publication_trial_error", error_type="invalid plan", detail=problem
+                )
+        now = self.journal.now()
+        for plan in plans:
+            if plan.id in self.trials or plan.ends_at <= now:
+                continue
+            if self.trial_db is None:
+                self.trial_db = sqlite3.connect(self.directory / TRIALS_STATE)
+            self.trials[plan.id] = asyncio.create_task(
+                run_trials(plan, self.fetcher, self.journal, self.trial_db)
+            )
+        # Record-only runs of the GlobeNewswire guessing over a busy minute (globe_frontier)
+        for path in sorted((self.directory / TRIALS_FOLDER / "globe").glob("*.json")):
+            try:
+                batch = GlobeBatch.model_validate_json(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as error:
+                problem = f"{path.name}: {str(error).splitlines()[0][:200]}"
+                if problem not in self.trial_problems:
+                    self.trial_problems.add(problem)
+                    self.journal.write(
+                        "publication_trial_error", error_type="invalid plan", detail=problem
+                    )
+                continue
+            if batch.id in self.trials or batch.ends_at <= now:
+                continue
+            self.trials[batch.id] = asyncio.create_task(
+                run_batch(batch, self.fetcher, self.journal)
+            )
+
+    async def scan(self) -> None:
+        self._scan_trials()
+        targets = self._targets()
+        if targets is None:
+            return
+        for server in self.servers:
+            targets = server.calendar.plan(targets)
+        self.planned = targets
+        now = self.journal.now()
+        for key, window in list(self.windows.items()):
+            if window.target != targets.get(key) or window.task.done():
+                if not window.task.done():
+                    window.task.cancel()
+                    await asyncio.gather(window.task, return_exceptions=True)
+                    self.followed.discard((key, window.target.expected))
+                    self._inline_status(
+                        f"🔁 **{window.target.ticker}**: schedule changed or removed"
+                    )
+                del self.windows[key]
+
+        for key, target in targets.items():
+            if key in self.windows:
+                continue
+            token = (key, target.expected)
+            if token in self.closed or self.store.window_closed(*token):
+                self.closed.add(token)
+                if (
+                    self.follow_up
+                    and now < followup_end(target, self.follow_up)
+                    and token not in self.followed
+                    and any(server.calendar.delivered(key) for server in self.subscribers(target))
+                ):
+                    task = asyncio.create_task(self._resume_links(target))
+                    self.windows[key] = _Window(target, task)
+                    self.followed.add(token)
+                continue
+            if target.window[1] <= now:
+                if target.window[1] >= self.since:
+                    saved = self.store.get(key)
+                    outcome = (
+                        "the alert was posted"
+                        if saved and saved.message_id
+                        else "no completed watch was recorded"
+                    )
+                    self.status(
+                        f"⌛ **{target.ticker}**: window ended while the bot was off, and {outcome}"
+                    )
+                    self.store.close_window(*token)
+                self.closed.add(token)
+                continue
+            self.windows[key] = _Window(target, asyncio.create_task(self._watch(target)))
+        self.last_scan = now
+        self.store.scanned(now)
+        # Keep a just-opened or imminently opening IR source clear of browser teardown.
+        browser_horizon = self.journal.now() + timedelta(seconds=SCAN_SECONDS)
+        if not any(
+            not window.task.done()
+            and window.target.window[0] <= browser_horizon
+            and window.target.ir is not None
+            and (
+                window.target.ir.listing
+                or window.target.ir.rss
+                or window.target.ir.pdfs
+                or window.target.ir.results_table
+            )
+            for window in self.windows.values()
+        ):
+            await self.fetcher.close_browser()
+
+    def _on_new(self, target: Target, source: Source, sighting: Sighting) -> None:
+        self.releases.on_new(target, source, sighting, measure=self.tracks(target.cik))
+
+    async def _resume_links(self, target: Target) -> None:
+        watches = [
+            Watch(target.ticker, source, target.window, period=target.period)
+            for source in target.sources()
+        ]
+        try:
+            await self._follow_links(target, watches)
+        except Exception as error:
+            self.journal.write("followup_error", ticker=target.ticker, message=repr(error))
+        finally:
+            await self.releases.finish_target(target)
+
+    async def _follow_links(self, target: Target, watches: list[Watch]) -> None:
+        await follow_up(
+            target, watches, self.fetcher, self.journal, self._on_new, self.sixk, self.follow_up
+        )
+        self._learn_wire(target, watches)
+
+    async def _watch(self, target: Target) -> None:
+        # The next scan retries a failed window within seconds, so a lasting failure is
+        # reported once, not every 3 s
+        problem = f"{target.ticker} monitoring"
+
+        benchmark = None
+        if self.benchmark:
+            benchmark = asyncio.create_task(self.benchmark.watch(target.ticker, *target.window))
+        try:
+            try:
+                watches = await record_target(
+                    target,
+                    self.fetcher,
+                    self.journal,
+                    self._on_new,
+                    self.polls,
+                    on_watches=partial(self.live_watches.__setitem__, target.release_key),
+                )
+            finally:
+                self.live_watches.pop(target.release_key, None)
+            self._problem(problem, None)
+            self.store.close_window(target.release_key, target.expected)
+            self.dates.changed.set()
+            comparison = ""
+            if benchmark is not None:
+                comparison = await self._compare(target, watches, benchmark)
+            self.status(_window_report(target, watches, comparison))
+            self._learn_wire(target, watches)
+            release = self.releases.active.get(target.release_key)
+            if self.follow_up and release is not None:
+                await release.finish()
+                if release.posted:
+                    self.followed.add((target.release_key, target.expected))
+                    await self._follow_links(target, watches)
+            await self.releases.finish_target(target)
+            for server in self.servers:
+                if server.calendar.contains(target.cik):
+                    server.calendar.clear_review(target.cik)
+                    if server.progress:
+                        server.progress.next_attempt.pop(target.cik, None)
+                        server.progress.changed.set()
+        except Exception as error:
+            self.journal.write("error", ticker=target.ticker, message=repr(error))
+            self._problem(problem, f"failed and will retry: {error!r}")
+        finally:
+            if benchmark is not None:
+                benchmark.cancel()
+                await asyncio.gather(benchmark, return_exceptions=True)
+
+    async def _compare(
+        self, target: Target, watches: list[Watch], task: asyncio.Task[BenchmarkResult]
+    ) -> str:
+        try:
+            result = await asyncio.wait_for(task, timeout=30)
+        except Exception as error:
+            self.journal.write("benchmark_error", ticker=target.ticker, message=repr(error))
+            result = BenchmarkResult("unavailable")
+        delivered = self.subscribers(target)[0].store.get(target.release_key)
+        alert = (
+            discord.utils.snowflake_time(delivered.message_id)
+            if delivered and delivered.message_id is not None
+            else None
+        )
+        release = self.releases.active.get(target.release_key)
+        first_text = release.first_text_at if release else None
+        first_seen = min((w.first for w in watches if w.first), default=None)
+        post = result.post
+        self.journal.write(
+            "benchmark",
+            ticker=target.ticker,
+            period=target.period,
+            account="earnings_guy",
+            state=result.state,
+            x_post=post.url if post else None,
+            x_posted=post.posted if post else None,
+            first_seen=first_seen,
+            first_text=first_text,
+            discord_alert=alert,
+        )
+        outcome = _benchmark_report(result, alert)
+        self.latest_benchmark = f"{target.ticker}: {outcome}"
+        return outcome
+
+    async def run(self) -> None:
+        dates = asyncio.create_task(self.dates.run())
+        try:
+            while True:
+                await self.scan()
+                await asyncio.sleep(SCAN_SECONDS)
+        finally:
+            dates.cancel()
+            await asyncio.gather(dates, return_exceptions=True)
+            for trial in self.trials.values():
+                trial.cancel()
+            await asyncio.gather(*self.trials.values(), return_exceptions=True)
+            if self.trial_db is not None:
+                self.trial_db.close()
+            for window in self.windows.values():
+                window.task.cancel()
+            await asyncio.gather(
+                *(window.task for window in self.windows.values()), return_exceptions=True
+            )
+            await self.releases.finish()
+
+
+def durable_posters(watcher: DirectoryWatcher, author_id: int) -> Callable[[Target], Poster]:
+    """Each release's poster: one durable alert in every server tracking the company, all sent
+    at once (FanOutPoster), or in the deployment's own for a schedule file's release."""
+
+    def poster(target: Target) -> Poster:
+        return fan_out(
+            [
+                DurableDiscordPoster(server.channel, server.store, target.release_key, author_id)
+                for server in watcher.subscribers(target)
+                if server.channel is not None
+            ]
+        )
+
+    return poster
+
+
+def _benchmark_report(result: BenchmarkResult, alert: datetime | None) -> str:
+    if result.post is None:
+        state = {
+            "no_post_found": "no post found",
+            "unavailable": "lookup unavailable",
+            "unverified": "candidate could not be verified",
+        }
+        return f"@earnings_guy: {state.get(result.state, 'lookup unavailable')}"
+    post = result.post
+    text = f"[@earnings_guy](<{post.url}>) posted at {clock(post.posted, millis=True)}"
+    if alert:
+        delta = (alert - post.posted).total_seconds()
+        if abs(delta) < 0.005:
+            text += ", the same moment as our alert"
+        else:
+            direction = "after" if delta < 0 else "before"
+            text += f", {abs(delta):.2f}s {direction} our alert"
+    else:
+        text += ". No Discord alert was recorded"
+    return text
+
+
+def _route_label(watch: Watch) -> str:
+    form = watch.source.form if isinstance(watch.source, EdgarFilings) else "8-K"
+    return source_label(watch.source.name, form)
+
+
+def _window_report(target: Target, watches: list[Watch], comparison: str = "") -> str:
+    label = _route_label
+    period = f" {period_label(target.period)}" if target.period else ""
+    lines = [f"🏁 **{target.ticker}{period} window closed**"]
+    seen: dict[str, datetime] = {}
+    for at, name in sorted((watch.first, label(watch)) for watch in watches if watch.first):
+        seen.setdefault(name, at)
+    if seen:
+        (winner, first), *rest = seen.items()
+        lines.append(f"🥇 {winner} at {clock(first, millis=True)}")
+        if rest:
+            behind = (f"{name} +{duration((at - first).total_seconds())}" for name, at in rest)
+            lines.append("Then " + " · ".join(behind))
+    else:
+        caught_up = list(dict.fromkeys(label(w) for w in watches if w.caught_up))
+        lines.append(
+            "Already out when the window opened: " + ", ".join(caught_up)
+            if caught_up
+            else "No release seen"
+        )
+    if stopped := list(dict.fromkeys(label(w) for w in watches if w.stopped)):
+        lines.append(f"⚠️ Stopped early: {', '.join(stopped)}")
+    if refused := list(
+        dict.fromkeys(label(w) for w in watches if w.blocked and not w.stopped and not w.first)
+    ):
+        lines.append(f"⚠️ Refused at times (HTTP 403), retried: {', '.join(refused)}")
+    limit = DEGRADED_AFTER.total_seconds()
+    quiet = {
+        label(w): w.longest_quiet
+        for w in watches
+        if w.longest_quiet > max(limit, 5 * w.source.interval) and not w.stopped
+    }
+    if quiet:
+        gaps = ", ".join(f"{name} {duration(gap)}" for name, gap in quiet.items())
+        lines.append(f"⚠️ Went without an answer for up to: {gaps}")
+    if stopped or refused or quiet:
+        # A route that died mid-window must be loud (the 1.0 gate)
+        lines[0] += " · ⚠️ degraded"
+    if comparison:
+        lines.append(f"-# {comparison}")
+    return "\n".join(lines)
+
+
+STARTED = "🟢 **Earnings monitoring started**"
+# How far back the status channel is searched for earlier start notices to remove
+NOTICE_LOOKBACK = 100
+
+
+async def replace_start_notice(
+    channel: discord.abc.Messageable, store: DeliveryStore, author_id: int, text: str
+) -> None:
+    """Posts the start notice, then deletes the earlier ones, so the channel shows only the
+    running version's. Earlier ones are the notice whose ID was saved at the last start, and
+    any of the bot's own in the last NOTICE_LOOKBACK messages, which covers those posted
+    before IDs were saved."""
+    message = await channel.send(text[:1900], allowed_mentions=discord.AllowedMentions.none())
+    saved = store.notice("started")
+    store.set_notice("started", message.id)
+    stale: dict[int, discord.Message | None] = {}
+    if saved is not None and saved != message.id:
+        stale[saved] = None
+    async for earlier in channel.history(limit=NOTICE_LOOKBACK):
+        if (
+            earlier.id != message.id
+            and earlier.author.id == author_id
+            and earlier.content.startswith(STARTED)
+        ):
+            stale[earlier.id] = earlier
+    for message_id, earlier in stale.items():
+        with contextlib.suppress(discord.NotFound):
+            await (earlier or await channel.fetch_message(message_id)).delete()
+
+
+async def watch_directory(
+    directory: Path,
+    channel: discord.abc.Messageable,
+    channel_id: int,
+    author_id: int,
+    sec_user_agent: str,
+    summarizer: Summarizer | None,
+    fmp_api_key: str | None,
+    status_channel: discord.abc.Messageable | None,
+    ready: Callable[[DirectoryWatcher], None],
+    ping: Callable[[], Awaitable[object]] | None = None,
+    *,
+    driver_profiles: bool = False,
+    other_channels: Sequence[discord.TextChannel | discord.Thread] = (),
+) -> None:
+    progress_channel = status_channel or channel
+    progress_id = getattr(progress_channel, "id", channel_id)
+    with contextlib.ExitStack() as stack:
+        progress_store = stack.enter_context(
+            DeliveryStore(directory / ".tracking-progress.sqlite3", progress_id)
+        )
+        file = stack.enter_context((directory / "watch.jsonl").open("a", encoding="utf-8"))
+        store = stack.enter_context(
+            DeliveryStore(directory / ".earnings-state.sqlite3", channel_id)
+        )
+        # Every other server keeps its own tracked companies, alerts and scorecards, under its
+        # alert channel in the same databases
+        servers = [
+            Server(
+                store, channel, getattr(getattr(channel, "guild", None), "id", None), follow=True
+            )
+        ]
+        server_progress: list[DeliveryStore] = [progress_store]
+        for other in other_channels:
+            other_id = other.id
+            servers.append(
+                Server(
+                    stack.enter_context(
+                        DeliveryStore(directory / ".earnings-state.sqlite3", other_id)
+                    ),
+                    other,
+                    other.guild.id,
+                )
+            )
+            server_progress.append(
+                stack.enter_context(
+                    DeliveryStore(directory / ".tracking-progress.sqlite3", other_id)
+                )
+            )
+        journal = Journal(file)
+        queue: asyncio.Queue[tuple[str, bool]] = asyncio.Queue()
+
+        def status(message: str, *, start: bool = False) -> None:
+            journal.write("status", message=message)
+            journal.say(message)
+            if status_channel is not None:
+                queue.put_nowait((message, start))
+
+        async def report(channel: discord.abc.Messageable) -> None:
+            while True:
+                message, start = await queue.get()
+                try:
+                    if start:
+                        await replace_start_notice(channel, progress_store, author_id, message)
+                    else:
+                        await channel.send(
+                            message[:1900], allowed_mentions=discord.AllowedMentions.none()
+                        )
+                except (aiohttp.ClientError, discord.HTTPException, TimeoutError) as error:
+                    journal.say(f"Status post failed: {error!r}")
+
+        # Alerts' posts and edits go before scorecard edits, which share the channel's limits
+        priority = EditPriority()
+
+        async def recover_pending() -> None:
+            for server in servers:
+                assert server.channel is not None
+                for pending in server.store.pending():
+                    poster = DurableDiscordPoster(
+                        server.channel, server.store, pending.key, author_id
+                    )
+                    try:
+                        async with priority.release():
+                            await retry_delivery(partial(poster.send, pending.content))
+                    except (aiohttp.ClientError, discord.HTTPException, TimeoutError) as error:
+                        status(f"⚠️ Pending alert {pending.key} needs attention: {error!r}")
+                    else:
+                        status(f"✅ Recovered pending alert {pending.key}")
+
+        async with Fetcher(sec_user_agent) as fetcher:
+            releases = Releases(
+                lambda: DiscordPoster(channel),
+                fetcher,
+                journal,
+                summarizer,
+                None,
+                priority=priority,
+                store=store,
+            )
+            benchmark = EarningsBenchmark(fetcher, journal.now)
+            watcher = DirectoryWatcher(
+                directory,
+                fetcher,
+                journal,
+                releases,
+                store,
+                status,
+                benchmark,
+                fmp_api_key,
+                servers=servers,
+            )
+            releases.durable_poster = durable_posters(watcher, author_id)
+            watcher.follow_up = FOLLOW_UP
+            profiles = (
+                DriverProfiles(
+                    store,
+                    fetcher,
+                    watcher.sixk,
+                    ProfileWriter(summarizer.client),
+                    lambda cik: watcher.research_paused() or watcher.in_window(cik),
+                )
+                if driver_profiles and summarizer is not None
+                else None
+            )
+            watcher.dates.profiles = profiles
+            if profiles:
+                releases.issuer_context = lambda target: profiles.context(target.cik, journal.now())
+            watcher.summaries = summarizer is not None
+            if isinstance(channel, discord.abc.GuildChannel | discord.Thread):
+                watcher.guild_id = channel.guild.id
+            for server, cards in zip(servers, server_progress, strict=True):
+                dates = server.dates
+                assert dates is not None
+                server.progress = TrackProgress(
+                    server.calendar,
+                    cards,
+                    progress_channel if server is servers[0] else server.channel or channel,
+                    author_id,
+                    lambda: watcher.planned,
+                    journal.now,
+                    watcher.busy,
+                    partial(
+                        audit_sources, fetcher, directory, benchmark=benchmark, sixk=watcher.sixk
+                    ),
+                    date_phase=dates.phases.get,
+                    research=dates.reports.get,
+                    ir_note=dates.ir_notes.get,
+                    cache_notes=dates.cache_notes.get,
+                    cache_caveats=dates.cache_caveats.get,
+                    priority=priority,
+                    settled=dates.settled,
+                    research_paused=lambda: watcher.research_paused() or watcher.chrome_live(),
+                    in_window=watcher.in_window,
+                    research_mode=watcher.research_mode,
+                    research_deferred=fetcher.research_deferred,
+                    profile_note=profiles.notes.get if profiles else None,
+                    reviews=watcher.shared if len(servers) > 1 else None,
+                    claim=watcher.claim_audit,
+                    release=watcher.auditing.discard,
+                    next_attempt=watcher.audit_next_attempts,
+                )
+                server.progress.follow_calendar()
+
+            def research_changed() -> None:
+                """Research shows on every server's scorecards."""
+                for each in servers:
+                    if each.progress:
+                        each.progress.changed.set()
+
+            watcher.dates.on_progress = research_changed
+            watcher.progress = servers[0].progress
+            ready(watcher)
+            status(f"{STARTED} · {release_version()} · `{directory.name}/`", start=True)
+            tasks = [
+                asyncio.create_task(recover_pending()),
+                *(asyncio.create_task(s.progress.run()) for s in servers if s.progress),
+            ]
+            if status_channel is not None:
+                tasks.append(asyncio.create_task(report(status_channel)))
+            if ping is not None:
+                tasks.append(asyncio.create_task(keep_warm(ping, watcher.open_windows, journal)))
+            try:
+                await watcher.run()
+            finally:
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)

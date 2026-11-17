@@ -4,12 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from earnings_bot import restart
-from earnings_bot.calendar import Calendar
-from earnings_bot.delivery import DeliveryStore
-from earnings_bot.known import to_target
-from earnings_bot.recorder import ET, Target
-from earnings_bot.restart import WINDOW_OPEN, interrupted, schedule_targets
+from first_print import restart
+from first_print.calendar import Calendar
+from first_print.delivery import DeliveryStore
+from first_print.known import to_target
+from first_print.recorder import ET, Target
+from first_print.restart import WINDOW_OPEN, interrupted, schedule_targets
 
 NOW = datetime(2026, 11, 9, 16, 0, tzinfo=ET)
 

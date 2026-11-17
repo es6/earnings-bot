@@ -11,17 +11,17 @@ from typing import cast
 
 import pytest
 
-from earnings_bot import date_discovery
-from earnings_bot.browser import BrowserJSON, DesktopChrome
-from earnings_bot.calendar import Calendar
-from earnings_bot.date_discovery import DateDiscovery
-from earnings_bot.delivery import DeliveryStore
-from earnings_bot.fetch import Response
-from earnings_bot.ir_research import quarter_headline
-from earnings_bot.issuer_news import IssuerNews, news_records
-from earnings_bot.known import KnownCompany
-from earnings_bot.recorder import ET, poll
-from earnings_bot.sources import Sighting
+from first_print import date_discovery
+from first_print.browser import BrowserJSON, DesktopChrome
+from first_print.calendar import Calendar
+from first_print.date_discovery import DateDiscovery
+from first_print.delivery import DeliveryStore
+from first_print.fetch import Response
+from first_print.ir_research import quarter_headline
+from first_print.issuer_news import IssuerNews, news_records
+from first_print.known import KnownCompany
+from first_print.recorder import ET, poll
+from first_print.sources import Sighting
 from tests.fakes import RoutedChrome, RoutedFetcher
 
 HOME = "https://www.sea.com/"
@@ -116,7 +116,7 @@ async def test_track_reads_the_rendered_newsrooms_api_and_prepares_live_pdf(
         filing = Sighting("0001703399-26-000040", "8-K 2.02,9.01", "https://www.sec.gov/")
         return [(filing, "Sea Limited. See https://www.sea.com/investor/home.")]
 
-    monkeypatch.setattr("earnings_bot.investigate._last_releases", last_results)
+    monkeypatch.setattr("first_print.investigate._last_releases", last_results)
     monkeypatch.setattr(date_discovery, "chrome_available", lambda: True)
     with DeliveryStore(tmp_path / "calendar.db", 7) as store:
         calendar = Calendar(store)

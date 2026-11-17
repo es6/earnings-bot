@@ -1,6 +1,6 @@
 # Latency recording for Monday, November 2, 2026. Times are US Eastern.
 #
-#   uv run earnings-bot-record schedules/2026-11-02.toml
+#   uv run first-print-record schedules/2026-11-02.toml
 #
 # Start it any time before 3:55 PM and keep the computer awake until Apple's window closes at
 # 5:00 PM.

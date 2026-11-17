@@ -10,14 +10,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from earnings_bot import date_discovery, fetch, unattended
-from earnings_bot.browser_sources import IRSource
-from earnings_bot.calendar import Calendar
-from earnings_bot.date_discovery import DateDiscovery
-from earnings_bot.delivery import DeliveryStore
-from earnings_bot.fetch import HostBusy
-from earnings_bot.pipeline import Releases
-from earnings_bot.recorder import Journal, Target
+from first_print import date_discovery, fetch, unattended
+from first_print.browser_sources import IRSource
+from first_print.calendar import Calendar
+from first_print.date_discovery import DateDiscovery
+from first_print.delivery import DeliveryStore
+from first_print.fetch import HostBusy
+from first_print.pipeline import Releases
+from first_print.recorder import Journal, Target
 from tests.builders import company
 from tests.fakes import FakePoster, RoutedFetcher, ScanFinished, scan_finished
 

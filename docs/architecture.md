@@ -183,7 +183,7 @@ Checked on 2026-10-31 for the 19 companies in the table that aren't on Q4, plus 
 HubSpot was added on 2026-11-04. Each row gives the fastest source we can read and how far it led the 8-K. Where a range is
 given, the source's time held for the quarters we could see. A single number comes from the
 latest quarter only. The details per company, with the last four 8-K times, are in
-`src/earnings_bot/companies.toml`.
+`src/first_print/companies.toml`.
 
 | Fastest source we can read | Companies | Lead over the 8-K |
 |---|---|---|
@@ -222,7 +222,7 @@ latest quarter only. The details per company, with the last four 8-K times, are 
   Walmart, Goldman Sachs and Microsoft. These are guess templates in `companies.toml`. Others
   name files by random IDs: JPMorgan, Bank of America, and Walmart's PDFs.
 - **Tesla's update deck** has a predictable URL. The default HTTP client gets 403, so the
-  deck source uses a Tesla-specific User-Agent that identifies earnings-bot and races
+  deck source uses a Tesla-specific User-Agent that identifies first-print and races
   the 8-K when configured.
 - **Issuer IR through Chrome.** The [desktop Chrome source](browser-ir.md) covers the
   release listings for FICO, CrowdStrike, HubSpot, Lilly and Broadcom, plus exact PDF URLs
@@ -571,7 +571,7 @@ public response fixture is `tests/fixtures/ir_misses.json`; the replay is
 - For tracked issuers, a `source_body` event records when each source yields verified report
   text or an issuer report PDF.
   The audit ranks those live report times separately from headline sightings. The one-off
-  `earnings-bot-record` command uses the same release window and source pollers for local tests.
+  `first-print-record` command uses the same release window and source pollers for local tests.
 
 ### Publication trials (record-only)
 
@@ -597,7 +597,7 @@ The running bot starts each plan once, on its own fetcher and journal:
   `already_present`, not a measurement. Each event also has its timings (queued, network,
   parse, total, and Chrome's separate waits) and the cache headers.
 
-`python -m earnings_bot.publication_trials plan.json --dry-run` checks a plan without sending
+`python -m first_print.publication_trials plan.json --dry-run` checks a plan without sending
 anything. Plans that probe an issuer's site add requests to it, so each budget is the owner's
 call; GlobeNewswire article-ID probing in particular waits for the owner's decision on its
 rate.
@@ -637,7 +637,7 @@ not establish a publication advantage or sustained access.
 
 `/track` runs in directory mode and accepts any ticker on SEC's list. A subscription is
 persistent and deduplicated by issuer CIK in the earnings channel. For a company in the
-[ticker catalog](../src/earnings_bot/companies.toml), the catalog supplies the source adapters,
+[ticker catalog](../src/first_print/companies.toml), the catalog supplies the source adapters,
 wire names, URL patterns and typical release times. For any other, `issuers.py` builds the same
 kind of entry from SEC's data when it's added, and the calendar saves it: the CIK, the name
 without its legal ending (when it's more than one word) and the exchange-and-ticker tag for
@@ -920,7 +920,7 @@ experiment does not establish all-claims accuracy or default reference-writer re
 
 ## Running unattended
 
-Run `uv run earnings-bot schedules` for the continuous watcher. It reloads TOML and persisted
+Run `uv run first-print schedules` for the continuous watcher. It reloads TOML and persisted
 calendar windows, retains the last valid copy of a malformed schedule, and recovers pending
 Discord alerts across restarts. For one-off monitoring, pass a single TOML file instead.
 

@@ -7,13 +7,13 @@ from urllib.parse import unquote
 import pytest
 from pydantic import ValidationError
 
-from earnings_bot.browser_sources import BrowserRelease, BrowserRss, IRSource
-from earnings_bot.cache_research import probe_cache
-from earnings_bot.fetch import Response
-from earnings_bot.issuer_news import IssuerNews
-from earnings_bot.known import target_toml
-from earnings_bot.recorder import ET, Plan, Target, Trial
-from earnings_bot.sources import RssFeed, Spellings
+from first_print.browser_sources import BrowserRelease, BrowserRss, IRSource
+from first_print.cache_research import probe_cache
+from first_print.fetch import Response
+from first_print.issuer_news import IssuerNews
+from first_print.known import target_toml
+from first_print.recorder import ET, Plan, Target, Trial
+from first_print.sources import RssFeed, Spellings
 from tests.fakes import FakeSession, SessionFetcher
 
 FEED = "https://ir.hubspot.com/rss/news-releases.xml"

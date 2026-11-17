@@ -48,12 +48,12 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
-from earnings_bot import fetch
-from earnings_bot.clock import Sample, TrustedClock
-from earnings_bot.fetch import Response
-from earnings_bot.pipeline import Poster, Releases
-from earnings_bot.recorder import ET, Journal, Plan, Target, record
-from earnings_bot.sources import PR_NEWSWIRE_EARNINGS, EdgarFilings, Source
+from first_print import fetch
+from first_print.clock import Sample, TrustedClock
+from first_print.fetch import Response
+from first_print.pipeline import Poster, Releases
+from first_print.recorder import ET, Journal, Plan, Target, record
+from first_print.sources import PR_NEWSWIRE_EARNINGS, EdgarFilings, Source
 from tests.builders import sec_filing_detail
 from tests.fakes import FakeSession, SessionFetcher
 

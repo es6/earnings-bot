@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from earnings_bot.summary_evaluation import common_cases, coverage, metric_match, replay_row
+from first_print.summary_evaluation import common_cases, coverage, metric_match, replay_row
 from scripts.summary_prepare import prepare
 
 

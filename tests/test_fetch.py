@@ -16,11 +16,11 @@ import pytest_asyncio
 from aiohttp import web
 from aiohttp.abc import AbstractResolver, ResolveResult
 
-from earnings_bot import fetch as fetch_module
-from earnings_bot.browser import BrowserError
-from earnings_bot.fetch import Fetcher, HostBusy, host_gap, queue_key
-from earnings_bot.sources import EdgarFilings, EdgarLatest, Sighting
-from earnings_bot.text import release_text
+from first_print import fetch as fetch_module
+from first_print.browser import BrowserError
+from first_print.fetch import Fetcher, HostBusy, host_gap, queue_key
+from first_print.sources import EdgarFilings, EdgarLatest, Sighting
+from first_print.text import release_text
 from tests import fakes
 from tests.fakes import FakeSession, SessionFetcher
 
@@ -290,7 +290,7 @@ async def test_sec_redirects_and_connection_retries_wait_for_the_shared_queue(
 async def test_background_research_waits_behind_every_poll_and_paces_sec(
     monkeypatch: pytest.MonkeyPatch, clock: VirtualClock
 ) -> None:
-    monkeypatch.setattr("earnings_bot.fetch.BACKGROUND_SEC_GAP", 0.4)
+    monkeypatch.setattr("first_print.fetch.BACKGROUND_SEC_GAP", 0.4)
     fetcher = Fetcher("Test Person test@example.com")
     turns: list[tuple[str, float]] = []
 
@@ -329,7 +329,7 @@ async def test_background_research_gives_way_to_a_host_a_window_is_polling(
     # A host no window polls is fine, and so is the polled one once it has been quiet a while
     with fetcher.background(chrome=False):
         await fetcher.wait_turn("www.another-issuer.com")
-    monkeypatch.setattr("earnings_bot.fetch.LIVE_SECONDS", 0.0)
+    monkeypatch.setattr("first_print.fetch.LIVE_SECONDS", 0.0)
     with fetcher.background(chrome=False):
         await fetcher.wait_turn("investors.example.com")
 

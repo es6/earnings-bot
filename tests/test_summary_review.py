@@ -2,10 +2,10 @@ import json
 
 import pytest
 
-from earnings_bot.source_document import document_from_text
-from earnings_bot.summary_binding import BindingReport, Rejection
-from earnings_bot.summary_request import referenced_request
-from earnings_bot.summary_review import (
+from first_print.source_document import document_from_text
+from first_print.summary_binding import BindingReport, Rejection
+from first_print.summary_request import referenced_request
+from first_print.summary_review import (
     BRIEF_EXAMPLES,
     headline_repair_request,
     review_variant,

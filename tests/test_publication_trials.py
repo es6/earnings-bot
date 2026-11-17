@@ -12,12 +12,12 @@ from typing import Any
 import pytest
 from aiohttp import web
 
-from earnings_bot import fetch, unattended
-from earnings_bot.delivery import DeliveryStore
-from earnings_bot.fetch import Fetcher, Response, ResponseTooLarge
-from earnings_bot.pipeline import Releases
-from earnings_bot.publication_trials import load_plans, run_trials
-from earnings_bot.recorder import Journal
+from first_print import fetch, unattended
+from first_print.delivery import DeliveryStore
+from first_print.fetch import Fetcher, Response, ResponseTooLarge
+from first_print.pipeline import Releases
+from first_print.publication_trials import load_plans, run_trials
+from first_print.recorder import Journal
 from tests.builders import events, plan
 from tests.fakes import FakePoster, QueuedFetcher
 

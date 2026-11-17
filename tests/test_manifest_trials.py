@@ -3,7 +3,7 @@ import json
 import re
 from pathlib import Path
 
-from earnings_bot.trial_matching import candidates
+from first_print.trial_matching import candidates
 
 API = "https://www.jpmorganchase.com/services/json/v1/investor-relations/quarterly-earnings.json"
 FIXTURE = Path(__file__).parent / "fixtures/issuer-history/jpm-quarterly.json"

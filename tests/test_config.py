@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from earnings_bot.config import Settings
+from first_print.config import Settings
 
 
 def load_settings() -> Settings:
@@ -83,6 +83,6 @@ def test_sec_user_agent_needs_a_contact_email(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setenv("SEC_USER_AGENT", "Jane Doe jane@example.com")
     assert load_settings().sec_user_agent == "Jane Doe jane@example.com"
 
-    monkeypatch.setenv("SEC_USER_AGENT", "earnings-bot")
+    monkeypatch.setenv("SEC_USER_AGENT", "first-print")
     with pytest.raises(ValidationError):
         load_settings()

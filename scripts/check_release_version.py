@@ -6,7 +6,7 @@ import sys
 import tomllib
 
 DEPLOYED = (
-    "src/earnings_bot",
+    "src/first_print",
     "scripts/run-bot.ps1",
     "scripts/update-bot.ps1",
     "Dockerfile",

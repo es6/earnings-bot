@@ -6,9 +6,9 @@ import json
 from pathlib import Path
 from typing import Any
 
-from earnings_bot.source_document import document_from_html, document_from_text
-from earnings_bot.summary_policy import DEFAULT_COMPARISON, EMBER, HAIKU, POLICY_VERSION
-from earnings_bot.summary_request import referenced_request, structured_request
+from first_print.source_document import document_from_html, document_from_text
+from first_print.summary_policy import DEFAULT_COMPARISON, EMBER, HAIKU, POLICY_VERSION
+from first_print.summary_request import referenced_request, structured_request
 
 
 def prepare(

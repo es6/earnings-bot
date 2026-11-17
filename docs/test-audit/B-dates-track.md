@@ -249,7 +249,7 @@ Everything else under 0.1 s.
   end-to-end alerts (ShiftedClock.sync uses the real clock). Flake risk on a loaded CI runner. Inject a
   clock (track_progress reads `time.monotonic` directly; add a `monotonic` parameter like `now`).
 - Manual class patching (`FakeMessage.edit = counted` in try/finally) where `monkeypatch` exists;
-  inline imports inside tests (`from earnings_bot import date_discovery`, `import contextvars`).
+  inline imports inside tests (`from first_print import date_discovery`, `import contextvars`).
 - Misplaced tests: status/health_embed, `_window_report`, `is_owner`, `is_date_notice`, the catalog
   fiscal-year data invariant, and the wire-publisher plan test live in files named for other features.
 - Tests with branches in the body (`if time is None` / `if day == 25`; loops with `if source.name in`).

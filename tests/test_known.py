@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from earnings_bot.known import (
+from first_print.known import (
     FIELDS,
     fill,
     fiscal_period,
@@ -16,7 +16,7 @@ from earnings_bot.known import (
     template_fields,
     to_target,
 )
-from earnings_bot.recorder import ET, Plan, load_plan
+from first_print.recorder import ET, Plan, load_plan
 
 SCHEDULES = Path(__file__).parent.parent / "schedules"
 

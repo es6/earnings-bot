@@ -5,12 +5,12 @@ from urllib.parse import unquote
 
 import pytest
 
-from earnings_bot.cache_research import probe_cache
-from earnings_bot.calendar import Calendar
-from earnings_bot.date_discovery import DateDiscovery
-from earnings_bot.delivery import DeliveryStore
-from earnings_bot.fetch import Response
-from earnings_bot.recorder import ET, Target
+from first_print.cache_research import probe_cache
+from first_print.calendar import Calendar
+from first_print.date_discovery import DateDiscovery
+from first_print.delivery import DeliveryStore
+from first_print.fetch import Response
+from first_print.recorder import ET, Target
 from tests.fakes import RoutedFetcher
 
 URL = "https://issuer.example/press?category=results"

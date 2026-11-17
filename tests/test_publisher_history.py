@@ -2,10 +2,10 @@ from pathlib import Path
 
 import pytest
 
-from earnings_bot.issuer_history import listing_history
-from earnings_bot.publisher_history import metadata, publication
-from earnings_bot.recorder import ET
-from earnings_bot.sources import Sighting
+from first_print.issuer_history import listing_history
+from first_print.publisher_history import metadata, publication
+from first_print.recorder import ET
+from first_print.sources import Sighting
 from tests.fakes import RoutedFetcher
 
 FIXTURE = Path(__file__).parent / "fixtures/issuer-history/lcid-prn-q2.html"

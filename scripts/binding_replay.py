@@ -16,9 +16,9 @@ from collections import Counter
 from collections.abc import Iterator
 from pathlib import Path
 
-from earnings_bot.source_document import SourceDocument, SourceTable
-from earnings_bot.summary_binding import bind_answer
-from earnings_bot.summary_evidence import VALUE_FIELDS
+from first_print.source_document import SourceDocument, SourceTable
+from first_print.summary_binding import bind_answer
+from first_print.summary_evidence import VALUE_FIELDS
 
 DEVELOPMENT = "development-evaluation-2026-11-13"
 HELD_OUT = "claude-continuation-evidence/item6-original/heldout/raw.json"

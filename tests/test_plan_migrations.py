@@ -1,6 +1,6 @@
 import copy
 
-from earnings_bot.recorder import Target
+from first_print.recorder import Target
 
 
 def test_old_schedule_normalizes_without_losing_sources_or_mutating_input() -> None:

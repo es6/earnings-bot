@@ -2,7 +2,7 @@
 
 ## Commands
 
-Start the bot in directory mode with `uv run earnings-bot schedules`. Calendar
+Start the bot in directory mode with `uv run first-print schedules`. Calendar
 commands are available in the server that contains the configured earnings channel.
 Replies to the commands are private to the person who ran them.
 
@@ -18,7 +18,7 @@ Replies to the commands are private to the person who ran them.
 
 The calendar holds up to 50 subscriptions per earnings channel.
 
-Companies in the [ticker catalog](../src/earnings_bot/companies.toml) start
+Companies in the [ticker catalog](../src/first_print/companies.toml) start
 from researched sources: the issuer's feeds, its wire and URL patterns. Any
 other ticker on SEC's list is looked up when it's added, and the bot then
 investigates it outside release windows:
@@ -181,7 +181,7 @@ for per-release schedule settings.
 
 ## Watchdog
 
-`uv run earnings-bot-watchdog schedules` runs apart from the bot and posts to the Discord
+`uv run first-print-watchdog schedules` runs apart from the bot and posts to the Discord
 webhook in `WATCHDOG_WEBHOOK_URL` when a release window is open and polling has stopped. It
 is not a second bot: it never connects to Discord's gateway. Every 30 seconds it:
 
@@ -206,12 +206,12 @@ always runs the same code.
 
 ## Run continuously on Windows
 
-Run `uv run earnings-bot schedules` to watch every TOML in the directory. Edits and new files
+Run `uv run first-print schedules` to watch every TOML in the directory. Edits and new files
 are picked up within a few seconds. A malformed edit keeps the last valid version active.
 Use `/status` (formerly `/watch_status`, which still works) for health: the running release
 version and Git build, the last schedule scan, the next watch start, how many scorecards are
 ready, whether live summaries are on, and problems. The release version also appears on scorecards, at startup, and in
-`uv run earnings-bot --version`. Set `DISCORD_STATUS_CHANNEL_ID` to receive window reports in
+`uv run first-print --version`. Set `DISCORD_STATUS_CHANNEL_ID` to receive window reports in
 a channel, which can be the alerts' own. Reports are also written to `schedules/watch.jsonl`.
 
 Window reports use **@earnings_guy** as the main external speed benchmark. The runner
@@ -269,7 +269,7 @@ To measure which source shows a release first, the recorder polls every source a
 scheduled release and logs when each one first lists it:
 
 ```bash
-uv run earnings-bot-record schedules/2026-11-02.toml
+uv run first-print-record schedules/2026-11-02.toml
 ```
 
 The plan file lists each release's expected time (US Eastern) and where to look. The recorder

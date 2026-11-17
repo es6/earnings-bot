@@ -1,0 +1,473 @@
+"""Persistent issuer subscriptions and the next planned release."""
+
+import re
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta
+
+from first_print.delivery import DeliveryStore
+from first_print.formatting import clock, period_label, stamp
+from first_print.ir_research import IR_LISTINGS, quarter_headline
+from first_print.known import KnownCompany, known_companies, to_target, wire_publisher
+from first_print.plan_migrations import restore_ir_headline
+from first_print.recorder import ET, Target
+
+_LINKED = re.compile(r"(.*?)\s*<(https?://[^>\s]+)>")
+MAX_TRACKED = 50
+
+
+@dataclass(frozen=True)
+class Tracked:
+    ticker: str
+    cik: int
+    target: Target | None
+    evidence: str | None
+    company: KnownCompany
+
+
+# Each table that's kept per channel, and its channel column
+_CHANNEL_COLUMNS = (
+    ("tracked", "channel"),
+    ("tracking_reviews", "channel"),
+    ("tracking_adds", "channel"),
+    ("alerts", "channel_id"),
+    ("windows", "channel_id"),
+    ("watcher", "channel_id"),
+)
+
+
+class Calendar:
+    def __init__(self, store: DeliveryStore, *, follow: bool = True, catalog: bool = True) -> None:
+        """`follow`: move the calendar here from the channel the bot posted to before
+        (_follow_channel). Only the deployment's own server's calendar does; another server's
+        starts empty, and following would take the deployment's whole calendar."""
+        self.store = store
+        self.catalog = catalog
+        self.db = store.db
+        self.channel = store.channel_id
+        self.db.executescript("""
+            CREATE TABLE IF NOT EXISTS tracked (
+                channel INTEGER NOT NULL,
+                cik INTEGER NOT NULL,
+                ticker TEXT NOT NULL,
+                target TEXT,
+                evidence TEXT,
+                profile TEXT,
+                PRIMARY KEY (channel, cik)
+            );
+            CREATE TABLE IF NOT EXISTS tracking_reviews (
+                channel INTEGER NOT NULL,
+                cik INTEGER NOT NULL,
+                checked TEXT NOT NULL,
+                result TEXT NOT NULL,
+                PRIMARY KEY (channel, cik)
+            );
+        """)
+        columns = {row["name"] for row in self.db.execute("PRAGMA table_info(tracked)")}
+        if "profile" not in columns:  # a calendar saved before /track took any ticker
+            with self.db:
+                self.db.execute("ALTER TABLE tracked ADD COLUMN profile TEXT")
+        # The channel the calendar was in before the bot moved, if it just moved
+        self.moved_from = self._follow_channel() if follow else None
+
+    def delivered(self, release_key: str) -> bool:
+        delivery = self.store.get(release_key)
+        return delivery is not None and delivery.message_id is not None
+
+    def _follow_channel(self) -> int | None:
+        """When the bot posts to a new channel, its calendar moves there with it: the tracked
+        companies, their research, and the alerts and windows already done, so nothing is lost
+        or posted twice. It comes from the channel that tracked the most companies."""
+        if self.db.execute(
+            "SELECT 1 FROM tracked WHERE channel = ? LIMIT 1", (self.channel,)
+        ).fetchone():
+            return None
+        row = self.db.execute(
+            "SELECT channel FROM tracked GROUP BY channel ORDER BY COUNT(*) DESC LIMIT 1"
+        ).fetchone()
+        if row is None:
+            return None
+        old = int(row[0])
+        tables = {row[0] for row in self.db.execute("SELECT name FROM sqlite_master")}
+        with self.db:
+            for table, column in _CHANNEL_COLUMNS:
+                if table in tables:
+                    self.db.execute(
+                        f"UPDATE OR IGNORE {table} SET {column} = ? WHERE {column} = ?",
+                        (self.channel, old),
+                    )
+        return old
+
+    def entries(self) -> list[Tracked]:
+        return [
+            Tracked(
+                row["ticker"],
+                row["cik"],
+                _read_target(row["target"]),
+                row["evidence"],
+                _company(row["ticker"], row["cik"], row["profile"], self.catalog),
+            )
+            for row in self.db.execute(
+                "SELECT * FROM tracked WHERE channel = ? ORDER BY ticker", (self.channel,)
+            )
+        ]
+
+    def find(self, ticker: str) -> Tracked | None:
+        return next((row for row in self.entries() if row.ticker == ticker), None)
+
+    def contains(self, cik: int) -> bool:
+        return (
+            self.db.execute(
+                "SELECT 1 FROM tracked WHERE channel = ? AND cik = ?", (self.channel, cik)
+            ).fetchone()
+            is not None
+        )
+
+    def add(self, ticker: str, company: KnownCompany | None = None) -> tuple[Tracked, bool]:
+        """Tracks a catalog company, or any other with its company facts given."""
+        company = company or known_companies()[ticker]
+        cik = company.cik
+        entries = self.entries()
+        if existing := next((row for row in entries if row.cik == cik), None):
+            return existing, False
+        if len(entries) >= MAX_TRACKED:
+            raise ValueError(f"This calendar already tracks {MAX_TRACKED} companies.")
+        # The catalog's entry is read fresh each time, so only other companies' facts are saved
+        catalog = self.catalog and ticker in known_companies()
+        profile = None if catalog else company.model_dump_json()
+        with self.db:
+            self.db.execute(
+                "INSERT INTO tracked (channel, cik, ticker, profile) VALUES (?, ?, ?, ?)",
+                (self.channel, cik, ticker, profile),
+            )
+        return Tracked(ticker, cik, None, None, company), True
+
+    def set_target(self, target: Target, evidence: str) -> None:
+        with self.db:
+            self.db.execute(
+                "UPDATE tracked SET target = ?, evidence = ? WHERE channel = ? AND cik = ?",
+                (target.model_dump_json(), evidence, self.channel, target.cik),
+            )
+
+    def save_profile(self, cik: int, company: KnownCompany) -> None:
+        """Keeps what the bot found out about a company outside the catalog."""
+        with self.db:
+            self.db.execute(
+                "UPDATE tracked SET profile = ? WHERE channel = ? AND cik = ?",
+                (company.model_dump_json(), self.channel, cik),
+            )
+
+    def review(self, cik: int) -> tuple[datetime | None, str | None]:
+        row = self.db.execute(
+            "SELECT checked, result FROM tracking_reviews WHERE channel = ? AND cik = ?",
+            (self.channel, cik),
+        ).fetchone()
+        return (datetime.fromisoformat(row["checked"]), row["result"]) if row else (None, None)
+
+    def save_review(self, cik: int, checked: datetime, result: str) -> None:
+        with self.db:
+            self.db.execute(
+                "INSERT OR REPLACE INTO tracking_reviews VALUES (?, ?, ?, ?)",
+                (self.channel, cik, checked.isoformat(), result),
+            )
+
+    def clear_review(self, cik: int) -> None:
+        with self.db:
+            self.db.execute(
+                "DELETE FROM tracking_reviews WHERE channel = ? AND cik = ?", (self.channel, cik)
+            )
+
+    def remove(self, cik: int) -> bool:
+        with self.db:
+            self.db.execute(
+                "DELETE FROM tracking_reviews WHERE channel = ? AND cik = ?", (self.channel, cik)
+            )
+            return (
+                self.db.execute(
+                    "DELETE FROM tracked WHERE channel = ? AND cik = ?", (self.channel, cik)
+                ).rowcount
+                > 0
+            )
+
+    def plan(self, files: dict[str, Target]) -> dict[str, Target]:
+        """Use one window per release, keeping the source settings of existing schedule files."""
+        result = files.copy()
+        for row in self.entries():
+            if (target := row.target) is None:
+                continue
+            if row.company.sec_form == "6-K" and target.sec_form != "6-K":
+                target = target.model_copy(update={"sec_form": "6-K"})
+            if target.wire_publisher is None and (publisher := wire_publisher(row.company)):
+                target = target.model_copy(update={"wire_publisher": publisher})
+            existing = next((t for t in files.values() if same_release(t, target)), None)
+            if existing is None:
+                result[target.release_key] = target
+            else:
+                updates = {}
+                if existing.wire_publisher is None and target.wire_publisher:
+                    updates["wire_publisher"] = target.wire_publisher
+                if row.company.sec_form == "6-K" and "sec_form" not in existing.model_fields_set:
+                    updates["sec_form"] = "6-K"
+                if row.evidence == "Manual override":
+                    updates.update(
+                        expected=target.expected,
+                        before_minutes=target.before_minutes,
+                        after_minutes=target.after_minutes,
+                    )
+                if found := target.ir:
+                    ir = existing.ir or found
+                    if found.results_table and not ir.results_table:
+                        ir = ir.model_copy(
+                            update={
+                                "results_table": found.results_table,
+                                "table_http": found.table_http,
+                                "table_rendered": found.table_rendered,
+                                "cache_bust_urls": [
+                                    *ir.cache_bust_urls,
+                                    *(
+                                        url
+                                        for url in found.cache_bust_urls
+                                        if url == found.results_table
+                                    ),
+                                ],
+                                "spelled_urls": [
+                                    *ir.spelled_urls,
+                                    *(
+                                        url
+                                        for url in found.spelled_urls
+                                        if url == found.results_table
+                                    ),
+                                ],
+                            }
+                        )
+                    if ir.results_table and not (existing.period or ir.table_period):
+                        ir = ir.model_copy(update={"table_period": target.period})
+                    if ir != existing.ir:
+                        updates["ir"] = ir
+                if updates:
+                    result[existing.release_key] = existing.model_copy(update=updates)
+        return result
+
+
+def _read_target(saved: str | None) -> Target | None:
+    if saved is None:
+        return None
+    target = Target.model_validate_json(saved)
+    if target.period:
+        restore_ir_headline(
+            target.ir,
+            listing=IR_LISTINGS.get(target.ticker),
+            headline=quarter_headline(int(target.period[2:6]), int(target.period[-1])),
+        )
+    return target
+
+
+def same_release(first: Target, second: Target) -> bool:
+    if first.cik != second.cik:
+        return False
+    if first.period and second.period:
+        return first.period == second.period
+    return first.expected.astimezone(ET).date() == second.expected.astimezone(ET).date()
+
+
+def _company(ticker: str, cik: int, profile: str | None, catalog: bool = True) -> KnownCompany:
+    if catalog and (known := known_companies().get(ticker)):
+        return known
+    if profile:
+        return KnownCompany.model_validate_json(profile)
+    # Tracked from the catalog, which has since dropped it. EDGAR still identifies it by CIK.
+    return KnownCompany(
+        name=ticker,
+        cik=cik,
+        platform="unknown",
+        reachable=False,
+        wire="none",
+        fastest="unknown",
+        evidence="No longer in the catalog.",
+        checked=date.min,
+    )
+
+
+def manual_target(
+    ticker: str, when: str, period: str, now: datetime, company: KnownCompany | None = None
+) -> Target:
+    try:
+        if "T" not in when and " " not in when:
+            raise ValueError
+        expected = datetime.fromisoformat(when)
+        fy, quarter = int(period[2:6]), int(period[7:])
+        if (
+            period != f"FY{fy:04d}Q{quarter}"
+            or quarter not in range(1, 5)
+            or not 2000 <= fy <= 2099
+        ):
+            raise ValueError
+    except ValueError:
+        raise ValueError(
+            "Use an ISO date and time like 2026-11-17T16:20 and a period like FY2027Q3."
+        ) from None
+    if expected.tzinfo is None:
+        expected = expected.replace(tzinfo=ET)
+    if expected <= now:
+        raise ValueError("Choose a future earnings release time.")
+    return to_target(ticker, expected.astimezone(ET), fy, quarter, company)
+
+
+def evidence_text(evidence: str) -> str:
+    """Evidence for a date, with a trailing <link> made a short masked link."""
+    match = _LINKED.fullmatch(evidence)
+    if match is None:
+        return evidence
+    text, url = match.groups()
+    return f"{text} · [source](<{url}>)"
+
+
+def describe(target: Target, evidence: str) -> str:
+    """One line about a planned release, with its time in each reader's own time zone."""
+    period = f" {period_label(target.period)}" if target.period else ""
+    return (
+        f"**{target.ticker}**{period} · {stamp(target.expected, 'F')} "
+        f"({stamp(target.expected, 'R')}) · {evidence_text(evidence)}"
+    )
+
+
+def upcoming_releases(
+    tracked: list[Tracked], planned: dict[str, Target], now: datetime, days: int = 7
+) -> tuple[list[tuple[Target, str]], list[str]]:
+    """Releases expected in the next `days`, soonest first, each with the evidence for its date,
+    and the tracked tickers that have no date yet."""
+    end = now + timedelta(days=days)
+    rows = []
+    for target in sorted(planned.values(), key=lambda item: item.expected):
+        # A window still open counts, though its expected time has passed
+        if target.window[1] > now and target.expected <= end:
+            evidence = next(
+                (
+                    row.evidence
+                    for row in tracked
+                    if row.target
+                    and same_release(row.target, target)
+                    and row.target.expected == target.expected
+                ),
+                "Schedule file",
+            )
+            rows.append((target, evidence or "Tracked"))
+    planned_ciks = {target.cik for target in planned.values() if target.window[1] > now}
+    pending = [row.ticker for row in tracked if row.cik not in planned_ciks]
+    return rows, pending
+
+
+def upcoming(tracked: list[Tracked], planned: dict[str, Target], now: datetime) -> list[str]:
+    releases, pending = upcoming_releases(tracked, planned, now)
+    rows = [describe(target, evidence) for target, evidence in releases]
+    if pending:
+        rows.append(f"-# Still looking for dates: {', '.join(pending)}")
+    return rows
+
+
+def session(moment: datetime) -> str:
+    """The US market session a release falls in."""
+    local = moment.astimezone(ET)
+    minutes = local.hour * 60 + local.minute
+    if minutes < 9 * 60 + 30:
+        return "before the open"
+    return "after the close" if minutes >= 16 * 60 else "during market hours"
+
+
+def calendar_line(target: Target, evidence: str, dot: str) -> str:
+    """One compact /upcoming line: readiness, ticker, fiscal period, the expected time in
+    each reader's own time zone, and whether that time is confirmed."""
+    period = f" · {period_label(target.period)}" if target.period else ""
+    confidence = "confirmed" if exact_time(evidence) else "estimated"
+    return f"{dot} **{target.ticker}**{period} · {stamp(target.expected, 't')} · {confidence}"
+
+
+def exact_time(evidence: str) -> bool:
+    """Whether the evidence gives the release's time, not just its day."""
+    return evidence.startswith(("Issuer confirmed release time", "Manual override"))
+
+
+def window_text(target: Target) -> str:
+    """When the bot watches for a release: "5:10 to 7:40 AM ET" or "3:05 PM to 5:35 PM ET"."""
+    start, end = (clock(moment) for moment in target.window)
+    # Said once when both are in the same half of the day
+    start = start[:-6] if start[-5:] == end[-5:] else start[:-3]
+    return f"{start} to {end}"
+
+
+def release_lines(target: Target, evidence: str) -> str:
+    """Two lines about a planned release: when its results are expected, then when the bot
+    watches and why it believes the date."""
+    period = f" {period_label(target.period)}" if target.period else ""
+    expected = clock(target.expected)
+    when = expected if exact_time(evidence) else f"about {expected}"
+    return (
+        f"**{target.ticker}**{period} · results {when} ({stamp(target.expected, 'R')})\n"
+        f"-# Watching {window_text(target)} · {evidence_text(evidence)}"
+    )
+
+
+class SharedCalendar(Calendar):
+    """Every server's tracked companies as one, for the research they share: each company once,
+    read from the first server that tracks it, and each finding (release date, profile, speed
+    audit) written to every server that tracks it. A company two servers track is researched
+    once, and both servers' scorecards show the same research."""
+
+    def __init__(self, calendars: Callable[[], Sequence[Calendar]]) -> None:
+        self._calendars = calendars
+        first = calendars()[0]
+        self.catalog = first.catalog
+        self.store, self.db, self.channel, self.moved_from = (
+            first.store,
+            first.db,
+            first.channel,
+            None,
+        )
+
+    def _tracking(self, cik: int) -> list[Calendar]:
+        return [calendar for calendar in self._calendars() if calendar.contains(cik)]
+
+    def entries(self) -> list[Tracked]:
+        rows: dict[int, Tracked] = {}
+        for calendar in self._calendars():
+            for row in calendar.entries():
+                rows.setdefault(row.cik, row)
+        return sorted(rows.values(), key=lambda row: row.ticker)
+
+    def find(self, ticker: str) -> Tracked | None:
+        for calendar in self._calendars():
+            if row := calendar.find(ticker):
+                return row
+        return None
+
+    def contains(self, cik: int) -> bool:
+        return bool(self._tracking(cik))
+
+    def delivered(self, release_key: str) -> bool:
+        return any(calendar.delivered(release_key) for calendar in self._calendars())
+
+    def review(self, cik: int) -> tuple[datetime | None, str | None]:
+        tracking = self._tracking(cik)
+        return tracking[0].review(cik) if tracking else (None, None)
+
+    def save_review(self, cik: int, checked: datetime, result: str) -> None:
+        for calendar in self._tracking(cik):
+            calendar.save_review(cik, checked, result)
+
+    def clear_review(self, cik: int) -> None:
+        for calendar in self._tracking(cik):
+            calendar.clear_review(cik)
+
+    def set_target(self, target: Target, evidence: str) -> None:
+        for calendar in self._tracking(target.cik):
+            calendar.set_target(target, evidence)
+
+    def save_profile(self, cik: int, company: KnownCompany) -> None:
+        for calendar in self._tracking(cik):
+            calendar.save_profile(cik, company)
+
+    def add(self, ticker: str, company: KnownCompany | None = None) -> tuple[Tracked, bool]:
+        raise TypeError("A company is tracked in one server's own calendar")
+
+    def remove(self, cik: int) -> bool:
+        raise TypeError("A company is untracked in one server's own calendar")

@@ -4,12 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from earnings_bot import driver_profiles
-from earnings_bot.calendar import Calendar, Tracked
-from earnings_bot.date_discovery import DateDiscovery
-from earnings_bot.delivery import DeliveryStore
-from earnings_bot.driver_profiles import DriverProfiles, ProfileReply, ProfileSource
-from earnings_bot.sec_results import SixKResults
+from first_print import driver_profiles
+from first_print.calendar import Calendar, Tracked
+from first_print.date_discovery import DateDiscovery
+from first_print.delivery import DeliveryStore
+from first_print.driver_profiles import DriverProfiles, ProfileReply, ProfileSource
+from first_print.sec_results import SixKResults
 from tests.builders import SOURCE, TODAY, content, parsed
 from tests.fakes import RoutedFetcher
 

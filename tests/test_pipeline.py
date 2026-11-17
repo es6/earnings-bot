@@ -11,15 +11,15 @@ import aiohttp
 import discord
 import pytest
 
-from earnings_bot import delivery, fetch, pipeline
-from earnings_bot.browser_sources import BrowserPDF, IRSource
-from earnings_bot.delivery import DeliveryStore
-from earnings_bot.fetch import Response
-from earnings_bot.ir_research import quarter_headline
-from earnings_bot.pipeline import Release, Releases, describe_source
-from earnings_bot.recorder import ET, Journal, Target, Watch, watch
-from earnings_bot.source_document import SourceDocument, document_from_text
-from earnings_bot.sources import (
+from first_print import delivery, fetch, pipeline
+from first_print.browser_sources import BrowserPDF, IRSource
+from first_print.delivery import DeliveryStore
+from first_print.fetch import Response
+from first_print.ir_research import quarter_headline
+from first_print.pipeline import Release, Releases, describe_source
+from first_print.recorder import ET, Journal, Target, Watch, watch
+from first_print.source_document import SourceDocument, document_from_text
+from first_print.sources import (
     GLOBENEWSWIRE_EARNINGS,
     PR_NEWSWIRE_EARNINGS,
     PR_NEWSWIRE_SEMICONDUCTORS,
@@ -34,7 +34,7 @@ from earnings_bot.sources import (
     Sighting,
     Source,
 )
-from earnings_bot.summary import Summary, SummaryError
+from first_print.summary import Summary, SummaryError
 from tests.builders import (
     ACCESSION,
     FILING,
