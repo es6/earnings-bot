@@ -170,8 +170,12 @@ The sizes, each including the one before:
 Plan:
 - **Any time (owner):** the Discord application's name and avatar in the Developer Portal.
   Nothing in the code changes.
-- **Logo:** a mark readable at Discord's 32 px avatar size, such as a bold "1" or a
-  candlestick that doubles as a lightning bolt.
+- **Logo (chosen Nov 16):** a stopwatch drawn as a printer's registration mark, with its first
+  quarter in mint: speed and print in one shape. Navy `#0B1F3A`, light `#E8F1EC`, mint
+  `#2BD49A`. Files in [`assets/`](../assets): `first-print-avatar.png` (1024 px square, for
+  the Discord application and bot avatar, which Discord crops to a circle),
+  `first-print.png` and `first-print.svg` (round, for everything else);
+  `scripts/render_logo.py` redraws the PNGs.
 - **After the streak (Nov 20), before the international work:** the repository rename, then
   the package `first_print`, the commands (`first-print`, `first-print-record`,
   `first-print-replay`), the Docker image and the Task Scheduler tasks (with the owner's yes),

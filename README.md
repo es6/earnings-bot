@@ -1,4 +1,9 @@
+<img src="assets/first-print.svg" alt="First Print" width="96" align="right">
+
 # earnings-bot
+
+Becoming **First Print**: the bot, repository and package are renamed after the live streak
+(November 20), as the [roadmap](docs/roadmap.md#name-and-identity) records.
 
 [![CI](https://github.com/es6/earnings-bot/actions/workflows/ci.yml/badge.svg)](https://github.com/es6/earnings-bot/actions/workflows/ci.yml)
 [![Docker](https://github.com/es6/earnings-bot/actions/workflows/docker.yml/badge.svg)](https://github.com/es6/earnings-bot/actions/workflows/docker.yml)
