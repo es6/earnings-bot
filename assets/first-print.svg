@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 112 112" width="512" height="512" role="img" aria-label="First Print">
+  <title>First Print</title>
+  <circle cx="56" cy="56" r="56" fill="#0B1F3A"/>
+  <rect x="48" y="12" width="16" height="9" rx="3" fill="#E8F1EC"/>
+  <path d="M56 62 L56 32 A30 30 0 0 1 86 62 Z" fill="#2BD49A"/>
+  <circle cx="56" cy="62" r="30" fill="none" stroke="#E8F1EC" stroke-width="7"/>
+  <line x1="18" y1="62" x2="94" y2="62" stroke="#E8F1EC" stroke-width="7" stroke-linecap="round"/>
+  <line x1="56" y1="26" x2="56" y2="98" stroke="#E8F1EC" stroke-width="7" stroke-linecap="round"/>
+</svg>
