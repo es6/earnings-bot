@@ -442,3 +442,16 @@ def test_the_company_named_as_a_scope_on_most_lines_is_dropped() -> None:
     text = discord_brief(facts)
     assert company not in text
     assert "🔹 **Asset Management · Fee-bearing capital**: $682B" in text
+
+
+def test_a_rate_that_is_its_own_growth_is_shown_once() -> None:
+    comps = SummaryFact("Comparable sales", "2.2%", "source", change="+2.2%", comparison="YoY")
+    assert format_fact(comps) == "Comparable sales: +2.2% YoY"
+    falling = replace(comps, value="-1.1%", change="-1.1%")
+    assert format_fact(falling) == "Comparable sales: -1.1% YoY"
+    # A different number, an opposite sign or a margin level keeps both
+    assert format_fact(replace(comps, change="-2.2%")) == "Comparable sales: 2.2%; -2.2% YoY"
+    margin = replace(comps, metric="Gross margin", change="+2.2%")
+    assert format_fact(margin) == "Gross margin: 2.2%; +2.2% YoY"
+    update = SummaryFact("Fiserv partnership", "signed", "source", "update", change="Signed")
+    assert format_fact(update) == "Fiserv partnership: signed"
