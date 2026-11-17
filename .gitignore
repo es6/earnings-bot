@@ -33,3 +33,6 @@ schedules/.earnings-state.sqlite3*
 recordings/
 schedules/.tracking-progress.sqlite3*
 schedules/track-tests/
+
+# Plans, status and dated evidence (see CLAUDE.md): local only
+.context/

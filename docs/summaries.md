@@ -25,26 +25,19 @@ Measured on the 36 saved Ember-low answers of November 12 (15 releases):
 
 The facts it drops are mostly secondary (drivers, supporting detail), which keeps the summary
 to what the release states plainly. The rates hold for releases like these; on releases
-unlike any seen so far, about 60% of headline values bind (the held-out measure below), so a
+unlike any seen so far, about 60% of headline values bind (measured on held-out releases), so a
 summary of an unfamiliar layout can come out shorter. Summaries stay labeled Beta until the
 live streak's releases have been read value by value.
 
-Two fixes from NVIDIA's August release, which no replay set held (v0.21.52). Ember wrote its
-answer two ways on two calls, and each lost a number that matters (measured):
+Two value readings matter for real releases (v0.21.52):
 
-- **A tolerance is one value.** "Revenue is expected to be $108.0 billion, plus or minus 2%"
-  was dropped as several values, and "2%" made the value read as a percentage. "Plus or
-  minus", "+/-" and "±" with their amount are now set aside when the value is read.
+- **A tolerance is one value.** "Plus or minus", "+/-" and "±" with their amount are set
+  aside when a value is read, so "$108.0 billion, plus or minus 2%" is money, not several
+  values or a percentage.
 - **Money copied from a table takes the table's scale.** "$96,221" from a table "in
-  millions" was refused against its cell, so revenue, operating income and net income went
-  missing. When an unscaled amount of 1,000 or more fails, it's retried in millions,
-  thousands and billions. The binder accepts only the scale the table's caption or header
-  states, and the card shows "$96.22B".
-
-On NVIDIA's release both answers now show revenue, operating income, net income and
-revenue and margin guidance. On the 36 saved answers, the only change is two ASML values now
-kept at their table's scale (€4.96B net income, €12.74B cash), both right; the binding
-replay is unchanged and the 7 known wrong facts stay refused.
+  millions" is retried in millions, thousands and billions when it fails as written; the
+  binder accepts only the scale the table's caption or header states, and the card shows
+  "$96.22B".
 
 ## Source references: extraction and durable runtime handoff
 
@@ -81,7 +74,7 @@ document version fails explicitly. The reference verifier must additionally chec
 headers, metric, period/duration, basis, units and scale against this observed source
 structure. Merely returning an existing cell ID will not establish claim correctness.
 
-## Item 6 unverified candidate schema
+## Unverified candidate schema
 
 `summary_evidence.py` defines an immutable `UnverifiedBrief`. Each fact has separate
 current actual, prior-year actual, reported growth, comparable growth, previous guidance
@@ -116,7 +109,7 @@ The preparer uses a saved `<ticker>.html` when present, otherwise plain blocks f
 JSON `release` text. It never infers PDF cells. Reference-schema preparation permits only
 Ember; `--include-haiku` is rejected with `--references`. The opt-in writer uses the same
 request and source-binding code. Default activation remains held for final coverage and
-broader factual auditing; see the [frozen comparison](evaluation-2026-11-13.md).
+broader factual auditing; see the frozen comparison of November 13.
 
 The schema follows the raw `output_config.format` shape and uses the SDK's schema
 transformation for unsupported constraints; local Pydantic validation retains those
@@ -125,9 +118,9 @@ and [Meta structured output documentation](https://dev.meta.ai/docs/structured-o
 Ember-low provider calls established wire compatibility. That does not establish model
 quality or a latency improvement.
 
-## Item 6 binding checks and limits
+## Binding checks and limits
 
-Item 6 also has a conservative binding library in `summary_binding.py` and
+There is also a conservative binding library in `summary_binding.py` and
 `binding_text.py`. `bind_brief` resolves the candidate's evidence first, then checks
 metric identity against the source row or claim clause; table-column period/duration;
 numeric amount, sign, scale and dimension; accounting basis; currency and physical
@@ -256,330 +249,9 @@ EPS between", and groups such as "MCO" or "guidance" required as if they were se
 - Retention is still below what default activation needs, and the reference request's
   extra latency is unchanged. Activation stays off.
 
-## Verifying the live summaries' facts (Nov 15, measured, offline)
-
-The question before removing "Beta": how often do the live summaries show a fact whose
-measure, period or basis is wrong, and does the verifier catch those facts without
-dropping right ones? `scripts/verify_replay.py` replays the 36 saved Ember-low answers of
-November 12 (15 releases: two runs each of the first set's 9 releases and three each
-of the second set's 6).
-Each fact the live checker keeps is handed to the verifier with every paragraph and table
-cell of the release that holds its number. No model calls. SPOT's release was a PDF, so it
-is read from its text, as the live bot reads a PDF; the others from their HTML.
-
-| Of 619 facts the live checker kept | Facts |
-|---|---|
-| Verifier confirmed the main value, and its growth and prior-year values | 239 |
-| Verifier confirmed the main value only | 64 |
-| Verifier refused the main value | 299 (48%) |
-| The replay couldn't read the value | 17 |
-
-- **Refusals aren't errors.** A fixed random sample of 30 refused facts, read against
-  their quotes: none was clearly wrong; two carry a label the quote doesn't confirm
-  (JPM's $50.9 billion net revenue labeled "managed", Adobe's "Total Customer Group
-  subscription revenue" shown as "Subscription revenue"). The rest were refused because
-  the verifier reads too narrowly: a segment named in the row above its numbers
-  ("LATAM:" over "Revenue"), a share ("cRPO were 67%"), "up 38%" growth phrasing, a
-  measure named before "and" ("R&D costs of around EUR1.2 billion and SG&A costs of
-  around EUR0.4 billion").
-- **Known errors.** The November 12 study found 8 wrong facts in 7 of the 18 first-set
-  answers. The live checker drops 2 (NOW's free cash flow margin given as its growth,
-  Duolingo's full-year bookings growth of 13% for 12%). It shows 6. The verifier refuses
-  4 of them: Netflix's 12% reported growth labeled as its 11% currency-neutral growth,
-  DoorDash's cash change labeled year over year when it compares December 31 with
-  September 30, and Synopsys's nine-month operating cash flow labeled Q3, in both runs.
-  It missed Duolingo's daily active users and paid subscribers claimed in USD: a dollar
-  sign elsewhere in their table read as their currency. Visa's revenue growth labeled
-  constant-dollar wasn't tested, as the replay doesn't pass that label.
-- **The fix, v0.21.29:** a count of people or things (users, subscribers, customers,
-  accounts, vehicles, stores and the like) is never bound as money, unless its measure
-  names money ("revenue per user", "customer deposits", "customer credits"). On the 619
-  facts it refused exactly the two Duolingo facts and nothing else.
-
-So today's live summaries show at least 6 known wrong labels in 18 answers, about 2% of
-the facts they show; the study's checks were targeted, so that is a floor. The verifier
-catches most of them, but it would also drop nearly half of the right facts, so it can't
-yet filter the live summaries. Next: raise what it confirms among the right facts, while
-the 6 known errors stay refused, measured on this replay and then on releases it was never
-tuned on.
-
-### Fewer right facts refused (Nov 16, v0.21.44, measured, offline)
-
-The replay now names, for each refused fact, why the passage the answer quoted refused it
-(before, a refusal listed every reason from every passage holding the number). In 241 of
-the 299 refusals one reason decides, and the largest was "metric is absent from the cited
-claim clause" (112): right facts phrased in ways the binder didn't read. The fixes are
-general, not per issuer:
-
-- **Ranges:** "$2.649 - $2.653 billion" read as $2.649 and minus $2.653 billion. A dash right
-  after an amount now separates a range, and a scale written once at the end applies to both
-  ends ("$(1.2)-$(1.3)B" too). A minus anywhere else stays.
-- **The measure after "of":** "Closed $1.463 billion of U.S. commercial TCV", "repurchased
-  $110.0 million of stock". As with "in", the phrase must be exactly the measure; a claimed
-  word it leaves out must be the verb just before the number, and a verb that makes the
-  amount a part ("Cloud accounted for $4.5 billion of revenue") binds nothing; that gap was
-  open for "in" too. A name ending in its verb ("Total contract value closed") also matches
-  the release's verb-first order.
-- **Spelling:** prefixes releases fuse ("pre-tax" and "Pretax", "e-commerce") are one word;
-  other hyphens stay apart ("ex-fuel" and "ex. fuel"). "SG&A" and "R&D" are one word. A list of
-  footnote marks ("LTM12,13") is dropped, and an amount glued to a currency code ("EUR1.2
-  billion") is no longer read as a footnote.
-- **Abbreviations:** a measure's abbreviation the release defines ("Free cash flow (FCF)")
-  names that measure, except where it is defined; MAU and DAU are monthly and daily active
-  users.
-- **Groups:** a group that repeats the measure ("Total net interest income") is no segment. A
-  category the release never says ("Backlog", "Customer balances") is dropped from a fact
-  the model doesn't call a segment; a segment, or a group with the issuer's name in it
-  ("Acme Analytics"), must still be established. A segment is found in any form
-  ("Commissions" in "Commission revenue") and without filler words ("U.S. total" is U.S.).
-- **Labels kept, not lost.** Two held-out values bound only once their group was handled,
-  and both exposed a display error that the old refusal had hidden by accident:
-  - Visa's payments volume grew 9% on a constant-dollar basis and was shown as "+9% YoY". A
-    constant-dollar label is now kept and shown, and a growth rate the source calls
-    currency-neutral is refused when the claim isn't, the same rule as for adjusted values.
-  - Booking's free cash flow was claimed in the unit "free cash flow" and shown as "1.1B".
-    An amount the source writes with a currency sign is shown as money ("$1.1B").
-
-| Set (Ember-low answers) | Before | After |
-|---|---|---|
-| Live facts, Nov 12 (the 619 of the replay above): refused | 299 | 262 |
-| Development, the six of Nov 13: values kept | 78/184 | 85/184 |
-| Held out, 16 releases never used for tuning | 148/398 | 163/398 |
-| Unseen issuers KO, MCO, ETN, BSX, 60 answers | 790/1,869 | 800/1,869 |
-
-- **No known error kept.** All 7 known wrong facts above stay refused.
-- **Every newly kept value was read against its passage:** the 38 live facts and the 32
-  values of the other sets. None was wrong. The unseen study's frozen known-value checks find
-  0 wrong among 279 checked values (272 before).
-- **One right fact lost:** Chipotle's 0.8% increase in transactions, quoted without the
-  words "comparable restaurant" its metric names. It had bound only because the model's group
-  exempted those words. A group's words now never stand in for a measure's.
-- **What's still refused, by the quoted passage's reason:** the measure absent from the
-  clause (96: paraphrases such as "Net payout ratio" for "Net payout", "Share repurchases"
-  for "repurchased ... of stock", a segment named only in a heading above the text), the cell
-  not holding the value (42), the row not naming the measure (40, mostly tables whose
-  headers sit in a separate header table), and the number not in the quoted passage (34).
-- The held-out gain is smaller than the tuning set's, as expected. Retention is still below
-  what filtering the live summaries needs, so summaries stay Beta and reference mode stays
-  off. Reproduce: `scripts/verify_replay.py` (live facts, with the known-error check) and
-  `scripts/binding_replay.py` (the three reference sets, listing every kept value).
-
-### The gate for verified summaries, and headline facts (Nov 16, v0.21.45, measured)
-
-Zero refusals is not the goal. A refusal is right when a fact is wrong, computed by the
-model, or not supported by its quote, and dropping an unsupported secondary line also keeps a
-summary short. Verified summaries are ready to drop "Beta" when, on releases never used for
-tuning (the live streak's and later ones):
-
-1. **No wrong fact is shown.** Every kept value is read against its passage.
-2. **The headline facts survive:** revenue, EPS, guidance and the KPIs that move the stock.
-   The target is about 95% of the headline facts the live summary shows today.
-3. **No added delay.** Filtering the live answer runs locally, with no extra model call.
-
-Headline facts, the facts the live answers mark `headline`, were confirmed 81 of 106 times
-(76%); guidance 69 of 126 (55%). This round fixes the headline refusals that were binder
-gaps:
-
-- **A quarter announced without a year.** "Walmart reports second quarter results" gives no
-  year, so nothing set the reporting quarter, and Walmart's revenue and adjusted EPS were
-  refused. The announced quarter now takes the year the release reports.
-- **Glued bullets.** "$0.81 •Company issues guidance for Q3" put the outlook's Q3 in the EPS
-  clause; any bullet now starts a clause.
-- **Several quarters nearby.** When the text around an actual names more than one quarter
-  (the title's second quarter and the outlook's Q3), the release's reporting quarter decides.
-  Before, a Q3 label on Walmart's Q2 EPS passed.
-- **Comparable sales.** "Comparable restaurant sales increased 2.1%" states a growth measure's
-  value with a growth word; it was refused as a growth rate in an actual's slot. Such a rate
-  must also claim the currency basis the source gives it.
-- **A segment dropped from its value.** When the model quoted only a cell ("3.5%"), the
-  segment check looked for the segment in that quote instead of the row and the table's
-  header, dropped the group, and showed Walmart U.S. and Walmart International net sales
-  growth as the company's. On main, International's 12.8% was shown that way. Both now keep
-  their segment.
-- **Year-to-date labels need the source.** A six- or nine-month claim with no duration in
-  its passage is refused. Walmart's operating and free cash flow in a highlights list were
-  claimed as six months; the label was right, but nothing there said so, and a quarterly label
-  would have passed just as well.
-
-| Measure | v0.21.44 | v0.21.45 |
-|---|---|---|
-| Live facts confirmed, headline role | 81/106 (76%) | 88/106 (83%) |
-| Live facts refused (of 619) | 262 | 255 |
-| Development values kept | 85/184 | 91/184 |
-| Held-out values kept | 163/398 | 166/398 |
-| Unseen values kept | 800/1,869 | 800/1,869 |
-
-All 7 known wrong facts stay refused. Every newly kept value was read against its passage;
-none is wrong. Two right facts are now refused, Walmart's unlabeled year-to-date cash flows.
-Still refused among headline facts: values in tables whose layout the binder can't read
-(reconciliation columns, JPM's segment tables), JPM's "managed" revenue, and a group of the
-model's that the release uses elsewhere. Guidance (55%) is the next gap.
-
-### Guidance (Nov 16, v0.21.46, measured)
-
-Guidance facts of the live answers were confirmed 69 of 126 times (55%). The refusals were
-mostly guidance the binder couldn't read, fixed generally:
-
-- **The guidance word anywhere before the number.** Only the two words before a measure's
-  name were read, so "ASML expects Q4 2026 total net sales between..." and Adobe's "Targets
-  assume non-GAAP operating margin of ~44.0%" weren't guidance; "fourth-quarter" with a
-  hyphen wasn't a quarter.
-- **Bounds.** "In excess of" is "more than". A source's "approximately $1.2 billion" claimed
-  as "$1.2 billion" is shown as approximate; any other difference in a bound is refused.
-- **Guidance tables.** Walmart's "Net sales (cc) | Increase 3.0% to 3.75%" is a range of
-  increases (a "Decrease" cell isn't read, as its sign would be lost); the cell's "Increase"
-  says the rate is growth; a row marked "(cc)" must be claimed as constant currency. A
-  paragraph laid out across the table is no column header (its "Q3 FY26 figures" and "as of
-  August 20, 2026" had set the period) but does say the table is guidance.
-- **Earlier guidance.** A column headed "Original" or "Prior" is earlier guidance, never the
-  new: Walmart's "Original from 2.19.2026" 3.5% to 4.5% beside "As of 8.20.2026" 4.0% to
-  5.0%, Coca-Cola's "Current | Prior".
-- **The guidance's period.** The cited passage's own period decides, then the nearest heading
-  that has one ("For full year 2026:" below "For Q4 2026, we expect:"), never the release
-  title's "third quarter ... results". "Year ending December 31, 2026" is a year, not a
-  balance at its end.
-
-| Measure | v0.21.45 | v0.21.46 |
-|---|---|---|
-| Live facts confirmed, guidance role | 69/126 (55%) | 82/126 (65%) |
-| Live facts confirmed, headline role | 88/106 | 88/106 |
-| Live facts refused (of 619) | 255 | 237 |
-| Development values kept | 91/184 | 96/184 |
-| Held-out values kept | 166/398 | 173/398 |
-| Unseen values kept | 800/1,869 | 819/1,869 |
-
-All 7 known wrong facts stay refused, and no live fact was lost. Every newly kept value was
-read against its passage and column header; none is wrong (for example Walmart's full-year
-guidance binds from "As of 8.20.2026", its earlier range only as previous guidance, and
-Coca-Cola's "at least 5%" from "Current"). Still refused among guidance: Spotify's outlook
-table read from PDF text, DoorDash's table with the period in the row and the measure in the
-column, ServiceNow's margin rows labeled "Income from operations", and guidance without a
-number ("low single digit range").
-
-### Headline facts reach the gate on this replay (Nov 16, v0.21.47, measured)
-
-Of 106 headline facts in the live answers, 2 are wrong claims the verifier must refuse
-(Duolingo's users in USD, ASML's net income given as a bare "4960"). The other 104 were
-confirmed 88 times. Fixes, general:
-
-- **Segment tables.** JPMorgan titles them "Results for CIB | 2Q26 | 3Q25": "2Q26" now dates
-  a title row, the title's section counts as part of each row's name ("Net revenue" there is
-  CIB net revenue), and "Results for JPM", the issuer's own ticker, is the whole company (a
-  ticker given as "NYSE symbol: JPM" is now read). A group given with its abbreviation,
-  "Commercial & Investment Bank (CIB)", is named by either.
-- **Scales in column headers.** "Amount ($ millions)" and "($ millions, except per share
-  data)" state a scale; the header nearest above a value decides, as a table can restate
-  its headers in "$ billions" further down.
-- **Labels that name no segment.** A company's legal name ("JPMorgan Chase & Co."), a
-  reconciliation heading ("Non-GAAP adjustments"), and categories such as "Operating
-  Metrics" or "Balance sheet and liquidity".
-- **JPMorgan's managed basis** binds where the clause says it ("managed revenue of $50.9
-  billion"), never where it doesn't.
-- **A definition in parentheses** ("Operating margin (income from operations as a percentage
-  of total revenue)") is not part of the measure. One that qualifies the number ("excluding
-  litigation") or states numbers of its own stays required.
-- **Bank ratios.** ROTCE, ROE and CET1 are their long names, and count as measures, so "ROE
-  of 17% and ROTCE of 20%" can't give return on equity 20%.
-- **Safety:** "ROTCE of 21%, excluding discretionary investment securities losses" is not the
-  reported ROTCE (20%). A value the source states excluding items is refused unless the claim
-  says so.
-
-| Measure | v0.21.46 | v0.21.47 |
-|---|---|---|
-| Headline facts confirmed, of 104 right claims | 88 (85%) | 99 (95%) |
-| Live facts refused (of 619) | 237 | 221 |
-| Development / held-out / unseen values kept | 96 / 173 / 819 | 101 / 177 / 819 |
-
-All 7 known wrong facts stay refused; no live fact lost; every newly kept value read against
-its passage, row and column header. The 5 headline claims still refused: DoorDash's total
-orders under the model's group "Marketplace" (also the name of its measures), two JPM claims
-reworded beyond what the release supports ("excluding significant item"), JPM's ROTCE in a
-cell that holds two ratios, and Chipotle's "new" restaurant openings. Guidance stays at
-81 of 126 (64%); the 90% target needs the outlook tables of Spotify (PDF text), DoorDash
-(period in the row) and ServiceNow.
-
-### Guidance reaches the gate on this replay (Nov 16, v0.21.48, measured)
-
-Of 126 guidance facts in the live answers, 14 can't or shouldn't verify: guidance with no
-number ("low single digit range", "similar to Q3"), values given without a unit (ASML's
-"14.2-15.2"), a value folded together with the prior guidance ("~$12.0B vs $12.5B
-previously"), GE's backlog (an actual), and Chipotle's tax rate claimed without its "before
-discrete items". The other 112 were confirmed 81 times. Fixes, general:
-
-- **Prose forecasts.** A forecast's period is named up to its number and just after it, not
-  in the reasons that follow (Netflix's "...$12.0B ... due primarily to a real estate
-  transaction in Q4"); a forecast named by its year alone is the year's. Whether new
-  guidance is old is read before its number, as what follows belongs to the comparator
-  ("(vs. our prior projection of $12.5B)").
-- **Guidance words.** "Expectations" and "forward-looking"; a footnote mark glued to a word
-  ("1Targets assume") no longer hides it; "ad revenue" is advertising revenue.
-- **Outlook headings.** "For 2027, management is anticipating the following:" dates the list
-  below it, and an outlook heading stays in view below the rows of its table (Spotify's
-  "Outlook for Q4'26" above rows that each say "in the quarter"). A count names its measure
-  to the clause's end ("340 to 360 new company-owned restaurant openings in the U.S. and
-  Canada").
-- **Outlook tables.** A column header says what a rate is: "cRPO" under "Year/Year Growth
-  (%)" is cRPO growth, and "Income from operations" under "Margin (%)" is the operating
-  margin ("income from operations" is operating income). The header nearest a value decides
-  whether it is a constant-currency rate, as ServiceNow's margin rows sit below its constant
-  currency growth columns. A table with the period in the row and the measure in the column
-  (DoorDash's "Period | Marketplace GOV | Adjusted EBITDA") is read that way round.
-
-| Measure | v0.21.47 | v0.21.48 |
-|---|---|---|
-| Guidance confirmed, of 112 right claims | 81 (72%) | 104 (93%) |
-| Headline confirmed, of 104 right claims | 99 (95%) | 99 (95%) |
-| Live facts refused (of 619) | 221 | 191 |
-| Development / held-out / unseen values kept | 101 / 177 / 819 | 102 / 187 / 831 |
-
-All 7 known wrong facts stay refused, and no live fact was lost. Every newly kept value was
-read against its passage, row and column header; none is wrong (DoorDash's outlook binds to
-its own column and quarter, ServiceNow's cRPO growth to the reported, not the constant
-currency, column).
-
-**Where the gate stands.** On these replays both targets are met: 95% of right headline
-claims and 93% of right guidance claims, with no known wrong fact kept. That is the replay
-the rules were tuned on. Releases never used for tuning (the live streak's, from November
-17) decide whether it holds, and every value they keep is to be read before "Beta" is
-removed.
-
-### Generalizing beyond the tuned replay (Nov 16, v0.21.49, measured)
-
-The reference sets keep fewer values by role than the live replay (every value of a fact
-counts: current, prior year, growth). Headline values kept: held out 78/131 (60%), unseen
-280/456 (61%); guidance 28/53 and 133/375. This round was tuned only on the unseen issuers
-(KO, MCO, ETN, BSX) and only measured on the 16 held-out releases. Fixes, general:
-
-- **A unit written once in a range**: "Organic growth of 13-15%", "decline ... by
-  approximately (3.0) to (1.0) percent". A negative end's parenthesis between the ends no
-  longer breaks the range.
-- **A forecast rate stated as a change** ("net sales to decline ... by") is that measure's
-  growth guidance. A stated decline is never bound as a rise.
-- **Outlook cells with a breakdown** ("At least $13.0 billion, consisting of: ...", "9% to
-  10% growth, which includes: ..."); "Approx."; an EPS row's percentage is EPS growth;
-  "Current | Prior" guidance columns are versions, not periods.
-- **Periods written "2026Q3"**, and a growth's period with its comparison ("Q3 2026 vs Q3
-  2025").
-- **A comparison qualifier stated in any order and form**: "organic, constant currency" by
-  "on an organic constant currency basis"; "organic" by "organically".
-
-| Values kept, by role | Held out (not tuned) | Unseen (tuned on) | Live replay |
-|---|---|---|---|
-| Headline, before | 78/131 (60%) | 280/456 (61%) | 99/106 |
-| Headline, after | 82/131 (63%) | 328/456 (72%) | 99/106 |
-| Guidance, before | 28/53 (53%) | 133/375 (35%) | 104/126 |
-| Guidance, after | 29/53 (55%) | 309/375 (82%) | 107/126 |
-
-All 7 known wrong facts stay refused; no value was lost on any set; every newly kept value
-was read against its passage, row and column (Coca-Cola's guidance binds from "Current", its
-previous guidance from "Prior"; Eaton's full-year and fourth-quarter lists each to their own
-period). **The held-out set barely moved.** The unseen gains are mostly layouts those four
-issuers share with few others, so a release unlike any seen so far still keeps about 60% of
-its headline values. The live streak is the measure that decides.
-
 ## Live summaries (v0.13.0)
 
-`summary_bound_format.py` supplies the item 6 presentation path for `BindingReport`
+`summary_bound_format.py` supplies the reference-bound presentation path for `BindingReport`
 objects only. It formats separate structured values, retains range endpoints, units,
 currency, per-share precision and comparison qualifiers, and computes YoY only from
 verified comparable exact actuals. Percentage-level changes use basis points. Zero or
@@ -699,25 +371,9 @@ The model is told that each quoted source passage must contain every number it r
 releases, two runs each, that raised the figures the checker keeps from 61% to 84%, and
 headline figures from 45% to 84%.
 
-## Shorter model output (item 8, measured, not adopted)
-
-Dropping the hidden `relevance` rationale field from the live request was tested with Ember
-low on 20 saved releases, one call per variant ($0.11, November 13):
-
-| | Current request | Without `relevance` |
-|---|---|---|
-| Median / mean time | 5.21 s / 5.23 s | 4.79 s / 5.18 s |
-| Median output tokens | 3,836 | 3,344 (−13%) |
-| Facts the checker kept | 339 of 408 (83%) | 414 of 453 (91%) |
-
-The leaner request was faster on only 11 of the 20 releases (median paired saving 0.22 s), so
-a speed gain isn't established. It also changed selection: more facts, and more of them kept.
-Whether that makes better briefs is a quality judgment for the owner, so the request is
-unchanged.
-
 ## Prior-release driver profiles (opt-in)
 
-The [November 13 comparison](evaluation-2026-11-13.md) measured profiles, examples,
+The November 13 comparison measured profiles, examples,
 an internal check and one conditional repair on four new issuers, three runs each.
 Final coverage remains too low for default reference-writer activation.
 
@@ -747,78 +403,6 @@ separately from monitoring readiness.
 The switch defaults to false. No existing setting or running bot is changed. Its effect
 on selection, retention, latency and cost still requires the unseen-issuer comparison;
 implementation tests do not establish summary quality.
-
-## Offline research
-
-`summary_review.review_variant` prepares opt-in reference-request variants with the two
-owner-selected historical FICO/Uber examples and/or a short internal selection check.
-It preserves source evidence and the default request. `headline_repair_request` prepares
-one replacement request only when code rejects a headline or guidance value; malformed
-answers and accepted headlines do not automatically start another call. Callers must
-reserve its full cost, cap repairs at one, and bind the replacement against the original
-document again. These helpers make no calls and do not alter the live summary policy.
-
-Reference requests omit empty decorative table cells while retaining every nonempty
-cell's original ID, row, column and spans. The durable source document and verifier keep
-the full original geometry. This reduces redundant serialization without truncating
-release text or renumbering evidence. Existing size limits still reject oversized input.
-This became necessary during unseen-issuer preparation before any summary call; the
-original draft requests and policy were preserved for comparison.
-
-No API call is made by the offline evaluation commands.
-
-## What the feedback changed
-
-The blind feedback rounds informed a shared policy in `summary_policy.py`. The live writer's
-prompt imports it; future structured experiments must import it too. Muse Ember low is
-the preparation/evaluation default. Other providers require explicit experiment opt-in;
-routine Sonnet, Spark, Haiku and Opus calls are excluded. Adding a model requires a new
-blind evaluation, not an automatic failover that changes the quality or cost silently.
-
-| Feedback family | General rule | Enforcement |
-|---|---|---|
-| EPS versus operating profit/EBITDA | Choose the relevant profit measure from business context; no blanket EPS | Shared prompt; selection still needs evaluation |
-| Missing segments, subscription/fee streams, growth engines | Material revenue taxonomies and recurring streams; preserve scope | Shared prompt; never complete segments by finding any table ending in a total |
-| Missing volume, backlog, flagship growth | Preserve the leading operating KPI even without a revenue level | Shared prompt; annotated coverage evaluation |
-| Software capex missed; retailer cash overemphasized | Use capital intensity/cash burn as context for this quarter's story | Shared selection prompt; no automatic deletion gate |
-| Missing/computed YoY | Same metric, currency, unit, basis, scope and prior-year fiscal period | Bound renderer arithmetic; zero/negative priors omitted, margins use bps |
-| Reported versus adjusted comps; profit versus margin | Preserve table columns, exact exclusions and accounting basis | Table-parser regression; identity and arithmetic tests |
-| Q and FY outlooks looking identical | Guidance period must be explicit; previous guide differs from prior-year actual | Prompt and `evidence_issues`; no year/number-based inference |
-| Bare initiative names; material news omitted | Status/change/scale required; prioritize growth and cash-burn milestones | Prompt and bare-update check; importance requires review |
-| One-off EPS effects, investment marks, usage milestones | Explain material distortion; evaluate relevance to this business | Conditional prompt rules, no absolute sector/metric bans |
-| Too verbose | Be brief through selection, grouping and removal of repetition; no editorial word/line cap | Shared prompt; renderer retains all selected facts |
-| Call-only facts absent | Use a separately identified document when available; never invent it | Evidence checks plus human review; second-source ingestion not built here |
-
-The formatter preserves every model-selected fact. It has no editorial word/line limit,
-and no cash-profile or topic blacklist removes facts. Selection is contextual model work.
-Future requests include a fact role and relevance rationale for the audit; the displayed
-brief omits that audit reasoning. Historical capital-intensity data can be supplied as an
-advisory context signal, including its period, without deciding inclusion automatically.
-
-The code checks traceability and comparable arithmetic. They cannot prove that a cited
-sentence describes the chosen metric, that its units were read correctly, or that an
-initiative matters to the stock. The current live free-text writer does not yet consume
-structured facts or use these arithmetic helpers. It shares the selection prompt only.
-Do not describe these helpers as a complete live factual validator.
-
-## Round eight: what the preference votes establish
-
-The final nine-company votes favored Sonnet low 8–1; Ember won NET. These were preferences
-for the displayed briefs, not factual-accuracy judgments. Both models had MELI/BKNG operating
-KPIs in their raw output that the experimental 90-word formatter cut. Both included NET's
-restructuring; one display dropped it. The original votes and previews remain unchanged.
-
-The user explicitly rejected that word limit. All selected facts now survive rendering.
-Length follows the business and quarter; examples such as a cash balance, bond issue,
-restructuring charge or consolidated revenue must not become blanket topic bans. The model
-records why each selected fact matters here. Code handles faithful formatting, not semantic
-deletion. New batches show Discord-formatted message previews and accept ordinary chat feedback.
-
-Formatting defects were independent of selection: duplicated acronyms, `FYFY2026`, mixed
-periods and ranges that scaled only one endpoint. `summary_format.py` uses Decimal, retains
-exact range endpoints, canonicalizes explicit fiscal labels and leaves compound legacy
-measures unguessed with their unit metadata. It is used by the offline replay; the live
-free-text writer shares the updated selection prompt but has not adopted structured rendering.
 
 ## Evaluation protocol
 
@@ -927,23 +511,3 @@ opening it. Haiku is opt-in; code-only is included as a baseline.
 Do not edit source artifacts during a batch or overwrite a previous round's annotations.
 Commit general rules and small synthetic regressions. Keep complete release/model-output
 caches outside git; do not copy a scratchpad wholesale because it may contain API keys.
-
-### November 11 offline audit
-
-Replaying the saved `experiment7_all.json` against its latest annotations found 11 common
-issuer/run cases. After fixing punctuation and equivalent accounting-label matching,
-approximate editorial coverage was Sonnet 85%, Ember 82%, Haiku 76%, code-only 59%.
-The first replay undercounted measures such as `Revenue, Q3 2026` and `Adjusted (non-GAAP)
-Operating Earnings per share`; its Ember 73% and code-only 53% figures are superseded.
-This conservative matcher distinguishes amount/margin, adjusted/reported, actual/guidance,
-consolidated/segment revenue and word boundaries. It can undercount legitimate synonyms;
-it does not check values or whether all requested growth rates were supplied. These numbers
-are neither factual-accuracy scores nor a benchmark of the new policy. The cases were
-already used for feedback and are not an unseen holdout.
-
-Both LLMs missed the annotated Airbnb nights/bookings metrics. Code-only found none of its
-three must-have measures, and it incorrectly selected expense rows as Snap revenue segments.
-The replay flagged eight unlabeled code-only guides, plus bare LLM business updates and a
-missing source passage. The original grading's numeric-occurrence check could not establish
-metric/value correctness. Review those facts against their tables before treating any
-model's reported coverage as acceptable quality.

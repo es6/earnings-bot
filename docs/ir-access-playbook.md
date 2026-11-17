@@ -335,7 +335,7 @@ benchmark. Label unmatched benchmarks unknown. Renew evidence after site/API cha
 
 ## 10. Required case record and agent handoff
 
-Store sanitized artifacts under an explicitly ignored research directory, or attach a
+Store the case record and sanitized artifacts in `.context/` (git-ignored), or attach a
 small sanitized evidence report to the PR. Check ignore rules before writing raw captures.
 Do not commit cookies, credentials, authorization headers, personal browsing data, or raw
 HAR files containing them. Retain public response bodies needed to reproduce the issue.

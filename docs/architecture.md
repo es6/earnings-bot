@@ -914,7 +914,7 @@ bound-result evidence by document/attempt in SQLite, and logs its validation mod
 The default checker and deployed bot remain unchanged by adding the opt-in path.
 
 [Summary handling](summaries.md) records the feedback rules, optional issuer profiles and
-offline commands. The [November 13 comparison](evaluation-2026-11-13.md) separates selection,
+offline commands. The November 13 comparison separates selection,
 known-value checks, retention, consistency, latency and cost. Summaries remain beta; the
 experiment does not establish all-claims accuracy or default reference-writer readiness.
 
