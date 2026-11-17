@@ -337,3 +337,33 @@ def test_chrome_may_open_any_public_https_page(url: str) -> None:
 def test_chrome_never_opens_this_pc_or_its_network(url: str) -> None:
     with pytest.raises(ValueError, match="Not a public https page"):
         browser_host(url)
+
+
+async def test_closing_chrome_survives_a_tab_opened_while_a_socket_closes() -> None:
+    """Nov 16: a research request opened a tab while close() awaited each socket, and the live
+    dict's "changed size during iteration" stopped the bot's schedule."""
+    chrome = DesktopChrome()
+    closed: list[str] = []
+
+    class Session:
+        async def close(self) -> None:
+            closed.append("session")
+
+    class Socket:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        async def close(self) -> None:
+            await asyncio.sleep(0)
+            closed.append(self.name)
+            if self.name == "listing":  # a request still running opens its tab now
+                chrome._tabs["late"] = _Tab("late", Socket("late"))  # type: ignore[arg-type]
+
+    chrome._session = Session()  # type: ignore[assignment]
+    chrome._tabs[HOST] = _Tab("listing", Socket("listing"))  # type: ignore[arg-type]
+    chrome._tabs[HOST + URGENT_LANE] = _Tab("urgent", Socket("urgent"))  # type: ignore[arg-type]
+
+    await chrome.close()
+
+    assert closed == ["listing", "urgent", "late", "session"]
+    assert not chrome._tabs and chrome._session is None

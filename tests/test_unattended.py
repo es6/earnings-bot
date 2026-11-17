@@ -868,3 +868,20 @@ async def test_status_names_a_degraded_route_while_its_window_is_open(
     assert refused in text
     assert "Degraded: SEC" not in text
     assert embed.color is not None and embed.color.value == AMBER
+
+
+async def test_a_failure_closing_chrome_never_stops_the_schedule(tmp_path: Path) -> None:
+    class BrokenClose(RoutedFetcher):
+        async def close_browser(self) -> None:
+            raise RuntimeError("dictionary changed size during iteration")
+
+    fetcher = BrokenClose({})
+    out = io.StringIO()
+    journal = Journal(out)
+    releases = Releases(FakePoster, fetcher, journal, None)
+    with DeliveryStore(tmp_path / "state.db", 7) as store:
+        watcher = unattended.DirectoryWatcher(tmp_path, fetcher, journal, releases, store, print)
+
+        await watcher.scan()
+
+    assert '"browser_close_error"' in out.getvalue()
