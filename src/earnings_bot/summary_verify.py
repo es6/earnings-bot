@@ -54,13 +54,19 @@ _QUALIFIERS = (
     (("less than", "under ", "below", "<"), "less_than"),
     (("up to", "at most"), "at_most"),
 )
+# A tolerance around one value, not a second value: NVIDIA's "$54.0 billion, plus or minus 2%"
+_TOLERANCE = re.compile(
+    r",?\s*(?:plus or minus|\+/-|\+/−|±)\s*[$€£¥]?\s*\d[\d,]*(?:\.\d+)?\s*"
+    r"(?:%|percent\b|basis points?\b|bps?\b|trillion\b|billion\b|million\b|[tbmk](?![a-z]))?",
+    re.IGNORECASE,
+)
 ROLES = {"headline", "driver", "guidance", "material_context", "update", "supporting"}
 SLOTS = ("current_actual", "new_guidance", "reported_growth", "prior_year_actual")
 
 
 def parse(text: str) -> tuple[str, str | None, str, str] | None:
     """Amount, range end, scale and qualifier of a live value such as "$6.76 billion"."""
-    text = text.strip()
+    text = _TOLERANCE.sub("", text).strip()
     lowered = text.casefold()
     qualifier = next(
         (name for words, name in _QUALIFIERS if any(w in lowered for w in words)), "exact"
@@ -100,11 +106,12 @@ def parse(text: str) -> tuple[str, str | None, str, str] | None:
 def _several(value: str) -> bool:
     """Whether a value states more amounts than it is read as: not one, nor one range."""
     parsed = parse(value)
-    stated = len(_NUMBER.findall(value))
+    stated = len(_NUMBER.findall(_TOLERANCE.sub("", value)))
     return parsed is not None and stated > (2 if parsed[1] is not None else 1)
 
 
 def unit_of(fact: SummaryFact, value: str) -> str:
+    value = _TOLERANCE.sub("", value)  # "$108.0 billion, plus or minus 2%" is money
     text = f"{value} {fact.unit}".casefold()
     if "bps" in text or "basis point" in text:
         return "bps"
@@ -283,6 +290,35 @@ def main_slot(kept: dict[str, bool]) -> str:
     return next((s for s in ("new_guidance", "current_actual") if s in kept), "reported_growth")
 
 
+def _unscaled(fact: SummaryFact, value: str) -> bool:
+    """Money copied from a table without the table's scale: "$96,221" in a table "in millions"."""
+    parsed = parse(value)
+    return (
+        parsed is not None
+        and parsed[2] == "one"
+        and unit_of(fact, value) == "money"
+        and abs(Decimal(parsed[0])) >= 1000
+    )
+
+
+def _rescaled(
+    fact: SummaryFact, document: SourceDocument
+) -> tuple[SummaryFact, dict[str, bool], dict[str, list[str]]] | None:
+    """The fact with its table's scale written in, if the binder confirms its main value at that
+    scale. The binder checks the scale against the table's own caption or header, so a scale the
+    table doesn't state can't pass."""
+    for scale in ("million", "thousand", "billion"):
+        trial = replace(
+            fact,
+            value=f"{fact.value.strip()} {scale}",
+            prior=f"{fact.prior.strip()} {scale}" if _unscaled(fact, fact.prior) else fact.prior,
+        )
+        kept, reasons = check(trial, document)
+        if kept.get(main_slot(kept)):
+            return trial, kept, reasons
+    return None
+
+
 def verify_facts(
     facts: list[SummaryFact], document: SourceDocument
 ) -> tuple[list[SummaryFact], list[str]]:
@@ -291,7 +327,8 @@ def verify_facts(
     value shows the release's own sentence, which the quote check has already matched."""
     shown: list[SummaryFact] = []
     dropped: list[str] = []
-    for fact in facts:
+    for given in facts:
+        fact = given  # replaced below if it's confirmed at its table's scale
         if fact.kind == "update" and not fact.value.strip():
             shown.append(fact)
             continue
@@ -301,6 +338,12 @@ def verify_facts(
             dropped.append(f"{fact.metric}: several values in one fact")
             continue
         kept, reasons = check(fact, document)
+        if (
+            not kept.get(main_slot(kept))
+            and _unscaled(fact, fact.value)
+            and (rescaled := _rescaled(fact, document))
+        ):
+            fact, kept, reasons = rescaled
         if not kept:
             if not re.search(r"\d", f"{fact.value} {fact.change} {fact.prior}"):
                 # No number to mislabel ("low single digit range", a strategy update): the
