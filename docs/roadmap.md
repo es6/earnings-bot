@@ -149,8 +149,8 @@ US. Today the repository is `earnings-bot`, the Discord application shows as "In
 Earnings", and nothing has a logo; renaming before 1.0 is cheaper than after other people run
 copies.
 
-Checked on Nov 16: `firstprint` and `first-print` are free on PyPI; the repository can be
-`es6/firstprint`; firstprint.com, .app and .dev are registered by others; a web search found no
+Checked on Nov 16: `firstprint` and `first-print` are free on PyPI; the repository will be
+`es6/first-print` (free); firstprint.com, .app and .dev are registered by others; a web search found no
 finance product or trademark by the name (the USPTO database was not searched directly).
 
 The sizes, each including the one before:
@@ -173,8 +173,8 @@ Plan:
 - **Logo:** a mark readable at Discord's 32 px avatar size, such as a bold "1" or a
   candlestick that doubles as a lightning bolt.
 - **After the streak (Nov 20), before the international work:** the repository rename, then
-  the package `firstprint`, the commands (`firstprint`, `firstprint-record`,
-  `firstprint-replay`), the Docker image and the Task Scheduler tasks (with the owner's yes),
+  the package `first_print`, the commands (`first-print`, `first-print-record`,
+  `first-print-replay`), the Docker image and the Task Scheduler tasks (with the owner's yes),
   in one PR outside a release window. The deploy script pulls from the renamed remote.
 
 ## Order of work
