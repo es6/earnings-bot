@@ -4,12 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from earnings_bot.config import Settings
-from earnings_bot.delivery import DeliveryStore
-from earnings_bot.pipeline import Release
-from earnings_bot.recorder import Journal
-from earnings_bot.source_document import document_from_text
-from earnings_bot.summary import SummaryError, summarizer_from
+from first_print.config import Settings
+from first_print.delivery import DeliveryStore
+from first_print.pipeline import Release
+from first_print.recorder import Journal
+from first_print.source_document import document_from_text
+from first_print.summary import SummaryError, summarizer_from
 from tests.builders import fact, ir_sighting, uber, value
 from tests.fakes import FakePoster, fetcher, summarizer_answering
 
@@ -97,7 +97,7 @@ async def test_reference_result_survives_pipeline_persistence_and_restart_withou
     async def released(*args: object, **kwargs: object):
         return DOCUMENT
 
-    monkeypatch.setattr("earnings_bot.pipeline.release_document", released)
+    monkeypatch.setattr("first_print.pipeline.release_document", released)
     writer, asked = summarizer_answering("end_turn", candidate())
     writer.references = True
     db = tmp_path / "state.db"

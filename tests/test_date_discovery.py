@@ -7,11 +7,11 @@ from typing import Any
 
 import pytest
 
-from earnings_bot import date_discovery, ir_research
-from earnings_bot.browser import RenderedPage
-from earnings_bot.browser_sources import IRSource, QuarterlyTable
-from earnings_bot.calendar import Calendar, Tracked, describe, manual_target
-from earnings_bot.date_discovery import (
+from first_print import date_discovery, ir_research
+from first_print.browser import RenderedPage
+from first_print.browser_sources import IRSource, QuarterlyTable
+from first_print.calendar import Calendar, Tracked, describe, manual_target
+from first_print.date_discovery import (
     CALENDAR_6K_DATE,
     CALENDAR_DATE,
     FMP_EARNINGS,
@@ -24,16 +24,16 @@ from earnings_bot.date_discovery import (
     rendered_date,
     timed_by_publishers,
 )
-from earnings_bot.delivery import DeliveryStore
-from earnings_bot.fetch import Fetcher, Response
-from earnings_bot.investigate import INVESTIGATION
-from earnings_bot.ir_pages import Moment, moments
-from earnings_bot.ir_research import IR_LISTINGS
-from earnings_bot.issuers import profile
-from earnings_bot.known import SourceCheck, known_companies, to_target
-from earnings_bot.recorder import ET, Target
-from earnings_bot.source_audit import Speed, Timing
-from earnings_bot.sources import EdgarFilings
+from first_print.delivery import DeliveryStore
+from first_print.fetch import Fetcher, Response
+from first_print.investigate import INVESTIGATION
+from first_print.ir_pages import Moment, moments
+from first_print.ir_research import IR_LISTINGS
+from first_print.issuers import profile
+from first_print.known import SourceCheck, known_companies, to_target
+from first_print.recorder import ET, Target
+from first_print.source_audit import Speed, Timing
+from first_print.sources import EdgarFilings
 from tests.brookfield_data import (
     BN_NOW,
     CIK,
@@ -1217,7 +1217,7 @@ async def test_saved_bn_profile_is_enriched_and_scheduled_from_issuer_notice(
 async def test_klarna_style_results_exhibit_leads_to_issuer_q4_notice(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("earnings_bot.date_discovery.chrome_available", lambda: False)
+    monkeypatch.setattr("first_print.date_discovery.chrome_available", lambda: False)
     cik = 2003292
     accession = "0001628280-26-057573"
     path = f"/Archives/edgar/data/{cik}/{accession.replace('-', '')}"

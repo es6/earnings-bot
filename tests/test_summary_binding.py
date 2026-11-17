@@ -6,14 +6,14 @@ from typing import Any
 
 import pytest
 
-from earnings_bot.source_document import (
+from first_print.source_document import (
     SourceDocument,
     SourceTable,
     document_from_html,
     document_from_text,
 )
-from earnings_bot.summary_binding import bind_answer, bind_brief
-from earnings_bot.summary_evidence import parse_referenced_brief
+from first_print.summary_binding import bind_answer, bind_brief
+from first_print.summary_evidence import parse_referenced_brief
 from tests.builders import TABLE, fact, value
 
 

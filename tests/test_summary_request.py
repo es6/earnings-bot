@@ -1,7 +1,7 @@
 import pytest
 
-from earnings_bot.summary_policy import DEFAULT_COMPARISON, EMBER
-from earnings_bot.summary_request import structured_request
+from first_print.summary_policy import DEFAULT_COMPARISON, EMBER
+from first_print.summary_request import structured_request
 
 NOW = "ServiceNow Q3 2026 revenue was $4.11B."
 

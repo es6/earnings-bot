@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import discord
 import pytest
 
-from earnings_bot import __main__ as entry
+from first_print import __main__ as entry
 
 
 @pytest.fixture
@@ -18,7 +18,7 @@ def started(
     for name in ("DISCORD_CHANNEL_ID", "DISCORD_STATUS_CHANNEL_ID", "SEC_USER_AGENT"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("DISCORD_TOKEN", "not-a-real-token")
-    monkeypatch.setattr(sys, "argv", ["earnings-bot", str(tmp_path)])
+    monkeypatch.setattr(sys, "argv", ["first-print", str(tmp_path)])
     monkeypatch.setattr(entry, "configure_console", lambda: None)
     monkeypatch.setattr(discord.utils, "setup_logging", lambda **kwargs: None)
     runs: list[tuple[object, dict[str, object]]] = []
@@ -61,7 +61,7 @@ def test_a_schedule_file_that_cant_be_read_stops_the_bot_before_it_starts(
     monkeypatch.setenv("SEC_USER_AGENT", "Jane Doe jane@example.com")
     broken = tmp_path / "today.toml"
     broken.write_text("this is = = not toml", encoding="utf-8")
-    monkeypatch.setattr(sys, "argv", ["earnings-bot", str(broken)])
+    monkeypatch.setattr(sys, "argv", ["first-print", str(broken)])
 
     with pytest.raises(SystemExit) as stopped:
         entry.main()
@@ -79,7 +79,7 @@ def test_the_bot_says_when_live_summaries_are_off(
     monkeypatch.setenv("SEC_USER_AGENT", "Jane Doe jane@example.com")
     monkeypatch.setenv("LIVE_SUMMARIES", "false")
 
-    with caplog.at_level(logging.INFO, logger="earnings_bot"):
+    with caplog.at_level(logging.INFO, logger="first_print"):
         entry.main()
 
     assert "Live summaries are off" in caplog.text

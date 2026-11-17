@@ -2,8 +2,8 @@ from datetime import datetime
 
 import pytest
 
-from earnings_bot.browser_sources import BrowserRelease
-from earnings_bot.formatting import (
+from first_print.browser_sources import BrowserRelease
+from first_print.formatting import (
     bullets,
     clock,
     duration,
@@ -11,8 +11,8 @@ from earnings_bot.formatting import (
     source_label,
     watch_list,
 )
-from earnings_bot.recorder import ET
-from earnings_bot.sources import PR_NEWSWIRE_EARNINGS, EdgarFilings, EdgarLatest, RssFeed
+from first_print.recorder import ET
+from first_print.sources import PR_NEWSWIRE_EARNINGS, EdgarFilings, EdgarLatest, RssFeed
 
 
 @pytest.mark.parametrize(

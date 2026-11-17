@@ -9,16 +9,16 @@ from typing import Any
 
 import pytest
 
-from earnings_bot import track_test
-from earnings_bot.calendar import Calendar
-from earnings_bot.date_discovery import DateDiscovery
-from earnings_bot.delivery import DeliveryStore
-from earnings_bot.investigate import due
-from earnings_bot.issuers import Issuers
-from earnings_bot.known import KnownCompany, known_companies
-from earnings_bot.recorder import ET, Target
-from earnings_bot.source_audit import Speed
-from earnings_bot.track_test import (
+from first_print import track_test
+from first_print.calendar import Calendar
+from first_print.date_discovery import DateDiscovery
+from first_print.delivery import DeliveryStore
+from first_print.investigate import due
+from first_print.issuers import Issuers
+from first_print.known import KnownCompany, known_companies
+from first_print.recorder import ET, Target
+from first_print.source_audit import Speed
+from first_print.track_test import (
     FOUND,
     MISSING,
     UNSURE,
@@ -181,7 +181,7 @@ def test_saved_reports_keep_the_last_twenty_per_symbol(tmp_path: Path) -> None:
 async def test_research_investigates_a_catalog_company_only_in_a_test_calendar(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, catalog: bool
 ) -> None:
-    from earnings_bot import date_discovery
+    from first_print import date_discovery
 
     monkeypatch.setattr(date_discovery, "chrome_available", lambda: False)
     investigated: list[str] = []

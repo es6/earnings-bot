@@ -9,10 +9,10 @@ from typing import cast
 
 import pytest
 
-from earnings_bot import clock, fetch, recorder
-from earnings_bot.clock import Sample
-from earnings_bot.fetch import Response
-from earnings_bot.recorder import (
+from first_print import clock, fetch, recorder
+from first_print.clock import Sample
+from first_print.fetch import Response
+from first_print.recorder import (
     ET,
     Journal,
     Polls,
@@ -26,7 +26,7 @@ from earnings_bot.recorder import (
     sync_clock,
     watch,
 )
-from earnings_bot.sources import GuessedFile, GuessedPage, RssFeed, Sighting, Source
+from first_print.sources import GuessedFile, GuessedPage, RssFeed, Sighting, Source
 from tests.fakes import CompanyFeed, FakeFetcher, ListSource, PinnedClock, RoutedFetcher
 
 

@@ -4,15 +4,15 @@ from pathlib import Path
 
 import pytest
 
-from earnings_bot.browser_sources import IRSource, QuarterlyTable
-from earnings_bot.calendar import Calendar, manual_target, upcoming
-from earnings_bot.delivery import DeliveryStore
-from earnings_bot.fetch import Response
-from earnings_bot.ir_research import IR_LISTINGS, quarter_headline
-from earnings_bot.issuers import profile
-from earnings_bot.known import known_companies, to_target
-from earnings_bot.recorder import ET, Target, Trial
-from earnings_bot.sources import PR_NEWSWIRE_EARNINGS
+from first_print.browser_sources import IRSource, QuarterlyTable
+from first_print.calendar import Calendar, manual_target, upcoming
+from first_print.delivery import DeliveryStore
+from first_print.fetch import Response
+from first_print.ir_research import IR_LISTINGS, quarter_headline
+from first_print.issuers import profile
+from first_print.known import known_companies, to_target
+from first_print.recorder import ET, Target, Trial
+from first_print.sources import PR_NEWSWIRE_EARNINGS
 from tests.builders import AMAT
 from tests.sec_data import LCID_CIK, LCID_SUBMISSIONS
 

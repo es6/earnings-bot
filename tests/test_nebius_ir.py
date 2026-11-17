@@ -8,16 +8,16 @@ from pathlib import Path
 
 import pytest
 
-from earnings_bot import date_discovery, ir_research
-from earnings_bot.browser_sources import BrowserRelease
-from earnings_bot.calendar import Calendar, Tracked
-from earnings_bot.date_discovery import DateDiscovery
-from earnings_bot.delivery import DeliveryStore
-from earnings_bot.issuers import profile
-from earnings_bot.known import KnownCompany
-from earnings_bot.pipeline import Releases
-from earnings_bot.recorder import ET, Journal, Target, poll
-from earnings_bot.source_audit import audit_sources
+from first_print import date_discovery, ir_research
+from first_print.browser_sources import BrowserRelease
+from first_print.calendar import Calendar, Tracked
+from first_print.date_discovery import DateDiscovery
+from first_print.delivery import DeliveryStore
+from first_print.issuers import profile
+from first_print.known import KnownCompany
+from first_print.pipeline import Releases
+from first_print.recorder import ET, Journal, Target, poll
+from first_print.source_audit import audit_sources
 from tests.builders import sec_filing_detail
 from tests.fakes import BrowserFake, FakePoster, RoutedFetcher
 

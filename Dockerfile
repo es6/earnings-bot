@@ -27,4 +27,4 @@ ENV PATH="/app/.venv/bin:$PATH" \
     EARNINGS_BOT_REVISION=$EARNINGS_BOT_REVISION
 USER bot
 WORKDIR /home/bot
-CMD ["earnings-bot"]
+CMD ["first-print"]

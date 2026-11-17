@@ -8,10 +8,10 @@ from typing import Any
 
 import pytest
 
-from earnings_bot import globe_frontier, recorder, unattended
-from earnings_bot.delivery import DeliveryStore
-from earnings_bot.fetch import Fetcher, Response
-from earnings_bot.globe_frontier import (
+from first_print import globe_frontier, recorder, unattended
+from first_print.delivery import DeliveryStore
+from first_print.fetch import Fetcher, Response
+from first_print.globe_frontier import (
     Frontier,
     GlobeBatch,
     Page,
@@ -21,8 +21,8 @@ from earnings_bot.globe_frontier import (
     run_batch,
     spans,
 )
-from earnings_bot.pipeline import Releases
-from earnings_bot.recorder import ET, Journal, Target, Trial
+from first_print.pipeline import Releases
+from first_print.recorder import ET, Journal, Target, Trial
 from tests.fakes import FakePoster
 
 FRIDAY = datetime(2026, 11, 20, 7, tzinfo=ET)

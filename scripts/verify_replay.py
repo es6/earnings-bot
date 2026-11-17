@@ -18,15 +18,15 @@ import json
 from collections import Counter
 from pathlib import Path
 
-from earnings_bot.source_document import SourceDocument, document_from_html, document_from_text
-from earnings_bot.summary_binding import bind_brief
-from earnings_bot.summary_evidence import (
+from first_print.source_document import SourceDocument, document_from_html, document_from_text
+from first_print.summary_binding import bind_brief
+from first_print.summary_evidence import (
     ReferencedFact,
     UnverifiedBrief,
 )
-from earnings_bot.summary_policy import SummaryFact
-from earnings_bot.summary_validation import validate_facts
-from earnings_bot.summary_verify import SLOTS, candidate
+from first_print.summary_policy import SummaryFact
+from first_print.summary_validation import validate_facts
+from first_print.summary_verify import SLOTS, candidate
 
 RUNS = ("ember-effort-2026-11-12", "ember-fresh-effort-2026-11-12")
 # Wrong facts the live checker shows (docs/summaries.md): Netflix's 12% reported growth labeled

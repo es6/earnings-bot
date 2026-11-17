@@ -2,7 +2,7 @@
 
 The owner's requirement (Nov 15, 2026): run the whole `/track` process over and over, fixing
 what it gets wrong in a feedback loop with Claude, until a fresh run gets every needed fact
-right on the first try. Built in v0.21.28 for US tickers ([track_test.py](../src/earnings_bot/track_test.py)).
+right on the first try. Built in v0.21.28 for US tickers ([track_test.py](../src/first_print/track_test.py)).
 It's Phase 0 of [international.md](international.md). Each international phase adds its own
 facts to the report and its answer keys.
 
@@ -49,7 +49,7 @@ It changes nothing live:
 The same run works without Discord, for one ticker or a batch:
 
 ```
-uv run python -m earnings_bot.track_test NVDA LCID --out schedules
+uv run python -m first_print.track_test NVDA LCID --out schedules
 ```
 
 It prints each checklist and, for tickers with answer keys, how many were one-shot. Unlike

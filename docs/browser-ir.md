@@ -155,5 +155,5 @@ An exact PDF URL can redirect to a generic page before publication. Chrome
 stops at the redirect and keeps the tab warm for the next check.
 
 ```powershell
-uv run earnings-bot-record schedules/<day>.toml
+uv run first-print-record schedules/<day>.toml
 ```

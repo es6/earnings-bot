@@ -1,13 +1,13 @@
 from dataclasses import replace
 
-from earnings_bot.summary import EFFORT, MODEL
-from earnings_bot.summary_policy import (
+from first_print.summary import EFFORT, MODEL
+from first_print.summary_policy import (
     DEFAULT_COMPARISON,
     EMBER,
     SummaryFact,
     evidence_issues,
 )
-from earnings_bot.summary_request import structured_request
+from first_print.summary_request import structured_request
 
 
 def test_default_writer_and_comparison_follow_the_selected_models() -> None:

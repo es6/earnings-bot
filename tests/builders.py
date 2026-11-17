@@ -5,19 +5,19 @@ import json
 from datetime import UTC, date, datetime
 from typing import Any
 
-from earnings_bot.browser_sources import BrowserPDF
-from earnings_bot.driver_profile import (
+from first_print.browser_sources import BrowserPDF
+from first_print.driver_profile import (
     parse_profile,
 )
-from earnings_bot.fetch import Response
-from earnings_bot.investigate import INVESTIGATION
-from earnings_bot.issuers import profile
-from earnings_bot.known import KnownCompany, SourceCheck
-from earnings_bot.publication_trials import TrialPlan
-from earnings_bot.recorder import ET, Target
-from earnings_bot.source_audit import Speed, Timing
-from earnings_bot.source_document import document_from_html
-from earnings_bot.sources import (
+from first_print.fetch import Response
+from first_print.investigate import INVESTIGATION
+from first_print.issuers import profile
+from first_print.known import KnownCompany, SourceCheck
+from first_print.publication_trials import TrialPlan
+from first_print.recorder import ET, Target
+from first_print.source_audit import Speed, Timing
+from first_print.source_document import document_from_html
+from first_print.sources import (
     Q4PressReleases,
     Sighting,
 )

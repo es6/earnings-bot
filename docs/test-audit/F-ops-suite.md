@@ -1,6 +1,6 @@
 # Test audit F: ops/support modules (part 1) and suite-wide practice (part 2)
 
-Repo es6/earnings-bot at origin/main 0dc9d97 (v0.21.35). Every number below is MEASURED in this
+Repo es6/first-print at origin/main 0dc9d97 (v0.21.35). Every number below is MEASURED in this
 worktree on Windows 10, Python 3.13, 32 logical CPUs, unless marked "read" (from reading code).
 Git status is clean at the end; every mutation was reverted by the harness (try/finally rewrite of
 the original text).
@@ -292,7 +292,7 @@ collapses them to **74**. Breakdown of the 1039 by category and source:
   `.venv/Lib/site-packages/discord/utils.py:1010: 'count' is passed as positional argument`
   (discord.py 2.7 calling `re.sub(regex, replacement, text, 0, re.MULTILINE)` on Python 3.13).
   Third-party. Triggered by our `discord.utils.escape_markdown` call at
-  src/earnings_bot/pipeline.py:615. By module: test_pipeline 929, test_unattended 62,
+  src/first_print/pipeline.py:615. By module: test_pipeline 929, test_unattended 62,
   test_burst_replay 15, test_browser_sources 15, test_release_timeout_replay 6,
   test_track_progress 3, test_nebius_ir 3, test_tracking_commands 2, test_referenced_writer 2,
   test_servers 1, test_source_document_flow 1.
@@ -388,7 +388,7 @@ Current `[tool.pytest.ini_options]`: `testpaths`, `asyncio_mode = "auto"`,
 - `xfail_strict = true`. Zero xfails exist now (measured), so it is free insurance.
 - `filterwarnings = ["error", "ignore:'count' is passed as positional:DeprecationWarning:discord.utils"]`
   (plus `error::ResourceWarning` after fixing the 11 leaks). The current setup lets 1039 warnings
-  scroll past unseen. At minimum `error::DeprecationWarning:earnings_bot`.
+  scroll past unseen. At minimum `error::DeprecationWarning:first_print`.
 - `--import-mode=importlib`: tests rely on `tests/__init__.py` and `from tests.x import` (read);
   importlib mode works only with `pythonpath = ["."]` and forbids cross-test-module imports, which
   is the right pressure to move helpers into non-test modules. Do this after the helper move.
@@ -412,7 +412,7 @@ Experiments (measured):
   serial, 29 s with xdist, so a whole-package run is too slow). Targeted runs on pure modules
   (release_band, text, formatting, clock, restart, config, watchdog) with `-n auto` are
   realistic. My 39 manual mutations found 12 survivors in 13 files, which suggests a periodic
-  mutmut run on `src/earnings_bot/{release_band,text,watchdog,config,formatting}.py` would pay
+  mutmut run on `src/first_print/{release_band,text,watchdog,config,formatting}.py` would pay
   off. mutmut 3 on Windows needs WSL or a Linux runner (it uses fork); run in a scheduled
   Linux CI job.
 - Hypothesis/property tests: **none** (zero imports, measured). Parsing code is the natural fit:
@@ -455,7 +455,7 @@ What CI misses:
    run (`uv lock --upgrade` canary: discord.py/aiohttp/pydantic break things first).
 7. Windows job does not run lint/pyright (platform-specific type branches such as ctypes code
    are only type-checked on Linux).
-8. The Docker image is never smoke-tested (e.g. `earnings-bot --version`).
+8. The Docker image is never smoke-tested (e.g. `first-print --version`).
 9. Single Python version (3.13), which matches `requires-python >=3.13`; fine, but add the next
    version as an allowed-failure canary.
 

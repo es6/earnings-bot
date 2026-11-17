@@ -1,10 +1,10 @@
 # Thursday, November 5, 2026. Times are US Eastern.
 #
-#   uv run earnings-bot schedules/2026-11-05.toml
+#   uv run first-print schedules/2026-11-05.toml
 #
 # Start it before 3:50 PM and keep the computer awake until the Cloudflare window closes at
 # 4:45 PM. All three said only "after market close", so each time comes from past quarters.
-# Generated from companies.toml with `uv run python -m earnings_bot.known`.
+# Generated from companies.toml with `uv run python -m first_print.known`.
 
 [[target]]
 ticker = "ABNB"

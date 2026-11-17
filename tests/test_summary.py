@@ -3,9 +3,9 @@ import json
 import pytest
 from pydantic import SecretStr
 
-from earnings_bot.config import Settings
-from earnings_bot.source_document import document_from_text
-from earnings_bot.summary import (
+from first_print.config import Settings
+from first_print.source_document import document_from_text
+from first_print.summary import (
     META_API,
     MODEL,
     SummaryError,

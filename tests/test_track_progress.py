@@ -13,26 +13,26 @@ from typing import Any, cast
 import discord
 import pytest
 
-from earnings_bot import track_progress
-from earnings_bot.bot import EarningsBot
-from earnings_bot.browser_sources import IRSource
-from earnings_bot.cache_research import CHECKING_CACHE
-from earnings_bot.calendar import Calendar
-from earnings_bot.config import Settings
-from earnings_bot.date_discovery import VERIFYING_IR, DateDiscovery
-from earnings_bot.delivery import DeliveryStore
-from earnings_bot.edit_priority import EditPriority
-from earnings_bot.formatting import GREEN
-from earnings_bot.investigate import INVESTIGATION, Report
-from earnings_bot.issuers import profile
-from earnings_bot.known import KnownCompany, SourceCheck, to_target
-from earnings_bot.pipeline import Release
-from earnings_bot.recorder import ET, Journal, Target
-from earnings_bot.release_cards import release_content
-from earnings_bot.source_audit import Speed, Timing
-from earnings_bot.sources import RssFeed, Sighting
-from earnings_bot.track_progress import REPLACE_AFTER, CardPoster, TrackProgress
-from earnings_bot.version import release_version
+from first_print import track_progress
+from first_print.bot import EarningsBot
+from first_print.browser_sources import IRSource
+from first_print.cache_research import CHECKING_CACHE
+from first_print.calendar import Calendar
+from first_print.config import Settings
+from first_print.date_discovery import VERIFYING_IR, DateDiscovery
+from first_print.delivery import DeliveryStore
+from first_print.edit_priority import EditPriority
+from first_print.formatting import GREEN
+from first_print.investigate import INVESTIGATION, Report
+from first_print.issuers import profile
+from first_print.known import KnownCompany, SourceCheck, to_target
+from first_print.pipeline import Release
+from first_print.recorder import ET, Journal, Target
+from first_print.release_cards import release_content
+from first_print.source_audit import Speed, Timing
+from first_print.sources import RssFeed, Sighting
+from first_print.track_progress import REPLACE_AFTER, CardPoster, TrackProgress
+from first_print.version import release_version
 from tests.brookfield_data import BN_NOW, CIK, filings
 from tests.builders import INVESTIGATED, LISTING, LUCID, SPEED, uber
 from tests.builders import PROGRESS_NOW as NOW
@@ -271,7 +271,7 @@ async def test_a_finished_card_says_what_was_fastest_watched_and_rejected(tmp_pa
         "-# Issuer confirmed release time · [source](<https://ir.lucidmotors.com/notice>) · "
         "watching from 3:55 PM ET"
     )
-    assert embed.footer.text == f"Earnings Bot {release_version()} · Updated"
+    assert embed.footer.text == f"First Print {release_version()} · Updated"
     assert fields["Progress"] == [
         f"✅ Found in SEC data: CIK {LCID_CIK}, results on Form 8-K",
         "✅ Sources investigated Nov 9",

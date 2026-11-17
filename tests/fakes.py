@@ -17,19 +17,19 @@ import discord
 import pytest
 from yarl import URL
 
-from earnings_bot import recorder
-from earnings_bot.browser import _SETTLED, DesktopChrome, RenderedPage
-from earnings_bot.clock import TrustedClock
-from earnings_bot.delivery import DeliveryStore
-from earnings_bot.fetch import Fetcher, Response
-from earnings_bot.pipeline import DurableDiscordPoster, Poster
-from earnings_bot.recorder import Target
-from earnings_bot.sources import Sighting, Source
-from earnings_bot.summary import (
+from first_print import recorder
+from first_print.browser import _SETTLED, DesktopChrome, RenderedPage
+from first_print.clock import TrustedClock
+from first_print.delivery import DeliveryStore
+from first_print.fetch import Fetcher, Response
+from first_print.pipeline import DurableDiscordPoster, Poster
+from first_print.recorder import Target
+from first_print.sources import Sighting, Source
+from first_print.summary import (
     Summarizer,
     Summary,
 )
-from earnings_bot.text import html_to_text
+from first_print.text import html_to_text
 from tests.builders import GUILD, OWNER, PLTR_FEED, TRACKING_RESULTS
 
 

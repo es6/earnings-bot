@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from earnings_bot import transport_probe as probe
+from first_print import transport_probe as probe
 
 
 def plan(budget: int = 4) -> probe.Plan:

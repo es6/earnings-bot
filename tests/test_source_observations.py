@@ -8,13 +8,13 @@ from typing import Self
 
 import pytest
 
-from earnings_bot import fetch as fetch_module
-from earnings_bot import http_policy
-from earnings_bot.fetch import Response
-from earnings_bot.http_policy import retry_after
-from earnings_bot.publication_trials import run_trials
-from earnings_bot.recorder import Journal, PollError, fetch
-from earnings_bot.trial_matching import candidates
+from first_print import fetch as fetch_module
+from first_print import http_policy
+from first_print.fetch import Response
+from first_print.http_policy import retry_after
+from first_print.publication_trials import run_trials
+from first_print.recorder import Journal, PollError, fetch
+from first_print.trial_matching import candidates
 from tests.builders import events, plan
 from tests.fakes import QueuedFetcher
 

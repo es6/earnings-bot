@@ -5,10 +5,10 @@ import discord
 import pytest
 from discord import app_commands
 
-from earnings_bot.bot import EarningsBot
-from earnings_bot.commands import ALL_COMMANDS, ping
-from earnings_bot.config import Settings
-from earnings_bot.version import release_version
+from first_print.bot import EarningsBot
+from first_print.commands import ALL_COMMANDS, ping
+from first_print.config import Settings
+from first_print.version import release_version
 
 
 async def test_ping_replies_privately_with_latency() -> None:
@@ -34,7 +34,7 @@ async def test_the_bot_registers_ping_in_its_command_tree() -> None:
 async def test_watch_status_shows_build_separately_from_the_version(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("earnings_bot.bot.build_revision", lambda: "0123456789")
+    monkeypatch.setattr("first_print.bot.build_revision", lambda: "0123456789")
     bot = EarningsBot(Settings.model_validate({"discord_token": "test"}))
     send = AsyncMock()
     interaction = cast(discord.Interaction, Mock(response=Mock(send_message=send)))
@@ -45,7 +45,7 @@ async def test_watch_status_shows_build_separately_from_the_version(
     await command.callback(command.binding, interaction)  # pyright: ignore[reportCallIssue, reportArgumentType]
 
     send.assert_awaited_once_with(
-        f"**Earnings Bot {release_version()}**\nBuild `0123456789`\n"
+        f"**First Print {release_version()}**\nBuild `0123456789`\n"
         "Earnings monitoring is not configured.",
         ephemeral=True,
     )

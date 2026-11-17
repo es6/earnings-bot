@@ -8,12 +8,12 @@ from typing import Any
 
 import pytest
 
-from earnings_bot import recorder
-from earnings_bot.browser_sources import BrowserRelease
-from earnings_bot.clock import TrustedClock
-from earnings_bot.recorder import ET, Journal, Polls, Target, Watch, pace_routes, watch
-from earnings_bot.release_band import NEAR, SLOW, pace, paced, release_times
-from earnings_bot.sources import EdgarFilings, EdgarLatest, RssFeed
+from first_print import recorder
+from first_print.browser_sources import BrowserRelease
+from first_print.clock import TrustedClock
+from first_print.recorder import ET, Journal, Polls, Target, Watch, pace_routes, watch
+from first_print.release_band import NEAR, SLOW, pace, paced, release_times
+from first_print.sources import EdgarFilings, EdgarLatest, RssFeed
 from tests.fakes import CompanyFeed, FakeFetcher, ListSource
 
 T = datetime(2026, 11, 19, 7, 0, tzinfo=ET)

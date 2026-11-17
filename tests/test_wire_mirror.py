@@ -2,10 +2,10 @@ from pathlib import Path
 
 import pytest
 
-from earnings_bot.source_document import SourceDocument
-from earnings_bot.sources import RssFeed, Sighting
-from earnings_bot.text import release_document
-from earnings_bot.wire_mirror import HOST, candidate, candidates
+from first_print.source_document import SourceDocument
+from first_print.sources import RssFeed, Sighting
+from first_print.text import release_document
+from first_print.wire_mirror import HOST, candidate, candidates
 from tests.fakes import RoutedFetcher
 
 URL = "https://www.businesswire.com/news/home/20261112208769/en/"

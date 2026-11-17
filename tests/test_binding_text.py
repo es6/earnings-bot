@@ -2,7 +2,7 @@ from decimal import Decimal
 
 import pytest
 
-from earnings_bot.binding_text import duration, normalized, number_tokens, words
+from first_print.binding_text import duration, normalized, number_tokens, words
 
 
 @pytest.mark.parametrize("months", [3, 6, 9, 12])

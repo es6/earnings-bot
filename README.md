@@ -1,12 +1,11 @@
 <img src="assets/first-print.svg" alt="First Print" width="96" align="right">
 
-# earnings-bot
+# First Print
 
-Becoming **First Print**: the bot, repository and package are renamed after the live streak
-(November 20), as the [roadmap](docs/roadmap.md#name-and-identity) records.
+Formerly earnings-bot (renamed November 16, 2026; old GitHub links redirect here).
 
-[![CI](https://github.com/es6/earnings-bot/actions/workflows/ci.yml/badge.svg)](https://github.com/es6/earnings-bot/actions/workflows/ci.yml)
-[![Docker](https://github.com/es6/earnings-bot/actions/workflows/docker.yml/badge.svg)](https://github.com/es6/earnings-bot/actions/workflows/docker.yml)
+[![CI](https://github.com/es6/first-print/actions/workflows/ci.yml/badge.svg)](https://github.com/es6/first-print/actions/workflows/ci.yml)
+[![Docker](https://github.com/es6/first-print/actions/workflows/docker.yml/badge.svg)](https://github.com/es6/first-print/actions/workflows/docker.yml)
 
 A Discord bot that races public earnings sources, posts a release as soon as it detects it,
 then edits in a short summary of the numbers that move the stock.
@@ -102,8 +101,8 @@ for you.
 3. **Configure it.**
 
    ```bash
-   git clone https://github.com/es6/earnings-bot.git
-   cd earnings-bot
+   git clone https://github.com/es6/first-print.git
+   cd first-print
    cp .env.example .env
    ```
 
@@ -121,7 +120,7 @@ for you.
 4. **Run it.**
 
    ```bash
-   uv run earnings-bot schedules
+   uv run first-print schedules
    ```
 
    It watches the companies tracked with `/track`, plus any schedule files in `schedules/`.
@@ -129,8 +128,8 @@ for you.
    without posting anything twice. Docker works too:
 
    ```bash
-   docker build -t earnings-bot .
-   docker run --env-file .env -v "${PWD}/schedules:/data" earnings-bot earnings-bot /data
+   docker build -t first-print .
+   docker run --env-file .env -v "${PWD}/schedules:/data" first-print first-print /data
    ```
 
    The mounted directory must be writable by container user 1000. The Chrome routes for sites that block
@@ -153,10 +152,10 @@ each kind of IR site is reached, [browser IR](docs/browser-ir.md) the Chrome rou
 [wire recovery](docs/wire-recovery.md) the verified mirrors.
 
 Two command-line tools come with it:
-- `uv run earnings-bot-record schedules/<day>.toml` polls every source around a release and
+- `uv run first-print-record schedules/<day>.toml` polls every source around a release and
   logs when each one first listed it, to measure which is fastest
   ([latency recorder](docs/unattended.md#latency-recorder)).
-- `uv run earnings-bot-replay` replays a past release through the whole flow.
+- `uv run first-print-replay` replays a past release through the whole flow.
 
 ## Development
 

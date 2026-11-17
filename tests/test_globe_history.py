@@ -1,7 +1,7 @@
 from datetime import datetime
 
-from earnings_bot.globe_history import listed, past_releases
-from earnings_bot.recorder import ET
+from first_print.globe_history import listed, past_releases
+from first_print.recorder import ET
 from tests.builders import listing, row
 from tests.fakes import RoutedFetcher
 

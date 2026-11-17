@@ -26,7 +26,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $repo = Split-Path -Parent $PSScriptRoot
-# What python -m earnings_bot.restart exits with when a restart now would interrupt a release
+# What python -m first_print.restart exits with when a restart now would interrupt a release
 $windowOpen = 3
 
 function Fail([string]$Message) {
@@ -54,9 +54,11 @@ function Get-BotProcesses {
     # what they run, so other tools working in this folder are left alone.
     @(Get-CimInstance Win32_Process | Where-Object {
         ($_.Name -eq "powershell.exe" -and $_.CommandLine -match "run-bot\.ps1") -or
-        (($_.Name -in "cmd.exe", "uv.exe") -and $_.CommandLine -match "run --locked earnings-bot ") -or
-        (($_.Name -in "python.exe", "earnings-bot.exe") -and
-            $_.CommandLine -match "\\Scripts\\earnings-bot\.exe")
+        # Both names: a bot started before the November 2026 rename still runs as earnings-bot
+        (($_.Name -in "cmd.exe", "uv.exe") -and
+            $_.CommandLine -match "run --locked (first-print|earnings-bot) ") -or
+        (($_.Name -in "python.exe", "first-print.exe", "earnings-bot.exe") -and
+            $_.CommandLine -match "\\Scripts\\(first-print|earnings-bot)\.exe")
     })
 }
 
@@ -68,7 +70,7 @@ function Wait-ForWindows {
     while ($true) {
         # --no-sync: the running bot holds the environment's files
         $check = Invoke-Native $uv @(
-            "run", "--no-sync", "python", "-m", "earnings_bot.restart", $ScheduleDirectory
+            "run", "--no-sync", "python", "-m", "first_print.restart", $ScheduleDirectory
         )
         if ($check.Code -eq 0) {
             $check.Output | ForEach-Object { Write-Host $_ }

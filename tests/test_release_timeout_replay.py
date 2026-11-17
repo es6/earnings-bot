@@ -13,12 +13,12 @@ from typing import Literal
 
 import pytest
 
-from earnings_bot import fetch
-from earnings_bot.browser_sources import BrowserRelease, HttpRelease
-from earnings_bot.fetch import Response
-from earnings_bot.pipeline import Poster, Releases
-from earnings_bot.recorder import Journal, Target, Watch, watch
-from earnings_bot.summary import Summarizer, Summary
+from first_print import fetch
+from first_print.browser_sources import BrowserRelease, HttpRelease
+from first_print.fetch import Response
+from first_print.pipeline import Poster, Releases
+from first_print.recorder import Journal, Target, Watch, watch
+from first_print.summary import Summarizer, Summary
 from tests.fakes import FakeSession, SessionFetcher
 
 LISTING = "https://ir.example.com/results"

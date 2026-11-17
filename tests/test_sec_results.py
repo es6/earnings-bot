@@ -5,15 +5,15 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from earnings_bot import recorder
-from earnings_bot.recorder import ET, Journal, Polls, Target, Watch, follow_up
-from earnings_bot.sec_results import (
+from first_print import recorder
+from first_print.recorder import ET, Journal, Polls, Target, Watch, follow_up
+from first_print.sec_results import (
     SixKResults,
     announces_results,
     is_results_release,
     reported_period,
 )
-from earnings_bot.sources import EdgarFilings, EdgarLatest, Sighting, _filing_type
+from first_print.sources import EdgarFilings, EdgarLatest, Sighting, _filing_type
 from tests.brookfield_data import CIK, ORDINARY, RESULT, filings, fixtures, folder
 from tests.builders import sec_filing_detail
 from tests.fakes import PinnedClock, RoutedFetcher

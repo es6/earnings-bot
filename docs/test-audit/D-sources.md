@@ -85,7 +85,7 @@ The suite is in good shape: no test is obsolete or tautological as a whole, and 
 
 | test | verdict | reason |
 |---|---|---|
-| test_a_render_turns_off_chromes_own_cache_before_it_navigates | STRENGTHEN | Caught M9. 1.22 s because `render()` really sleeps 0.3 s x 4; patch `asyncio.sleep` in earnings_bot.browser. Monkeypatches private `_start/_new_tab/_drop` and pokes `_tabs` |
+| test_a_render_turns_off_chromes_own_cache_before_it_navigates | STRENGTHEN | Caught M9. 1.22 s because `render()` really sleeps 0.3 s x 4; patch `asyncio.sleep` in first_print.browser. Monkeypatches private `_start/_new_tab/_drop` and pokes `_tabs` |
 | test_a_slow_answer_times_out_without_losing_the_warm_tab | KEEP | Caught M37 |
 | test_render_only_skips_settling_for_a_verified_target_quarter_pdf (4 params) | STRENGTHEN | Caught M34; 1.2 s each for 3 of 4 params (real settle sleeps); counts `_SETTLED` calls (private constant); local imports inside the function |
 | test_research_yields_after_pacing_without_dropping_a_live_warm_tab | KEEP | |
@@ -264,7 +264,7 @@ Coverage of my area: sources.py 94%, fetch.py 81%, browser.py 52%, browser_sourc
 - Misfiled tests: test_sec_results holds DateDiscovery, TrackProgress, source_audit and site_local_time tests; test_browser_sources holds browser_host and verified_results_table tests; test_sources holds periods.agrees_with_period.
 - Private-name coupling: `_SETTLED`, `_Tab`, `_start/_new_tab/_drop/_warm/_tabs/_prewarming/_locks` (test_browser), `_queues`, `_session`, `_browser` (test_fetch), `_check`, `_verify_sixks`, `_filing_type`, `_measurements`, `_archived_sources`. Refactoring internals will break these without a behavior change.
 - Real time: wall-clock thresholds (`< 0.05`, `< 0.5`, `== 8`, `0.35 s` live polling windows, `ROUND=0.02` frontier) are flaky under load; prefer injected clocks, `asyncio.Event` gating, or `<=` invariants.
-- Repeated stub closures (`started`, `wait_turn`, `drop`) in test_browser: make a `chrome` fixture. Local imports inside test bodies (`from earnings_bot.browser import ...`) should be top-level.
+- Repeated stub closures (`started`, `wait_turn`, `drop`) in test_browser: make a `chrome` fixture. Local imports inside test bodies (`from first_print.browser import ...`) should be top-level.
 - Production data in tests: `known_companies()["LLY"/"GOOGL"/"NVDA"]` couples tests to companies.toml.
 - `HttpRelease.chrome_fallback` defaults to `os.name == "nt"`; tests that care pass it explicitly (good), but any new test omitting it would behave differently on Linux CI.
 - DeprecationWarning noise from discord/utils.py: filter in pyproject `filterwarnings` so real warnings stay visible.

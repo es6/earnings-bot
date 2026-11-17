@@ -9,13 +9,13 @@ import json
 import random
 from pathlib import Path
 
-from earnings_bot.summary_evaluation import (
+from first_print.summary_evaluation import (
     EVALUATOR_VERSION,
     common_cases,
     display_lines,
     replay_row,
 )
-from earnings_bot.summary_policy import DEFAULT_COMPARISON, POLICY_VERSION, SELECTION_RULES
+from first_print.summary_policy import DEFAULT_COMPARISON, POLICY_VERSION, SELECTION_RULES
 
 
 def digest(path: Path) -> str:

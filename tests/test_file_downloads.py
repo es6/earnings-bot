@@ -2,8 +2,8 @@ import asyncio
 
 import pytest
 
-from earnings_bot.fetch import Response
-from earnings_bot.file_downloads import FileDownloads
+from first_print.fetch import Response
+from first_print.file_downloads import FileDownloads
 from tests.fakes import GatedRequest
 
 URL = "https://ir.example.com/release.pdf"

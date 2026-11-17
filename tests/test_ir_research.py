@@ -3,9 +3,9 @@ from datetime import date
 
 import pytest
 
-from earnings_bot import ir_research
-from earnings_bot.browser_sources import IRSource
-from earnings_bot.ir_research import (
+from first_print import ir_research
+from first_print.browser_sources import IRSource
+from first_print.ir_research import (
     issuer_links,
     matches_release,
     quarter_headline,

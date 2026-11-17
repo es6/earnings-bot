@@ -14,27 +14,27 @@ import discord
 import pytest
 from discord import app_commands
 
-from earnings_bot import calendar as tracking_calendar
-from earnings_bot import track_test, tracking_commands
-from earnings_bot.calendar import describe
-from earnings_bot.delivery import DeliveryStore
-from earnings_bot.fetch import Response
-from earnings_bot.formatting import stamp
-from earnings_bot.known import KnownCompany, known_companies, to_target
-from earnings_bot.pipeline import Releases
-from earnings_bot.recorder import ET, Journal
-from earnings_bot.release_cards import release_content
-from earnings_bot.source_audit import Speed
-from earnings_bot.sources import PR_NEWSWIRE_EARNINGS
-from earnings_bot.track_progress import TrackProgress
-from earnings_bot.track_test import TrackReport
-from earnings_bot.tracking_commands import (
+from first_print import calendar as tracking_calendar
+from first_print import track_test, tracking_commands
+from first_print.calendar import describe
+from first_print.delivery import DeliveryStore
+from first_print.fetch import Response
+from first_print.formatting import stamp
+from first_print.known import KnownCompany, known_companies, to_target
+from first_print.pipeline import Releases
+from first_print.recorder import ET, Journal
+from first_print.release_cards import release_content
+from first_print.source_audit import Speed
+from first_print.sources import PR_NEWSWIRE_EARNINGS
+from first_print.track_progress import TrackProgress
+from first_print.track_test import TrackReport
+from first_print.tracking_commands import (
     NOT_CONNECTED,
     OFFLINE,
     TrackingCommands,
     upcoming_embed,
 )
-from earnings_bot.unattended import DirectoryWatcher
+from first_print.unattended import DirectoryWatcher
 from tests.builders import GUILD, NVDA_CIK, OWNER
 from tests.builders import TRACKING_NOW as NOW
 from tests.clocks import ShiftedClock

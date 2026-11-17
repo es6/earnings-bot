@@ -354,7 +354,7 @@ Per-module line coverage from these 15 files: summary_binding 96%, summary_evide
 ## Suite-wide practice issues
 
 - Cross-test-module imports as shared helpers: `from tests.test_summary_evidence import fact, value` (binding, bound_format, referenced_writer), `from tests.test_summary_binding import TABLE`, `from tests.test_summary import summarizer_answering`, `from tests.test_pipeline import ...`, `from tests.test_driver_profile import SOURCE, TODAY, content, parsed`. Move to conftest.py/tests/builders.py; importing a test module from another couples collection and hides the fixtures.
-- Inline imports inside tests (`from earnings_bot.binding_text import duration`, `from tests.test_driver_profile import parsed`).
+- Inline imports inside tests (`from first_print.binding_text import duration`, `from tests.test_driver_profile import parsed`).
 - test_summary_binding repeats a 6-line evidence-reference dict (`{"document_sha256": ..., "block_id": ..., "cell_ids": [...], "quote": ...}`) plus `parse_referenced_brief(json.dumps({"schema_version": ...}))` about 10 times, while a helper (`report`/`bound`) already exists for the common case. Extract one `ref_for(block)` and `candidate_json(fact)`.
 - For-loops of cases inside one test (binding wrong_row, group attribution, group_naming_issuer; validation unknown_quote) hide which case failed; parametrize or `pytest.param(id=...)`.
 - `pytest.raises(ValueError)` without `match=` in evidence malformed-numeric, request truncation and a few others: any ValueError passes.

@@ -5,15 +5,15 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from earnings_bot import source_document
-from earnings_bot.source_document import (
+from first_print import source_document
+from first_print.source_document import (
     SourceCell,
     SourceDocument,
     SourceTable,
     document_from_html,
     document_from_text,
 )
-from earnings_bot.text import html_to_text
+from first_print.text import html_to_text
 
 
 def at(table: SourceTable, row: int, column: int) -> SourceCell:

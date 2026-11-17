@@ -5,10 +5,10 @@ from datetime import date, datetime
 
 import pytest
 
-from earnings_bot.browser import BrowserError, RenderedPage
-from earnings_bot.date_discovery import EVENT_DATE, event_target, rendered_date, title_period
-from earnings_bot.formatting import period_label
-from earnings_bot.ir_pages import (
+from first_print.browser import BrowserError, RenderedPage
+from first_print.date_discovery import EVENT_DATE, event_target, rendered_date, title_period
+from first_print.formatting import period_label
+from first_print.ir_pages import (
     IRReader,
     Moment,
     earnings_event,
@@ -17,8 +17,8 @@ from earnings_bot.ir_pages import (
     nav_rank,
     upcoming,
 )
-from earnings_bot.ir_research import prior_period, quarter_headline
-from earnings_bot.recorder import ET
+from first_print.ir_research import prior_period, quarter_headline
+from first_print.recorder import ET
 from tests.builders import AMAT
 from tests.fakes import rendered
 

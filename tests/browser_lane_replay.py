@@ -15,9 +15,9 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
-from earnings_bot import browser
-from earnings_bot.browser import DesktopChrome, _Tab
-from earnings_bot.fetch import Fetcher
+from first_print import browser
+from first_print.browser import DesktopChrome, _Tab
+from first_print.fetch import Fetcher
 from tests.fakes import FakeTabSocket
 
 

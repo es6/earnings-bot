@@ -7,10 +7,10 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from earnings_bot.source_document import document_from_html, document_from_text
-from earnings_bot.summary_evidence import parse_referenced_brief
-from earnings_bot.summary_policy import HAIKU
-from earnings_bot.summary_request import referenced_request
+from first_print.source_document import document_from_html, document_from_text
+from first_print.summary_evidence import parse_referenced_brief
+from first_print.summary_policy import HAIKU
+from first_print.summary_request import referenced_request
 from scripts import summary_prepare
 from scripts.summary_prepare import prepare
 from tests.builders import DOCUMENT, evidence, fact, value

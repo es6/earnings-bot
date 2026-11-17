@@ -32,7 +32,7 @@ jobs:
       - name: Check the mutation setup
         if: github.event_name == 'pull_request'
         timeout-minutes: 10
-        run: uv run --with mutmut==3.8.1 mutmut run 'earnings_bot.http_policy*' --max-children 4
+        run: uv run --with mutmut==3.8.1 mutmut run 'first_print.http_policy*' --max-children 4
 
       - name: Run mutmut
         if: github.event_name != 'pull_request'

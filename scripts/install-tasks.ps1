@@ -36,7 +36,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $repo = Split-Path -Parent $PSScriptRoot
-# What python -m earnings_bot.restart exits with when a restart now would interrupt a release
+# What python -m first_print.restart exits with when a restart now would interrupt a release
 $windowOpen = 3
 
 function Test-ReleaseWindows {
@@ -46,7 +46,7 @@ function Test-ReleaseWindows {
     Push-Location -LiteralPath $repo
     try {
         $ErrorActionPreference = "Continue"
-        $output = @(& $uv run --no-sync python -m earnings_bot.restart $ScheduleDirectory 2>&1 |
+        $output = @(& $uv run --no-sync python -m first_print.restart $ScheduleDirectory 2>&1 |
             ForEach-Object { "$_" })
         $code = $LASTEXITCODE
     } finally {

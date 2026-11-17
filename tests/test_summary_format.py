@@ -5,8 +5,8 @@ from dataclasses import replace
 
 import pytest
 
-from earnings_bot.summary_evaluation import display_lines
-from earnings_bot.summary_format import (
+from first_print.summary_evaluation import display_lines
+from first_print.summary_format import (
     discord_brief,
     format_change,
     format_fact,
@@ -15,7 +15,7 @@ from earnings_bot.summary_format import (
     format_value,
     render_facts,
 )
-from earnings_bot.summary_policy import SummaryFact
+from first_print.summary_policy import SummaryFact
 
 
 @pytest.mark.parametrize(

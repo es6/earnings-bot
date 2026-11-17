@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from earnings_bot.sources import (
+from first_print.sources import (
     BroadcomNewsroom,
     GuessedFile,
     GuessedPage,
@@ -10,7 +10,7 @@ from earnings_bot.sources import (
     RssFeed,
     Sighting,
 )
-from earnings_bot.text import html_to_text, pdf_text, pick_exhibit, release_text
+from first_print.text import html_to_text, pdf_text, pick_exhibit, release_text
 from tests.builders import simple_pdf
 from tests.fakes import RoutedFetcher
 

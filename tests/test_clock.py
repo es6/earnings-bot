@@ -6,8 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from earnings_bot import clock
-from earnings_bot.clock import Sample, TrustedClock, parse_reply
+from first_print import clock
+from first_print.clock import Sample, TrustedClock, parse_reply
 
 
 def ntp(unix_seconds: float) -> bytes:

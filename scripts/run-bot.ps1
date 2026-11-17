@@ -15,7 +15,7 @@ try {
         $ownsLock = $true
     }
     if (-not $ownsLock) {
-        throw "An earnings-bot supervisor is already running on this PC."
+        throw "A First Print supervisor is already running on this PC."
     }
     $schedule = (Resolve-Path -LiteralPath $ScheduleDirectory).Path
     if (-not (Test-Path -LiteralPath $schedule -PathType Container)) {
@@ -34,9 +34,9 @@ try {
     while ($true) {
         $log = Join-Path $logs ("runner-" + (Get-Date -Format "yyyy-MM-dd") + ".log")
         $env:EARNINGS_BOT_LOG = $log
-        [System.IO.File]::AppendAllText($log, "[$(Get-Date -Format o)] Starting earnings-bot`r`n", $utf8)
+        [System.IO.File]::AppendAllText($log, "[$(Get-Date -Format o)] Starting first-print`r`n", $utf8)
         # --% passes the rest to cmd.exe as written, with %VARIABLES% from the environment
-        cmd.exe --% /d /s /c ""%EARNINGS_BOT_UV%" run --locked earnings-bot "%EARNINGS_BOT_SCHEDULE%" >> "%EARNINGS_BOT_LOG%" 2>&1"
+        cmd.exe --% /d /s /c ""%EARNINGS_BOT_UV%" run --locked first-print "%EARNINGS_BOT_SCHEDULE%" >> "%EARNINGS_BOT_LOG%" 2>&1"
         $code = $LASTEXITCODE
         [System.IO.File]::AppendAllText($log, "[$(Get-Date -Format o)] Bot exited ($code); restarting`r`n", $utf8)
         Start-Sleep -Seconds $RestartSeconds

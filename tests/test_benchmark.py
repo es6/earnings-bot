@@ -9,19 +9,19 @@ from xml.sax.saxutils import escape
 import discord
 import pytest
 
-from earnings_bot import unattended
-from earnings_bot.benchmark import (
+from first_print import unattended
+from first_print.benchmark import (
     EMBED,
     TIMELINES,
     BenchmarkPost,
     BenchmarkResult,
     EarningsBenchmark,
 )
-from earnings_bot.delivery import DeliveryStore
-from earnings_bot.fetch import Fetcher
-from earnings_bot.pipeline import Releases
-from earnings_bot.recorder import Journal, OnNew, Polls, Target, Watch
-from earnings_bot.sources import EdgarLatest
+from first_print.delivery import DeliveryStore
+from first_print.fetch import Fetcher
+from first_print.pipeline import Releases
+from first_print.recorder import Journal, OnNew, Polls, Target, Watch
+from first_print.sources import EdgarLatest
 from tests.fakes import FakePoster, RoutedFetcher
 
 UBER = BenchmarkPost("2117948805941223450", "UBER")

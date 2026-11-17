@@ -2,9 +2,9 @@
 
 import json
 
-from earnings_bot.source_document import document_from_text
-from earnings_bot.summary_policy import SummaryFact
-from earnings_bot.summary_verify import verify_facts
+from first_print.source_document import document_from_text
+from first_print.summary_policy import SummaryFact
+from first_print.summary_verify import verify_facts
 from tests.fakes import summarizer_answering
 
 RELEASE = (
@@ -91,7 +91,7 @@ async def test_the_live_writer_checks_its_facts_only_when_verified_summaries_are
 
 
 def test_a_live_value_is_read_as_one_number_or_a_range_as_written() -> None:
-    from earnings_bot.summary_verify import parse
+    from first_print.summary_verify import parse
 
     assert parse("+5.9% reported, +5.1% cc")[:2] == ("5.9", None)  # type: ignore[index]
     assert parse("$4.8 - $5.0 billion")[:3] == ("4.8", "5.0", "billion")  # type: ignore[index]
@@ -170,7 +170,7 @@ def _unscaled_revenue() -> SummaryFact:
 
 
 def test_money_copied_from_a_table_without_its_scale_takes_only_a_scale_the_table_states() -> None:
-    from earnings_bot.source_document import document_from_html
+    from first_print.source_document import document_from_html
 
     scaled = document_from_html(_table_release("(In millions)"))
     thousands = document_from_html(_table_release("(In thousands)"))

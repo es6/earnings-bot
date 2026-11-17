@@ -8,10 +8,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from earnings_bot import bot as bot_module
-from earnings_bot.bot import EarningsBot
-from earnings_bot.browser import PROFILE_PREFIX, leftover_chrome, sweep_leftover_chrome
-from earnings_bot.config import Settings
+from first_print import bot as bot_module
+from first_print.bot import EarningsBot
+from first_print.browser import PROFILE_PREFIX, leftover_chrome, sweep_leftover_chrome
+from first_print.config import Settings
 
 LEFT = PROFILE_PREFIX + "v9z3ozn7"  # from a bot stopped on Nov 13
 LIVE = PROFILE_PREFIX + "zv253xe1"  # this bot's
@@ -28,7 +28,7 @@ def chrome(pid: int, parent: int, profile: str, kind: str = "") -> dict[str, Any
 
 
 PROCESSES = [
-    {"ProcessId": 100, "ParentProcessId": 1, "Name": "python.exe", "CommandLine": "earnings-bot"},
+    {"ProcessId": 100, "ParentProcessId": 1, "Name": "python.exe", "CommandLine": "first-print"},
     # Left by a bot that's gone: its main process's parent, 35032, isn't running
     chrome(17696, 35032, LEFT),
     chrome(17700, 17696, LEFT, "--type=renderer"),
@@ -73,7 +73,7 @@ _OWNER = textwrap.dedent(
     """
     import sys, time
     from pathlib import Path
-    from earnings_bot._windows_desktop import DesktopProcess
+    from first_print._windows_desktop import DesktopProcess
     child = DesktopProcess(Path(sys.executable), ["-c", "import time; time.sleep(120)"])
     print(child.pid, child.ended_with_owner, flush=True)
     time.sleep(120)

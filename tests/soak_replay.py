@@ -23,7 +23,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from earnings_bot.resources import snapshot
+from first_print.resources import snapshot
 from tests.burst_replay import Settings, replay
 
 
@@ -83,12 +83,12 @@ async def run(folder: Path, hours: float, iterations: int | None, tickers: int, 
     hashes = {
         name: hashlib.sha256((root / name).read_bytes()).hexdigest()
         for name in (
-            "src/earnings_bot/fetch.py",
-            "src/earnings_bot/recorder.py",
-            "src/earnings_bot/pipeline.py",
-            "src/earnings_bot/file_downloads.py",
-            "src/earnings_bot/text.py",
-            "src/earnings_bot/html_text.py",
+            "src/first_print/fetch.py",
+            "src/first_print/recorder.py",
+            "src/first_print/pipeline.py",
+            "src/first_print/file_downloads.py",
+            "src/first_print/text.py",
+            "src/first_print/html_text.py",
             "tests/burst_replay.py",
         )
     }

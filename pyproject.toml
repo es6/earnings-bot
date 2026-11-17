@@ -1,6 +1,6 @@
 [project]
-name = "earnings-bot"
-version = "0.21.52"
+name = "first-print"
+version = "0.22.0"
 description = "Discord bot that posts company earnings the moment they're released"
 readme = "README.md"
 license = "MIT"
@@ -17,13 +17,13 @@ dependencies = [
 ]
 
 [project.urls]
-Repository = "https://github.com/es6/earnings-bot"
+Repository = "https://github.com/es6/first-print"
 
 [project.scripts]
-earnings-bot = "earnings_bot.__main__:main"
-earnings-bot-record = "earnings_bot.recorder:main"
-earnings-bot-replay = "earnings_bot.replay:main"
-earnings-bot-watchdog = "earnings_bot.watchdog:main"
+first-print = "first_print.__main__:main"
+first-print-record = "first_print.recorder:main"
+first-print-replay = "first_print.replay:main"
+first-print-watchdog = "first_print.watchdog:main"
 
 [build-system]
 requires = ["uv_build>=0.13.6,<0.14.0"]
@@ -78,7 +78,7 @@ filterwarnings = [
 ]
 
 [tool.coverage.run]
-source = ["earnings_bot"]
+source = ["first_print"]
 branch = true
 
 [tool.coverage.report]
@@ -91,10 +91,10 @@ show_missing = true
 # The whole package is copied so the tests import; only the pure parsers are mutated
 source_paths = ["src/"]
 only_mutate = [
-    "src/earnings_bot/http_policy.py",
-    "src/earnings_bot/formatting.py",
-    "src/earnings_bot/summary_format.py",
-    "src/earnings_bot/binding_text.py",
+    "src/first_print/http_policy.py",
+    "src/first_print/formatting.py",
+    "src/first_print/summary_format.py",
+    "src/first_print/binding_text.py",
 ]
 also_copy = ["tests/", "scripts/", "schedules/", "docs/", "pyproject.toml"]
 pytest_add_cli_args = ["-p", "no:randomly", "-p", "no:xdist", "-p", "no:cacheprovider"]

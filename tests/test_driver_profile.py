@@ -3,12 +3,12 @@ from pathlib import Path
 
 import pytest
 
-from earnings_bot.delivery import DeliveryStore
-from earnings_bot.driver_profile import (
+from first_print.delivery import DeliveryStore
+from first_print.driver_profile import (
     profile_request,
     request_reservation_micros,
 )
-from earnings_bot.driver_profile_store import (
+from first_print.driver_profile_store import (
     DAILY_PROFILE_CALLS,
     DAILY_PROFILE_MICROS,
     DriverProfileStore,

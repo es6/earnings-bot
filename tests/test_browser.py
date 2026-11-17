@@ -3,8 +3,8 @@ from typing import Any
 
 import pytest
 
-from earnings_bot import browser as browser_module
-from earnings_bot.browser import (
+from first_print import browser as browser_module
+from first_print.browser import (
     _SETTLED,
     URGENT_LANE,
     BrowserDeferred,
@@ -13,7 +13,7 @@ from earnings_bot.browser import (
     _Tab,
     browser_host,
 )
-from earnings_bot.quarterly_table import rendered_pdf
+from first_print.quarterly_table import rendered_pdf
 from tests.fakes import FakeTabSocket
 
 HOST = "ir.example.com"

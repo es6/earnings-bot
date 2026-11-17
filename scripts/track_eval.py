@@ -20,15 +20,15 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from earnings_bot import fetch
-from earnings_bot.browser import DesktopChrome
-from earnings_bot.calendar import Calendar
-from earnings_bot.config import Settings
-from earnings_bot.date_discovery import DateDiscovery
-from earnings_bot.delivery import DeliveryStore
-from earnings_bot.issuers import Issuers
-from earnings_bot.recorder import ET
-from earnings_bot.source_audit import audit_sources
+from first_print import fetch
+from first_print.browser import DesktopChrome
+from first_print.calendar import Calendar
+from first_print.config import Settings
+from first_print.date_discovery import DateDiscovery
+from first_print.delivery import DeliveryStore
+from first_print.issuers import Issuers
+from first_print.recorder import ET
+from first_print.source_audit import audit_sources
 
 
 class EvalFetcher(fetch.Fetcher):

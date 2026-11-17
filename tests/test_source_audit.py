@@ -2,11 +2,11 @@ import json
 from datetime import UTC, date, datetime
 from pathlib import Path
 
-from earnings_bot.issuers import profile, usual_release_time
-from earnings_bot.known import KnownCompany, known_companies
-from earnings_bot.recorder import ET
-from earnings_bot.sec_results import SixKResults
-from earnings_bot.source_audit import (
+from first_print.issuers import profile, usual_release_time
+from first_print.known import KnownCompany, known_companies
+from first_print.recorder import ET
+from first_print.sec_results import SixKResults
+from first_print.source_audit import (
     Speed,
     Timing,
     _archived_sources,

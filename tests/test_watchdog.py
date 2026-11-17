@@ -8,8 +8,8 @@ from typing import Any
 
 import pytest
 
-from earnings_bot import watchdog as watchdog_module
-from earnings_bot.watchdog import Watchdog, Window, post_webhook
+from first_print import watchdog as watchdog_module
+from first_print.watchdog import Watchdog, Window, post_webhook
 
 OPEN = datetime(2026, 11, 17, 21, 10, tzinfo=UTC)
 WINDOW = Window("1045810:FY2027Q3", "NVDA", OPEN, OPEN + timedelta(minutes=50))

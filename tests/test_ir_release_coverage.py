@@ -15,17 +15,17 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from earnings_bot.browser_sources import IRSource
-from earnings_bot.calendar import Calendar
-from earnings_bot.date_discovery import DateDiscovery, _cache_routes, parse_notice
-from earnings_bot.delivery import DeliveryStore
-from earnings_bot.fetch import Response
-from earnings_bot.ir_research import quarter_headline
-from earnings_bot.issuer_news import IssuerNews, news_records
-from earnings_bot.pipeline import describe_source
-from earnings_bot.recorder import ET, Journal, Target, Watch, poll, take
-from earnings_bot.source_audit import Speed, Timing
-from earnings_bot.sources import Q4PressReleases, Sighting
+from first_print.browser_sources import IRSource
+from first_print.calendar import Calendar
+from first_print.date_discovery import DateDiscovery, _cache_routes, parse_notice
+from first_print.delivery import DeliveryStore
+from first_print.fetch import Response
+from first_print.ir_research import quarter_headline
+from first_print.issuer_news import IssuerNews, news_records
+from first_print.pipeline import describe_source
+from first_print.recorder import ET, Journal, Target, Watch, poll, take
+from first_print.source_audit import Speed, Timing
+from first_print.sources import Q4PressReleases, Sighting
 from tests.builders import IR_COVERAGE_NOW as NOW
 from tests.builders import IR_COVERAGE_RESULTS as RESULTS
 from tests.builders import NEWS, company

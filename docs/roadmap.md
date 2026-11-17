@@ -20,8 +20,7 @@ one server until a second is configured.
 - **This week:** the live streak (Nov 17 to 20). After it: read the streak's verified
   summaries value by value before "Beta" comes off, and read its `resources` records.
 - **Open, bounded:** the Python maintainability review (one reproduced lifecycle finding to
-  fix, then sign-off); a second Discord server configured and its rate limits measured;
-  the rename to First Print.
+  fix, then sign-off); a second Discord server configured and its rate limits measured.
 - **Open, largest:** international tickers. Only the plan and debug mode exist, so this is
   most of the remaining work.
 
@@ -33,7 +32,7 @@ one server until a second is configured.
 | Verified summaries | Live since Nov 16 (v0.21.51), labeled Beta until the streak is read |
 | International tickers | Not started beyond the plan and debug mode |
 | Load on the PC | Limits live; measured from the streak's `resources` records |
-| Name and identity | Decided Nov 16: the bot becomes **First Print**; full rename after the streak |
+| Name and identity | Done Nov 16: renamed **First Print** (v0.22.0) |
 
 ## The 1.0 gate (agreed November 12)
 
@@ -145,7 +144,7 @@ Open:
 Decided by the owner on Nov 16: the bot becomes **First Print**, the whole bot (size 3
 below). On Wall Street "the print" is the reported number itself ("NVDA prints at 4:20"), and
 this bot's job is to be first to it. The name also fits `/transcript` and markets outside the
-US. Today the repository is `earnings-bot`, the Discord application shows as "Instantaneous
+US. Today the repository is `first-print`, the Discord application shows as "Instantaneous
 Earnings", and nothing has a logo; renaming before 1.0 is cheaper than after other people run
 copies.
 
@@ -160,8 +159,8 @@ The sizes, each including the one before:
    docs.
 2. **A logo and a display name.** The owner sets the Discord application's name and avatar in
    the Developer Portal; the repository gets the logo for its README and social preview.
-3. **The whole bot.** Also the Python package (`earnings_bot`), the commands
-   (`earnings-bot`, `earnings-bot-record`, `earnings-bot-replay`), the Docker image, and the
+3. **The whole bot.** Also the Python package (`first_print`), the commands
+   (`first-print`, `first-print-record`, `first-print-replay`), the Docker image, and the
    Task Scheduler tasks ("Earnings Bot", "Earnings Bot Watchdog"). The tasks are system
    settings, so renaming them needs the owner's yes, and the live checkout's path and saved
    `schedules/` files must keep working through the switch. Do it in one PR, outside a
@@ -176,10 +175,15 @@ Plan:
   the Discord application and bot avatar, which Discord crops to a circle),
   `first-print.png` and `first-print.svg` (round, for everything else);
   `scripts/render_logo.py` redraws the PNGs.
-- **After the streak (Nov 20), before the international work:** the repository rename, then
-  the package `first_print`, the commands (`first-print`, `first-print-record`,
-  `first-print-replay`), the Docker image and the Task Scheduler tasks (with the owner's yes),
-  in one PR outside a release window. The deploy script pulls from the renamed remote.
+- **Done Nov 16 (v0.22.0), at the owner's request, before the streak:** the package
+  `first_print`, the commands (`first-print`, `first-print-record`, `first-print-replay`,
+  `first-print-watchdog`), the Docker image and the repository `es6/first-print`. Kept
+  unchanged on purpose, because other systems or saved state know them: the user agents IR
+  sites see (`earnings-bot/0.1`), the Chrome profile prefix (`earnings-bot-chrome-`), the
+  watchdog's webhook user agent, the `EARNINGS_BOT_*` environment variables, the Task
+  Scheduler task names ("Earnings Bot", "Earnings Bot Watchdog"), the live checkout's path
+  `C:\earnings-bot`, and the "Earnings monitoring started" message the deploy script waits
+  for. `update-bot.ps1` recognizes a bot running under either name.
 
 ## Order of work
 
@@ -198,8 +202,7 @@ Agreed with the owner on Nov 15:
 4. **Python maintainability review:** apply the [review standard](python-quality.md), complete
    the whole-codebase findings register and review the final verified-summary implementation
    after its active changes settle. Preserve the release behavior with focused PRs.
-5. **Rename to First Print:** the full rename lands after the streak, before the
-   international work.
+5. **Rename to First Print:** done Nov 16 (v0.22.0).
 6. **International tickers:** the foundations, identification, then a dedicated source
    per market ([international.md](international.md)), each going live once its answer
    keys pass one-shot.

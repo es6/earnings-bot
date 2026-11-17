@@ -10,13 +10,13 @@ from typing import cast
 import discord
 import pytest
 
-from earnings_bot.config import Settings
-from earnings_bot.delivery import DeliveryStore
-from earnings_bot.pipeline import FanOutPoster, Releases, fan_out
-from earnings_bot.recorder import ET, Journal, Target
-from earnings_bot.release_cards import release_content
-from earnings_bot.tracking_commands import NOT_CONNECTED, TrackingCommands
-from earnings_bot.unattended import DirectoryWatcher, Server, _Window, durable_posters
+from first_print.config import Settings
+from first_print.delivery import DeliveryStore
+from first_print.pipeline import FanOutPoster, Releases, fan_out
+from first_print.recorder import ET, Journal, Target
+from first_print.release_cards import release_content
+from first_print.tracking_commands import NOT_CONNECTED, TrackingCommands
+from first_print.unattended import DirectoryWatcher, Server, _Window, durable_posters
 from tests.builders import GUILD
 from tests.clocks import ShiftedClock
 from tests.fakes import (
@@ -213,8 +213,8 @@ async def test_the_watcher_gives_each_configured_server_its_own_list_and_scoreca
 ) -> None:
     from types import SimpleNamespace
 
-    from earnings_bot.calendar import Calendar
-    from earnings_bot.unattended import watch_directory
+    from first_print.calendar import Calendar
+    from first_print.unattended import watch_directory
 
     # The deployment's own server already tracks NVIDIA; the other server is new
     with DeliveryStore(tmp_path / ".earnings-state.sqlite3", 7) as before:
@@ -266,7 +266,7 @@ async def test_the_bot_registers_its_commands_in_every_configured_server(
 ) -> None:
     from unittest.mock import AsyncMock, Mock
 
-    from earnings_bot.bot import EarningsBot
+    from first_print.bot import EarningsBot
 
     monkeypatch.setenv("DISCORD_CHANNEL_ID", "7")
     monkeypatch.setenv("DISCORD_SERVER_CHANNEL_IDS", "8,9")
@@ -294,7 +294,7 @@ async def test_the_bot_registers_its_commands_in_every_configured_server(
 def test_the_shared_calendar_reads_each_company_once_and_writes_to_every_server(
     tmp_path: Path,
 ) -> None:
-    from earnings_bot.calendar import Calendar, SharedCalendar
+    from first_print.calendar import Calendar, SharedCalendar
 
     with (
         DeliveryStore(tmp_path / "state.db", 7) as mine,
@@ -324,7 +324,7 @@ def test_the_shared_calendar_reads_each_company_once_and_writes_to_every_server(
 
 
 async def test_a_company_two_servers_track_is_researched_once_for_both(tmp_path: Path) -> None:
-    from earnings_bot.calendar import SharedCalendar
+    from first_print.calendar import SharedCalendar
 
     journal = Journal(io.StringIO())
     with (
@@ -344,8 +344,8 @@ async def test_a_company_two_servers_track_is_researched_once_for_both(tmp_path:
         # One research loop, over both servers' companies
         assert all(server.dates is bot.dates for server in servers)
         assert isinstance(bot.dates.calendar, SharedCalendar)
-        from earnings_bot.investigate import INVESTIGATION
-        from earnings_bot.known import SourceCheck, known_companies, to_target
+        from first_print.investigate import INVESTIGATION
+        from first_print.known import SourceCheck, known_companies, to_target
 
         now = datetime(2026, 11, 14, 21, tzinfo=ET)
         company = known_companies()["NVDA"].model_copy(
@@ -378,7 +378,7 @@ async def test_each_companys_speed_audit_runs_once_for_every_server(
 ) -> None:
     from dataclasses import replace
 
-    from earnings_bot.track_progress import TrackProgress
+    from first_print.track_progress import TrackProgress
     from tests.builders import INVESTIGATED, SPEED
     from tests.builders import PROGRESS_NOW as NOW
     from tests.fakes import WatchedDiscord
@@ -467,7 +467,7 @@ async def borrowing(
     SEC would fail here: every other URL answers 404."""
     from dataclasses import replace
 
-    from earnings_bot.known import to_target
+    from first_print.known import to_target
     from tests.builders import INVESTIGATED, SPEED
     from tests.fakes import RoutedFetcher
 
@@ -548,7 +548,7 @@ async def test_primary_server_commands_are_registered_without_a_test_guild_setti
 ) -> None:
     from unittest.mock import AsyncMock, Mock
 
-    from earnings_bot.bot import EarningsBot
+    from first_print.bot import EarningsBot
 
     settings = Settings.model_validate(
         {

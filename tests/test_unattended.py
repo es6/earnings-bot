@@ -9,18 +9,18 @@ from typing import Any, cast
 import discord
 import pytest
 
-from earnings_bot import delivery, pipeline, recorder, unattended
-from earnings_bot.browser_sources import BrowserRelease
-from earnings_bot.delivery import DeliveryStore
-from earnings_bot.fetch import Fetcher, Response
-from earnings_bot.formatting import AMBER, clock, day
-from earnings_bot.known import to_target
-from earnings_bot.pipeline import Release, Releases
-from earnings_bot.recorder import ET, Journal, OnNew, Polls, Target, Watch
-from earnings_bot.release_cards import release_content
-from earnings_bot.sources import EdgarFilings, EdgarLatest, GuessedFile, RssFeed, Sighting
-from earnings_bot.track_progress import TrackProgress
-from earnings_bot.unattended import DirectoryWatcher, _Window
+from first_print import delivery, pipeline, recorder, unattended
+from first_print.browser_sources import BrowserRelease
+from first_print.delivery import DeliveryStore
+from first_print.fetch import Fetcher, Response
+from first_print.formatting import AMBER, clock, day
+from first_print.known import to_target
+from first_print.pipeline import Release, Releases
+from first_print.recorder import ET, Journal, OnNew, Polls, Target, Watch
+from first_print.release_cards import release_content
+from first_print.sources import EdgarFilings, EdgarLatest, GuessedFile, RssFeed, Sighting
+from first_print.track_progress import TrackProgress
+from first_print.unattended import DirectoryWatcher, _Window
 from tests.builders import TRACKING_NOW as NOW
 from tests.builders import uber
 from tests.fakes import (
@@ -811,7 +811,7 @@ async def test_watch_status_shows_each_releases_time_beside_when_its_watch_opens
 
     # /status is health: the next watch's start, not a second calendar (that's /upcoming)
     text = embed_text(embed)
-    assert embed.title == "Earnings Bot v0.8.0 · status"
+    assert embed.title == "First Print v0.8.0 · status"
     assert f"⏭️ Next watch: **HD** from {day(onon.window[0])}, {clock(onon.window[0])}" in text
     assert "results about" not in text
     assert "📝 Live summaries off" in text

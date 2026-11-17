@@ -8,8 +8,8 @@ from email.utils import format_datetime
 from hypothesis import given
 from hypothesis import strategies as st
 
-from earnings_bot.http_policy import retry_after
-from earnings_bot.summary_format import amount_of
+from first_print.http_policy import retry_after
+from first_print.summary_format import amount_of
 
 NOW = datetime(2026, 11, 17, 21, 10, tzinfo=UTC)
 WORDS = {"K": ["K", "thousand"], "M": ["M", "million", "millions"], "B": ["B", "billion", "bn"]}
