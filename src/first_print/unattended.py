@@ -624,7 +624,11 @@ class DirectoryWatcher:
             )
             for window in self.windows.values()
         ):
-            await self.fetcher.close_browser()
+            try:
+                await self.fetcher.close_browser()
+            except Exception as error:  # closing Chrome must never stop the schedule
+                self.journal.write("browser_close_error", message=repr(error))
+                self.journal.say(f"Closing Chrome failed, and the schedule goes on: {error!r}")
 
     def _on_new(self, target: Target, source: Source, sighting: Sighting) -> None:
         self.releases.on_new(target, source, sighting, measure=self.tracks(target.cik))

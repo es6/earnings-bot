@@ -650,10 +650,15 @@ class DesktopChrome:
             except (aiohttp.ClientError, TimeoutError):
                 pass
             finally:
-                for tab in self._tabs.values():
-                    await tab.socket.close()
+                # A request still running can open or drop a tab while each socket closes, so
+                # close a snapshot, again until none are left (Nov 16: the live dict raised
+                # "changed size during iteration" and stopped the schedule)
+                while self._tabs:
+                    tabs = list(self._tabs.values())
+                    self._tabs.clear()
+                    for tab in tabs:
+                        await tab.socket.close()
                 await self.session.close()
-                self._tabs.clear()
                 self._session = None
                 self._browser_socket = None
         if self._process:
