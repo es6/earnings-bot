@@ -29,6 +29,23 @@ unlike any seen so far, about 60% of headline values bind (the held-out measure 
 summary of an unfamiliar layout can come out shorter. Summaries stay labeled Beta until the
 live streak's releases have been read value by value.
 
+Two fixes from NVIDIA's August release, which no replay set held (v0.21.52). Ember wrote its
+answer two ways on two calls, and each lost a number that matters (measured):
+
+- **A tolerance is one value.** "Revenue is expected to be $108.0 billion, plus or minus 2%"
+  was dropped as several values, and "2%" made the value read as a percentage. "Plus or
+  minus", "+/-" and "±" with their amount are now set aside when the value is read.
+- **Money copied from a table takes the table's scale.** "$96,221" from a table "in
+  millions" was refused against its cell, so revenue, operating income and net income went
+  missing. When an unscaled amount of 1,000 or more fails, it's retried in millions,
+  thousands and billions. The binder accepts only the scale the table's caption or header
+  states, and the card shows "$96.22B".
+
+On NVIDIA's release both answers now show revenue, operating income, net income and
+revenue and margin guidance. On the 36 saved answers, the only change is two ASML values now
+kept at their table's scale (€4.96B net income, €12.74B cash), both right; the binding
+replay is unchanged and the 7 known wrong facts stay refused.
+
 ## Source references: extraction and durable runtime handoff
 
 `source_document.py` adds a version-scoped evidence representation. Retrieval now carries

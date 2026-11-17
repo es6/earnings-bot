@@ -111,3 +111,76 @@ def test_a_fact_with_several_values_is_dropped_as_only_one_could_be_checked() ->
     shown, dropped = verify_facts([combined], document)
 
     assert shown == [] and dropped[0].endswith("several values in one fact")
+
+
+GUIDANCE = (
+    "Acme reports third quarter fiscal 2027 results\n"
+    "Acme's outlook for the fourth quarter of fiscal 2027 is as follows:\n"
+    "Revenue is expected to be $108.0 billion, plus or minus 2%.\n"
+    "Gross margins are expected to be 74.0%, plus or minus 50 basis points."
+)
+
+
+def test_a_guided_value_with_a_tolerance_is_one_value() -> None:
+    document = document_from_text(GUIDANCE)
+    passage = "Revenue is expected to be $108.0 billion, plus or minus 2%."
+    revenue = SummaryFact(
+        metric="Revenue outlook",
+        value="$108.0 billion, plus or minus 2%",
+        source=passage,
+        period="Q4 FY2027",
+        kind="guide",
+        role="guidance",
+    )
+    margin = SummaryFact(
+        metric="Gross margin outlook",
+        value="74.0% ± 50 bps",
+        source="Gross margins are expected to be 74.0%, plus or minus 50 basis points.",
+        period="Q4 FY2027",
+        kind="guide",
+        role="guidance",
+    )
+
+    shown, dropped = verify_facts([revenue, margin], document)
+
+    assert shown == [revenue, margin], dropped
+
+
+def _table_release(caption: str) -> str:
+    return (
+        "<p>Acme reports third quarter fiscal 2027 results</p>"
+        f"<table><tr><td>{caption}</td><td>Q3 FY27</td><td>Q3 FY26</td><td>Y/Y</td></tr>"
+        "<tr><td>Revenue</td><td>$96,221</td><td>$46,743</td><td>106 %</td></tr>"
+        "<tr><td>Operating income</td><td>$63,734</td><td>$28,440</td><td>124 %</td></tr>"
+        "</table>"
+    )
+
+
+def _unscaled_revenue() -> SummaryFact:
+    return SummaryFact(
+        metric="Revenue",
+        value="$96,221",
+        source="Revenue $96,221 $46,743 106 %",
+        period="Q3 FY2027",
+        kind="actual",
+        role="headline",
+        change="+106%",
+        comparison="YoY",
+    )
+
+
+def test_money_copied_from_a_table_without_its_scale_takes_only_a_scale_the_table_states() -> None:
+    from earnings_bot.source_document import document_from_html
+
+    scaled = document_from_html(_table_release("(In millions)"))
+    thousands = document_from_html(_table_release("(In thousands)"))
+    unstated = document_from_html(_table_release(""))
+
+    shown, dropped = verify_facts([_unscaled_revenue()], scaled)
+    smaller, _ = verify_facts([_unscaled_revenue()], thousands)
+    as_written, _ = verify_facts([_unscaled_revenue()], unstated)
+
+    assert [f.value for f in shown] == ["$96,221 million"], dropped
+    assert shown[0].change == "+106%"
+    assert [f.value for f in smaller] == ["$96,221 thousand"]
+    assert [f.value for f in as_written] == ["$96,221"]
