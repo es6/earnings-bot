@@ -122,6 +122,7 @@ line-by-line sign-off of every module.
 
 | Finding | Evidence and recommended action | Priority / status |
 |---|---|---|
+| Shared Chrome has no record of who is using it | `DirectoryWatcher.scan()` calls `fetcher.close_browser()` whenever no open window has an IR browser route, while research, source audits and `/track` may still be mid-request on the same `DesktopChrome`. Seen live: on Nov 16 at 19:24 `close()` raised "dictionary changed size during iteration" twice and the bot exited (supervisor restarts, about 25 s each); on Nov 15 the AMAT source audit failed with `assert self._session is not None` because Chrome closed under it. v0.22.1 (#173) contains the crash: `close()` closes a snapshot of its tabs and `scan()` survives a failed close. The cause remains: give each user a lease (a context manager that counts holders) and close Chrome only when none hold it, or after a bounded wait. Add a regression with a request in flight during a scan. | Required before sign-off; first lifecycle fix after the streak |
 | A cancelled scorecard caller can leave request cleanup running without its owner waiting | [`EditPriority.card`](../src/first_print/edit_priority.py) cancels in `finally` and drops the task from `_cards` without awaiting its completion. A gated async cleanup probe reproduced a completed caller with a still-pending request. Drain it with an appropriate cleanup deadline, or give its remaining cleanup an explicit supervisor. Preserve alert priority and add one regression that fails on this behavior. | Required resolution before sign-off; reproduced, not fixed by this docs change |
 | Discovery combines several responsibilities | `date_discovery.py` is 1,475 lines. `_check` selects evidence, formats missing-date status, prepares routes/cache and commits the plan. `investigate.py::investigate` spans 255 lines. Consider extraction by phase, preserving source precedence and deadline/untrack checks. Length selects review candidates; it does not mandate splitting. | Refactor candidate after behavior review |
 | Delivery combines transport and orchestration | `pipeline.py` is 1,335 lines and contains Discord poster implementations and release orchestration. Review a poster-module extraction before changing the state machine. Preserve successful bytes, deduplication, edit priority and durable retry semantics. | Refactor candidate; compare release replays |
@@ -181,3 +182,50 @@ Use focused PRs: wording/dead-path cleanup, lifecycle fixes and module extractio
 independently reviewable changes. Report application, test and documentation deltas separately.
 Do not introduce universal file-size caps, new strictness everywhere, or coverage targets
 merely to produce a cleaner score.
+
+## Plan and order (agreed November 16)
+
+Rescanned on November 16 at v0.22.1, after the rename to `first_print` (measured):
+
+| Measure | Value |
+|---|---|
+| Application modules / lines | 70 / 23,790 |
+| Largest modules | `summary_binding` 1,791, `date_discovery` 1,475, `pipeline` 1,335, `recorder` 1,229, `unattended` 1,061, `investigate` 1,013 |
+| Functions over 100 / 60 lines | 15 / 43 of 1,064 |
+| Longest functions | `_paragraph_binding` 263, `investigate` 255, `_table_binding` 231, `watch_directory` 187, `track_progress.render` 180, `publication_trials.run_trials` 172, `audit_sources` 145, `date_discovery._check` 127 |
+| `create_task` calls | 27 |
+| Broad `except Exception` handlers | 28 |
+| `Any` / type-ignore comments / `noqa` | 90 / 12 / 12 |
+
+Length only chooses what to read first, as above.
+
+**Phase 0, during the live streak (Nov 17 to 20): read-only.** Nothing from this review is
+deployed during the streak; finished changes wait on branches, so a hotfix to `main` never
+carries them along. No test suites or heavy work during release windows.
+
+1. Complete the register area by area (the six areas above), with a decision for each.
+2. Ownership table for all 27 created tasks: who awaits or cancels each on normal exit,
+   failure and shutdown. Tonight's Chrome crash is this category.
+3. Classify the 28 broad handlers: a deliberate boundary (keep, with the reason) or a mask
+   (narrow it or let it fail).
+4. Write the Phase 1 fixes on branches, each with a regression that fails without it.
+
+**Phase 1, right after the streak: lifecycle fixes, deployed one at a time.**
+
+1. Chrome leases (the first finding above).
+2. Scorecard cleanup on cancel (`EditPriority.card`).
+3. The summarizer's API client: who closes it on startup failure, exit and cancellation.
+4. Stale wording and narration (the "trial" vocabulary and the like).
+
+**Phase 2: one extraction per PR, each proven unchanged.** Ordered so the international work,
+which extends discovery and sources, lands on the restructured code:
+
+1. Discovery: `date_discovery._check` and `investigate` split by phase. Proven with
+   `scripts/track_eval.py` on about 50 upcoming tickers, before and after.
+2. Delivery: Discord posters out of `pipeline.py`. Proven with the burst and failure replays.
+3. `unattended.watch_directory`: building the watcher separated from running it.
+4. The verifier: `_paragraph_binding` and `_table_binding` as named rules. Proven with the
+   binding replay (development, held-out and unseen sets) and the known-wrong facts.
+5. `track_progress.render` by section.
+
+**Phase 3: sign-off.** Diagrams and the reading guide updated, then the gate's checklist above.

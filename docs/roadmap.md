@@ -199,9 +199,10 @@ Agreed with the owner on Nov 15:
    off. See [summaries.md](summaries.md).
 3. **Multiple servers:** deployed early, on Nov 15 with the owner's yes. After the streak
    (Nov 20), configure a second server and measure Discord's rate limits.
-4. **Python maintainability review:** apply the [review standard](python-quality.md), complete
-   the whole-codebase findings register and review the final verified-summary implementation
-   after its active changes settle. Preserve the release behavior with focused PRs.
+4. **Python maintainability review:** apply the [review standard](python-quality.md) in the
+   [agreed phases](python-quality.md#plan-and-order-agreed-november-16): read-only during the
+   streak, lifecycle fixes right after it (Chrome leases first), then one extraction per PR,
+   discovery before the international work. Preserve the release behavior with focused PRs.
 5. **Rename to First Print:** done Nov 16 (v0.22.0).
 6. **International tickers:** the foundations, identification, then a dedicated source
    per market ([international.md](international.md)), each going live once its answer
