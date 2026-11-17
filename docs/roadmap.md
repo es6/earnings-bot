@@ -21,7 +21,7 @@ one server until a second is configured.
   summaries value by value before "Beta" comes off, and read its `resources` records.
 - **Open, bounded:** the Python maintainability review (one reproduced lifecycle finding to
   fix, then sign-off); a second Discord server configured and its rate limits measured;
-  the name and identity decision.
+  the rename to First Print.
 - **Open, largest:** international tickers. Only the plan and debug mode exist, so this is
   most of the remaining work.
 
@@ -33,7 +33,7 @@ one server until a second is configured.
 | Verified summaries | Live since Nov 16 (v0.21.51), labeled Beta until the streak is read |
 | International tickers | Not started beyond the plan and debug mode |
 | Load on the PC | Limits live; measured from the streak's `resources` records |
-| Name and identity | Added Nov 16: GitHub rename, and possibly a logo and a new name for the whole bot |
+| Name and identity | Decided Nov 16: the bot becomes **First Print**; full rename after the streak |
 
 ## The 1.0 gate (agreed November 12)
 
@@ -142,11 +142,18 @@ Open:
 
 ### Name and identity
 
-Added by the owner on Nov 16. The repository is `earnings-bot`, the Discord application shows
-as "Instantaneous Earnings", and nothing has a logo. Decide before 1.0, because every rename
-gets more expensive once other people run copies.
+Decided by the owner on Nov 16: the bot becomes **First Print**, the whole bot (size 3
+below). On Wall Street "the print" is the reported number itself ("NVDA prints at 4:20"), and
+this bot's job is to be first to it. The name also fits `/transcript` and markets outside the
+US. Today the repository is `earnings-bot`, the Discord application shows as "Instantaneous
+Earnings", and nothing has a logo; renaming before 1.0 is cheaper than after other people run
+copies.
 
-Three sizes, each including the one before:
+Checked on Nov 16: `firstprint` and `first-print` are free on PyPI; the repository can be
+`es6/firstprint`; firstprint.com, .app and .dev are registered by others; a web search found no
+finance product or trademark by the name (the USPTO database was not searched directly).
+
+The sizes, each including the one before:
 
 1. **GitHub rename.** GitHub redirects the old URLs, so existing clones keep working. Update
    the remote, the CI badges, the clone and Docker commands in the README, and links in the
@@ -160,8 +167,15 @@ Three sizes, each including the one before:
    `schedules/` files must keep working through the switch. Do it in one PR, outside a
    release window.
 
-Open: the owner picks the name and the size. Step 3 is safest after the streak and before the
-international work starts, so the new modules are written under the final name.
+Plan:
+- **Any time (owner):** the Discord application's name and avatar in the Developer Portal.
+  Nothing in the code changes.
+- **Logo:** a mark readable at Discord's 32 px avatar size, such as a bold "1" or a
+  candlestick that doubles as a lightning bolt.
+- **After the streak (Nov 20), before the international work:** the repository rename, then
+  the package `firstprint`, the commands (`firstprint`, `firstprint-record`,
+  `firstprint-replay`), the Docker image and the Task Scheduler tasks (with the owner's yes),
+  in one PR outside a release window. The deploy script pulls from the renamed remote.
 
 ## Order of work
 
@@ -180,8 +194,8 @@ Agreed with the owner on Nov 15:
 4. **Python maintainability review:** apply the [review standard](python-quality.md), complete
    the whole-codebase findings register and review the final verified-summary implementation
    after its active changes settle. Preserve the release behavior with focused PRs.
-5. **Name and identity:** the owner's choice of name and size; a full rename lands after the
-   streak, before the international work.
+5. **Rename to First Print:** the full rename lands after the streak, before the
+   international work.
 6. **International tickers:** the foundations, identification, then a dedicated source
    per market ([international.md](international.md)), each going live once its answer
    keys pass one-shot.
