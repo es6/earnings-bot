@@ -383,6 +383,15 @@ def format_fact(fact: SummaryFact) -> str:
     ):
         value = f"{value} of {denominator[1]}"
     change = format_change(fact.change, reference)
+    rate = re.fullmatch(r"([2212-]?)\+?(\d+(?:\.\d+)?)%", value.strip())
+    if (
+        rate
+        and not re.search(r"margin|rate|ratio|share", label, re.IGNORECASE)
+        and (same := re.match(r"([2212-]?)\+?(\d+(?:\.\d+)?)%", change.strip()))
+        and bool(same[1]) == bool(rate[1])
+        and same[2] == rate[2]
+    ):
+        value = ""  # comparable sales 2.2% is its growth: "+2.2% YoY", not "2.2%; +2.2% YoY"
     if not value.strip():  # a growth rate given without a level
         return f"{prefix}{label}: {change}" if change.strip() else f"{prefix}{label}"
     text = f"{prefix}{label}: {value}"

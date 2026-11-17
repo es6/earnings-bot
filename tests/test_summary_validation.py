@@ -279,3 +279,17 @@ def test_prose_about_millions_is_not_a_table_caption() -> None:
     release = "We serve millions of customers in 40 markets.\n| 2025 | 2026\n" + source
     units = SummaryFact("Units shipped", "980.8", source, period="Q3 2026", unit="thousand units")
     assert validate_fact(replace(units, unit="$ millions", currency="USD"), release) != []
+
+
+def test_a_figure_quoted_without_its_number_waits_for_the_verifier_only_when_asked() -> None:
+    # HD, Nov 17: net sales quoted from a passage that didn't hold the number was dropped
+    # before the verifier, which reads every passage and table cell, could bind it
+    unquoted = replace(cash(), source="Non-GAAP free cash flow margin", prior="", change="")
+    wrong_period = replace(unquoted, period="")
+    growth_only = replace(cash(), change="+99%")
+    assert validate_facts([unquoted], NOW)[0] == []
+    kept, rejected = validate_facts([unquoted, wrong_period, growth_only], NOW, unquoted=True)
+    assert kept[0] == unquoted
+    # Any other problem still refuses it, and a refused growth rate keeps the old path
+    assert wrong_period not in kept and any("missing fiscal period" in r for r in rejected)
+    assert growth_only not in kept

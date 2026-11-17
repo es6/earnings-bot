@@ -143,7 +143,8 @@ class Summarizer:
             raise SummaryError(
                 f"{WRITER} returned no usable facts (stop reason {message.stop_reason})"
             ) from error
-        accepted, rejected = validate_facts(facts, release)
+        # Verified mode binds every kept figure to the release, so a badly quoted one can try
+        accepted, rejected = validate_facts(facts, release, unquoted=self.verified)
         if not accepted:
             raise SummaryError(
                 f"none of {WRITER}'s {len(facts)} facts could be confirmed in the release"

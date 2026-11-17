@@ -282,13 +282,38 @@ def validate_fact(fact: SummaryFact, release: str) -> list[str]:
     return issues
 
 
-def validate_facts(facts: list[SummaryFact], release: str) -> tuple[list[SummaryFact], list[str]]:
+# The model's quote didn't hold the figure, and nothing else is wrong that the check could see
+_UNQUOTED = (
+    "source passage is empty or not exact",
+    "value number is not supported by its source passage",
+    "prior number is not supported by its source passage",
+    "change number is not supported by its source passage",
+)
+
+
+def validate_facts(
+    facts: list[SummaryFact], release: str, *, unquoted: bool = False
+) -> tuple[list[SummaryFact], list[str]]:
+    """The facts the quote check keeps, and a reason for each one it doesn't. With unquoted,
+    a figure refused only because the model's quote doesn't hold it is kept for the verifier,
+    which looks for it in every passage and table cell of the release (HD's net sales and
+    operating income, Nov 17). Only a caller that verifies every kept fact may ask for this."""
     accepted, rejected = [], []
     for fact in map(_stated_comparison, facts):
         try:
             issues = validate_fact(fact, release)
         except (InvalidOperation, ValueError, OverflowError):
             issues = ["ambiguous numeric or table binding"]
+        if (
+            issues
+            and unquoted
+            and fact.kind != "update"
+            and re.search(r"\d", fact.value)
+            and issues[0] in _UNQUOTED[:2]  # the figure itself, not only its growth
+            and all(issue in _UNQUOTED for issue in issues)
+        ):
+            accepted.append(fact)
+            continue
         if issues:
             rejected.append(f"{fact.metric}: {'; '.join(issues)}")
             # Preserve an independently supported current value when only its optional
