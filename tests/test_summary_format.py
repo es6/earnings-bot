@@ -453,3 +453,5 @@ def test_a_rate_that_is_its_own_growth_is_shown_once() -> None:
     assert format_fact(replace(comps, change="-2.2%")) == "Comparable sales: 2.2%; -2.2% YoY"
     margin = replace(comps, metric="Gross margin", change="+2.2%")
     assert format_fact(margin) == "Gross margin: 2.2%; +2.2% YoY"
+    update = SummaryFact("Fiserv partnership", "signed", "source", "update", change="Signed")
+    assert format_fact(update) == "Fiserv partnership: signed"

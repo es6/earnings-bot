@@ -392,6 +392,8 @@ def format_fact(fact: SummaryFact) -> str:
         and same[2] == rate[2]
     ):
         value = ""  # comparable sales 2.2% is its growth: "+2.2% YoY", not "2.2%; +2.2% YoY"
+    if change.strip() and change.strip().casefold() == value.strip().casefold():
+        change = ""  # KLAR, Nov 17: "Fiserv partnership: signed; signed"
     if not value.strip():  # a growth rate given without a level
         return f"{prefix}{label}: {change}" if change.strip() else f"{prefix}{label}"
     text = f"{prefix}{label}: {value}"
