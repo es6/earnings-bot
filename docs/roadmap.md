@@ -1,255 +1,37 @@
 # Roadmap
 
-What's left before 1.0 and what comes after, as agreed with the owner. Status as of
-November 16, 2026. Times are US Eastern.
+What First Print 1.0 means, and what comes after. Progress, plans and evidence are tracked
+outside the repository; this page changes only when the goals do.
 
-See the [implementation handoff](completion-2026-11-15.md) for the completed work,
-preserved evidence and remaining release-time gates.
+## 1.0
 
-**Live since November 16, 06:21:** v0.21.51, everything merged through #166, with verified
-summaries on, deployed with the owner's authorization. That includes the Chrome limits
-(#135), `/track` debug mode (#140) and the multiple-server code (#136 to #138), which runs as
-one server until a second is configured.
+1.0 is a bot the owner can leave running through an earnings season:
 
-## Where 1.0 stands
-
-1.0 needs everything in the gate below and the sections added before 1.0. As of Nov 16:
-
-- **Done:** loud route failures, gentler polling, failure replays, crash cleanup, the Beta
-  label, Chrome limits, and verified summaries live.
-- **This week:** the live streak (Nov 17 to 20). After it: read the streak's verified
-  summaries value by value before "Beta" comes off, and read its `resources` records.
-- **Open, bounded:** the Python maintainability review (one reproduced lifecycle finding to
-  fix, then sign-off); a second Discord server configured and its rate limits measured.
-- **Open, largest:** international tickers. Only the plan and debug mode exist, so this is
-  most of the remaining work.
-
-| Area | Where it stands |
-|---|---|
-| Live streak | Next, Nov 17 to 20 |
-| Python maintainability | Added Nov 16: full code-quality review before 1.0; initial scan and standards recorded, sign-off open |
-| Multiple servers | Live, not set up: no second server configured yet |
-| Verified summaries | Live since Nov 16 (v0.21.51), labeled Beta until the streak is read |
-| International tickers | Not started beyond the plan and debug mode |
-| Load on the PC | Limits live; measured from the streak's `resources` records |
-| Name and identity | Done Nov 16: renamed **First Print** (v0.22.0) |
-
-## The 1.0 gate (agreed November 12)
-
-| # | Item | Status |
-|---|---|---|
-| 1 | A route that dies mid-window is loud | Done: the watchdog alarms when a window's polling stops or a route is refused, and names it (#90, #91). `/status` and the window report show a degraded route (#100) |
-| 2 | Polling is gentler far from the release time | Done: 15 s far from a release time, 5 s from 5 minutes before, full speed from 2 minutes before to 10 after (#92, #128). Live, not yet seen on a live release |
-| 3 | A live streak | Next. HD, KLAR and NVDA on Tue Nov 17, ROAD on Thu Nov 19, WRD on Fri Nov 20. Every IR route stays alive (or recovers and says so), the alert posts, and the summary comes from the first available text. Each is written up from the journal the same day, and a failure restarts the streak |
-| 4 | Failure-replay tests | Done. A refusal mid-window (`test_recorder`), repeated timeouts as a release goes live (#93, #101), a wire alert with no readable article, a restart after delivery not summarizing again, and Discord refusing a post or edit (#123) |
-| 5 | Summaries labeled beta until verified summaries are confirmed on live releases | Done: the footer starts "Beta · Summary by ..." (#132) |
-| 6 | Python maintainability review (added November 16) | Open: review readability, names, comments, module structure, task/resource ownership, types and operations. Resolve concrete findings and document justified deferrals. See [the standards, diagrams and initial scan](python-quality.md) |
-
-From the earlier 1.0 list:
-
-| Item | Status |
-|---|---|
-| Crash cleanup | Done: Chrome ends with the bot, and the bot clears Chrome and profiles a previous run left (#133) |
-| Load and failure replay | Done: a 20-release burst replay and the failure replays above |
-| Soak | Done for fixture replay and passive monitoring: 6,660 replay alerts and four hours of live-process counters. No sustained Chrome or real Discord claim; see [scope and results](soak-2026-11-15.md) |
-| Chrome limits, telemetry | Live since Nov 15: byte caps, shared pacing, below-normal priority, an 8 GiB job memory ceiling and per-window resource records (#135). Sustained real-browser evidence remains open |
-| Whether the first missed IR page had the same cause as Nebius's | Investigated: On/Sea had no HTTP refusal/timeout or route retirement. Missing historical bodies limit attribution; [architecture](architecture.md) records evidence and existing fixes. Nebius now has direct/fallback diagnostics (#146) |
-
-## Added before 1.0 (November 15)
-
-### International tickers
-
-The full plan is [international.md](international.md); the debug mode it's built with is
-[track-testing.md](track-testing.md). Agreed with the owner on Nov 15:
-
-- **Markets:** ASX, Hong Kong, Tokyo, Toronto and Europe's main markets. Any other exchange is
-  learned when `/track` identifies one of its tickers and a second source confirms it.
-- **Symbols:** `SYMBOL.SUFFIX` with Yahoo Finance's suffixes (`TEA.AX`, `0700.HK`, `7203.T`,
-  `SHOP.TO`, `SAF.PA`); `EXCHANGE:SYMBOL` also accepted.
-- **US tickers keep today's path.** The new logic runs only for symbols naming a non-US
-  exchange, or plain symbols that aren't on SEC's list.
-- **Decisions:** OpenFIGI for identification (it named all six test tickers correctly without
-  a key); `exchange_calendars` for hours and holidays; Japanese and Chinese releases
-  summarized in English by Muse Ember at low effort; new exchanges learned automatically once
-  two sources agree.
-- **Order:**
-  1. Debug mode (`/track ... debug:true`).
-  2. Foundations: symbols and the exchange table, a non-SEC company key, half-year periods,
-     each exchange's hours, currencies and languages.
-  3. Identification.
-  4. A dedicated source per market: ASX, Toronto, Hong Kong, Tokyo, then Europe exchange by
-     exchange.
-  5. Live checks as each market reports.
-
-  Only the plan and debug mode exist so far. The company-key change waits until the streak
-  ends (the multiple-server work it depended on is merged and live).
-
-### Multiple Discord servers
-
-Decided Nov 15: each server tracks its own companies; only the owner adds a server, in
-config; each server sees scorecards for its own companies; a server tracking a company
-another already researched may import that research after a quick check.
-
-All three steps are live since the Nov 15 deploy (v0.21.43). `DISCORD_SERVER_CHANNEL_IDS` is
-empty, so the bot still serves one server; adding a server is a config change and a restart.
-
-1. Several alert channels from config, own lists, alerts fanned out (merged #136).
-   `DISCORD_SERVER_CHANNEL_IDS`; commands registered in each
-   server; one window, one set of polls and one summary per release; the alert goes to every
-   server tracking the company at once.
-2. Research once per company across servers, written to each server that tracks it (merged
-   #137, including a shared retry cooldown). A server tracking a company another already
-   researched gets its findings at the next research pass, within about an hour, or at
-   once with step 3.
-3. Importing another server's research at `/track`, after a quick check that it's current
-   (merged #138, with current-profile, successful-response and date checks).
-
-Open: after the streak, configure a second server and measure Discord's rate limits with
-several servers posting the same release (one send per server, then its edits).
-
-### Load on the PC from `/track` and live releases
-
-The aim: a heavy release (four or more companies at once) or a `/track` run never slows the
-owner's PC down, whether through CPU, memory or leftover processes. Measured on Nov 15 on this
-PC (i9-13900K, 32 threads, 64 GB):
-
-| Load | Chrome | The bot itself | Whole PC |
-|---|---|---|---|
-| Five release windows at once, full speed, real Chrome and sites, 3 min | 1.4 GB median, 1.6 GB peak working set (1.0 GB committed); 1.4 cores peak, about 0.1 on average | 76 MB; 0.1 core peak | CPU 14% median, 27% peak; free RAM unchanged at 35 GB |
-| `/track` research for 3 new companies, one at a time as the bot does | 760 MB median, 1.2 GB peak; 2.1 cores peak | 129 MB; 0.9 core peak | CPU 40% peak |
-| 40 real release files read at once (PDFs and pages) | — | 106 MB; 1 core (Python runs one thread at a time) | 4.5 s in all |
-
-Done:
-- Chrome ends with the bot, and leftovers are cleared at start (#133). A Chrome from Nov 13 was
-  still running two days later, beside 1.8 GB of old profiles on disk.
-- Chrome runs at below-normal priority, so the owner's programs come first when the CPU is
-  busy, under an 8 GB ceiling on the memory its processes may commit together.
-- Every minute of a window, the journal records the bot's memory and CPU, Chrome's processes,
-  CPU and peak memory, and the PC's free memory (`resources` events).
-- Tried and dropped: turning off images in Chrome saved about 3% of its memory and no CPU, and
-  BN's rendered results table failed without them.
-
-Open:
-- Read the `resources` records from the live streak (Nov 17 to 20).
-- Keep heavy work off this PC during release windows. At 17:30 on Nov 15, while six agents
-  ran test suites, the bot's Discord connection fell 41.4 s behind (measured, from the log).
-- Sustained real-Chrome release-window behavior. The completed fixture/passive soaks and
-  reusable runners are in [soak results](soak-2026-11-15.md); neither substitutes for this.
-- When many releases land at once, one release's text can wait seconds behind the others'
-  parsing (a PDF read took 0.3 s alone and up to 4 s among 40). That costs summary speed, not
-  responsiveness. A separate process for parsing would fix it at some memory cost.
-
-### Name and identity
-
-Decided by the owner on Nov 16: the bot becomes **First Print**, the whole bot (size 3
-below). On Wall Street "the print" is the reported number itself ("NVDA prints at 4:20"), and
-this bot's job is to be first to it. The name also fits `/transcript` and markets outside the
-US. Today the repository is `first-print`, the Discord application shows as "Instantaneous
-Earnings", and nothing has a logo; renaming before 1.0 is cheaper than after other people run
-copies.
-
-Checked on Nov 16: `firstprint` and `first-print` are free on PyPI; the repository will be
-`es6/first-print` (free); firstprint.com, .app and .dev are registered by others; a web search found no
-finance product or trademark by the name (the USPTO database was not searched directly).
-
-The sizes, each including the one before:
-
-1. **GitHub rename.** GitHub redirects the old URLs, so existing clones keep working. Update
-   the remote, the CI badges, the clone and Docker commands in the README, and links in the
-   docs.
-2. **A logo and a display name.** The owner sets the Discord application's name and avatar in
-   the Developer Portal; the repository gets the logo for its README and social preview.
-3. **The whole bot.** Also the Python package (`first_print`), the commands
-   (`first-print`, `first-print-record`, `first-print-replay`), the Docker image, and the
-   Task Scheduler tasks ("Earnings Bot", "Earnings Bot Watchdog"). The tasks are system
-   settings, so renaming them needs the owner's yes, and the live checkout's path and saved
-   `schedules/` files must keep working through the switch. Do it in one PR, outside a
-   release window.
-
-Plan:
-- **Any time (owner):** the Discord application's name and avatar in the Developer Portal.
-  Nothing in the code changes.
-- **Logo (chosen Nov 16):** a stopwatch drawn as a printer's registration mark, with its first
-  quarter in mint: speed and print in one shape. Navy `#0B1F3A`, light `#E8F1EC`, mint
-  `#2BD49A`. Files in [`assets/`](../assets): `first-print-avatar.png` (1024 px square, for
-  the Discord application and bot avatar, which Discord crops to a circle),
-  `first-print.png` and `first-print.svg` (round, for everything else);
-  `scripts/render_logo.py` redraws the PNGs.
-- **Done Nov 16 (v0.22.0), at the owner's request, before the streak:** the package
-  `first_print`, the commands (`first-print`, `first-print-record`, `first-print-replay`,
-  `first-print-watchdog`), the Docker image and the repository `es6/first-print`. Kept
-  unchanged on purpose, because other systems or saved state know them: the user agents IR
-  sites see (`earnings-bot/0.1`), the Chrome profile prefix (`earnings-bot-chrome-`), the
-  watchdog's webhook user agent, the `EARNINGS_BOT_*` environment variables, the Task
-  Scheduler task names ("Earnings Bot", "Earnings Bot Watchdog"), the live checkout's path
-  `C:\earnings-bot`, and the "Earnings monitoring started" message the deploy script waits
-  for. `update-bot.ps1` recognizes a bot running under either name.
-
-## Order of work
-
-Agreed with the owner on Nov 15:
-
-1. **`/track` debug mode** ([track-testing.md](track-testing.md)). Built in v0.21.28 for US
-   tickers; it adds an option to `/track` and changes nothing else live.
-2. **Verified summaries:** live since Nov 16 (v0.21.51, `VERIFIED_SUMMARIES=true`, the
-   owner's authorization). Each live summary fact is checked against the release before it
-   is shown; on the Nov 12 replay it keeps 95% of right headline facts and 96% of right
-   guidance, and none of the 7 known wrong facts. Releases unlike any seen keep about 60% of
-   headline values, so the streak's summaries are read value by value before "Beta" comes
-   off. See [summaries.md](summaries.md).
-3. **Multiple servers:** deployed early, on Nov 15 with the owner's yes. After the streak
-   (Nov 20), configure a second server and measure Discord's rate limits.
-4. **Python maintainability review:** apply the [review standard](python-quality.md), complete
-   the whole-codebase findings register and review the final verified-summary implementation
-   after its active changes settle. Preserve the release behavior with focused PRs.
-5. **Rename to First Print:** done Nov 16 (v0.22.0).
-6. **International tickers:** the foundations, identification, then a dedicated source
-   per market ([international.md](international.md)), each going live once its answer
-   keys pass one-shot.
-7. **After 1.0:** `/transcript`.
-
-## Other open work
-
-- GlobeNewswire article guessing. The 06:58 record-only batch on Nov 16 found 51 pages with no
-  refusal (measured). GlobeNewswire opened the 07:00 burst in number order, about one page
-  every 2 s over 85 s, and the guesser stayed within a few seconds of each page. The 15:58
-  batch also runs a candidate design alongside, for the same burst: most requests on the next
-  number, the following number requested as soon as one opens, at the same 1.5 requests a
-  second. NVDA's guessing on Tue Nov 17 (16:18) is record-only; its GlobeNewswire pages carry
-  the `Nasdaq:NVDA` tag it matches on. NVDA's SEC directory trial runs at 16:19:30 that day.
-  After the streak: match by company name when a page has no ticker tag, report a guesser
-  that stops (refused or out of budget) in `/status` and the window report, and adopt the
-  candidate design if the head-to-head supports it.
-- Summary quality: the reference-bound writer retains 790/1,869 selected values (42%) in
-  the frozen corpus; this is retention, not an accuracy score. Driver profiles showed no
-  gain. Both remain off pending independently audited improvement on new releases.
-- Source follow-up: ROAD pagination/JPM manifests (#143), provenance-bound BW mirrors
-  (#144), bounded profile diagnostics (#146) and publisher timestamp recovery (#148) are
-  merged. HubSpot profile-dependent access is verified; no new publication-speed lead is
-  proven. See [diagnostics](source-diagnostics.md) and [inert event drafts](trial-plans/README.md).
-- [Test audit](test-audit/README.md): done (#154, #155, #157). Every candidate survivor was
-  checked against the whole suite: 27 gaps closed, 5 already caught elsewhere, 1 equivalent.
-  The serial suite went from 93.8 s to 34.0 s (measured). The leftovers (misplaced tests,
-  private-method calls, a test file merge) were finished in #157.
-- [Astra task priorities](astra-tasks.md) record the next bounded reasoning/research jobs.
-- Owner: pause Windows Update before Nov 17.
-- Dependabot #119 (Docker Python 3.15) closed Nov 15: it moved only the runtime stage, so
-  the 3.13 virtualenv wouldn't start. A Python upgrade moves both Docker stages,
-  `.python-version` and CI together, after 1.0.
+- **Reliable release detection.** Every route stays alive or says loudly that it isn't; a
+  route that dies mid-window alarms. Polling is gentle far from a release time and full
+  speed around it. A live streak of releases posts every alert from the first route to see
+  it, with no failure.
+- **Summaries worth trusting.** Each fact shown is checked against the release
+  (`VERIFIED_SUMMARIES`). Summaries are labeled Beta until live releases confirm the check.
+- **Safe on the owner's PC.** Chrome is bounded in memory and priority, ends with the bot,
+  and a heavy release day never slows the PC.
+- **Several Discord servers,** each with its own tracked companies, sharing one watch per
+  release.
+- **Tickers outside the US:** ASX, Hong Kong, Tokyo, Toronto and Europe's main markets
+  ([international.md](international.md)), identified with OpenFIGI, each market with a
+  dedicated source.
+- **Maintainable code,** reviewed against the [Python quality guide](python-quality.md):
+  clear ownership of tasks and resources, and no workflow too large to change safely.
 
 ## After 1.0
 
 ### Earnings call transcript summaries (`/transcript`)
 
-The owner's idea (Nov 15). `/transcript TICKER` turns on listening for that company's call.
-The bot posts a Discord message at once and keeps it updated with status: call found, live,
-ended, transcript found, summarizing. Once the call is over, it gets the transcript and runs
-the summarizer with the same aim as for releases: the most useful new information from the
-call, not a repeat of the release. The summary then replaces the status.
+`/transcript TICKER` listens for the company's call. The bot posts a Discord message at once
+and keeps it updated with status: call found, live, ended, transcript found, summarizing.
+Once the call is over it gets the transcript and summarizes the most useful new information
+from the call, not a repeat of the release. The summary then replaces the status.
 
-To work out:
-
-- Where transcripts come from and how soon after the call. Options include the company's IR
-  site, the webcast provider and transcript services.
-- How the bot knows the call has started and ended.
-- Muse Ember at low effort only, with a spend cap per call.
+To work out: where transcripts come from and how soon after the call (the IR site, the
+webcast provider, transcript services); how the bot knows the call has started and ended;
+Muse Ember at low effort only, with a spend cap per call.

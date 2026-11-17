@@ -81,9 +81,7 @@ Details: [command reference](docs/unattended.md#commands).
 
 ## Status
 
-Before 1.0. The polling, failure handling, crash cleanup and verified summaries are done.
-What's left is a live streak of releases, a code-quality review, then tickers outside the US
-(ASX, Hong Kong, Tokyo, Toronto and Europe). See the [roadmap](docs/roadmap.md).
+Before 1.0. The [roadmap](docs/roadmap.md) says what 1.0 means.
 
 ## Run your own copy
 
@@ -160,7 +158,7 @@ Two command-line tools come with it:
 ## Development
 
 The [Python quality guide](docs/python-quality.md) explains the project's conventions,
-structure, resource ownership and pre-1.0 maintainability review, with diagrams and references.
+structure and resource ownership, with diagrams and references.
 
 ```bash
 uv sync               # install

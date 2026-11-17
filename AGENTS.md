@@ -1,3 +1,11 @@
+# Where notes go
+
+`docs/` holds reference only: how the bot works and how to run it. Plans, status, progress,
+handoffs, audits, evaluations, case records and other dated evidence go in `.context/` at
+the repository root, which git ignores. The live checkout's `C:\earnings-bot\.context\` is
+the copy every agent shares; read it there, and write there rather than in a task clone.
+Don't add a docs page or a docs PR to record a decision or a plan.
+
 # IR access and freshness investigations
 
 When investigating a difficult ticker from `/track`, an IR access failure, stale
