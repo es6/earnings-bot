@@ -184,7 +184,8 @@ def test_a_range_is_labelled_by_its_own_sentence_not_one_sharing_an_end() -> Non
     document = document_from_text(
         "Walmart reports second quarter results. Fiscal year 2027 outlook\n"
         "For Q3, net sales are expected to grow 3.0% to 3.75% and adjusted operating income "
-        "to grow 2.0% to 4.0%. Net sales for FY27 are expected to grow 4.0% to 5.0%, all in "
+        "to grow 2.0% to 4.0% versus 1.5% last year. Net sales for FY27 are expected to grow "
+        "4.0% to 5.0%, all in "
         "constant currency."
     )
     year = fact(
