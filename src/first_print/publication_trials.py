@@ -348,6 +348,11 @@ async def run_trials(
                     min(route.cadence(journal.now()), max(0, budget.deadline - time.monotonic()))
                 )
 
+        async def observe_in_chrome(route: TrialRoute) -> None:
+            # A Chrome route holds the shared Chrome open until its trial ends
+            with fetcher.browser_lease(f"trial {plan.id}"):
+                await observe(route)
+
         for route in plan.routes:
             # Each route's task keeps its own observation context: the plan's budget and
             # byte cap, and the route's Chrome cache mode and service-worker bypass.
@@ -358,7 +363,11 @@ async def run_trials(
                 cache_mode=route.cache_mode,
                 bypass_service_worker=route.bypass_service_worker,
             ):
-                tasks.append(asyncio.create_task(observe(route)))
+                tasks.append(
+                    asyncio.create_task(
+                        observe_in_chrome(route) if route.transport == "chrome" else observe(route)
+                    )
+                )
         async with asyncio.timeout(max(0, budget.deadline - time.monotonic())):
             await asyncio.gather(*tasks)
     except TimeoutError:
