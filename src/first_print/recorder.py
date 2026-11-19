@@ -42,7 +42,9 @@ from first_print.sec_results import SixKResults, SixKUnavailable, is_results_rel
 from first_print.sources import (
     BUSINESS_WIRE_EARNINGS,
     GLOBENEWSWIRE_EARNINGS,
+    PR_NEWSWIRE_CACHED_INTERVAL,
     PR_NEWSWIRE_EARNINGS,
+    PR_NEWSWIRE_EARNINGS_PAGE,
     PR_NEWSWIRE_SEMICONDUCTORS,
     BroadcomNewsroom,
     EdgarFilings,
@@ -50,6 +52,7 @@ from first_print.sources import (
     FreshPrNewswire,
     GuessedFile,
     GuessedPage,
+    PrNewswirePage,
     Q4FinancialReports,
     Q4PressReleases,
     RssFeed,
@@ -236,8 +239,16 @@ class Target(BaseModel):
                 )
             )
         if self.prnewswire:
-            # The fresh copy goes first. The cached one stays in case PR Newswire's own server
-            # stops answering.
+            # The fresh feed goes first, then the same category as a web page, which was ahead of
+            # it on two of three releases on Nov 18. The cached feed stays in case PR Newswire's
+            # own server stops answering. Whichever lists the release first posts it.
+            cached = RssFeed(
+                "prnewswire",
+                PR_NEWSWIRE_EARNINGS,
+                self.prnewswire,
+                publisher=self.wire_publisher,
+            )
+            cached.interval = PR_NEWSWIRE_CACHED_INTERVAL
             sources += [
                 FreshPrNewswire(
                     "prnewswire_busted",
@@ -245,12 +256,13 @@ class Target(BaseModel):
                     self.prnewswire,
                     publisher=self.wire_publisher,
                 ),
-                RssFeed(
-                    "prnewswire",
-                    PR_NEWSWIRE_EARNINGS,
+                PrNewswirePage(
+                    "prnewswire_html",
+                    PR_NEWSWIRE_EARNINGS_PAGE,
                     self.prnewswire,
                     publisher=self.wire_publisher,
                 ),
+                cached,
             ]
         sources += [
             _company_feed(

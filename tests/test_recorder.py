@@ -193,6 +193,7 @@ def test_extra_sources_come_from_the_targets_trial_table(tmp_path: Path) -> None
         "edgar",
         "edgar_latest",
         "prnewswire_busted",
+        "prnewswire_html",
         "prnewswire",
         "broadcom_newsroom",
         "rss:ir.hubspot.com",

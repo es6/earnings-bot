@@ -72,6 +72,7 @@ def test_durations_read_at_a_glance(seconds: float, text: str) -> None:
         ("businesswire_busted", "Business Wire earnings feed"),
         ("prnewswire_busted", "PR Newswire earnings feed"),
         ("prnewswire_semiconductors", "PR Newswire semiconductor feed"),
+        ("prnewswire_html", "PR Newswire earnings page"),
         ("globenewswire", "GlobeNewswire earnings feed"),
         ("browser-ir", "IR press release page, read in Chrome"),
         ("browser-pdf:q3.pdf", "IR file q3.pdf, read in Chrome"),

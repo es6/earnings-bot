@@ -88,8 +88,9 @@ USER_AGENT = "Mozilla/5.0 (compatible; earnings-bot/0.1; +https://github.com/es6
 # Minimum seconds between requests to one host, or to one site whose hosts share a queue. SEC
 # allows 10 requests a second across everything we send it, so all of sec.gov gets 8 a second,
 # leaving headroom. The file CDN serves many companies, and Apple's newsroom is a few guessed URLs
-# plus a feed on one very large site. PR Newswire's earnings feed is read fresh every second and
-# from its CDN every two. Every other host gets one request a second.
+# plus a feed on one very large site. PR Newswire's earnings feed is read fresh every second,
+# and its earnings page and the feed's CDN copy every four. Every other host gets one request
+# a second.
 # GlobeNewswire takes three guessed article numbers at once every 2 s around a GlobeNewswire
 # issuer's release (globe_frontier) beside its feeds.
 _HOST_GAPS = {
