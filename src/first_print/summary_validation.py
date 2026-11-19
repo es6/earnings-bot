@@ -44,10 +44,10 @@ def _passages(source: str) -> list[str]:
     return quoted if source.strip().startswith('"') and quoted else [source]
 
 
-# "$2.649 - $2.653 billion": the scale word written once covers both ends of the range
+# "$2.649 - $2.653 billion", "$10.9 - $11.0B": the scale written once covers both ends
 _RANGE_SCALE = re.compile(
     r"(\d[\d,]*(?:\.\d+)?)(\s*(?:-|\u2013|to)\s*[$\u20ac\u00a3\u00a5]?\s*\d[\d,]*(?:\.\d+)?\s*"
-    r"(thousands?|millions?|billions?|trillions?)\b)",
+    r"(thousands?\b|millions?\b|billions?\b|trillions?\b|[kmbt](?![\w.])))",
     re.IGNORECASE,
 )
 # The quoted source itself names the comparison ("grew 13% year-over-year")
@@ -71,7 +71,10 @@ def _stated_comparison(fact: SummaryFact) -> SummaryFact:
 
 def _numbers(text: str, unit: str = "") -> list[tuple[Decimal, Decimal, str]]:
     """Amount, rounding tolerance and dimension; Decimal preserves table precision."""
-    text = _RANGE_SCALE.sub(lambda m: f"{m[1]} {m[3]}{m[2]}", text)
+    # The joining dash becomes "to", so "$10.55-$10.75B" never reads as a minus
+    text = _RANGE_SCALE.sub(
+        lambda m: f"{m[1]} {m[3]}" + re.sub(r"^\s*(?:-|\u2013|to)", " to ", m[2]), text
+    )
     text = re.sub(r"([+-])([$€£¥])", r"\2\1", text)
     text = re.sub(r"(\d)\s*\|\s*(%|bps)", r"\1\2", text)
     text = re.sub(
@@ -274,10 +277,15 @@ def validate_fact(fact: SummaryFact, release: str) -> list[str]:
         r"raised|increased|cut|lowered", fact.change, re.IGNORECASE
     ):
         nearest = max(
-            context.rfind("for q"), context.rfind("full year"), context.rfind("updated fy")
+            context.rfind("for q"),
+            context.rfind("full year"),
+            context.rfind("full-year"),  # GE's "Full-Year 2026 Guidance:"
+            context.rfind("updated fy"),
         )
         local = context[nearest:] if nearest >= 0 else quote
-        if not re.search(r"rais|increas|cut|lower|updated", local):
+        # "now expects revenue growth of low 20s, up from our prior guide of ~20%"
+        moved = r"\b(?:up|down) from (?:our |the |its )?(?:prior|previous)\b"
+        if not re.search(rf"rais|increas|cut|lower|updated|{moved}", local):
             issues.append("guidance revision is not established by its local source context")
     return issues
 

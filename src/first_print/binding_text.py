@@ -126,7 +126,8 @@ _ALIASES = [
     (r"\bcurrent remaining performance obligations?\b", "crpo"),
     (r"\bremaining performance obligations?\b", "rpo"),
     (r"\bcurrent rpo\b", "crpo"),
-    (r"\bnet cash provided by operating activities\b", "operating cash flow"),
+    # As a cash flow statement labels it: "Net cash provided by (used in) operating activities"
+    (r"\bnet cash provided by (?:\(used in\) )?operating activities\b", "operating cash flow"),
     (r"\bcash flows? from operations\b", "operating cash flow"),
     (r"\bcash flows? from operating activities\b", "operating cash flow"),
     (r"\breturn on (?:average )?tangible common equity\b", "rotce"),
@@ -194,7 +195,15 @@ _PERIOD_WORDS = re.compile(
 def metric_words(metric: str) -> list[str]:
     """The words that identify a measure, in order and stemmed, without its basis, period
     or abbreviation."""
-    text = re.sub(r"\(([A-Za-z]{2,6})\)", "", metric)  # "(RPO)", "(ARR)"
+    # An abbreviation, "(RPO)", '("NIM")'; but "(basic)" and "(diluted)" name the EPS
+    text = re.sub(
+        r"\(\s*[\"“]?(?!(?:basic|diluted)\b)([A-Za-z]{2,6})[\"”]?\s*\)",
+        "",
+        metric,
+        flags=re.IGNORECASE,
+    )
+    # A breakdown's lead-in: ASML's "...of which Installed Base Management sales"
+    text = re.sub(r"^\W*(?:of which|thereof)\b", "", text, flags=re.IGNORECASE)
     # A definition in parentheses: "Operating margin (income from operations as a percentage
     # of total revenue)". One that qualifies the number ("excluding Deliveroo") or states
     # numbers of its own ("-$50m, offset by +$36m") stays, as nothing else would check it.
@@ -307,6 +316,13 @@ def fiscal_offset(text: str) -> int:
         )
         if date and fiscal - int(date[1]) in (0, 1):
             return fiscal - int(date[1])
+    # Walmart's "Q2 FY27" headline, its statements' "Three Months Ended July 31, 2026" pages
+    # later: the fiscal year it reports against the latest date a period ended on
+    reported = reporting_year(text)
+    dated = rf"\bended\s+{_MONTH}\s+\d{{1,2}},?\s+(20\d{{2}})"
+    ended = [int(found) for found in re.findall(dated, text, re.IGNORECASE)]
+    if reported and reported[1] and ended and int(reported[0]) - max(ended) in (0, 1):
+        return int(reported[0]) - max(ended)
     return 0
 
 

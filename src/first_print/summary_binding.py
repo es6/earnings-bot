@@ -237,7 +237,7 @@ _NOT_SEGMENT = {
     "indicators",
 }
 # Words that name the slot a value fills, not its measure: "EPS guidance", "Revenue growth"
-_GUIDANCE_STEMS = frozenset(stem(w) for w in ("guidance", "outlook", "forecast", "target"))
+_GUIDANCE_STEMS = frozenset(stem(w) for w in ("guidance", "guide", "outlook", "forecast", "target"))
 _GROWTH_STEMS = frozenset(stem(w) for w in ("growth", "change", "increase", "decrease", "yoy"))
 
 
@@ -361,6 +361,9 @@ class _Context:
     offset: int = 0  # how far the release's fiscal year label runs ahead of the calendar
     reported: tuple[str, bool] | None = None  # the year the release reports, and if fiscal
     lead: str = ""  # the paragraph right before a table: "Net sales by business and region:"
+    # The scale a caption above states for the tables that follow it until another states
+    # its own: Walmart's "Dollars in billions, except as noted" over three segment tables
+    scale: str | None = None
     terms: _Terms = _NO_TERMS
 
     def __str__(self) -> str:
@@ -374,10 +377,16 @@ def _context(document: SourceDocument, block_id: str) -> _Context:
     local: list[str] = []
     passed_table = False
     lead = ""
+    scale = None
     for block in document.blocks:
         if block.id == block_id:
             break
         lead = block.text if block.kind == "paragraph" and len(block.text) <= 300 else ""
+        # A caption's scale holds for the tables after it until another states its own:
+        # Walmart's "Dollars in billions, except as noted" over three segment tables
+        stated = source_scale(block.text[:400] if block.kind == "table" else block.text[:300])
+        if stated and stated != "ambiguous":
+            scale = stated
         if block.kind == "table":
             passed_table = True
             local.clear()
@@ -402,7 +411,7 @@ def _context(document: SourceDocument, block_id: str) -> _Context:
     if outlook:
         near = [outlook, *near]
     far = [line for line in opening[:12] if _METADATA.search(line)]
-    return _Context("\n".join(near), "\n".join(far), lead=lead)
+    return _Context("\n".join(near), "\n".join(far), lead=lead, scale=scale)
 
 
 # Words after a growth rate that say what it compares, not what it measures
@@ -486,11 +495,48 @@ def _column_headers(table: SourceTable, value: SourceCell) -> list[str]:
                 and (cell.header or not data_row)
                 and (cell.column <= value.column < cell.column + cell.colspan)
                 # A paragraph laid out across the table heads no column: Walmart's "guidance
-                # reflects the Company's expectations as of August 20, 2026"
-                and not _prose(cell)
+                # reflects the Company's expectations as of August 20, 2026". A period's name
+                # does: Synopsys's "Range for Three Months Ending October 31, 2026"
+                and (not _prose(cell) or _period_header(cell.text))
             )
         )
     return headers
+
+
+def _period_header(text: str) -> bool:
+    """A column header that names a period, however many words it takes, and nothing more."""
+    return (
+        len(text) <= 80
+        and not re.search(r"[.:;]\s", text)
+        and bool(
+            re.search(r"\bmonths? end|\bquarter\b|\b(?:fiscal|full)[- ]year\b", text, re.IGNORECASE)
+        )
+    )
+
+
+# A range's ends in two columns: Synopsys's "Low | High" under "Range for Fiscal Year ..."
+_LOW = re.compile(r"\b(?:low|minimum|min)\b", re.IGNORECASE)
+_HIGH = re.compile(r"\b(?:high|maximum|max)\b", re.IGNORECASE)
+
+
+def _range_end(table: SourceTable, row: list[SourceCell], index: int) -> str:
+    """The high end of a range whose low end is this cell, from the next value cell in its row,
+    when their column headers are the same but for "Low" and "High"; else nothing."""
+    own = _headers(table, row[index])
+    if not _LOW.search(own):
+        return ""
+    for position in range(index + 1, len(row)):
+        cell = row[position]
+        if cell.header or not _numeric(cell):
+            continue
+        other = _headers(table, cell)
+        if not _HIGH.search(other) or _LOW.sub("", own).split() != _HIGH.sub("", other).split():
+            return ""
+        start = position
+        while start and row[start - 1].text.strip() in _DECORATION and start - 1 > index:
+            start -= 1
+        return " ".join(c.text for c in row[start : position + 1])
+    return ""
 
 
 def _lead_measure(text: str) -> str:
@@ -499,7 +545,29 @@ def _lead_measure(text: str) -> str:
     head = re.split(
         r"\b(?:for|by|in|during|from|across|of the)\b|[:,;(.]", text.strip(), maxsplit=1
     )[0]
-    return head if len(head.split()) <= 5 else ""
+    if len(head.split()) > 5:
+        return ""
+    # From the measure's own words: Duolingo's "The table below provides revenues by product
+    # type:" names revenues
+    names = head.split()
+    first = next(
+        (
+            i
+            for i, word in enumerate(names)
+            if {stem(w) for w in words(normalized(word)).split()}
+            & (MEASURE_STEMS | _MODIFIER_STEMS)
+        ),
+        len(names),
+    )
+    return " ".join(names[first:])
+
+
+# What a table is broken down by follows its measure: "Adjusted operating margin by segment"
+_BREAKDOWN_BY = re.compile(
+    r"\s+by\s+(?:reportable\s+)?(?:segments?|regions?|geograph\w*|business(?:es)?|products?|"
+    r"types?|channels?|markets?|categor(?:y|ies)|divisions?|countr(?:y|ies)|brands?)\b.*$",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 def _row_measure(table: SourceTable, value: SourceCell, label: str, section: str, lead: str) -> str:
@@ -510,7 +578,7 @@ def _row_measure(table: SourceTable, value: SourceCell, label: str, section: str
         return ""
     for text in [*reversed(_column_headers(table, value)), section, _heading(table, value)]:
         if set(metric_words(text)) & MEASURE_STEMS:
-            return text
+            return _BREAKDOWN_BY.sub("", text)
     found = _lead_measure(lead)
     return found if set(metric_words(found)) & MEASURE_STEMS else ""
 
@@ -559,6 +627,12 @@ def _generic_heading(text: str) -> bool:
     )
 
 
+def _segment_heading(cell: SourceCell) -> bool:
+    """A heading that introduces the rows under it with a colon and names no measure: "APAC:",
+    not a statement's "Current assets:" or "Costs and expenses:"."""
+    return bool(re.search(r":\s*$", cell.text)) and not set(metric_words(cell.text)) & MEASURE_STEMS
+
+
 def _label_and_group(table: SourceTable, value: SourceCell) -> tuple[str, str]:
     """The row's own name (the first text cell left of the value) and the section heading
     above it (a row with a single text cell)."""
@@ -574,11 +648,20 @@ def _label_and_group(table: SourceTable, value: SourceCell) -> tuple[str, str]:
         "",
     )
     section = ""
+    # A heading sits in the label column. One as wide as the labels heads the rows under it
+    # when it says so with a colon: Netflix's "APAC:" over its "Revenue" row
+    width = next((c.colspan for c in _row(table, value.row) if c.column == 0), 1)
     for row in range(value.row):
         cells = [c for c in _row(table, row) if c.text.strip()]
         if not cells or cells[0].column != 0 or _numeric(cells[0]):
             continue
-        if len(cells) == 1 and cells[0].colspan == 1 and not _prose(cells[0]):
+        if (
+            len(cells) == 1
+            and (
+                cells[0].colspan == 1 or (cells[0].colspan <= width and _segment_heading(cells[0]))
+            )
+            and not _prose(cells[0])
+        ):
             # A heading, not a paragraph laid out in the table ("...guidance is based on the
             # following Q3 FY26 figures")
             section = cells[0].text
@@ -655,7 +738,7 @@ def _unit_note(note: str, unit: str) -> bool:
     return bool(
         re.fullmatch(
             r"(?:in )?(?:usd |us |eur )?(?:thousands?|millions?|billions?|percent|dollars|"
-            r"unaudited)(?: of (?:us )?dollars)?(?: except per share(?: data| amounts)?)?",
+            r"euros?|unaudited)(?: of (?:us )?dollars)?(?: except per share(?: data| amounts)?)?",
             text,
         )
         or (counted and set(text.split()) <= counted | {"in", "of", "thousands", "millions"})
@@ -675,7 +758,16 @@ def _identity_issues(
     is a narrower or different measure (a margin, subscription revenue) does not bind. A
     label's own unit note is not part of its name, and neither is the slot a value fills
     ("guidance", "growth")."""
-    label = re.sub(r"\([^()]*\)", lambda m: "" if _unit_note(m[0], unit) else m[0], label)
+    # Each part of a note on its own: ASML's "EPS (basic; in euros)" is basic EPS
+    label = re.sub(
+        r"\(([^()]*)\)",
+        lambda m: " ".join(
+            f"({part.strip()})"
+            for part in re.split(r"[;,]", m[1])
+            if part.strip() and not _unit_note(f"({part.strip()})", unit)
+        ),
+        label,
+    )
     # The issuer's own name or ticker is no part of a measure's name: "MCO Revenue"
     unnamed = set(metric_words(group)) | slot | {stem(w) for w in terms.issuer}
     claimed = set(metric_words(claim)) - unnamed
@@ -828,6 +920,22 @@ _NEUTRAL = re.compile(
 _MONEY_MARK = re.compile(r"US\$|C\$|A\$|[$€£¥]")
 
 
+def _neutral_name(metric: str) -> bool:
+    """Whether a rate's name claims it is currency-neutral: "Revenue growth (F/X neutral)",
+    "Constant currency revenue growth". A note beside the name ("(13% in constant currency)",
+    "(constant currency also disclosed)") describes another number, not this one."""
+    bare = re.sub(
+        r"\(([^()]*)\)",
+        lambda m: (
+            m[0]
+            if _NEUTRAL.fullmatch(f"({m[1].strip()})") or _NEUTRAL.fullmatch(m[1].strip())
+            else " "
+        ),
+        metric,
+    )
+    return bool(_NEUTRAL.search(bare))
+
+
 def _normal(value: SourcedValue) -> SourcedValue:
     """Model metadata reduced to what binding checks: a basis tag only when it is a basis, a
     comparison qualifier the model put in `basis`."""
@@ -891,6 +999,8 @@ def _table_binding(
         raw = " ".join(
             [*(c.text for c in row[left:index]), body, *(c.text for c in row[index + 1 : right])]
         )
+        if len(claims) == 2 and (high := _range_end(table, row, index)):
+            raw = f"{raw} to {high}"
         label, section = (terms.expand(t) for t in _label_and_group(table, cell))
         headers = f"{_headers(table, cell)} {prefix}".strip()
         named = _PERIOD_ONLY.sub("", headers).strip(" -:|")
@@ -917,7 +1027,8 @@ def _table_binding(
             if kind == "%" and re.search(r"\bmargin", column, re.IGNORECASE)
             else ""
         )
-        issues: list[str] = []
+        # A cell nothing names (a page number laid out as a table) names no measure
+        issues: list[str] = ["metric does not match the cited source row"]
         # A section the row sits in is part of its name: "Net revenue" under "Results for
         # CIB" is CIB net revenue
         titled = re.sub(
@@ -926,11 +1037,13 @@ def _table_binding(
             section,
             flags=re.IGNORECASE,
         ).strip()
+        named_by = ""  # the name that binds the claim
         for name in dict.fromkeys(
             (label, f"{label} {measure}".strip(), f"{titled} {label}".strip(), margin)
         ):
             if not name:
                 continue
+            named_by = name
             issues = _identity_issues(
                 terms.expand(fact.metric),
                 name,
@@ -941,6 +1054,8 @@ def _table_binding(
             )
             if not issues:
                 break
+        # The row's own label names the claimed measure in full, without help from above
+        self_named = not issues and named_by == label
         if field not in ("previous_guidance", "new_guidance", "prior_year_actual") and (
             _guidance_heading(frame.near)
         ):
@@ -957,8 +1072,25 @@ def _table_binding(
             and words(section)
             and words(section) not in _NEUTRAL_GROUPS
             # "Results for CIB" is the CIB section; "Results for JPM" is the whole company
-            and not set(metric_words(section)) - _SECTION_WORDS - terms.issuer
+            # and "Adjusted operating margin by segment" titles the margins of its rows
+            and not set(metric_words(_BREAKDOWN_BY.sub("", section)))
+            - _SECTION_WORDS
+            - terms.issuer
             <= set(metric_words(fact.metric))
+            # A statement's grouping ("Changes in operating assets and liabilities:") names
+            # line items, no segment: a subtotal under it that names the claimed measure in
+            # full ("Net cash provided by operating activities") is that measure
+            and not (
+                self_named
+                and set(metric_words(section)) & MEASURE_STEMS
+                # a grouping says so with a colon, or groups the label's own family:
+                # "Net interest margin" under "Net interest income", never a business's
+                # "Capital deployed" under "Asset management"
+                and (
+                    re.search(r":\s*$", section)
+                    or set(metric_words(section)) & set(metric_words(label))
+                )
+            )
             # A reconciliation's heading ("Non-GAAP adjustments") names a basis, no segment
             and not re.fullmatch(
                 r"(?:non gaap |gaap |ifrs )*(?:adjustments?|reconciliations?|measures?)",
@@ -974,7 +1106,7 @@ def _table_binding(
         )
         caption = source_scale(f"{label} {scaled} {prefix}", per_share)
         if caption is None and kind == "money":
-            caption = source_scale(context) or source_scale(table.text[:400])
+            caption = source_scale(context) or source_scale(table.text[:400]) or frame.scale
         if caption == "ambiguous":
             issues.append("source scale is ambiguous")
             caption = None
@@ -1096,6 +1228,27 @@ def _table_binding(
 
 # A bullet starts a clause, spaced or not: "(cc)1 •Operating income growth of 28.8%"
 _CLAUSES = re.compile(r"(?<=[.;!?])\s+(?=[A-Z(\"“•])|;\s*|\n+|\s*[•◦▪]\s*")
+# A full stop that ends an abbreviation, not a sentence: "U.S. Treasury securities", "Inc."
+_ABBREVIATION = re.compile(
+    r"(?:\b[A-Za-z]\.[A-Za-z]\.|\b(?:Inc|Corp|Co|Ltd|No|Nos|vs|approx|Mr|Ms|Dr|Jr|Sr|St)\.)$"
+)
+
+
+def _clauses(text: str) -> list[str]:
+    """A passage's clauses. A sentence break after an abbreviation is none: "Cash, cash
+    equivalents, and U.S. Treasury securities of $10.4 billion" is one clause."""
+    clauses: list[str] = []
+    for brk, piece in zip([None, *_CLAUSES.finditer(text)], _CLAUSES.split(text), strict=True):
+        if (
+            brk is not None
+            and clauses
+            and not brk[0].strip()  # a sentence break, not a bullet or a semicolon
+            and _ABBREVIATION.search(text[: brk.start()])
+        ):
+            clauses[-1] = f"{clauses[-1]} {piece}"
+        else:
+            clauses.append(piece)
+    return clauses
 
 
 def _metric_window(claim: list[str], prefix: str) -> tuple[int, int] | None:
@@ -1174,6 +1327,7 @@ def _names_itself(fact: ReferencedFact, group: str, label: str) -> bool:
 
 
 _MODIFIER_STEMS = frozenset(stem(w) for w in _MODIFIERS)
+_SHARE_STEMS = frozenset(stem(w) for w in ("share", "percentage", "percent", "portion", "mix"))
 _CHANGE_STEMS = frozenset(
     stem(w) for w in ("growth", "change", "increase", "decrease", "yoy", "qoq", "rate")
 )
@@ -1244,7 +1398,10 @@ def _paragraph_binding(
     group = terms.expand(_group(fact, terms))
     metric = terms.expand(fact.metric)
     context = str(frame)
-    measure = metric_words(metric)
+    # A currency-neutral basis in the name ("Revenue growth (F/X neutral)", "Adjusted operating
+    # income (cc)") is checked as a basis below, where the source states it, often after the
+    # number: "+11% on a foreign exchange (F/X) neutral basis"
+    measure = metric_words(_NEUTRAL.sub(" ", metric))
     growth_slot = field in ("reported_growth", "comparable_growth")
     if growth_slot:
         # The slot says it is a growth rate: "ARR growth" is named by "ARR grew"
@@ -1259,7 +1416,7 @@ def _paragraph_binding(
     required = [w for w in claim if w not in terms.optional(set(claim))] or claim
     named_claim, named_required = claim, required
     failures: list[str] = []
-    for clause in _CLAUSES.split(ref.quote):
+    for clause in _clauses(ref.quote):
         text = normalized(terms.expand(clause))
         caption = source_scale(clause) or (
             source_scale(context)
@@ -1321,9 +1478,22 @@ def _paragraph_binding(
                 # U.S. and Canada"
                 following_words = stems(following)[:14]
                 preceding_words = stems(prefix)[-6:]
-                if set(required) & set(following_words) and set(required) <= set(
-                    following_words
-                ) | set(preceding_words):
+                # A share's name says it is one ("Digital sales share of ... revenue"); the
+                # source says so with "of" after the rate
+                needed = [w for w in required if kind != "%" or w not in _SHARE_STEMS]
+                # and what it is a share of is the claim's: "of total food and beverage
+                # revenue" is no share of total revenue
+                of = re.match(r"\s*of\s+(.*)", following) if kind == "%" else None
+                whole = re.split(
+                    r"\b(?:for|in|during|compared|versus|vs|from|as|at)\b|[,.;(]",
+                    of[1] if of else "",
+                    maxsplit=1,
+                )[0]
+                if (
+                    set(needed) & set(following_words)
+                    and set(needed) <= set(following_words) | set(preceding_words)
+                    and set(metric_words(whole)) <= set(needed)
+                ):
                     window = (token[0], token[0])
             if window is None and _named_after(required, following, kind, growth_slot, prefix):
                 window = (token[0], token[0])
@@ -1333,6 +1503,15 @@ def _paragraph_binding(
                 window = _metric_window(claim[-1:] + claim[:-1], prefix)
             if window is None and kind == "per share":
                 window = _per_share_window(required, prefix, following)
+            if window is None and kind == "per share":
+                # "Per share" after the amount is part of the measure's name: "increased Visa's
+                # quarterly cash dividend 16% to $0.780 per share"
+                share = re.match(
+                    r"\s*per (?:(?:diluted|basic|common|ordinary|class [a-z]) )*share\b", following
+                )
+                rest = [w for w in claim if w not in set(stems(share[0]))] if share else claim
+                if rest and rest != claim:
+                    window = _metric_window(rest, prefix)
             if window is None:
                 failures.append("metric is absent from the cited claim clause")
                 continue
@@ -1345,6 +1524,19 @@ def _paragraph_binding(
             )
             if any(w in MEASURE_STEMS and w not in claim for w in between):
                 failures.append("a different measure lies between the metric and the number")
+                continue
+            # The name the clause gives runs on to the verb or preposition before the number
+            named_on = re.split(
+                r"\b(?:of|was|were|is|are|totaled|totalled|totaling|totalling|reached|grew|rose|"
+                r"increased|decreased|declined|fell|to|at|came|amounted|stood|up|down|for|in)\b|"
+                r"[:\d$€£¥(]",
+                prefix[window[1] :],
+                maxsplit=1,
+            )[0]
+            if window[1] > window[0] and re.search(r"\b(?:and|or|plus)\b|&", named_on):
+                # The number totals more than the claim names: "Cash, cash equivalents, and
+                # U.S. Treasury securities of $10.4 billion" is not the cash alone
+                failures.append("the cited clause names a broader measure")
                 continue
             issues.extend(_modifier_issues(prefix, window[0], claim))
             issues.extend(_positional_issues(text, tokens, index, len(claims), dimension))
@@ -1407,6 +1599,21 @@ def _paragraph_binding(
                 # Like an adjusted value claimed as reported: "9% on a constant-dollar basis"
                 # is not the reported growth
                 issues.append("the source growth excludes currency moves, the claim doesn't")
+            # And the other way: a currency-neutral claim needs the source to say so of this
+            # number, in its own clause. Netflix's "grew 12% year over year (+11% on a foreign
+            # exchange (F/X) neutral basis)" makes 11%, not 12%, the F/X-neutral growth
+            own_after = re.split(
+                r"[,;]|\b(?:and|while|but|whereas)\b", text[after_end:following], maxsplit=1
+            )[0]
+            own_before = re.split(
+                r"[,;]|\b(?:and|while|but|whereas)\b", text[max(0, window[0] - 30) : window[0]]
+            )[-1]
+            if (
+                _neutral_name(fact.metric)
+                and (growth_slot or (field == "current_actual" and kind == "%"))
+                and not _NEUTRAL.search(f"{own_before} {text[window[0] : token[0]]} {own_after}")
+            ):
+                issues.append("the claim excludes currency moves, the source value doesn't")
             rate = field == "current_actual" and kind == "%" and _growth_measure(fact.metric)
             if rate and neutral_source != neutral_claim:
                 # A rate such as comparable sales is either the currency-neutral one or not
@@ -1624,6 +1831,83 @@ def bind_answer(answer: str, document: SourceDocument) -> BindingReport:
 
 def bind_brief(candidate: UnverifiedBrief, document: SourceDocument) -> BindingReport:
     return _bind(list(candidate.facts), document)
+
+
+_BOUNDARY = r"[,;]|\b(?:and|while|but|whereas)\b"
+
+
+def _title(table: SourceTable, value: SourceCell) -> str:
+    """The nearest short title row above a value, however wide: GE's "Non-GAAP Metrics" over
+    its "Operating Profit" row."""
+    for row in range(value.row - 1, -1, -1):
+        cells = [c for c in _row(table, row) if c.text.strip() not in _DECORATION]
+        if len(cells) == 1 and cells[0].column == 0 and not _numeric(cells[0]):
+            return cells[0].text if len(cells[0].text) <= 60 else ""
+    return ""
+
+
+def bound_scope(document: SourceDocument, value: SourcedValue, metric: str = "") -> str:
+    """The text that states a bound value: for a table cell its row label, section, column
+    headers and the cell; in running text, from just before the metric's name (else the
+    clause's start) to the number and on to the next comma or "and", or to the sentence's
+    end when it closes with "all in constant currency". Plus a short caption just above ("GE
+    Aerospace (Non-GAAP)"). What a label claims about the value must be said here."""
+    claims, dimension = claimed_amounts(value)
+    claim = [w for w in metric_words(_NEUTRAL.sub(" ", metric)) if w not in _CHANGE_STEMS]
+    claim = [w for w in claim if w not in _GUIDANCE_STEMS]
+    texts: list[str] = []
+    for ref in value.evidence:
+        block = document.resolve(ref.document_sha256, ref.block_id)
+        frame = _context(document, ref.block_id)
+        texts += [line for line in f"{frame.near}\n{frame.lead}".splitlines() if len(line) <= 100]
+        passage = ref.quote
+        if isinstance(block, SourceTable):
+            cells = [c for c in block.cells if c.id in ref.cell_ids]
+            if cells and not _prose(cells[0]):
+                cell = cells[0]
+                label, section = _label_and_group(block, cell)
+                texts += [label, section, _headers(block, cell), _heading(block, cell), cell.text]
+                texts.append(_title(block, cell))
+                continue
+            passage = cells[0].text if cells else passage
+        for clause in _clauses(passage):
+            text = normalized(clause)
+            caption = "" if dimension in ("%", "bps") else (source_scale(clause) or "")
+            tokens = number_tokens(text, caption)
+            for index, token in enumerate(tokens):
+                run = tokens[index : index + len(claims)]
+                if len(run) == len(claims) and all(
+                    t[4] == dimension and matches((abs(c[0]), c[1]), abs(t[2]), t[3])
+                    for c, t in zip(claims, run, strict=True)
+                ):
+                    window = _metric_window(claim, text[: token[0]]) if claim else None
+                    start = 0
+                    if window is not None:
+                        # with the two words before the name: "non-GAAP EPS", "adjusted EBITDA"
+                        before = re.split(_BOUNDARY, text[: window[0]])[-1]
+                        start = window[0] - len(" ".join(before.split()[-2:])) - 1
+                    run_end = token[1]
+                    if len(claims) == 2 and index + 1 < len(tokens):
+                        run_end = tokens[index + 1][1]
+                    after = re.split(_BOUNDARY, text[run_end:], maxsplit=1)[0]
+                    whole = re.search(r"\ball (?:in|on|at)\b[^;]*", text)
+                    texts.append(
+                        f"{text[max(0, start) : run_end]}{after} {whole[0] if whole else ''}"
+                    )
+    return "\n".join(texts)
+
+
+def release_bases(document: SourceDocument) -> str:
+    """A basis the release declares for all it reports: JPMorgan's "information is presented
+    on a managed basis, which is a non-GAAP financial measure, unless otherwise noted"."""
+    return "\n".join(
+        sentence
+        for sentence in _SENTENCES.split(document.text[:20_000])
+        if re.search(
+            r"\bunless otherwise (?:noted|stated|indicated|specified)\b", sentence, re.IGNORECASE
+        )
+        and re.search(r"\bbasis\b", sentence, re.IGNORECASE)
+    )
 
 
 def _group_stated(fact: ReferencedFact, document: SourceDocument, terms: _Terms) -> bool:

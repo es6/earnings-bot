@@ -11,13 +11,15 @@ is a growth rate or prior-year value that is not. No model call: it runs on the 
 already has.
 """
 
+import itertools
 import re
+from collections.abc import Iterator
 from dataclasses import replace
 from decimal import Decimal, InvalidOperation
 
 from first_print.binding_text import number_tokens
 from first_print.source_document import SourceDocument
-from first_print.summary_binding import bind_brief
+from first_print.summary_binding import bind_brief, bound_scope, release_bases
 from first_print.summary_evidence import (
     EvidenceRef,
     ReferencedFact,
@@ -217,6 +219,10 @@ def sourced(
         return None
     amount, upper, scale, qualifier = parsed
     unit = unit_of(fact, value)
+    named = re.fullmatch(r"\s*(trillion|billion|million|thousand)s?\s*", fact.unit, re.IGNORECASE)
+    if scale == "one" and unit == "money" and named:
+        # The scale given as the unit: ASML's "14.2-15.2" in "billion" (EUR)
+        scale = named[1].casefold()
     scale = "one" if unit in ("%", "bps", "per share") else scale
     refs = evidence(document, amount, scale, unit) or [
         # Nowhere in the release: the verifier refuses it as unresolvable
@@ -239,12 +245,32 @@ def sourced(
     )
 
 
+def _rate_of_growth(fact: SummaryFact) -> bool:
+    """A percentage the metric names as growth, or writes with a plus sign, with no other
+    growth rate beside it (or the same one repeated): "Revenue growth: 12%; +12% YoY",
+    "Average check: +1.3%; +1.3% YoY"."""
+    value = parse(fact.value)
+    if value is None or value[1] is not None or unit_of(fact, fact.value) != "%":
+        return False
+    named = re.search(
+        r"\b(?:growth|grew|increase|decrease|decline|change)\b", fact.metric, re.IGNORECASE
+    )
+    if not named and not fact.value.strip().startswith("+"):
+        return False
+    change = parse(fact.change) if fact.change.strip() else None
+    return change is None or Decimal(change[0]).copy_abs() == Decimal(value[0]).copy_abs()
+
+
 def candidate(fact: SummaryFact, document: SourceDocument) -> ReferencedFact | None:
     kind = fact.kind if fact.kind in ("actual", "segment", "guide", "update") else "actual"
     guide = kind == "guide"
     main = sourced(fact, fact.value, document) if fact.value.strip() else None
     stated = fact.comparison if fact.comparison in ("YoY", "QoQ", "versus prior guidance") else ""
     growth = sourced(fact, fact.change, document, stated or "YoY") if "%" in fact.change else None
+    if not guide and main is not None and _rate_of_growth(fact):
+        # "Global eCommerce sales growth: 23%" is a growth rate, not a level: it is checked
+        # as one, where the release says the measure grew by it
+        main, growth = None, sourced(fact, fact.value, document, stated or "YoY")
     prior = sourced(fact, fact.prior, document) if fact.prior.strip() and not guide else None
     if main is None and growth is None:
         return None
@@ -276,14 +302,142 @@ def check(
 ) -> tuple[dict[str, bool], dict[str, list[str]]]:
     """Which of a fact's values the binder confirms, by slot, and its reasons for the rest. An
     empty result means the fact gave no value the binder can read."""
+    kept, reasons, _ = _checked(fact, document)
+    return kept, reasons
+
+
+def _checked(
+    fact: SummaryFact, document: SourceDocument
+) -> tuple[dict[str, bool], dict[str, list[str]], ReferencedFact | None]:
+    """As check, with the values the binder kept and where it found them."""
     built = candidate(fact, document)
     if built is None:
-        return {}, {}
+        return {}, {}, None
     report = bind_brief(UnverifiedBrief(schema_version="source-values/1", facts=(built,)), document)
     claimed = [slot for slot in SLOTS if getattr(built, slot) is not None]
     bound = report.facts[0].fact if report.facts else None
     kept = {slot: bound is not None and getattr(bound, slot) is not None for slot in claimed}
-    return kept, {r.field: list(r.reasons) for r in report.rejected}
+    return kept, {r.field: list(r.reasons) for r in report.rejected}, bound
+
+
+# Qualifiers a label can put on a value, by family: adjusted, non-GAAP and non-IFRS are one
+_FAMILIES = (
+    (
+        "currency-neutral",
+        (
+            r"constant[- ](?:currency|dollars?)|\bcc\b|\bf/?x\b[- ]?neutral|"
+            r"foreign exchange (?:\(f/x\) )?neutral|currency[- ]neutral|\bex[- ]?fx\b|"
+            r"excluding (?:the (?:impact|effects?) of )?(?:changes in )?(?:foreign )?"
+            r"(?:currency|exchange)"
+        ),
+    ),
+    ("adjusted (non-GAAP)", r"\badjusted\b|\badj\b|non[- ]?(?:gaap|ifrs)"),
+    ("managed", r"\bmanaged\b"),
+    ("organic", r"\borganic"),
+    ("comparable", r"\bcomparable\b|\bcomps?\b|same[- ]store|like[- ]for[- ]like"),
+    ("pro forma", r"\bpro[- ]forma\b"),
+)
+_EXCLUDED = re.compile(r"\b(?:excluding|ex)(?:\.\s*|-|\s+)([a-z][a-z&'-]+)", re.IGNORECASE)
+_NOT_ITEMS = {"the", "a", "an", "certain", "items", "item", "impact", "effect", "effects"}
+_EXCLUSION = re.compile(r"exclud|\bex[.-]|\bex\s|\bbefore\b|\bwithout\b", re.IGNORECASE)
+
+
+def _qualifiers(text: str) -> list[str]:
+    """The qualifiers a label states: "adjusted cc as stated" states adjusted and
+    currency-neutral; "ex. fuel" states an exclusion of fuel."""
+    found = [name for name, pattern in _FAMILIES if re.search(pattern, text, re.IGNORECASE)]
+    for match in _EXCLUDED.finditer(text):
+        item = match[1].casefold()
+        if item not in _NOT_ITEMS and not re.search(_FAMILIES[0][1], match[0], re.IGNORECASE):
+            found.append(f"excluding {item}")
+    return found
+
+
+def _supported(qualifier: str, scope: str) -> bool:
+    if qualifier.startswith("excluding "):
+        item = qualifier.removeprefix("excluding ")
+        return bool(_EXCLUSION.search(scope)) and item[:4] in scope.casefold()
+    pattern = dict(_FAMILIES)[qualifier]
+    return bool(re.search(pattern, scope, re.IGNORECASE))
+
+
+def _bindings(fact: SummaryFact, document: SourceDocument, slot: str) -> Iterator[SourcedValue]:
+    """The slot's value as bound by each passage or cell that binds it on its own."""
+    built = candidate(fact, document)
+    claimed = getattr(built, slot) if built is not None else None
+    if built is None or claimed is None:
+        return
+    for ref in claimed.evidence:
+        alone = built.model_copy(
+            update={
+                s: claimed.model_copy(update={"evidence": (ref,)}) if s == slot else None
+                for s in SLOTS
+            }
+        )
+        report = bind_brief(
+            UnverifiedBrief(schema_version="source-values/1", facts=(alone,)), document
+        )
+        if report.facts and (value := getattr(report.facts[0].fact, slot)) is not None:
+            yield value
+
+
+def _qualified(
+    fact: SummaryFact, value: SourcedValue, slot: str, document: SourceDocument
+) -> tuple[SummaryFact | None, list[str]]:
+    """The fact with only the labels its source states. A qualifier in the metric's own name
+    changes the measure ("Adjusted EBITDA", "Net sales growth (cc)"): a passage or cell that
+    binds the value must state it, or the fact is refused. A basis tag the value's row or
+    clause doesn't state ("cc as stated" on Walmart's reported operating income, "Non-GAAP" on
+    Synopsys's revenue targets) is dropped, as is one with a number nothing checked. An
+    approximation the source states ("around €1.2 billion") is shown."""
+    declared = release_bases(document)
+    named = _qualifiers(fact.metric)
+    candidates = itertools.chain([value], _bindings(fact, document, slot) if named else [])
+    scope = ""
+    for bound in candidates:
+        scope = f"{bound_scope(document, bound, fact.metric)}\n{declared}"
+        if all(_supported(q, scope) for q in named):
+            value = bound
+            break
+    else:
+        missing = next(q for q in named if not _supported(q, scope))
+        return None, [f"{fact.metric}: the name's {missing} basis is not stated for its value"]
+    parts = [part.strip() for part in re.split(r"[;,]", fact.basis) if part.strip()]
+    kept = [
+        part
+        for part in parts
+        if not re.search(r"\d", part) and all(_supported(q, scope) for q in _qualifiers(part))
+    ]
+    if value.basis == "non-GAAP":
+        # A reported tag on an adjusted value: Palantir's "Adjusted EPS, diluted (GAAP)"
+        kept = [part for part in kept if _qualifiers(part) or not _REPORTED_TAG.search(part)]
+    if kept != parts:
+        # What is left of a cut-up note is no label: "labor" from "Non-GAAP: revenue less
+        # food/beverage/packaging, labor". Only plain tags and supported qualifiers stay
+        kept = [part for part in kept if _qualifiers(part) or _PLAIN_TAG.fullmatch(part)]
+    stated = parse(fact.value)
+    approximate = value.value_qualifier == "approximately" and stated and stated[3] == "exact"
+    if approximate:
+        # Shown on the value ("~€1.2B"), not as a tag beside the name
+        kept = [part for part in kept if not _APPROXIMATE.fullmatch(part)]
+    notes = [
+        f"{fact.metric} basis: '{part}' is not stated for its value"
+        for part in parts
+        if part not in kept
+    ]
+    shown = replace(fact, basis="; ".join(kept)) if kept != parts else fact
+    if approximate:
+        shown = replace(shown, value=f"~{fact.value.strip()}")
+    return shown, notes
+
+
+_PLAIN_TAG = re.compile(
+    r"(?:(?:u\.?s\.? )?(?:gaap|ifrs|reported|as reported|guidance|guide|outlook|estimated?|"
+    r"preliminary|unaudited)\s*)+",
+    re.IGNORECASE,
+)
+_REPORTED_TAG = re.compile(r"\b(?:gaap|ifrs|reported)\b", re.IGNORECASE)
+_APPROXIMATE = re.compile(r"approximately|approx\.?|about|around|roughly|~", re.IGNORECASE)
 
 
 def main_slot(kept: dict[str, bool]) -> str:
@@ -365,5 +519,13 @@ def verify_facts(
             dropped.append(
                 f"{fact.metric} prior year: {'; '.join(reasons.get('prior_year_actual', []))}"
             )
+        _, _, bound = _checked(fact, document)
+        value = getattr(bound, main) if bound is not None else None
+        if value is not None:
+            qualified, notes = _qualified(trimmed, value, main, document)
+            dropped += notes
+            if qualified is None:
+                continue
+            trimmed = qualified
         shown.append(trimmed)
     return shown, dropped
