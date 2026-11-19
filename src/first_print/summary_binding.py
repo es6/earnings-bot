@@ -1833,6 +1833,83 @@ def bind_brief(candidate: UnverifiedBrief, document: SourceDocument) -> BindingR
     return _bind(list(candidate.facts), document)
 
 
+_BOUNDARY = r"[,;]|\b(?:and|while|but|whereas)\b"
+
+
+def _title(table: SourceTable, value: SourceCell) -> str:
+    """The nearest short title row above a value, however wide: GE's "Non-GAAP Metrics" over
+    its "Operating Profit" row."""
+    for row in range(value.row - 1, -1, -1):
+        cells = [c for c in _row(table, row) if c.text.strip() not in _DECORATION]
+        if len(cells) == 1 and cells[0].column == 0 and not _numeric(cells[0]):
+            return cells[0].text if len(cells[0].text) <= 60 else ""
+    return ""
+
+
+def bound_scope(document: SourceDocument, value: SourcedValue, metric: str = "") -> str:
+    """The text that states a bound value: for a table cell its row label, section, column
+    headers and the cell; in running text, from just before the metric's name (else the
+    clause's start) to the number and on to the next comma or "and", or to the sentence's
+    end when it closes with "all in constant currency". Plus a short caption just above ("GE
+    Aerospace (Non-GAAP)"). What a label claims about the value must be said here."""
+    claims, dimension = claimed_amounts(value)
+    claim = [w for w in metric_words(_NEUTRAL.sub(" ", metric)) if w not in _CHANGE_STEMS]
+    claim = [w for w in claim if w not in _GUIDANCE_STEMS]
+    texts: list[str] = []
+    for ref in value.evidence:
+        block = document.resolve(ref.document_sha256, ref.block_id)
+        frame = _context(document, ref.block_id)
+        texts += [line for line in f"{frame.near}\n{frame.lead}".splitlines() if len(line) <= 100]
+        passage = ref.quote
+        if isinstance(block, SourceTable):
+            cells = [c for c in block.cells if c.id in ref.cell_ids]
+            if cells and not _prose(cells[0]):
+                cell = cells[0]
+                label, section = _label_and_group(block, cell)
+                texts += [label, section, _headers(block, cell), _heading(block, cell), cell.text]
+                texts.append(_title(block, cell))
+                continue
+            passage = cells[0].text if cells else passage
+        for clause in _clauses(passage):
+            text = normalized(clause)
+            caption = "" if dimension in ("%", "bps") else (source_scale(clause) or "")
+            tokens = number_tokens(text, caption)
+            for index, token in enumerate(tokens):
+                run = tokens[index : index + len(claims)]
+                if len(run) == len(claims) and all(
+                    t[4] == dimension and matches((abs(c[0]), c[1]), abs(t[2]), t[3])
+                    for c, t in zip(claims, run, strict=True)
+                ):
+                    window = _metric_window(claim, text[: token[0]]) if claim else None
+                    start = 0
+                    if window is not None:
+                        # with the two words before the name: "non-GAAP EPS", "adjusted EBITDA"
+                        before = re.split(_BOUNDARY, text[: window[0]])[-1]
+                        start = window[0] - len(" ".join(before.split()[-2:])) - 1
+                    run_end = token[1]
+                    if len(claims) == 2 and index + 1 < len(tokens):
+                        run_end = tokens[index + 1][1]
+                    after = re.split(_BOUNDARY, text[run_end:], maxsplit=1)[0]
+                    whole = re.search(r"\ball (?:in|on|at)\b[^;]*", text)
+                    texts.append(
+                        f"{text[max(0, start) : run_end]}{after} {whole[0] if whole else ''}"
+                    )
+    return "\n".join(texts)
+
+
+def release_bases(document: SourceDocument) -> str:
+    """A basis the release declares for all it reports: JPMorgan's "information is presented
+    on a managed basis, which is a non-GAAP financial measure, unless otherwise noted"."""
+    return "\n".join(
+        sentence
+        for sentence in _SENTENCES.split(document.text[:20_000])
+        if re.search(
+            r"\bunless otherwise (?:noted|stated|indicated|specified)\b", sentence, re.IGNORECASE
+        )
+        and re.search(r"\bbasis\b", sentence, re.IGNORECASE)
+    )
+
+
 def _group_stated(fact: ReferencedFact, document: SourceDocument, terms: _Terms) -> bool:
     """Whether the evidence of every kept value names the fact's group: in its passage, or
     for a cell in the row's label or the section above it."""
