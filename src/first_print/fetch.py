@@ -6,6 +6,7 @@ import heapq
 import itertools
 import re
 import time
+from collections import Counter
 from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
@@ -207,6 +208,8 @@ class Fetcher:
         self._queues: dict[str, _HostQueue] = {}  # by queue_key
         self._arrivals = itertools.count()
         self._browser: DesktopChrome | None = None
+        # Who is using the shared Chrome now, by holder: close_idle_browser leaves it open
+        self._leases: Counter[str] = Counter()
         self._research: set[DesktopChrome] = set()  # research Chromes open now
         self._research_lock = asyncio.Lock()
         self._route_pauses: dict[str, RoutePause] = {}
@@ -331,7 +334,34 @@ class Fetcher:
         """Every Chrome this fetcher has open: the live one and any research one."""
         return [*([self._browser] if self._browser else []), *self._research]
 
+    @contextmanager
+    def browser_lease(self, holder: str) -> Iterator[None]:
+        """Keeps the shared Chrome open for `holder`'s work, such as a source audit or a release
+        read, however long it takes: close_idle_browser leaves it open while anyone holds a
+        lease. It doesn't launch Chrome; the first request still does."""
+        self._leases[holder] += 1
+        try:
+            yield
+        finally:
+            self._leases[holder] -= 1
+            if not self._leases[holder]:
+                del self._leases[holder]
+
+    def browser_holders(self) -> list[str]:
+        """Who holds a lease on the shared Chrome now."""
+        return sorted(self._leases)
+
+    async def close_idle_browser(self) -> bool:
+        """Closes the shared Chrome unless someone holds a lease. The watcher's next scan tries
+        again, so Chrome closes within a scan of the last lease's release, and stays open if a
+        window has needed it since. Returns whether no lease kept it open."""
+        if self._leases:
+            return False
+        await self.close_browser()
+        return True
+
     async def close_browser(self) -> None:
+        """Closes the shared Chrome now, leases or not: for shutdown."""
         if self._browser is not None:
             browser, self._browser = self._browser, None
             await browser.close()
@@ -355,18 +385,20 @@ class Fetcher:
             self._browser = DesktopChrome()
             self._browser.allowed = self._browser_allowed
         observation = _OBSERVATION.get()
-        return await self._browser.request(
-            url,
-            warmup,
-            give_up_after,
-            lambda host: self.wait_turn(host, urgent),
-            urgent=urgent,
-            # A record-only trial reads through its own tab, with its route's options
-            cache_mode=observation.cache_mode if observation else "no-store",
-            bypass_service_worker=observation.bypass_service_worker if observation else None,
-            observational=observation is not None,
-            max_bytes=observation.max_bytes if observation else MAX_BROWSER_BYTES,
-        )
+        # Every request holds a lease, so Chrome never closes under one in flight
+        with self.browser_lease("request"):
+            return await self._browser.request(
+                url,
+                warmup,
+                give_up_after,
+                lambda host: self.wait_turn(host, urgent),
+                urgent=urgent,
+                # A record-only trial reads through its own tab, with its route's options
+                cache_mode=observation.cache_mode if observation else "no-store",
+                bypass_service_worker=observation.bypass_service_worker if observation else None,
+                observational=observation is not None,
+                max_bytes=observation.max_bytes if observation else MAX_BROWSER_BYTES,
+            )
 
     async def browser_render(
         self,
@@ -381,7 +413,8 @@ class Fetcher:
         if self._browser is None:
             self._browser = DesktopChrome()
             self._browser.allowed = self._browser_allowed
-        return await self._browser.render(url, give_up_after, self.wait_turn, ready=ready)
+        with self.browser_lease("render"):
+            return await self._browser.render(url, give_up_after, self.wait_turn, ready=ready)
 
     async def request(
         self,

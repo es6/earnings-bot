@@ -629,9 +629,11 @@ class Release:
         task.add_done_callback(self.tasks.discard)
 
     async def _guard(self, work: Coroutine[Any, Any, None]) -> None:
-        # These run in the background, so log failures instead of losing them
+        # These run in the background, so log failures instead of losing them. Each holds the
+        # shared Chrome open, since a read can outlast the window that found the release.
         try:
-            await work
+            with self.fetcher.browser_lease(f"{self.target.ticker} release"):
+                await work
         except Exception as error:
             self.journal.write("post_error", ticker=self.target.ticker, message=repr(error))
             self.journal.say(f"{self.target.ticker}: posting step failed: {error!r}")
@@ -1301,7 +1303,8 @@ class Releases:
         self, target: Target, source: Source, sighting: Sighting, measure: bool
     ) -> None:
         try:
-            document = await release_document(self.fetcher, source, sighting)
+            with self.fetcher.browser_lease(f"{target.ticker} headline check"):
+                document = await release_document(self.fetcher, source, sighting)
         except Exception as error:  # a failed read mustn't stop the window
             self.journal.write(
                 "headline_check", ticker=target.ticker, source=source.name, error=repr(error)

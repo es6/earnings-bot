@@ -929,17 +929,19 @@ class DateDiscovery:
         """One hourly check of a company, which never raises."""
         self.working.add(row.cik)
         try:
-            # Room for a first investigation and a read of the IR site, both through Chrome
-            async with asyncio.timeout(RESEARCH_SECONDS) as research:
-                await self._check(row, preflight=True, deadline=research.when())
-                if (
-                    not self.fetcher.research_deferred()
-                    and (current := self.calendar.find(row.ticker))
-                    and (current.target is None or current.target.window[1] <= self.now())
-                ):
-                    await self._prepare_cache(current)
-                if self.profiles and (current := self.calendar.find(row.ticker)):
-                    await self.profiles.ensure(current, self.now())
+            # Room for a first investigation and a read of the IR site, both through Chrome.
+            # The date search, IR reads and cache probes hold the shared Chrome open throughout.
+            with self.fetcher.browser_lease(f"{row.ticker} research"):
+                async with asyncio.timeout(RESEARCH_SECONDS) as research:
+                    await self._check(row, preflight=True, deadline=research.when())
+                    if (
+                        not self.fetcher.research_deferred()
+                        and (current := self.calendar.find(row.ticker))
+                        and (current.target is None or current.target.window[1] <= self.now())
+                    ):
+                        await self._prepare_cache(current)
+                    if self.profiles and (current := self.calendar.find(row.ticker)):
+                        await self.profiles.ensure(current, self.now())
         except Exception:
             log.exception("Date discovery failed for %s", row.ticker)
             self._phase(row.cik, "Research failed. Retrying in an hour.")

@@ -388,7 +388,22 @@ async def audit_sources(
     benchmark: EarningsBenchmark | None,
     sixk: SixKResults | None = None,
 ) -> Speed:
-    """Use the latest dated results. Publisher times are estimates of availability."""
+    """Use the latest dated results. Publisher times are estimates of availability. The audit
+    holds the shared Chrome open until it's done (Nov 15 AMAT, Nov 17 KLAR: a scan closed
+    Chrome under it)."""
+    with fetcher.browser_lease(f"{ticker} source audit"):
+        return await _audit_sources(fetcher, directory, ticker, company, now, benchmark, sixk)
+
+
+async def _audit_sources(
+    fetcher: Fetcher,
+    directory: Path,
+    ticker: str,
+    company: KnownCompany,
+    now: datetime,
+    benchmark: EarningsBenchmark | None,
+    sixk: SixKResults | None,
+) -> Speed:
     form = company.sec_form or "8-K"
     # An 8-K filer's every filing SEC lists in one answer, so its history reaches back two years
     # even past many insider filings
