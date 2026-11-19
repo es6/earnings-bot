@@ -217,6 +217,10 @@ def sourced(
         return None
     amount, upper, scale, qualifier = parsed
     unit = unit_of(fact, value)
+    named = re.fullmatch(r"\s*(trillion|billion|million|thousand)s?\s*", fact.unit, re.IGNORECASE)
+    if scale == "one" and unit == "money" and named:
+        # The scale given as the unit: ASML's "14.2-15.2" in "billion" (EUR)
+        scale = named[1].casefold()
     scale = "one" if unit in ("%", "bps", "per share") else scale
     refs = evidence(document, amount, scale, unit) or [
         # Nowhere in the release: the verifier refuses it as unresolvable
@@ -239,12 +243,32 @@ def sourced(
     )
 
 
+def _rate_of_growth(fact: SummaryFact) -> bool:
+    """A percentage the metric names as growth, or writes with a plus sign, with no other
+    growth rate beside it (or the same one repeated): "Revenue growth: 12%; +12% YoY",
+    "Average check: +1.3%; +1.3% YoY"."""
+    value = parse(fact.value)
+    if value is None or value[1] is not None or unit_of(fact, fact.value) != "%":
+        return False
+    named = re.search(
+        r"\b(?:growth|grew|increase|decrease|decline|change)\b", fact.metric, re.IGNORECASE
+    )
+    if not named and not fact.value.strip().startswith("+"):
+        return False
+    change = parse(fact.change) if fact.change.strip() else None
+    return change is None or Decimal(change[0]).copy_abs() == Decimal(value[0]).copy_abs()
+
+
 def candidate(fact: SummaryFact, document: SourceDocument) -> ReferencedFact | None:
     kind = fact.kind if fact.kind in ("actual", "segment", "guide", "update") else "actual"
     guide = kind == "guide"
     main = sourced(fact, fact.value, document) if fact.value.strip() else None
     stated = fact.comparison if fact.comparison in ("YoY", "QoQ", "versus prior guidance") else ""
     growth = sourced(fact, fact.change, document, stated or "YoY") if "%" in fact.change else None
+    if not guide and main is not None and _rate_of_growth(fact):
+        # "Global eCommerce sales growth: 23%" is a growth rate, not a level: it is checked
+        # as one, where the release says the measure grew by it
+        main, growth = None, sourced(fact, fact.value, document, stated or "YoY")
     prior = sourced(fact, fact.prior, document) if fact.prior.strip() and not guide else None
     if main is None and growth is None:
         return None
