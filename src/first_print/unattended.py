@@ -266,6 +266,8 @@ class DirectoryWatcher:
         self.trials: dict[str, asyncio.Task[None]] = {}
         self.trial_problems: set[str] = set()
         self.trial_db: sqlite3.Connection | None = None
+        # Who held Chrome open at the last scan that would have closed it (Fetcher.browser_lease)
+        self.chrome_holders: list[str] = []
         # One research loop for every server: a company several servers track is researched
         # once, and what it finds is written to each of them
         self.dates = DateDiscovery(
@@ -624,11 +626,18 @@ class DirectoryWatcher:
             )
             for window in self.windows.values()
         ):
+            # Chrome stays open while research, an audit, a trial or a release read holds a
+            # lease on it; a later scan closes it once they're done
             try:
-                await self.fetcher.close_browser()
+                closed = await self.fetcher.close_idle_browser()
             except Exception as error:  # closing Chrome must never stop the schedule
                 self.journal.write("browser_close_error", message=repr(error))
                 self.journal.say(f"Closing Chrome failed, and the schedule goes on: {error!r}")
+            else:
+                holders = [] if closed else self.fetcher.browser_holders()
+                if holders and holders != self.chrome_holders:
+                    self.journal.write("browser_close_deferred", holders=holders)
+                self.chrome_holders = holders
 
     def _on_new(self, target: Target, source: Source, sighting: Sighting) -> None:
         self.releases.on_new(target, source, sighting, measure=self.tracks(target.cik))
