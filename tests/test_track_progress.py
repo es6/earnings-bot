@@ -289,6 +289,7 @@ async def test_a_finished_card_says_what_was_fastest_watched_and_rejected(tmp_pa
     assert fields["👀 Watching for the next release"] == [
         "• SEC 8-K filings",
         "• PR Newswire earnings feed",
+        "• PR Newswire earnings page",
         "• IR press release page, read in Chrome",
     ]
     # The Chrome page was verified for this release, so only the others are rejected

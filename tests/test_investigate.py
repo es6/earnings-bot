@@ -351,6 +351,7 @@ async def test_a_site_with_a_feed_is_polled_through_it(released: Callable[[str],
         "edgar",
         "edgar_latest",
         "prnewswire_busted",
+        "prnewswire_html",
         "prnewswire",
         "rss:ir.example.com",
     ]
@@ -434,6 +435,7 @@ async def test_a_site_that_blocks_the_bot_is_read_through_chrome(
         "edgar",
         "edgar_latest",
         "prnewswire_busted",
+        "prnewswire_html",
         "prnewswire",
     ]
 

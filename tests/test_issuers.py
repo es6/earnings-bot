@@ -211,6 +211,7 @@ def test_a_profile_watches_edgar_and_all_three_wires() -> None:
         "edgar_latest",
         "businesswire_busted",
         "prnewswire_busted",
+        "prnewswire_html",
         "prnewswire",
         "globenewswire",
         "globenewswire_busted",
