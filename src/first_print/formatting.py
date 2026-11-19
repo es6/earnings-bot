@@ -65,6 +65,8 @@ def source_label(name: str, form: str = "8-K") -> str:
         return "Business Wire earnings feed"
     if name == "prnewswire_semiconductors":
         return "PR Newswire semiconductor feed"
+    if name == "prnewswire_html":
+        return "PR Newswire earnings page"
     if name.startswith("prnewswire"):
         return "PR Newswire earnings feed"
     if name.startswith("globenewswire"):

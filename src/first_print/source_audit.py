@@ -22,6 +22,7 @@ from first_print.sec_results import SixKResults, SixKUnavailable, announces_resu
 from first_print.sources import (
     GLOBENEWSWIRE_EARNINGS,
     EdgarFilings,
+    PrNewswirePage,
     Q4PressReleases,
     RssFeed,
     Sighting,
@@ -368,8 +369,13 @@ def _archived_sources(ticker: str, company: KnownCompany, now: datetime) -> list
         source
         for source in target.sources()
         if source.name in {"q4_press", "broadcom_newsroom"}
-        # One copy of each feed is enough for the archive
-        or (isinstance(source, RssFeed) and not source.name.endswith("_busted"))
+        # One copy of each feed is enough for the archive, and the earnings page lists what
+        # the earnings feed does
+        or (
+            isinstance(source, RssFeed)
+            and not isinstance(source, PrNewswirePage)
+            and not source.name.endswith("_busted")
+        )
     ]
 
 

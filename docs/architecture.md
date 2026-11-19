@@ -123,7 +123,12 @@ What this tells us:
    the intended category. A schedule lists company names under `prnewswire`. Matching also
    checks the item's `dc:contributor`. A single-word issuer such as Azenta can match its
    exact contributor name, or lead the headline as the company reporting when the feed
-   supplies no contributor.
+   supplies no contributor. The same category's web page
+   (`https://www.prnewswire.com/news-releases/financial-services-latest-news/earnings-list/`)
+   is a third PR Newswire route, matched the same way on each row's headline and lead (rows
+   have no contributor). Its CDN treats path spellings as the plain URL, so each poll asks for
+   a page size whose copy has expired and keeps the newest 25 rows. A page without release rows,
+   or one that names another listing as canonical, is an error.
    The same source reads company press release feeds, such as the ones Equisolve sites publish.
 5. **Additional release sources.** Existing schedules configure these in `[target.trial]`.
    They can start or enrich an alert after their release checks pass.

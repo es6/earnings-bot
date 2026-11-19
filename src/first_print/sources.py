@@ -4,6 +4,7 @@ A source turns one HTTP response into the items it currently lists. Whoever poll
 compares those items with the ones it saw before to spot new ones.
 """
 
+import html
 import itertools
 import json
 import random
@@ -13,10 +14,11 @@ import xml.etree.ElementTree as ET
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Hashable, Iterator, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
 from typing import Literal
 from urllib.parse import urljoin, urlsplit, urlunsplit
+from zoneinfo import ZoneInfo
 
 from first_print.fetch import Fetcher, Response
 
@@ -26,6 +28,20 @@ BUSINESS_WIRE_EARNINGS = "https://feed.businesswire.com/rss/home/?rss=G1QFDERJXk
 PR_NEWSWIRE_EARNINGS = (
     "https://www.prnewswire.com/rss/financial-services-latest-news/earnings-list.rss"
 )
+# The same Earnings category as a web page (PrNewswirePage). Polled only every 30 s from its
+# 60 s cache on Nov 18, 2026, it listed three earnings releases a median 36 s after their stamps,
+# ahead of the spelled earnings feed on two of them (by 25 s for Target, 16 s median).
+PR_NEWSWIRE_EARNINGS_PAGE = (
+    "https://www.prnewswire.com/news-releases/financial-services-latest-news/earnings-list/"
+)
+# Seconds between polls of that page. With the spelled feed every second and the cached feed
+# every PR_NEWSWIRE_CACHED_INTERVAL seconds, PR Newswire's earnings take the same 1.5 requests a
+# second of the host's 2 as the feeds did before, so the spelled feed keeps its every second.
+PR_NEWSWIRE_PAGE_INTERVAL = 4.0
+# The plain earnings feed always comes from the CDN's 60 s copy (416 of 417 answers HIT on Nov
+# 18, 2026, Age up to 59 s) and was behind the spelled one on all six earnings releases both had,
+# so polling it every 4 s rather than every 2 adds about a second to a copy 30 s old on average.
+PR_NEWSWIRE_CACHED_INTERVAL = 4.0
 # PR Newswire's Semiconductors category, another place Broadcom's releases are filed. Also
 # cached for 60 s.
 PR_NEWSWIRE_SEMICONDUCTORS = (
@@ -596,6 +612,10 @@ class RssFeed(Source):
             entries = [_rss_item(item) for item in channel.iter("item")]
         else:
             raise ValueError("not an RSS or Atom feed")
+        return self._matched(entries, built)
+
+    def _matched(self, entries: Sequence["_Entry"], built: str | None) -> list[Sighting]:
+        """The entries that name one of the companies, as sightings."""
         sightings = []
         for entry in entries:
             # Newswire descriptions open with the dateline and the company's name:
@@ -613,7 +633,7 @@ class RssFeed(Source):
                     url=entry.link,
                     published=entry.published,
                     earnings=looks_like_earnings(entry.title),
-                    details={"feed_built": built} if built else {},
+                    details={"feed_built": built} if built else entry.details,
                     lead=entry.lead[:450],
                 )
             )
@@ -654,6 +674,119 @@ class FreshPrNewswire(RssFeed):
         )
 
 
+class PrNewswirePage(RssFeed):
+    """PR Newswire's Earnings listing as a web page (PR_NEWSWIRE_EARNINGS_PAGE), matched and
+    verified like its earnings feed. Each row links the release, gives its headline, its first
+    lines and the minute PR Newswire stamped it.
+
+    The page's CDN copy lasts 60 s (max-age=60), and unlike the feed's, its cache decodes a
+    percent-encoded spelling and drops a made-up query parameter: on Nov 19, 2026 five spellings,
+    `%2D`, `/./` and `?_=` all got the plain URL's HIT and its Age, and a capital letter got a
+    404.
+    The page and page size are part of the cache key, though, and each size not asked for in
+    the last minute came fresh from PR Newswire's server (EXPIRED or MISS, no Age, Last-Modified
+    equal to Date). So each poll asks for the next of PAGE_SIZES rows and keeps the newest
+    PAGE_ROWS, as many as the plain page lists: deeper rows are older releases, which mustn't
+    look new to a window that joined with a shorter page."""
+
+    PAGE_ROWS = 25
+    # Each size comes round again only after its copy has expired: 16 sizes, at most one poll
+    # every PR_NEWSWIRE_PAGE_INTERVAL seconds, is 64 s
+    PAGE_SIZES = range(PAGE_ROWS, PAGE_ROWS + 16)
+
+    def __init__(
+        self,
+        name: str,
+        page_url: str = PR_NEWSWIRE_EARNINGS_PAGE,
+        companies: Sequence[str] = (),
+        *,
+        interval: float = PR_NEWSWIRE_PAGE_INTERVAL,
+        publisher: str | None = None,
+    ) -> None:
+        super().__init__(name, page_url, companies, publisher=publisher)
+        self.interval = interval
+        sizes = list(self.PAGE_SIZES)
+        start = random.randrange(len(sizes))
+        self._sizes = itertools.cycle(sizes[start:] + sizes[:start])
+
+    def url(self) -> str:
+        return f"{self.feed_url}?page=1&pagesize={next(self._sizes)}"
+
+    async def fetch(self, fetcher: Fetcher) -> Response:
+        # A redirect would be some other page, or the cached one
+        return await fetcher.request(
+            self.method, self.url(), give_up_after=self.timeout, allow_redirects=False
+        )
+
+    def parse(self, response: Response) -> list[Sighting]:
+        page = response.body.decode("utf-8", errors="replace")
+        canonical = _CANONICAL.search(page)
+        href = _HREF.search(canonical[0]) if canonical else None
+        if href is None or html.unescape(href[1]) != self.feed_url:
+            raise ValueError("the page did not identify the requested listing")
+        answered = published_time(response.headers.get("date")) or datetime.now(UTC)
+        entries: dict[str, _Entry] = {}
+        for row in _PRN_ROW.finditer(page):
+            link = _HREF.search(row[1])
+            if link is None or not _PRN_ARTICLE.fullmatch(link[1]):
+                continue  # a card that isn't a release
+            heading = _H3.search(row[2])
+            if heading is None:
+                raise ValueError(f"a release row without a headline: {link[1]}")
+            stamp = _SMALL.search(heading[1])
+            listed = _text(stamp[1]) if stamp else ""
+            lead = _P.search(row[2])
+            url = urljoin("https://www.prnewswire.com/", link[1])
+            entries.setdefault(
+                url,
+                _Entry(
+                    key=url,
+                    title=_text(_SMALL.sub("", heading[1])),
+                    lead=_text(lead[1]) if lead else "",
+                    link=url,
+                    published=_listed_time(listed, answered),
+                    details={"listed": listed} if listed else {},
+                ),
+            )
+        if not entries:
+            raise ValueError("no release rows on the listing page")
+        return self._matched(list(entries.values())[: self.PAGE_ROWS], None)
+
+
+_CANONICAL = re.compile(r"<link\b[^>]*\brel=\"canonical\"[^>]*>", re.IGNORECASE)
+_HREF = re.compile(r"\bhref=\"([^\"]*)\"")
+_PRN_ROW = re.compile(
+    r"<a\b([^>]*\bnewsreleaseconsolidatelink\b[^>]*)>(.*?)</a>", re.DOTALL | re.IGNORECASE
+)
+_PRN_ARTICLE = re.compile(r"/news-releases/[^/?#\"]+-\d{9}\.html")
+_H3 = re.compile(r"<h3\b[^>]*>(.*?)</h3>", re.DOTALL | re.IGNORECASE)
+_SMALL = re.compile(r"<small\b[^>]*>(.*?)</small>", re.DOTALL | re.IGNORECASE)
+_P = re.compile(r"<p\b[^>]*>(.*?)</p>", re.DOTALL | re.IGNORECASE)
+_EASTERN = ZoneInfo("America/New_York")
+
+
+def _text(fragment: str) -> str:
+    return " ".join(html.unescape(re.sub(r"<[^>]+>", " ", fragment)).split())
+
+
+def _listed_time(listed: str, answered: datetime) -> str | None:
+    """A listing row's "Nov 18, 2026, 22:50 ET" as an ISO time with its offset. A bare "06:00
+    ET" is taken as the latest such minute by the time the page was answered."""
+    text = listed.removesuffix(" ET").strip()
+    try:
+        moment = datetime.strptime(text, "%b %d, %Y, %H:%M").replace(tzinfo=_EASTERN)
+    except ValueError:
+        try:
+            clock = datetime.strptime(text, "%H:%M")
+        except ValueError:
+            return None
+        now = answered.astimezone(_EASTERN)
+        moment = now.replace(hour=clock.hour, minute=clock.minute, second=0, microsecond=0)
+        if moment > now + timedelta(minutes=5):
+            moment -= timedelta(days=1)
+    return moment.isoformat()
+
+
 _ATOM = "{http://www.w3.org/2005/Atom}"
 _DC = "{http://purl.org/dc/elements/1.1/}"
 
@@ -671,6 +804,7 @@ class _Entry:
     link: str
     published: str | None
     contributor: str = ""
+    details: dict[str, str] = field(default_factory=dict)
 
 
 def _rss_item(item: ET.Element) -> _Entry:

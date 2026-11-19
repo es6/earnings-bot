@@ -300,6 +300,7 @@ async def test_an_admin_can_pin_a_ticker_outside_the_catalog(
         "edgar_latest",
         "businesswire_busted",
         "prnewswire_busted",
+        "prnewswire_html",
         "prnewswire",
         "globenewswire",
         "globenewswire_busted",

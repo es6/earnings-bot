@@ -53,7 +53,12 @@ from first_print.clock import Sample, TrustedClock
 from first_print.fetch import Response
 from first_print.pipeline import Poster, Releases
 from first_print.recorder import ET, Journal, Plan, Target, record
-from first_print.sources import PR_NEWSWIRE_EARNINGS, EdgarFilings, Source
+from first_print.sources import (
+    PR_NEWSWIRE_EARNINGS,
+    PR_NEWSWIRE_EARNINGS_PAGE,
+    EdgarFilings,
+    Source,
+)
 from tests.builders import sec_filing_detail
 from tests.fakes import FakeSession, SessionFetcher
 
@@ -69,6 +74,7 @@ LATENCY = {
     "businesswire": 0.20,
     "prnewswire": 0.15,
     "prnewswire_article": 0.30,
+    "prnewswire_html": 0.40,  # fresh from the server, 0.34-0.65 s on Nov 19, 2026
     "ir_feed": 0.15,
     "ir_page": 0.20,
     "unknown": 0.05,
@@ -291,6 +297,8 @@ class World:
             return Route("businesswire", "wire_poll", None, lambda out: self.wire(False, out))
         if host == "www.prnewswire.com" and path.startswith("/rss/"):
             return Route("prnewswire", "wire_poll", None, lambda out: self.wire(True, out))
+        if host == "www.prnewswire.com" and url.startswith(PR_NEWSWIRE_EARNINGS_PAGE):
+            return Route("prnewswire_html", "wire_poll", None, self.wire_page)
         if host == "www.prnewswire.com" and url in self.by_article:
             c = self.by_article[url]
             return Route("prnewswire_article", "wire_body", c.ticker, lambda out: self.page(c, out))
@@ -400,6 +408,33 @@ class World:
             '<rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/"><channel>'
             f"<title>Earnings</title>{channel_link}<lastBuildDate>{stamp}</lastBuildDate>"
             f"{xml}</channel></rss>"
+        ).encode()
+
+    def wire_page(self, out: bool) -> tuple[int, bytes]:
+        """PR Newswire's earnings listing page: the feed's releases, newest first."""
+        items = [
+            (f"{c.name} Reports Third Quarter 2026 Results", c.prnewswire_article, c.name)
+            for c in self.companies
+            if out and c.kind == "rss"
+        ]
+        items += [
+            (
+                f"Zenith Widgets {n} Reports Third Quarter 2026 Results",
+                f"https://www.prnewswire.com/news-releases/zenith-{n}-30{2_700_000 + n}.html",
+                f"Zenith Widgets {n}",
+            )
+            for n in range(25)
+        ]
+        stamp = f"{self.released.astimezone(ET):%b %d, %Y, %H:%M} ET"
+        rows = "".join(
+            '<div class="row newsCards"><a class="newsreleaseconsolidatelink" '
+            f'href="{link.removeprefix("https://www.prnewswire.com")}"><h3><small>{stamp}'
+            f'</small>{title}</h3><p class="remove-outline">{who}, today announced</p></a></div>'
+            for title, link, who in items
+        )
+        return 200, (
+            f'<html><head><link rel="canonical" href="{PR_NEWSWIRE_EARNINGS_PAGE}"></head>'
+            f"<body>{rows}</body></html>"
         ).encode()
 
     def ir_feed(self, c: Company, out: bool) -> tuple[int, bytes]:
@@ -698,6 +733,7 @@ def most_in_one_second(times: Sequence[float]) -> int:
 
 
 CATEGORY = {"q4_press": "ir", "q4_files": "ir", "businesswire_busted": "wire", "prnewswire": "wire"}
+CATEGORY |= {"prnewswire_html": "wire"}
 CATEGORY |= {"edgar": "sec", "edgar_latest": "sec"}
 BODY_KIND = {"SEC 8-K": "sec_body", "IR site": "ir_body", "PR Newswire": "wire_body"}
 

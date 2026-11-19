@@ -135,6 +135,7 @@ def test_blocked_sites_and_other_wires_are_left_out_of_the_target() -> None:
         "edgar",
         "edgar_latest",
         "prnewswire_busted",
+        "prnewswire_html",
         "prnewswire",
     ]
 
