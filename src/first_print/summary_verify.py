@@ -42,7 +42,9 @@ _SCALES = {
 }
 _FACTOR = {"one": 1, "thousand": 10**3, "million": 10**6, "billion": 10**9, "trillion": 10**12}
 _NUMBER = re.compile(
-    r"(?P<neg>[-\u2212\u2013]|\()?\s*[$€£¥]?\s*(?P<num>\d[\d,]*(?:\.\d+)?)\s*"
+    r"(?P<neg>[-\u2212\u2013(]|negative\s+|minus\s+)?\s*"
+    r"(?:(?:USD|EUR|GBP|CAD|JPY|RMB|CNY|AUD|CHF|SEK|INR|BRL|US)\s*)?"
+    r"[$€£¥]?\s*(?P<num>\d[\d,]*(?:\.\d+)?)\s*"
     r"(?P<scale>trillion|billion|million|thousand|bn|mn|[tbmk](?![a-z]))?",
     re.IGNORECASE,
 )
@@ -50,7 +52,7 @@ _NUMBER = re.compile(
 DASHES = ("-", "\u2212", "\u2013", "(")
 _QUALIFIERS = (
     (("approximately", "about", "~", "roughly", "around"), "approximately"),
-    (("more than", "in excess of", "over ", ">", "above"), "more_than"),
+    (("more than", "in excess of", "over ", ">", "above", "exceeded", "exceeding"), "more_than"),
     (("nearly", "almost"), "nearly"),
     (("at least",), "at_least"),
     (("less than", "under ", "below", "<"), "less_than"),
@@ -90,9 +92,10 @@ def parse(text: str) -> tuple[str, str | None, str, str] | None:
     amounts, scale = [], "one"
     for index, match in enumerate(found):
         # A dash between two numbers is a range, not a minus; a parenthesis is always one
-        negative = match["neg"] in DASHES and (
-            index == 0 or len(found) == 1 or match["neg"] == "(" or worded
+        signed = match["neg"] in DASHES or bool(
+            match["neg"] and match["neg"].strip().casefold() in ("negative", "minus")
         )
+        negative = signed and (index == 0 or len(found) == 1 or match["neg"] == "(" or worded)
         amounts.append(("-" if negative else "") + match["num"].replace(",", ""))
         if match["scale"]:
             scale = _SCALES[match["scale"].casefold()]

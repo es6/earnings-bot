@@ -573,7 +573,7 @@ def period_issues(
 
 def currencies(text: str) -> set[str]:
     found = set(
-        re.findall(r"\b(?:USD|EUR|GBP|CAD|JPY|RMB|CNY|AUD|CHF|SEK|INR|BRL)\b", text.upper())
+        re.findall(r"\b(?:USD|EUR|GBP|CAD|JPY|RMB|CNY|AUD|CHF|SEK|INR|BRL)(?=\b|\d)", text.upper())
     )
     if re.search(r"\b(?:C|CA|A|AU|HK|NT|S|R)\$", text):
         found.add("OTHER$")
@@ -585,7 +585,22 @@ def currencies(text: str) -> set[str]:
         found.add("GBP")
     if "¥" in text:
         found.add("JPY")
-    return found
+    return {currency_code(code) for code in found}
+
+
+def currency_code(code: str) -> str:
+    """RMB denotes the same currency as its ISO code CNY, not a conversion."""
+    return "CNY" if code.upper() == "RMB" else code.upper()
+
+
+def amount_currencies(text: str, start: int, end: int) -> set[str]:
+    """Only the currency attached to this amount, not its translated neighbour."""
+    mark = re.search(
+        r"(?:\b(?:USD|EUR|GBP|CAD|JPY|RMB|CNY|AUD|CHF|SEK|INR|BRL)|US\$|[$€£¥])\s*$",
+        text[:start],
+        re.IGNORECASE,
+    )
+    return currencies((mark[0] if mark else "") + text[start:end])
 
 
 def source_scale(text: str, per_share: bool = False) -> str | None:
@@ -714,6 +729,12 @@ def number_tokens(
         raw = match["num"].replace(",", "")
         suffix = (match["suffix"] or "").casefold()
         negative = bool(match["neg"] or match["neg2"])
+        word_sign = re.search(
+            r"\b(?:negative|minus)\s*(?:[a-z]{3}|us\$|[$€£¥])?\s*$",
+            text[: match.start("num")],
+            re.IGNORECASE,
+        )
+        negative = negative or word_sign is not None
         if "(" in (match["neg"] or "", match["neg2"] or "") and not match["close"]:
             negative = bool(match["neg"] not in (None, "(") or match["neg2"] not in (None, "("))
         if not suffix and not match["cur"] and re.fullmatch(r"(?:19|20)\d{2}", raw):

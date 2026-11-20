@@ -351,6 +351,17 @@ def validate_facts(
             continue
         if issues:
             rejected.append(f"{fact.metric}: {'; '.join(issues)}")
+            if (
+                unquoted
+                and issues == ["comparison exclusion is not supported by its quoted measure"]
+                and re.search(r"\badjusted\b|non[- ]?(?:gaap|ifrs)", fact.metric, re.IGNORECASE)
+            ):
+                # A descriptive basis note can cite a definition outside this quote. Drop
+                # that unverified note; the measure's own adjusted identity still must bind.
+                without_note = replace(fact, basis="")
+                if not validate_fact(without_note, release):
+                    accepted.append(without_note)
+                continue
             # Preserve an independently supported current value when only its optional
             # prior/change fails. Never repair a quote, scope, duration, unit or number.
             optional = (
