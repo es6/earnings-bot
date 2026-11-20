@@ -151,6 +151,9 @@ class SummaryFact:
     role: str = ""
     relevance: str = ""
     comparison: str = ""
+    # Deterministic display metadata from the pre-window cache, never model-supplied.
+    estimate: str = ""
+    estimate_result: str = ""
 
 
 _PERIOD = re.compile(

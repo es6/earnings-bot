@@ -10,7 +10,9 @@ from typing import Any
 import anthropic
 
 from first_print.config import Settings
+from first_print.consensus import attach_estimates
 from first_print.source_document import SourceDocument, document_from_text
+from first_print.sources import published_time
 from first_print.summary_binding import bind_answer
 from first_print.summary_bound_format import render_bound
 from first_print.summary_format import discord_brief
@@ -69,6 +71,7 @@ def _fact(line: dict[str, Any]) -> SummaryFact:
         **{
             name.name: str(line.get(name.name) or ("actual" if name.name == "kind" else ""))
             for name in fields(SummaryFact)
+            if name.name not in ("estimate", "estimate_result")
         }
     )
 
@@ -144,10 +147,17 @@ class Summarizer:
         context: dict[str, Any] | None,
         document: SourceDocument | None,
     ) -> Summary:
-        # No consensus estimates: the tested setting had none, and the brief never calls a beat
-        # or miss without a matching estimate
+        # Estimates never enter the model prompt. Only verified facts can receive an exact,
+        # deterministic comparison fetched before both the window and a source publication time.
+        snapshot = (context or {}).get("consensus_snapshot")
+        published = published_time((context or {}).get("release_published_at"))
+        writer_context = {
+            k: v
+            for k, v in (context or {}).items()
+            if k not in ("consensus_snapshot", "release_published_at")
+        }
         try:
-            request = structured_request(ticker, release, context)
+            request = structured_request(ticker, release, writer_context or None)
         except ValueError as error:
             raise SummaryError(str(error)) from error
         message = await self._generate(request)
@@ -196,6 +206,13 @@ class Summarizer:
                     f"the release confirmed none of {WRITER}'s facts' measure, period and basis"
                 )
         evidence["accepted"] = [asdict(fact) for fact in accepted]
+        if self.verified and isinstance(snapshot, dict):
+            accepted = await asyncio.to_thread(
+                attach_estimates, accepted, source, snapshot, ticker=ticker, published_at=published
+            )
+            evidence["consensus_snapshot"] = snapshot
+            evidence["consensus_publication_cutoff"] = published.isoformat() if published else None
+            evidence["displayed"] = [asdict(fact) for fact in accepted]
         return Summary(
             text=discord_brief(accepted),
             unverified=rejected,
@@ -225,6 +242,11 @@ class Summarizer:
     async def _write_referenced(
         self, ticker: str, document: SourceDocument, seconds: float, context: dict[str, Any] | None
     ) -> Summary:
+        context = {
+            k: v
+            for k, v in (context or {}).items()
+            if k not in ("consensus_snapshot", "release_published_at")
+        } or None
         try:
             request = referenced_request(ticker, document, context)
         except ValueError as error:

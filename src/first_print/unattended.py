@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from pathlib import Path
+from typing import Any
 
 import aiohttp
 import discord
@@ -18,6 +19,7 @@ from pydantic import ValidationError
 from first_print.benchmark import BenchmarkResult, EarningsBenchmark
 from first_print.browser_sources import BrowserRelease, BrowserRss
 from first_print.calendar import Calendar, SharedCalendar, Tracked
+from first_print.consensus_prefetch import ConsensusPrefetch
 from first_print.date_discovery import DateDiscovery
 from first_print.delivery import DeliveryStore, retry_delivery
 from first_print.driver_profiles import DriverProfiles, ProfileWriter
@@ -895,6 +897,7 @@ async def watch_directory(
     ping: Callable[[], Awaitable[object]] | None = None,
     *,
     driver_profiles: bool = False,
+    alpha_vantage_api_key: str | None = None,
     other_channels: Sequence[discord.TextChannel | discord.Thread] = (),
 ) -> None:
     progress_channel = status_channel or channel
@@ -1007,14 +1010,34 @@ async def watch_directory(
                 else None
             )
             watcher.dates.profiles = profiles
-            if profiles:
-                releases.issuer_context = lambda target: profiles.context(target.cik, journal.now())
+            consensus = (
+                ConsensusPrefetch(
+                    store,
+                    alpha_vantage_api_key,
+                    journal.now,
+                    watcher.busy,
+                )
+                if alpha_vantage_api_key
+                and summarizer
+                and summarizer.verified
+                and not summarizer.references
+                else None
+            )
+
+            def summary_context(target: Target) -> dict[str, Any]:
+                return {
+                    **(profiles.context(target.cik, journal.now()) if profiles else {}),
+                    **(consensus.context(target) if consensus else {}),
+                }
+
+            releases.issuer_context = summary_context
             watcher.summaries = summarizer is not None
             if isinstance(channel, discord.abc.GuildChannel | discord.Thread):
                 watcher.guild_id = channel.guild.id
             for server, cards in zip(servers, server_progress, strict=True):
                 dates = server.dates
                 assert dates is not None
+                dates.consensus = consensus
                 server.progress = TrackProgress(
                     server.calendar,
                     cards,
@@ -1038,6 +1061,7 @@ async def watch_directory(
                     research_mode=watcher.research_mode,
                     research_deferred=fetcher.research_deferred,
                     profile_note=profiles.notes.get if profiles else None,
+                    estimate_note=consensus.notes.get if consensus else None,
                     reviews=watcher.shared if len(servers) > 1 else None,
                     claim=watcher.claim_audit,
                     release=watcher.auditing.discard,

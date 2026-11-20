@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     verified_summaries: bool = False
     meta_model_api_key: SecretStr | None = None
     fmp_api_key: SecretStr | None = None  # earnings-calendar lookups
+    alpha_vantage_api_key: SecretStr | None = None  # pre-window analyst estimates only
 
     @field_validator("discord_server_channel_ids", mode="before")
     @classmethod

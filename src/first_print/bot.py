@@ -167,6 +167,11 @@ class EarningsBot(discord.Client):
                 self._watch_ready,
                 ping,
                 driver_profiles=settings.live_driver_profiles,
+                alpha_vantage_api_key=(
+                    settings.alpha_vantage_api_key.get_secret_value()
+                    if settings.alpha_vantage_api_key
+                    else None
+                ),
                 other_channels=await self._other_channels(),
             )
             return

@@ -438,6 +438,9 @@ def format_fact(fact: SummaryFact) -> str:
     if not value.strip():  # a growth rate given without a level
         return f"{prefix}{label}: {change}" if change.strip() else f"{prefix}{label}"
     text = f"{prefix}{label}: {value}"
+    if fact.estimate:
+        marker = {"above": "🟢", "below": "🔴", "inline": "🟡"}.get(fact.estimate_result, "")
+        text += f" ({marker + ' ' if marker else ''}Est. {fact.estimate})"
     return f"{text}; {change}" if change.strip() else text
 
 

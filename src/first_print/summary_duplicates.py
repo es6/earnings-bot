@@ -98,6 +98,8 @@ def combine_duplicates(facts: list[SummaryFact]) -> list[SummaryFact]:
                         (old.change, fact.change),
                         (old.prior, fact.prior),
                         (change_reference(old), change_reference(fact)),
+                        (old.estimate, fact.estimate),
+                        (old.estimate_result, fact.estimate_result),
                     )
                 )
             ):
@@ -107,6 +109,8 @@ def combine_duplicates(facts: list[SummaryFact]) -> list[SummaryFact]:
                 change=old.change or fact.change,
                 prior=old.prior or fact.prior,
                 comparison=old.comparison or fact.comparison,
+                estimate=old.estimate or fact.estimate,
+                estimate_result=old.estimate_result or fact.estimate_result,
             )
             break
         else:
