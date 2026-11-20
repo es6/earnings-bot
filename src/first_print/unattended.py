@@ -65,6 +65,7 @@ from first_print.source_audit import Speed, audit_sources
 from first_print.sources import EdgarFilings, Sighting, Source
 from first_print.summary import Summarizer
 from first_print.track_progress import REFRESH, TrackProgress
+from first_print.transition_evidence import TransitionEvidence
 from first_print.version import release_version
 
 SCAN_SECONDS = 3.0
@@ -930,7 +931,7 @@ async def watch_directory(
                     DeliveryStore(directory / ".tracking-progress.sqlite3", other_id)
                 )
             )
-        journal = Journal(file)
+        journal = Journal(file, evidence=TransitionEvidence.for_log(directory / "watch.jsonl"))
         queue: asyncio.Queue[tuple[str, bool]] = asyncio.Queue()
 
         def status(message: str, *, start: bool = False) -> None:

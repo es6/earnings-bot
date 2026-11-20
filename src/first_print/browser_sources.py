@@ -334,7 +334,7 @@ class BrowserRelease(Source):
         listing = await self.request_page(fetcher, self.listing_url())
         self.listing_diagnostics = self.request_diagnostics.copy()
         self.listing_transport = self.transport
-        self.listing_poll = replace(listing, body=b""), time.monotonic()
+        self.listing_poll = listing, time.monotonic()
         if listing.status != 200:
             return listing
         parser = _ReleaseLinks()
@@ -520,7 +520,7 @@ class QuarterlyTable(HttpRelease):
                 if listing.status == 200
                 else None
             )
-        self.listing_poll = replace(listing, body=b""), time.monotonic()
+        self.listing_poll = listing, time.monotonic()
         if not link:
             return listing
         title = f"Q{self.quarter} {self.year} Earnings Release"

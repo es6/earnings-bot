@@ -65,6 +65,7 @@ from first_print.sources import (
     results_headline,
 )
 from first_print.text import html_to_text, verified_report
+from first_print.transition_evidence import TransitionEvidence, public_url
 
 ET = ZoneInfo("America/New_York")
 
@@ -311,7 +312,14 @@ def _json_value(value: object) -> str:
 class Journal:
     """Appends every event to the JSON Lines log, and prints the ones worth watching live."""
 
-    def __init__(self, file: TextIO, clock: TrustedClock | None = None) -> None:
+    def __init__(
+        self,
+        file: TextIO,
+        clock: TrustedClock | None = None,
+        *,
+        evidence: TransitionEvidence | None = None,
+    ) -> None:
+        self.evidence = evidence
         self.file = file
         self.clock = clock or TrustedClock()
 
@@ -322,6 +330,19 @@ class Journal:
         record = {"at": self.now(), "event": event, **fields}
         self.file.write(json.dumps(record, default=_json_value) + "\n")
         self.file.flush()
+
+    async def flush_evidence(self) -> None:
+        if self.evidence is not None:
+            await self.evidence.flush()
+            if self.evidence.evicted:
+                self.write("source_evidence_retention", evicted=self.evidence.evicted)
+            if self.evidence.dropped or self.evidence.errors or self.evidence.omitted:
+                self.write(
+                    "source_evidence_incomplete",
+                    dropped=self.evidence.dropped,
+                    errors=self.evidence.errors,
+                    omitted_bodies=self.evidence.omitted,
+                )
 
     def say(self, message: str) -> None:
         print(f"{_clock(self.now())}  {message}", flush=True)
@@ -662,6 +683,7 @@ def _take(
     *,
     items: list[Sighting] | None = None,
 ) -> float:
+    received_at = journal.now()
     w.polls += 1
     if isinstance(w.source, BrowserRelease) and w.source.listing_poll:
         listing, received = w.source.listing_poll
@@ -716,6 +738,52 @@ def _take(
     w.elapsed.append(outcome.elapsed)
     w.queued.append(outcome.queued)
     record_items(w, items, outcome, journal, sent, on_new)
+    if (
+        journal.evidence is not None
+        and w.window is not None
+        and not isinstance(w.source, EdgarFilings)
+    ):
+        try:
+            listing = (
+                w.source.listing_poll[0]
+                if isinstance(w.source, BrowserRelease) and w.source.listing_poll
+                else outcome
+            )
+            identity = (
+                f"{w.ticker}:{w.period}:{w.window[0].isoformat()}:{w.source.name}:{w.source.url()}"
+            )
+            journal.evidence.offer(
+                identity,
+                {
+                    "ticker": w.ticker,
+                    "period": w.period,
+                    "source": w.source.name.replace(w.source.url(), public_url(w.source.url())),
+                    "method": w.source.method,
+                    "transport": getattr(w.source, "transport", "http"),
+                    "sent": sent.isoformat(),
+                    "received": received_at.isoformat(),
+                    "previous_sent": w.previous.isoformat() if w.previous else None,
+                    "window_start": w.window[0].isoformat(),
+                    "matched": w.first is not None or bool(w.caught_up),
+                    "initial_poll": w.polls == 1,
+                    "parsed_count": len(items),
+                    "parsed": [
+                        {
+                            "key": public_url(item.key)
+                            if item.key.startswith("https://")
+                            else item.key,
+                            "title": item.title[:256],
+                            "earnings": item.earnings,
+                        }
+                        for item in items[:256]
+                    ],
+                },
+                listing,
+                positive=w.first is not None or bool(w.caught_up),
+                article=outcome if outcome.url != listing.url else None,
+            )
+        except Exception as error:
+            journal.write("source_evidence_error", ticker=w.ticker, error=type(error).__name__)
     since = w.previous or (w.window[0] if w.window else None)
     if since is not None:
         w.longest_quiet = max(w.longest_quiet, (sent - since).total_seconds())
@@ -1127,6 +1195,7 @@ async def record_target(
                 group.create_task(polls.watch(w, end, notify))
     finally:
         summarize(target, watches, journal)
+        await journal.flush_evidence()
     return watches
 
 
@@ -1204,7 +1273,7 @@ async def record(
 
 async def _record_to(plan: Plan, sec_user_agent: str, log_path: Path) -> None:
     with log_path.open("a", encoding="utf-8") as file:
-        journal = Journal(file)
+        journal = Journal(file, evidence=TransitionEvidence.for_log(log_path))
         journal.say(f"Logging to {log_path}. Press Ctrl+C to stop.")
         async with Fetcher(sec_user_agent) as fetcher:
             await record(plan, fetcher, journal)
