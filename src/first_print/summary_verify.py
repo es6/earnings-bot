@@ -17,7 +17,7 @@ from collections.abc import Iterator
 from dataclasses import replace
 from decimal import Decimal, InvalidOperation
 
-from first_print.binding_text import CARDINALS, cardinal_tokens, number_tokens
+from first_print.binding_text import CARDINALS, cardinal_tokens, number_tokens, unit_kind
 from first_print.source_document import SourceDocument
 from first_print.summary_binding import bind_brief, bound_scope, release_bases
 from first_print.summary_evidence import (
@@ -233,7 +233,11 @@ def sourced(
     if re.search(r"percentage points?|\bpp\b", value, re.IGNORECASE):
         amount = str(Decimal(amount) * 100)
         upper = str(Decimal(upper) * 100) if upper is not None else None
-    named = re.fullmatch(r"\s*(trillion|billion|million|thousand)s?\s*", fact.unit, re.IGNORECASE)
+    named = (
+        re.search(r"\b(trillion|billion|million|thousand)s?\b", fact.unit, re.IGNORECASE)
+        if unit_kind(fact.unit) == "money" and not re.search(r"\d|/|ratio", fact.unit)
+        else None
+    )
     if scale == "one" and unit == "money" and named:
         # The scale given as the unit: ASML's "14.2-15.2" in "billion" (EUR)
         scale = named[1].casefold()
