@@ -2,6 +2,7 @@
 
 import io
 import tomllib
+from html import escape
 from pathlib import Path
 
 import pytest
@@ -120,11 +121,31 @@ async def test_other_issuers_work_and_official_host_boundary_is_enforced() -> No
     assert item.url == article and not any("elsewhere.example" in u for _, u, _ in fetcher.requests)
 
 
+@pytest.mark.parametrize("aliases", [["WeRide"], ["WeRide", "NASDAQ: WRD"]])
+async def test_issuer_in_headline_cannot_own_another_companys_results_announcement(
+    aliases: list[str],
+) -> None:
+    planned = target()
+    planned.newsrooms[0].names = aliases
+    room = next(s for s in planned.sources() if s.name.startswith("newsroom:"))
+    misleading = BODY.replace(b"WeRide (NASDAQ: WRD", b"Another Company (NASDAQ: WRD")
+    assert not (await poll(room, routes(misleading)))[1]
+
+
 def test_independent_routes_survive_schedule_round_trip_and_keep_existing_routes() -> None:
     planned = target()
     decoded = Target.model_validate(tomllib.loads(target_toml(planned))["target"][0])
     assert any(s.url() == LISTING for s in decoded.sources())
     assert {s.url() for s in uber().sources()} <= {s.url() for s in decoded.sources()}
+
+
+async def test_an_official_headline_without_company_name_is_verified_in_the_body() -> None:
+    title = "Third Quarter 2026 Financial Results"
+    body = BODY.replace(escape(TITLE).encode(), title.encode())
+    _, [item] = await poll(source(), routes(body, title))
+    assert item.url == ARTICLE and item.details["period"] == "FY2026Q3"
+    wrong = body.replace(b"WeRide (NASDAQ: WRD", b"Another Company (NASDAQ: WRD")
+    assert not (await poll(source(), routes(wrong, title)))[1]
 
 
 async def test_highlights_alert_immediately_but_only_full_report_feeds_the_summary(

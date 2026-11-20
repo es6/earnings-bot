@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field, model_validator
 from first_print.browser import browser_host
 from first_print.browser_sources import HttpRelease, _ReleaseLinks
 from first_print.fetch import Fetcher, Response
-from first_print.sec_results import announces_results, reported_period
+from first_print.sec_results import _ANNOUNCES_RESULTS, announces_results, reported_period
 from first_print.sources import Sighting, is_date_notice, issuer_wire_name
 from first_print.text import html_to_text, verified_report
 
@@ -19,7 +19,11 @@ _FINANCIAL = re.compile(r"\b(?:revenues?|results|earnings)\b", re.IGNORECASE)
 
 
 def _named(text: str, names: list[str]) -> bool:
-    return any(re.search(rf"(?<!\w){re.escape(name)}(?!\w)", text, re.IGNORECASE) for name in names)
+    return any(
+        re.search(rf"(?<!\w){re.escape(name)}(?!\w)", text, re.IGNORECASE)
+        for name in names
+        if not re.fullmatch(r"[A-Z]{2,12}\s*:\s*[\w.-]+", name, re.IGNORECASE)
+    )
 
 
 def newsroom_story(
@@ -45,6 +49,12 @@ def newsroom_story(
     named = reported_period(introduction)
     if not named or not _named("\n".join(lines[start : start + 3]), names):
         return None
+    if not any(
+        _named(line[: announcement.start()], names)
+        for line in introduction.splitlines()
+        for announcement in _ANNOUNCES_RESULTS.finditer(line)
+    ):
+        return None  # the issuer must make the announcement, not merely appear in the headline
     actual = f"FY{named[0]}Q{named[1]}"
     if period is not None and actual != period:
         return None
@@ -91,11 +101,7 @@ class NewsroomRelease(HttpRelease):
         parser.feed(listing.body.decode("utf-8", "replace"))
         seen: set[str] = set()
         for href, title in [*parser.links, *parser.structured]:
-            if (
-                not (_QUARTER.search(title) and _FINANCIAL.search(title))
-                or is_date_notice(title)
-                or not _named(title, self.names)
-            ):
+            if not (_QUARTER.search(title) and _FINANCIAL.search(title)) or is_date_notice(title):
                 continue
             url = urldefrag(urljoin(self.listing, href)).url
             parts = urlsplit(url)
