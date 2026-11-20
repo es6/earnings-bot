@@ -3,6 +3,7 @@
 import copy
 import json
 from dataclasses import asdict, replace
+from datetime import datetime
 from typing import Any
 
 import pytest
@@ -60,7 +61,13 @@ SNAPSHOT: dict[str, Any] = {
 
 
 def attach(fact: SummaryFact = FACT, snapshot: dict[str, Any] | None = None) -> SummaryFact:
-    return attach_estimates([fact], DOC, snapshot or SNAPSHOT, ticker="EX")[0]
+    return attach_estimates(
+        [fact],
+        DOC,
+        snapshot or SNAPSHOT,
+        ticker="EX",
+        published_at=datetime.fromisoformat("2026-11-20T09:00:00+00:00"),
+    )[0]
 
 
 def test_comparison_is_exact_currency_period_and_scope_with_no_inferred_eps_basis() -> None:
@@ -166,10 +173,35 @@ async def test_only_verified_summary_gets_cached_estimates_model_never_sees_them
     line = {**asdict(FACT), "estimate": "$1", "estimate_result": "above"}
     writer, asked = summarizer_answering("end_turn", json.dumps({"lines": [line]}))
     writer.verified = True
-    result = await writer.write_document("EX", DOC, context={"consensus_snapshot": SNAPSHOT})
+    result = await writer.write_document(
+        "EX",
+        DOC,
+        context={
+            "consensus_snapshot": SNAPSHOT,
+            "release_published_at": "2026-11-20T09:00:00+00:00",
+        },
+    )
     assert "🟢 Est. $42B" in result.text
     assert "consensus_snapshot" not in json.dumps(asked)
+    assert "release_published_at" not in json.dumps(asked)
     assert json.loads(result.evidence or "{}")["consensus_snapshot"] == SNAPSHOT
     writer.verified = False
     legacy = await writer.write_document("EX", DOC, context={"consensus_snapshot": SNAPSHOT})
     assert "Est." not in legacy.text
+
+
+@pytest.mark.parametrize("published", [None, "2026-11-19T21:00:00+00:00", "2026-11-20T09:00:00"])
+async def test_pre_window_snapshot_is_hidden_without_proven_prepublication_cutoff(
+    published: str | None,
+) -> None:
+    writer, _ = summarizer_answering("end_turn", json.dumps({"lines": [asdict(FACT)]}))
+    writer.verified = True
+    result = await writer.write_document(
+        "EX",
+        DOC,
+        context={
+            "consensus_snapshot": SNAPSHOT,
+            "release_published_at": published,
+        },
+    )
+    assert "Est." not in result.text

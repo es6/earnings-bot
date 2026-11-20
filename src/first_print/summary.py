@@ -12,6 +12,7 @@ import anthropic
 from first_print.config import Settings
 from first_print.consensus import attach_estimates
 from first_print.source_document import SourceDocument, document_from_text
+from first_print.sources import published_time
 from first_print.summary_binding import bind_answer
 from first_print.summary_bound_format import render_bound
 from first_print.summary_format import discord_brief
@@ -147,9 +148,14 @@ class Summarizer:
         document: SourceDocument | None,
     ) -> Summary:
         # Estimates never enter the model prompt. Only verified facts can receive an exact,
-        # deterministic comparison from a snapshot fetched before this release's window.
+        # deterministic comparison fetched before both the window and a source publication time.
         snapshot = (context or {}).get("consensus_snapshot")
-        writer_context = {k: v for k, v in (context or {}).items() if k != "consensus_snapshot"}
+        published = published_time((context or {}).get("release_published_at"))
+        writer_context = {
+            k: v
+            for k, v in (context or {}).items()
+            if k not in ("consensus_snapshot", "release_published_at")
+        }
         try:
             request = structured_request(ticker, release, writer_context or None)
         except ValueError as error:
@@ -202,9 +208,10 @@ class Summarizer:
         evidence["accepted"] = [asdict(fact) for fact in accepted]
         if self.verified and isinstance(snapshot, dict):
             accepted = await asyncio.to_thread(
-                attach_estimates, accepted, source, snapshot, ticker=ticker
+                attach_estimates, accepted, source, snapshot, ticker=ticker, published_at=published
             )
             evidence["consensus_snapshot"] = snapshot
+            evidence["consensus_publication_cutoff"] = published.isoformat() if published else None
             evidence["displayed"] = [asdict(fact) for fact in accepted]
         return Summary(
             text=discord_brief(accepted),
@@ -235,7 +242,11 @@ class Summarizer:
     async def _write_referenced(
         self, ticker: str, document: SourceDocument, seconds: float, context: dict[str, Any] | None
     ) -> Summary:
-        context = {k: v for k, v in (context or {}).items() if k != "consensus_snapshot"} or None
+        context = {
+            k: v
+            for k, v in (context or {}).items()
+            if k not in ("consensus_snapshot", "release_published_at")
+        } or None
         try:
             request = referenced_request(ticker, document, context)
         except ValueError as error:

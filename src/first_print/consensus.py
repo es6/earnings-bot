@@ -96,9 +96,14 @@ def _end_for(period: str, current: tuple[int, int], end: date) -> tuple[date, st
 
 
 def attach_estimates(
-    facts: list[SummaryFact], document: SourceDocument, snapshot: dict[str, Any], *, ticker: str
+    facts: list[SummaryFact],
+    document: SourceDocument,
+    snapshot: dict[str, Any],
+    *,
+    ticker: str,
+    published_at: datetime | None = None,
 ) -> list[SummaryFact]:
-    """Only trusted pre-window snapshots, with matching metric, period, units and basis."""
+    """Require pre-window and pre-publication retrieval plus matching financial metadata."""
     try:
         fetched = datetime.fromisoformat(snapshot["fetched_at"])
         cutoff = datetime.fromisoformat(snapshot["window_start"])
@@ -117,6 +122,9 @@ def attach_estimates(
     if (
         fetched.tzinfo is None
         or cutoff.tzinfo is None
+        or published_at is None
+        or published_at.tzinfo is None
+        or fetched >= published_at
         or fetched >= cutoff
         or cutoff - fetched > timedelta(days=1)
     ):
