@@ -442,6 +442,10 @@ class DirectoryWatcher:
                     f"**{t.ticker}**{_period(t)} · results expected {clock(t.expected)} · "
                     f"watching until {clock(t.window[1])}"
                 )
+                guess = self.journal.guess_status.get(t.release_key)
+                if guess in ("refused", "budget", "error", "time"):
+                    lines.append(f"⚠️ {t.ticker}: GlobeNewswire guessing ended ({guess})")
+                    color = AMBER
                 for w in self.live_watches.get(t.release_key, []):
                     if trouble := route_trouble(w, now):
                         lines.append(f"⚠️ Degraded: {_route_label(w)}, {trouble}")
@@ -596,6 +600,16 @@ class DirectoryWatcher:
                 ):
                     task = asyncio.create_task(self._resume_links(target))
                     self.windows[key] = _Window(target, task)
+                    self.followed.add(token)
+                continue
+            subscribers = self.subscribers(target)
+            if subscribers and all(server.calendar.delivered(key) for server in subscribers):
+                self.store.close_window(*token)
+                self.closed.add(token)
+                if self.follow_up and now < followup_end(target, self.follow_up):
+                    self.windows[key] = _Window(
+                        target, asyncio.create_task(self._resume_links(target))
+                    )
                     self.followed.add(token)
                 continue
             if target.window[1] <= now:

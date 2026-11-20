@@ -36,7 +36,8 @@ NOT_CONNECTED = "⚠️ This server isn't set up for earnings alerts."
 TEST_SECONDS = 600
 SCHEDULED = "📄"  # from a schedule file, not tracked with a scorecard
 LEGEND = (
-    "🟢 ready · 🔵 researching · 🟡 not ready or not verified fresh · 🔴 problem · "
+    "🟢 ready · 🔵 researching · 🟠 scheduled, IR freshness unverified · "
+    "🟡 not ready · 🔴 problem · "
     "📄 schedule file · "
     "times in your time zone"
 )

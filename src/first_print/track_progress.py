@@ -61,6 +61,7 @@ REPLACE_AFTER = 3  # refused edits of one old card in a row before it's posted a
 DONE, WORKING, WAITING, FAILED, TODO = "✅", "⏳", "⏸️", "⚠️", "▫️"
 # A scorecard's state as one dot, for lists such as /upcoming
 READY, RESEARCHING, NOT_READY, PROBLEM = "🟢", "🔵", "🟡", "🔴"
+READY_CAVEAT = "🟠"
 
 
 def _card_body(card: discord.Embed) -> dict[str, object]:
@@ -414,11 +415,19 @@ class TrackProgress:
             return None
         _, review = self.reviews.review(cik)
         checking = bool(self.active and self.active[0] == cik)
-        color = self.render(row, review, checking).color
+        card, ready_caveat = self._render(row, review, checking)
+        if ready_caveat:
+            return READY_CAVEAT
+        color = card.color
         value = color.value if color is not None else None
         return {GREEN: READY, BLUE: RESEARCHING, RED: PROBLEM}.get(value or 0, NOT_READY)
 
     def render(self, row: Tracked, review: str | None, checking: bool) -> discord.Embed:
+        return self._render(row, review, checking)[0]
+
+    def _render(
+        self, row: Tracked, review: str | None, checking: bool
+    ) -> tuple[discord.Embed, bool]:
         target = self._target(row)
         speed = Speed.from_json(review)
         # Research waits only while it's paused, or for the company's own window
@@ -627,7 +636,7 @@ class TrackProgress:
                 name="📝 Research", value=truncate(row.company.evidence, 1024), inline=False
             )
         embed.set_footer(text=f"First Print {release_version()} · Updated")
-        return embed
+        return embed, bool(target and complete and caveats)
 
     async def _check(self, row: Tracked) -> None:
         try:

@@ -390,7 +390,13 @@ def calendar_line(target: Target, evidence: str, dot: str) -> str:
     """One compact /upcoming line: readiness, ticker, fiscal period, the expected time in
     each reader's own time zone, and whether that time is confirmed."""
     period = f" · {period_label(target.period)}" if target.period else ""
-    confidence = "confirmed" if exact_time(evidence) else "estimated"
+    confidence = (
+        "date and time confirmed" if exact_time(evidence) else "date confirmed · time estimated"
+    )
+    if evidence in ("Schedule file", "Tracked"):
+        confidence = "scheduled · time estimated"
+    elif evidence.startswith("FMP calendar"):
+        confidence = "calendar date · time estimated"
     return f"{dot} **{target.ticker}**{period} · {stamp(target.expected, 't')} · {confidence}"
 
 

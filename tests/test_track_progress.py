@@ -422,7 +422,7 @@ def test_a_complete_card_is_green_only_when_its_routes_are_verified_fresh(
     assert "Research complete · watch scheduled" in unverified.description
     assert "**Not verified fresh:** IR press release listing." in unverified.description
     assert "SEC filings and newswires are watched too" in unverified.description
-    assert dot == "🟡"
+    assert dot == "🟠"
 
 
 def _without_history() -> str:

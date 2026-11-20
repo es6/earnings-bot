@@ -322,6 +322,7 @@ class Journal:
         self.evidence = evidence
         self.file = file
         self.clock = clock or TrustedClock()
+        self.guess_status: dict[str, str] = {}
 
     def now(self) -> datetime:
         return self.clock.now()
@@ -1034,6 +1035,7 @@ def summarize(target: Target, watches: list[Watch], journal: Journal) -> None:
     journal.write(
         "summary",
         ticker=target.ticker,
+        globe_guess_outcome=journal.guess_status.get(target.release_key),
         sources=[
             {
                 "source": w.source.name,
