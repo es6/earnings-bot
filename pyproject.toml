@@ -1,6 +1,6 @@
 [project]
 name = "first-print"
-version = "0.22.8"
+version = "0.22.9"
 description = "Discord bot that posts company earnings the moment they're released"
 readme = "README.md"
 license = "MIT"
