@@ -9,6 +9,7 @@ own label in `basis`, a currency on a count) is not a claim and is dropped, not 
 # ruff: noqa: RUF001
 
 import re
+from datetime import date
 from decimal import Decimal, InvalidOperation
 
 from first_print.summary_evidence import SourcedValue
@@ -300,6 +301,43 @@ def years(text: str) -> set[str]:
 
 
 _MONTH = r"(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?"
+_MONTH_NUMBERS = (
+    "jan",
+    "feb",
+    "mar",
+    "apr",
+    "may",
+    "jun",
+    "jul",
+    "aug",
+    "sep",
+    "oct",
+    "nov",
+    "dec",
+)
+DATE = re.compile(
+    r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2}),?\s+(20\d{2})\b",
+    re.IGNORECASE,
+)
+
+
+def date_of(match: re.Match[str]) -> date | None:
+    """The date a DATE match names."""
+    try:
+        return date(int(match[3]), _MONTH_NUMBERS.index(match[1].casefold()) + 1, int(match[2]))
+    except ValueError:
+        return None
+
+
+def period_end(text: str) -> date | None:
+    """The end of the latest period the release reports: the latest date a period "ended" on
+    ("fiscal fourth quarter and year ended September 30, 2026")."""
+    ended = [
+        found
+        for match in re.finditer(rf"\bended\s+(?={_MONTH}\s)", text, re.IGNORECASE)
+        if (dated := DATE.match(text, match.end())) and (found := date_of(dated))
+    ]
+    return max(ended, default=None)
 
 
 def fiscal_offset(text: str) -> int:
@@ -396,6 +434,14 @@ def durations_in(text: str) -> set[int]:
     found = set()
     if re.search(r"\bas (?:of|at)\b|\bat (?:the )?(?:end of|quarter.end)|quarter.end\b", text):
         found.add(0)
+    if re.search(r"\bfor the (?:full |fiscal |whole )?year\b(?![-\w]| ago)", text):
+        found.add(12)  # "7% organic revenue growth for the year"
+    if re.search(
+        r"(?<!quarter )(?<!\bq[1-4] )\bfiscal (?:year )?20\d{2}\b"
+        r"(?!,? (?:first|second|third|fourth|q[1-4])\b)",
+        text,
+    ):
+        found.add(12)  # "During fiscal 2026, we ..."; not "fiscal 2026 fourth quarter"
     for word, months in (("three", 3), ("six", 6), ("nine", 9), ("twelve", 12)):
         if re.search(rf"\b(?:{word}|{months})[ -]months?\b", text):
             found.add(months)
@@ -607,10 +653,61 @@ def _step(digits: str) -> Decimal:
     return Decimal(10) ** -places
 
 
-def number_tokens(text: str, caption: str = "") -> list[tuple[int, int, Decimal, Decimal, str]]:
+# Small counts a release writes as words: "seven strategic acquisitions". "One" is left out:
+# "one of", "one-time" and "no one" name no count
+CARDINALS = {
+    word: number
+    for number, word in enumerate(
+        [
+            "two",
+            "three",
+            "four",
+            "five",
+            "six",
+            "seven",
+            "eight",
+            "nine",
+            "ten",
+            "eleven",
+            "twelve",
+            "thirteen",
+            "fourteen",
+            "fifteen",
+            "sixteen",
+            "seventeen",
+            "eighteen",
+            "nineteen",
+            "twenty",
+        ],
+        start=2,
+    )
+}
+# Not a count of things: "three months ended", "a five-year plan", "two-thirds", "ten times"
+_CARDINAL = re.compile(
+    rf"(?<![\w-])({'|'.join(CARDINALS)})\b(?!-)"
+    r"(?!\s+(?:months?|quarters?|years?|weeks?|days?|hours?|minutes?|decades?|times|percent|"
+    r"basis|points?)\b)",
+    re.IGNORECASE,
+)
+
+
+def cardinal_tokens(text: str) -> list[tuple[int, int, Decimal, Decimal, str]]:
+    """Counts written as words, as number tokens."""
+    return [
+        (m.start(), m.end(), Decimal(CARDINALS[m[1].casefold()]), Decimal(1), "number")
+        for m in _CARDINAL.finditer(text)
+    ]
+
+
+def number_tokens(
+    text: str, caption: str = "", *, worded: bool = False
+) -> list[tuple[int, int, Decimal, Decimal, str]]:
     """Each number in a text: start, end, amount in base units, its precision in base units,
     and dimension (number, %, or bps). "(37.5)" and "-37.5" are negative; a caption's scale
-    applies to numbers that state none; bare years are skipped."""
+    applies to numbers that state none; bare years are skipped. With worded, small counts
+    written as words ("seven acquisitions") are numbers too."""
+    if worded:
+        return sorted(number_tokens(text, caption) + cardinal_tokens(text))
     found: list[tuple[int, int, Decimal, Decimal, str]] = []
     unscaled = False  # the previous number stated no scale of its own
     for match in _TOKEN.finditer(text):

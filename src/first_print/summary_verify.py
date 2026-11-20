@@ -17,7 +17,7 @@ from collections.abc import Iterator
 from dataclasses import replace
 from decimal import Decimal, InvalidOperation
 
-from first_print.binding_text import number_tokens
+from first_print.binding_text import CARDINALS, cardinal_tokens, number_tokens
 from first_print.source_document import SourceDocument
 from first_print.summary_binding import bind_brief, bound_scope, release_bases
 from first_print.summary_evidence import (
@@ -186,6 +186,7 @@ def evidence(document: SourceDocument, amount: str, scale: str, unit: str) -> li
     claim = abs(Decimal(amount)) * (1 if unit in ("%", "bps", "per share") else _FACTOR[scale])
     tables = {table.id: table for table in document.tables}
     blocks = {block.id: block for block in document.blocks}
+    counted = unit not in ("%", "bps", "per share", "money") and claim in CARDINALS.values()
     refs = []
     for block_id, cells, amounts in _numbers(document):
         if block_id in tables:
@@ -199,7 +200,10 @@ def evidence(document: SourceDocument, amount: str, scale: str, unit: str) -> li
                         quote=tables[block_id].text.strip()[:200],
                     )
                 )
-        elif any(_near(a, claim, unit) for a in amounts):
+        elif any(_near(a, claim, unit) for a in amounts) or (
+            # A small count the passage writes as a word: "seven strategic acquisitions"
+            counted and any(t[2] == claim for t in cardinal_tokens(blocks[block_id].text))
+        ):
             refs.append(
                 EvidenceRef(
                     document_sha256=document.sha256,
