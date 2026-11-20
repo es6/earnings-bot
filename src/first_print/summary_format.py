@@ -8,6 +8,7 @@ from collections import Counter
 from dataclasses import replace
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
+from first_print.summary_duplicates import combine_duplicates
 from first_print.summary_policy import SummaryFact, change_reference
 
 _SCALES = {
@@ -315,6 +316,14 @@ def _shown_basis(part: str, label: str) -> bool:
         return False
     if not _STANDARD.search(part):
         return True
+    declared = re.sub(
+        r"\b(?:segment|consolidated|basis|measure)\b",
+        "",
+        _STANDARD.sub("", part),
+        flags=re.IGNORECASE,
+    )
+    if _basis_key(declared) == _basis_key(label):
+        return False
     if _ADJUSTED_BASIS.search(label):
         return True  # "Non-GAAP EPS (GAAP)" keeps the conflict visible
     return not _STATEMENT.fullmatch(_STANDARD.sub("", part).strip(" -"))
@@ -556,20 +565,35 @@ def _segment_line(facts: list[SummaryFact]) -> str:
         parts.append(
             " ".join(f"{group} {value}".split()) + (f", {change}" if change.strip() else "")
         )
-    measure = _measure(facts[0])
+    measure = format_fact(
+        replace(facts[0], metric=_measure(facts[0]), group="", period="")
+    ).partition(": ")[0]
     measure = measure[:1].upper() + measure[1:]
     return f"🔹 **{measure} by segment**: " + "; ".join(parts)
 
 
 def _results_lines(facts: list[SummaryFact]) -> list[str]:
     def key(fact: SummaryFact) -> str:
-        return _measure(fact).casefold() if fact.group.strip() else ""
+        if not fact.group.strip() or not _measure(fact):
+            return ""
+        return "\x1f".join(
+            (
+                _measure(fact).casefold(),
+                _basis_key(fact.basis),
+                fact.unit.casefold(),
+                fact.currency,
+            )
+        )
 
     measures: dict[str, list[SummaryFact]] = {}
     for fact in facts:
         if fact.kind == "segment" and key(fact):
             measures.setdefault(key(fact), []).append(fact)
-    merged = {k: group for k, group in measures.items() if len({_scope(f) for f in group}) >= 2}
+    merged = {
+        k: group
+        for k, group in measures.items()
+        if len({_scope(f) for f in group}) >= 2 and len({_scope(f) for f in group}) == len(group)
+    }
     # A growth rate given on its own joins its segment's level ("Wealth Solutions DE growth")
     for fact in facts:
         group = merged.get(key(fact))
@@ -604,7 +628,7 @@ def discord_brief(facts: list[SummaryFact]) -> str:
     - results for other periods (year to date, trailing twelve months);
     - business updates, under one heading.
     """
-    facts = [with_change(fact) for fact in facts]
+    facts = combine_duplicates([with_change(fact) for fact in facts])
     # The consolidated company named as a "segment" on most lines repeats on every line
     groups = Counter(" ".join(f.group.split()) for f in facts if f.group.strip())
     if groups:
