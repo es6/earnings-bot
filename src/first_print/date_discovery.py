@@ -56,6 +56,7 @@ from first_print.known import (
     planned_period,
     to_target,
 )
+from first_print.newsroom_discovery import merge_rooms
 from first_print.periods import title_period
 from first_print.quarterly_table import quarter_pdf
 from first_print.recorder import ET, PollError, Target, poll
@@ -1303,6 +1304,14 @@ class DateDiscovery:
                     "rss_canonical": [url for url in row.target.rss_canonical if url in feeds],
                 }
             )
+        target = target.model_copy(
+            update={
+                "newsrooms": merge_rooms(
+                    target.newsrooms,
+                    [item.route() for item in row.company.newsrooms if item.enabled],
+                )
+            }
+        )
         if row.company.sec_form == "6-K" and target.sec_form != "6-K":
             target = target.model_copy(update={"sec_form": "6-K"})
         if evidence != MANUAL:

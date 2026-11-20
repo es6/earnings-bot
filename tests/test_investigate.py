@@ -248,6 +248,7 @@ async def test_a_q4_site_is_polled_directly(released: Callable[[str], None]) -> 
         ("Q4 press release feed on ir.gone.example", False),
         ("Q4 press release feed on investors.example.com", True),
         ("investors.example.com press release page", False),
+        ("Independent newsroom <https://ir.gone.example/>", False),
         ("PR Newswire earnings feed", False),
         ("Business Wire earnings feed", True),
         ("GlobeNewswire earnings feed", False),
@@ -698,6 +699,7 @@ async def test_every_source_checked_is_reported_with_why_as_it_goes(
         ("ir.lucidmotors.com homepage over HTTP", False),
         ("Q4 press release feed on ir.lucidmotors.com", False),
         (f"Press release page <{LUCID_LIST}>, read in Chrome", True),
+        ("Independent newsroom <https://www.lucidmotors.com/>", False),
         ("PR Newswire earnings feed", True),
         ("Business Wire earnings feed", False),
         ("GlobeNewswire earnings feed", False),
@@ -717,6 +719,7 @@ async def test_every_source_checked_is_reported_with_why_as_it_goes(
         "Checking ir.lucidmotors.com",
         "Looking for a Q4 press release feed on ir.lucidmotors.com",
         "Opening ir.lucidmotors.com in Chrome",
+        "Inventorying independent official newsrooms",
         "Checking direct HTTP access to the press release listing",
         "Choosing its sources",
     ]

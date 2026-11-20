@@ -9,6 +9,7 @@ from first_print.delivery import DeliveryStore
 from first_print.formatting import clock, period_label, stamp
 from first_print.ir_research import IR_LISTINGS, quarter_headline
 from first_print.known import KnownCompany, known_companies, to_target, wire_publisher
+from first_print.newsroom_discovery import merge_rooms
 from first_print.plan_migrations import restore_ir_headline
 from first_print.recorder import ET, Target
 
@@ -199,11 +200,22 @@ class Calendar:
                 target = target.model_copy(update={"sec_form": "6-K"})
             if target.wire_publisher is None and (publisher := wire_publisher(row.company)):
                 target = target.model_copy(update={"wire_publisher": publisher})
+            target = target.model_copy(
+                update={
+                    "newsrooms": merge_rooms(
+                        target.newsrooms,
+                        [item.route() for item in row.company.newsrooms if item.enabled],
+                    )
+                }
+            )
             existing = next((t for t in files.values() if same_release(t, target)), None)
             if existing is None:
                 result[target.release_key] = target
             else:
                 updates = {}
+                rooms = merge_rooms(existing.newsrooms, target.newsrooms)
+                if rooms != existing.newsrooms:
+                    updates["newsrooms"] = rooms
                 if existing.wire_publisher is None and target.wire_publisher:
                     updates["wire_publisher"] = target.wire_publisher
                 if row.company.sec_form == "6-K" and "sec_form" not in existing.model_fields_set:
