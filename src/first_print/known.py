@@ -261,6 +261,9 @@ def target_toml(target: Target) -> str:
             f"{key} = {json.dumps(value)}"
             for key, value in target.ir.model_dump(exclude_defaults=True).items()
         ]
+    for room in target.newsrooms:
+        lines += ["", "[[target.newsrooms]]", f"listing = {json.dumps(room.listing)}"]
+        lines += _toml_list("names", room.names)
     trial = target.trial
     if trial != Trial():
         lines += ["", "# Additional live sources", "[target.trial]"]

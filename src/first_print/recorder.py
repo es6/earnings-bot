@@ -34,6 +34,7 @@ from first_print.config import RecorderSettings
 from first_print.fetch import Fetcher, Response, RoutePause
 from first_print.globe_frontier import guess_release, guessed_for
 from first_print.http_policy import retry_after
+from first_print.newsrooms import Newsroom
 from first_print.periods import agrees_with_period
 from first_print.plan_migrations import schedule_fields
 from first_print.release_band import SLOW, pace, paced
@@ -181,6 +182,7 @@ class Target(BaseModel):
     rss_spelled: list[str] = []
     guess: list[str] = []  # file URLs to probe
     ir: IRSource | None = None
+    newsrooms: list[Newsroom] = []  # independent official corporate/IR publication routes
     trial: Trial = Trial()
     before_minutes: float = 10
     after_minutes: float = 30
@@ -273,6 +275,7 @@ class Target(BaseModel):
         sources += _named_apart([GuessedFile(url) for url in self.guess])
         if self.ir:
             sources += self.ir.sources(self.expected.astimezone(ET).date(), self.period)
+        sources += [room.source(self.period) for room in self.newsrooms]
         return sources + self.trial.sources(
             self.rss_canonical, self.rss_spelled, publisher=self.wire_publisher
         )

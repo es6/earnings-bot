@@ -71,6 +71,8 @@ def source_label(name: str, form: str = "8-K") -> str:
         return "PR Newswire earnings feed"
     if name.startswith("globenewswire"):
         return "GlobeNewswire earnings feed"
+    if name.startswith("newsroom:"):
+        return f"Official newsroom {name.removeprefix('newsroom:')}"
     if name == "browser-ir":
         return "IR press release page, read in Chrome"
     if name == "http-ir":
