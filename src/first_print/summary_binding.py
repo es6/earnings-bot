@@ -1350,7 +1350,14 @@ _SECTION_WORDS = frozenset(stem(w) for w in ("results", "highlights", "summary",
 _MANAGED = stem("managed")  # JPMorgan's managed basis: "managed revenue of $50.9 billion"
 
 
-def _named_after(claim: list[str], following: str, kind: str, growth: bool, prefix: str) -> bool:
+def _named_after(
+    claim: list[str],
+    following: str,
+    kind: str,
+    growth: bool,
+    prefix: str,
+    group_words: set[str],
+) -> bool:
     """An amount or a growth rate can name its measure right after it: "delivered $1.1 billion
     in revenue", "closed $1.463 billion of U.S. commercial TCV", "up 28%, with 19% growth in
     organic sales". The phrase after "in" or "of" must be the claimed measure, no more: "$5
@@ -1368,12 +1375,26 @@ def _named_after(claim: list[str], following: str, kind: str, growth: bool, pref
         r"\b(?:accounted for|contribut\w*|represent\w*|comprised|of which)[\s$€£¥(]*$", prefix
     ):
         return False  # a part of the measure: "Cloud accounted for $4.5 billion of revenue"
+    modifier = ""
+    if kind == "money":
+        change_to = re.search(r"\b(increase|decrease|addition|reduction) of\s*[$€£¥]?\s*$", prefix)
+        if change_to and stem(change_to[1]) in claim:
+            lead = r"\s*to\s+"
+        remainder = re.match(r"\s*(remaining|available)\s+(?:under|for)\s+", following)
+        if remainder:
+            modifier = remainder[1]
+            lead = re.escape(remainder[0])
     found = re.match(lead + r"([a-z&\-.' ]+)", following)
     if found is None:
         return False
     phrase = re.split(r"\b(?:and|or|compared|from|versus|vs|to|on|over|for|at)\b", found[1])[0]
-    named = stems(phrase.rstrip(". "))
-    if not named or named[-1] not in claim or set(named) - set(claim) > _BASIS_STEMS:
+    phrase = re.sub(r"\b(?:the company['’]s|its|our|the)\s+", "", phrase)
+    named = metric_words(f"{modifier} {phrase.rstrip('. ')}")
+    if (
+        not named
+        or named[-1] not in claim
+        or not (set(named) - set(claim)) <= _BASIS_STEMS | group_words
+    ):
         return False
     if kind == "money" and _changed_by(prefix, claim):
         return False
@@ -1814,7 +1835,7 @@ def _paragraph_binding(
             if (
                 window is None
                 and not worded
-                and _named_after(required, following, kind, growth_slot, prefix)
+                and _named_after(required, following, kind, growth_slot, prefix, group_words)
             ):
                 window = (token[0], token[0])
             if (
