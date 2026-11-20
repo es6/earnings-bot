@@ -138,7 +138,7 @@ def test_guidance_ranges_and_quarter_actuals_keep_their_own_periods() -> None:
             previous_guidance=value(amount="9", upper="10", scale="billion", period="Q4 2026"),
         )
     )
-    assert "Q3 2026" in shown and "Q4 2026" in shown
+    assert "**Results**" in shown and "Q3 2026" not in shown and "Q4 2026" in shown
     assert "10.123" in shown and "10.456" in shown and "from" in shown
     assert "25%" not in shown
 
@@ -187,7 +187,8 @@ def test_no_fixed_word_line_or_fact_limit_and_multiple_growth_periods_are_not_co
         ),
     )
     shown = render_bound(growths)
-    assert "Q3 2026" in shown and "FY2026" in shown and "+15% YoY ex FX" in shown
+    assert "**Results**" in shown and "Q3 2026" not in shown
+    assert "FY2026" in shown and "+15% YoY ex FX" in shown
 
 
 def test_per_share_precision_currency_and_previous_only_guidance_remain_explicit() -> None:

@@ -473,7 +473,10 @@ _COMPANY = re.compile(
 
 
 def _line(fact: SummaryFact, marker: str, stamp: str = "") -> str:
-    text = format_fact(replace(fact, period=""))
+    text = format_fact(fact)
+    period = format_period(fact.period)
+    if period:
+        text = text.removeprefix(f"{period} · ")
     metric, _, value = text.partition(": ")
     if stamp and stamp.lower() not in text.lower():
         metric = f"{stamp} · {metric}"
@@ -559,8 +562,8 @@ def _results_lines(facts: list[SummaryFact]) -> list[str]:
 
 
 def discord_brief(facts: list[SummaryFact]) -> str:
-    """The card's highlights, in the layout the user reviewed ("**Q3 2026 · Results**",
-    🔹 figures, 🔸 business updates), most important first:
+    """The card's highlights, with the reporting period implicit for current results,
+    🔹 figures and 🔸 business updates, most important first:
 
     - the quarter's headline results (the model marks each fact's role);
     - the outlook;
@@ -632,7 +635,13 @@ def discord_brief(facts: list[SummaryFact]) -> str:
             lines = _results_lines(group)
         else:
             lines = [_line(f, "🔹") for f in group]
-        blocks.append(f"**{f'{stamp} · {kind}'.strip(' ·')}**\n" + "\n".join(lines))
+        implicit = (
+            kind in ("Results", "More results")
+            and stamp == main
+            and re.fullmatch(r"(?:Q[1-4] (?:FY)?20\d{2}|FY20\d{2})", stamp)
+        )
+        heading_stamp = "" if implicit else stamp
+        blocks.append(f"**{f'{heading_stamp} · {kind}'.strip(' ·')}**\n" + "\n".join(lines))
     return "\n\n".join(blocks)
 
 

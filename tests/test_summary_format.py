@@ -262,7 +262,7 @@ def test_the_card_groups_facts_by_period_and_kind() -> None:
         SummaryFact("Operating income", "$1B", "s", period="Q3 2026"),
     ]
     assert discord_brief(facts) == (
-        "**Q3 2026 · Results**\n"
+        "**Results**\n"
         "🔹 **Revenue**: $5B; +10% YoY\n"
         "🔹 **Operating income**: $1B\n\n"
         "**FY2026 · Outlook**\n"
@@ -355,12 +355,12 @@ def test_headline_results_and_outlook_lead_the_brief() -> None:
         SummaryFact("Adjusted EPS", "$0.88", "s", period="Q3 2026", role="headline"),
     ]
     assert discord_brief(facts) == (
-        "**Q3 2026 · Results**\n"
+        "**Results**\n"
         "🔹 **Revenue**: $15B; +10% YoY\n"
         "🔹 **Adjusted EPS**: $0.88\n\n"
         "**Q4 2026 · Outlook**\n"
         "🔹 **Revenue outlook**: $16B\n\n"
-        "**Q3 2026 · More results**\n"
+        "**More results**\n"
         "🔹 **Cash**: $7B\n"
         "🔹 **Free cash flow**: $2B\n\n"
         "**Nine months ended September 30, 2026 · Results**\n"
@@ -385,7 +385,7 @@ def test_a_quarter_written_out_joins_the_quarter() -> None:
         ),
     ]
     assert discord_brief(facts) == (
-        "**Q3 2026 · Results**\n🔹 **Revenue**: $980.8M\n🔹 **Adjusted EBITDA**: $465.8M"
+        "**Results**\n🔹 **Revenue**: $980.8M\n🔹 **Adjusted EBITDA**: $465.8M"
     )
 
 
@@ -423,7 +423,7 @@ def test_segments_share_one_line_largest_first_with_their_growth() -> None:
         ),
     ]
     assert discord_brief(facts) == (
-        "**Q3 2026 · Results**\n"
+        "**Results**\n"
         "🔹 **Distributable earnings per share**: $0.64\n"
         "🔹 **Distributable earnings by segment**: Asset Management $755M, +9.9% YoY; "
         "Wealth Solutions $511M, +22% YoY; Operating Businesses $467M"
@@ -455,3 +455,28 @@ def test_a_rate_that_is_its_own_growth_is_shown_once() -> None:
     assert format_fact(margin) == "Gross margin: 2.2%; +2.2% YoY"
     update = SummaryFact("Fiserv partnership", "signed", "source", "update", change="Signed")
     assert format_fact(update) == "Fiserv partnership: signed"
+
+
+@pytest.mark.parametrize("period", ["Q3 2026", "Q3 FY2027", "FY2026"])
+def test_the_current_period_is_implicit_while_guidance_and_durations_stay_explicit(
+    period: str,
+) -> None:
+    facts = [
+        SummaryFact("Revenue", "$5B", "s", period=period, role="headline"),
+        SummaryFact("Revenue guidance", "$6B", "s", period="Q4 FY2027", kind="guide"),
+        SummaryFact("Revenue guidance", "$22B", "s", period="FY2027", kind="guide"),
+        SummaryFact("Cash flow", "$8B", "s", period="Nine months ended September 30, 2026"),
+    ]
+    rendered = discord_brief(facts)
+
+    assert rendered.startswith("**Results**\n")
+    assert "**Q4 FY2027 · Outlook**" in rendered
+    assert "**FY2027 · Outlook**" in rendered
+    assert "**Nine months ended September 30, 2026 · Results**" in rendered
+    assert facts[0].period == period
+
+
+def test_a_current_period_in_the_metric_name_does_not_repeat_on_the_card() -> None:
+    fact = SummaryFact("Q3 FY2027 Revenue", "$5B", "s", period="Q3 FY2027", role="headline")
+
+    assert discord_brief([fact]) == "**Results**\n🔹 **Revenue**: $5B"
