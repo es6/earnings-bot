@@ -374,6 +374,8 @@ def fan_out(posters: Sequence[Poster]) -> Poster:
 
 
 def describe_source(source: Source) -> str:
+    if source.name.startswith("newsroom:"):
+        return f"Official newsroom ({urlsplit(source.url()).hostname})"
     if isinstance(source, BrowserRss):
         return "IR press release feed"
     if isinstance(source, Q4PressReleases | Q4FinancialReports | BrowserRelease | IssuerNews):
@@ -551,6 +553,10 @@ class Release:
         if is_file:
             label = self._file_label(sighting.url)
         self._spawn(self._link(label, sighting.url))
+        if sighting.details.get("content_kind") == "highlights":
+            self.journal.write("highlights_only", ticker=self.target.ticker, url=sighting.url)
+            self._ask_issuer()
+            return  # alert now; independent IR/wire sources still provide the full summary
         if is_file:
             self._spawn(self._attach(sighting.url, sighting.body))
             if urlsplit(sighting.url).path.lower().endswith(".pdf") and not isinstance(

@@ -390,7 +390,7 @@ wheels = [
 
 [[package]]
 name = "first-print"
-version = "0.22.12"
+version = "0.22.13"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
