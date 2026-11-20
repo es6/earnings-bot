@@ -415,9 +415,9 @@ async def test_upcoming_lists_the_weeks_windows_and_issuers_awaiting_dates(
         "⚠️ Needs attention",
         "No date yet: CRWD",
         "Tue, Nov 17 · before the open",
-        f"🟡 **HD** · Q3 FY26 · {stamp(found.expected, 't')} · confirmed",
+        f"🟡 **HD** · Q3 FY26 · {stamp(found.expected, 't')} · date and time confirmed",
         "Tue, Nov 17 · after the close",
-        f"🟡 **NVDA** · Q3 FY27 · {stamp(nvda.expected, 't')} · estimated",
+        f"🟡 **NVDA** · Q3 FY27 · {stamp(nvda.expected, 't')} · scheduled · time estimated",
     ]
     assert (upcoming_embed(watcher).footer.text or "").startswith("🟢 ready · 🔵 researching")
 
