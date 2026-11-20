@@ -815,7 +815,9 @@ def _rss_item(item: ET.Element) -> _Entry:
         lead=item.findtext("description") or "",
         link=link,
         published=item.findtext("pubDate"),
-        contributor=item.findtext(f"{_DC}contributor") or "",
+        contributor=item.findtext(f"{_DC}contributor")
+        or item.findtext("{http://dublincore.org/documents/dcmi-namespace/}contributor")
+        or "",
     )
 
 
