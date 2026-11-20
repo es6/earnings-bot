@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from first_print.delivery import DeliveryStore
-from first_print.globe_frontier import Frontier, Page, guess_release, is_release
+from first_print.globe_frontier import FEED, Frontier, Page, guess_release, is_release
 from first_print.pipeline import Releases
 from first_print.recorder import Journal, Target, Trial, Watch, summarize
 from first_print.unattended import DirectoryWatcher
@@ -43,7 +43,7 @@ def test_missing_ticker_requires_the_named_issuer_to_make_the_announcement() -> 
 
 @pytest.mark.parametrize("status", [403, 429])
 async def test_a_frontier_feed_refusal_stops_before_any_article_guess(status: int) -> None:
-    fetcher = RoutedFetcher({globe_frontier.FEED: (status, b"")})
+    fetcher = RoutedFetcher({FEED: (status, b"")})
     journal = Journal(io.StringIO(), PinnedClock())
     target = Target(
         ticker="EX", cik=123, expected=journal.now(), trial=Trial(globenewswire=["Example"])
