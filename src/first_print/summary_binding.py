@@ -1886,12 +1886,18 @@ def _paragraph_binding(
                 _MONEY_MARK.search(text[max(0, token[0] - 4) : token[0] + 1])
             )
             scope = terms.expand(_group(fact.model_copy(update={"group": frame.section}), terms))
-            if (
-                group
-                and not _clause_names(group, f"{scope}\n{text}")
-                and not _names_itself(fact, group, text)
-            ):
+            stated_group = _clause_names(group, text) or _names_itself(fact, group, text)
+            if group and not stated_group and not _clause_names(group, scope):
                 issues.append("segment/group is absent from the claim clause")
+            elif group and not stated_group:
+                # A heading scopes a bare measure, not another named business's measure:
+                # "Banking & Payments revenue" beneath CIB is not CIB net revenue.
+                # Stay conservative when the measure is named only after the number.
+                before = _segment(prefix[: window[0]])
+                leading = set(metric_words(before))
+                leading -= {stem(w) for w in ("the", "our", "its", "this", "segment", "business")}
+                if named_next or leading:
+                    issues.append("the section cannot establish this more specific source measure")
             if (
                 scope
                 and not group

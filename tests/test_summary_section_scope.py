@@ -25,7 +25,9 @@ def test_a_named_business_section_scopes_its_paragraphs_and_ends_at_the_next_hea
     document = document_from_html(
         "<p>JPMorgan Chase reports third-quarter 2026 results</p>"
         + title
-        + "<p>Discussion of Results:</p><p>Net revenue was $22.7 billion, up 14%.</p>"
+        + "<p>Discussion of Results:</p><p>Net revenue was $22.7 billion, up 14%. "
+        "Banking &amp; Payments revenue was $11.0 billion. "
+        "Investment Banking revenue was $3.1 billion. Payments revenue was $5.6 billion.</p>"
         "<p>ASSET & WEALTH MANAGEMENT (AWM)</p><p>Net revenue was $6.9 billion.</p>"
         "<p>Capital return</p><p>Revenue was $1.2 billion.</p>"
     )
@@ -37,6 +39,9 @@ def test_a_named_business_section_scopes_its_paragraphs_and_ends_at_the_next_hea
     assert [f.group for f in kept] == [wanted.group, other.group]
     for wrong in (
         replace(wanted, value="$6.9 billion"),
+        replace(wanted, value="$11.0 billion"),
+        replace(wanted, value="$3.1 billion"),
+        replace(wanted, value="$5.6 billion"),
         replace(wanted, value="$1.2 billion"),
         replace(wanted, group="Asset & Wealth Management"),
         replace(wanted, group="", metric="Net revenue", kind="actual"),
@@ -77,7 +82,8 @@ def test_a_business_caption_scopes_its_table_without_inheriting_an_earlier_basis
 def test_another_business_heading_prevents_a_previous_scope_from_leaking() -> None:
     document = document_from_text(
         "Example reports third quarter 2026 results\n"
-        "Northern Operations (NO)\nRevenue was $12 million.\n"
+        "Northern Operations (NO)\nRevenue was $12 million. "
+        "Southern Operations revenue was $4 million.\n"
         "Southern Operations (SO)\nRevenue was $7 million.\n"
         "Consolidated results\nRevenue was $20 million."
     )
@@ -88,3 +94,6 @@ def test_another_business_heading_prevents_a_previous_scope_from_leaking() -> No
     assert len(kept) == 1 and kept[0].group == correct.group
     for value in ("$12 million", "$20 million"):
         assert verify_facts([replace(correct, value=value)], document)[0] == []
+    northern = replace(correct, group="Northern Operations", value="$12 million")
+    assert verify_facts([northern], document)[0]
+    assert verify_facts([replace(northern, value="$4 million")], document)[0] == []
