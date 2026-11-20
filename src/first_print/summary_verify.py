@@ -17,7 +17,7 @@ from collections.abc import Iterator
 from dataclasses import replace
 from decimal import Decimal, InvalidOperation
 
-from first_print.binding_text import number_tokens
+from first_print.binding_text import CARDINALS, cardinal_tokens, number_tokens
 from first_print.source_document import SourceDocument
 from first_print.summary_binding import bind_brief, bound_scope, release_bases
 from first_print.summary_evidence import (
@@ -186,6 +186,7 @@ def evidence(document: SourceDocument, amount: str, scale: str, unit: str) -> li
     claim = abs(Decimal(amount)) * (1 if unit in ("%", "bps", "per share") else _FACTOR[scale])
     tables = {table.id: table for table in document.tables}
     blocks = {block.id: block for block in document.blocks}
+    counted = unit not in ("%", "bps", "per share", "money") and claim in CARDINALS.values()
     refs = []
     for block_id, cells, amounts in _numbers(document):
         if block_id in tables:
@@ -199,7 +200,10 @@ def evidence(document: SourceDocument, amount: str, scale: str, unit: str) -> li
                         quote=tables[block_id].text.strip()[:200],
                     )
                 )
-        elif any(_near(a, claim, unit) for a in amounts):
+        elif any(_near(a, claim, unit) for a in amounts) or (
+            # A small count the passage writes as a word: "seven strategic acquisitions"
+            counted and any(t[2] == claim for t in cardinal_tokens(blocks[block_id].text))
+        ):
             refs.append(
                 EvidenceRef(
                     document_sha256=document.sha256,
@@ -482,50 +486,68 @@ def verify_facts(
     shown: list[SummaryFact] = []
     dropped: list[str] = []
     for given in facts:
-        fact = given  # replaced below if it's confirmed at its table's scale
-        if fact.kind == "update" and not fact.value.strip():
+        try:
+            kept, why = _verify_fact(given, document)
+        except Exception as error:
+            # One fact the checks can't read must cost only that fact, never the whole
+            # summary (a metric named only "Total" raised IndexError, Nov 19)
+            dropped.append(f"{given.metric}: the verifier failed on it ({type(error).__name__})")
+            continue
+        shown += kept
+        dropped += why
+    return shown, dropped
+
+
+def _verify_fact(
+    given: SummaryFact, document: SourceDocument
+) -> tuple[list[SummaryFact], list[str]]:
+    """verify_facts for one fact: the fact as shown (none or one) and why any part dropped."""
+    shown: list[SummaryFact] = []
+    dropped: list[str] = []
+    fact = given  # replaced below if it's confirmed at its table's scale
+    if fact.kind == "update" and not fact.value.strip():
+        shown.append(fact)
+        return shown, dropped
+    if _several(fact.value):
+        # "Total Customer Group $6.56B; Creative & Marketing Professionals $4.65B; ...":
+        # only the first amount could be checked, and the rest would show unchecked
+        dropped.append(f"{fact.metric}: several values in one fact")
+        return shown, dropped
+    kept, reasons = check(fact, document)
+    if (
+        not kept.get(main_slot(kept))
+        and _unscaled(fact, fact.value)
+        and (rescaled := _rescaled(fact, document))
+    ):
+        fact, kept, reasons = rescaled
+    if not kept:
+        if not re.search(r"\d", f"{fact.value} {fact.change} {fact.prior}"):
+            # No number to mislabel ("low single digit range", a strategy update): the
+            # quote check has matched its words in the release
             shown.append(fact)
-            continue
-        if _several(fact.value):
-            # "Total Customer Group $6.56B; Creative & Marketing Professionals $4.65B; ...":
-            # only the first amount could be checked, and the rest would show unchecked
-            dropped.append(f"{fact.metric}: several values in one fact")
-            continue
-        kept, reasons = check(fact, document)
-        if (
-            not kept.get(main_slot(kept))
-            and _unscaled(fact, fact.value)
-            and (rescaled := _rescaled(fact, document))
-        ):
-            fact, kept, reasons = rescaled
-        if not kept:
-            if not re.search(r"\d", f"{fact.value} {fact.change} {fact.prior}"):
-                # No number to mislabel ("low single digit range", a strategy update): the
-                # quote check has matched its words in the release
-                shown.append(fact)
-            else:
-                dropped.append(f"{fact.metric}: no value the verifier can read")
-            continue
-        main = main_slot(kept)
-        if not kept.get(main):
-            dropped.append(f"{fact.metric}: {'; '.join(reasons.get(main, ['not confirmed']))}")
-            continue
-        trimmed = fact
-        if "reported_growth" in kept and not kept["reported_growth"] and main != "reported_growth":
-            trimmed = replace(trimmed, change="", comparison="")
-            dropped.append(f"{fact.metric} growth: {'; '.join(reasons.get('reported_growth', []))}")
-        if "prior_year_actual" in kept and not kept["prior_year_actual"]:
-            trimmed = replace(trimmed, prior="")
-            dropped.append(
-                f"{fact.metric} prior year: {'; '.join(reasons.get('prior_year_actual', []))}"
-            )
-        _, _, bound = _checked(fact, document)
-        value = getattr(bound, main) if bound is not None else None
-        if value is not None:
-            qualified, notes = _qualified(trimmed, value, main, document)
-            dropped += notes
-            if qualified is None:
-                continue
-            trimmed = qualified
-        shown.append(trimmed)
+        else:
+            dropped.append(f"{fact.metric}: no value the verifier can read")
+        return shown, dropped
+    main = main_slot(kept)
+    if not kept.get(main):
+        dropped.append(f"{fact.metric}: {'; '.join(reasons.get(main, ['not confirmed']))}")
+        return shown, dropped
+    trimmed = fact
+    if "reported_growth" in kept and not kept["reported_growth"] and main != "reported_growth":
+        trimmed = replace(trimmed, change="", comparison="")
+        dropped.append(f"{fact.metric} growth: {'; '.join(reasons.get('reported_growth', []))}")
+    if "prior_year_actual" in kept and not kept["prior_year_actual"]:
+        trimmed = replace(trimmed, prior="")
+        dropped.append(
+            f"{fact.metric} prior year: {'; '.join(reasons.get('prior_year_actual', []))}"
+        )
+    _, _, bound = _checked(fact, document)
+    value = getattr(bound, main) if bound is not None else None
+    if value is not None:
+        qualified, notes = _qualified(trimmed, value, main, document)
+        dropped += notes
+        if qualified is None:
+            return shown, dropped
+        trimmed = qualified
+    shown.append(trimmed)
     return shown, dropped

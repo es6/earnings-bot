@@ -14,11 +14,13 @@ as if the source said it.
 import json
 import re
 from dataclasses import dataclass, replace
+from datetime import date
 from decimal import Decimal
 
 from pydantic import ValidationError
 
 from first_print.binding_text import (
+    DATE,
     FUSED,
     MEASURE_STEMS,
     WORD,
@@ -26,12 +28,15 @@ from first_print.binding_text import (
     claimed_amounts,
     count_words,
     currencies,
+    date_of,
     duration,
+    durations_in,
     fiscal_offset,
     matches,
     metric_words,
     normalized,
     number_tokens,
+    period_end,
     period_issues,
     qualifier_issues,
     quarter,
@@ -127,7 +132,10 @@ _OUTLOOK_HEADING = re.compile(
 )
 _GUIDANCE = re.compile(
     r"guidance|outlook|forecast|\bexpects?\b|\bexpected\b|\bexpectations?\b|\btargets?\b|"
-    r"\banticipat|\bprojects?\b|\bwill be\b|\bestimat|\bplans? (?:to|for)\b|forward-looking",
+    # "We project a Q4 operating margin of 26.0%", not a construction company's "project
+    # backlog"
+    r"\banticipat|\b(?:we|company|management|now|also)\s+projects?\b|\bprojected\b|"
+    r"\bprojections?\b|\bwill be\b|\bestimat|\bplans? (?:to|for)\b|forward-looking",
     re.IGNORECASE,
 )
 _DECREASE = re.compile(r"\b(?:decrease|decreased|decline|declined|down|lower|fell|drop|dropped)\b")
@@ -250,6 +258,7 @@ class _Terms:
     distinct: frozenset[tuple[str, str]] = frozenset()
     issuer: frozenset[str] = frozenset()  # the words of the issuer's name and its ticker
     vocabulary: str = ""  # every word of the release, in order, padded with spaces
+    end: date | None = None  # the last day of the period the release reports
 
     def names(self, phrase: str) -> bool:
         """Whether the release says this phrase anywhere, as written or as defined."""
@@ -343,6 +352,7 @@ def _read_terms(document: SourceDocument) -> _Terms:
         distinct,
         frozenset(issuer),
         f" {words(normalized(document.text))} ",
+        period_end(document.text),
     )
 
 
@@ -365,6 +375,7 @@ class _Context:
     # its own: Walmart's "Dollars in billions, except as noted" over three segment tables
     scale: str | None = None
     terms: _Terms = _NO_TERMS
+    end: date | None = None  # the last day of the period the release reports
 
     def __str__(self) -> str:
         return f"{self.near}\n{self.far}"
@@ -969,6 +980,25 @@ def _accepted(value: SourcedValue, currency: str, unit: str) -> SourcedValue:
     )
 
 
+# A row label that names cash going out: what was bought, repaid, returned or used
+_OUTFLOW = re.compile(
+    r"^\s*(?:business\s+|cash\s+paid\s+for\s+)?acquisitions?\b|\bpurchases?\s+of\b|"
+    r"^\s*capital\s+expenditures?\b|\brepurchases?\s+of\b|\bdividends?\s+paid\b|"
+    r"^\s*(?:principal\s+)?(?:re)?payments?\s+(?:of|on|for)\b|\bused\s+in\b",
+    re.IGNORECASE,
+)
+_CASH_FLOW = re.compile(
+    r"\bcash\s+flows?\b|\b(?:investing|financing)\s+activities\b", re.IGNORECASE
+)
+
+
+def _outflow(label: str, around: str) -> bool:
+    """Whether a cash-flow statement row's label names an outflow, outside any note in
+    parentheses: "Net cash provided by (used in) investing activities" names an inflow."""
+    plain = re.sub(r"\([^()]*\)", " ", label)
+    return bool(_OUTFLOW.search(plain)) and bool(_CASH_FLOW.search(around))
+
+
 def _table_binding(
     fact: ReferencedFact,
     field: str,
@@ -1120,6 +1150,17 @@ def _table_binding(
                 for a, b, amount, step, kind_ in tokens
             ]
         found = [t for t in tokens if t[4] == dimension]
+        if (
+            kind == "money"
+            and found
+            and all(t[2] < 0 for t in found)
+            and all(amount > 0 for amount, _ in claims)
+            and _outflow(label, f"{section}\n{table.text[:300]}\n{frame.near}")
+        ):
+            # A cash-flow statement puts an outflow in parentheses; the row's own label says it
+            # is one: "Business acquisitions, net of cash acquired | (476,585)" is $476.6 million
+            # spent on acquisitions
+            found = [(a, b, -amount, step, d) for a, b, amount, step, d in found]
         if len(found) != len(claims) or not all(
             matches(claim, token[2], token[3]) for claim, token in zip(claims, found, strict=False)
         ):
@@ -1253,7 +1294,10 @@ def _clauses(text: str) -> list[str]:
 
 def _metric_window(claim: list[str], prefix: str) -> tuple[int, int] | None:
     """The last place before a number where the claimed measure is named: all its words,
-    in order, within a few words of each other."""
+    in order, within a few words of each other. A name with no measure in it ("Total") is
+    named nowhere."""
+    if not claim:
+        return None
     tokens = [(m.start(), m.end(), m[0]) for m in re.finditer(rf"{FUSED}{WORD}", prefix)]
     names = [stem(t[2].replace("-", "")) for t in tokens]
     for end in range(len(tokens) - 1, -1, -1):
@@ -1305,7 +1349,160 @@ def _named_after(claim: list[str], following: str, kind: str, growth: bool, pref
     named = stems(phrase.rstrip(". "))
     if not named or named[-1] not in claim or set(named) - set(claim) > _BASIS_STEMS:
         return False
-    return set(claim) - set(named) <= set(stems(prefix)[-2:])
+    if kind == "money" and _changed_by(prefix, claim):
+        return False
+    # The rest of the claim's name is said before the number in the same part of the clause:
+    # "we completed three acquisitions that added $65.0 million of backlog" is backlog added by
+    # acquisitions; "organic growth added $65.0 million of backlog" is not
+    return set(claim) - set(named) - _LINK_STEMS <= set(stems(_segment(prefix)))
+
+
+# Words that link a measure's name to its source and name no measure: "backlog added by
+# acquisitions"
+_LINK_STEMS = frozenset(stem(w) for w in ("by", "from", "with", "through", "via"))
+# A verb right before an amount that makes the amount a change, not a level: "acquisitions
+# added $65.0 million of backlog" is no backlog of $65.0 million
+_CHANGE_VERBS = frozenset(
+    stem(w)
+    for w in (
+        "added",
+        "adding",
+        "adds",
+        "increased",
+        "decreased",
+        "grew",
+        "rose",
+        "fell",
+        "declined",
+        "reduced",
+        "lowered",
+        "gained",
+        "lost",
+        "cut",
+        "expanded",
+        "improved",
+        "up",
+        "down",
+    )
+)
+
+
+def _segment(prefix: str) -> str:
+    """The part of a clause right before a number, from its last comma, semicolon or
+    conjunction: "in the first few weeks of fiscal 2027, we completed three acquisitions that
+    added" gives "we completed three acquisitions that added"."""
+    return re.split(r"[,;]|\b(?:and|but|while|whereas)\b", prefix)[-1]
+
+
+def _changed_by(prefix: str, claim: list[str]) -> bool:
+    """Whether the verb right before a number makes it a change the claim doesn't name."""
+    before = [w for w in stems(prefix) if w not in ("by", "a", "an", "approximately", "about")]
+    return bool(before) and before[-1] in _CHANGE_VERBS and before[-1] not in claim
+
+
+# Where the name that follows a number ends: "seven strategic acquisitions that expanded ..."
+_PHRASE_END = re.compile(
+    r"\b(?:that|which|who|whose|and|or|but|to|in|of|for|with|from|at|on|by|during|since|"
+    r"across|as|were|was|are|is|have|has|had|we|our|it|its|they|their|compared|versus|vs|this|"
+    r"these|those|last|next|each|per|after|before|ago|than|over|within|into|driven|led)\b|"
+    r"[,;:.()]"
+)
+# The upper end of a range is no value of its own: "the 10% to 12% bookings growth ... targets"
+_RANGE_END = re.compile(r"\d\s*%?\s*(?:to|-|–|—)\s*[$€£¥]?\s*$")
+
+
+def _rate_named_after(claim: list[str], following: str, growth: bool) -> bool:
+    """A rate or an amount can name its measure right after it: "supported 7% organic revenue
+    growth", "a 25.1% adjusted EBITDA margin", "our over $170 billion commercial services
+    backlog". The words between the number and the growth word (or the phrase's end) must be
+    the claimed measure exactly: "7% organic revenue growth" is no revenue growth, and "7%
+    organic volume growth" no organic revenue growth."""
+    if growth:
+        found = re.match(r"\s*([a-z&\-.' ]+?)\s+(?:growth|increase|decrease|decline)\b", following)
+        phrase = found[1] if found and not _PHRASE_END.search(found[1]) else ""
+    else:
+        phrase = _PHRASE_END.split(following, maxsplit=1)[0]
+    named = metric_words(phrase)
+    # A measure, not "a 26% premium" or "$1.7 billion now"
+    return bool(set(named) & MEASURE_STEMS) and set(named) == set(claim)
+
+
+def _counted_after(needed: list[str], following: str, prefix: str) -> bool:
+    """A count written as a word counts the noun phrase right after it, no more and no less:
+    "seven strategic acquisitions" are strategic acquisitions (not acquisitions in general, nor
+    the "high-growth markets" further on). A claimed word the phrase leaves out, and any verb
+    just before the count ("we completed three acquisitions"), must be named in the same part
+    of the clause."""
+    named = metric_words(_PHRASE_END.split(following, maxsplit=1)[0])
+    if not named or named[-1] not in needed or set(named) - set(needed):
+        return False
+    segment = _segment(prefix)
+    # One of a list of counts shares the list's verb: "we opened 84 company-owned restaurants,
+    # of which 53 ..., and five international partner-operated restaurants" are five opened
+    listed = number_tokens(prefix, worded=True)
+    verbs = {
+        w
+        for w in re.findall(r"[a-z]{3,}ed\b", prefix if listed else segment)
+        if stem(w) not in needed
+    }
+    return not verbs and set(needed) - set(named) - _LINK_STEMS <= set(stems(segment))
+
+
+# A value counted from or after a period's boundary is not that period's: "Subsequent to the
+# end of fiscal 2026, we completed three additional acquisitions", "the ten acquisitions we
+# have completed since the start of fiscal 2026"
+_FROM_BOUNDARY = re.compile(
+    r"\b(?:subsequent to|since|after|following)\s+(?:the\s+)?(?:end|start|beginning|close)\s+of\b|"
+    r"\bsince\s+(?:fiscal\s+|the\s+)?(?:20\d{2}|fy\s?\d{2}|q[1-4]|year[- ]end|quarter[- ]end)\b|"
+    r"\b(?:subsequent to|after)\s+(?:the\s+)?(?:fiscal\s+)?(?:year|quarter|period)[- ]end\b"
+)
+_AT_DATE = re.compile(r"\b(?:at|as of|as at)\s+(?=[a-z]{3})")
+
+
+# A year that is part of a name, after a capitalised word that names no period: "our ROAD
+# 2030 goals", "Vision 2030"
+_NAMED_YEAR = re.compile(r"\b([A-Z][A-Za-z&]*)\s+(20\d{2})\b")
+_NOT_NAME = re.compile(
+    r"(?:fiscal|fy|calendar|year|quarter|half|in|of|for|during|through|to|by|until|from|since|"
+    r"and|the|q[1-4]|h[12]|jan\w*|feb\w*|mar\w*|apr\w*|may|jun\w*|jul\w*|aug\w*|sep\w*|oct\w*|"
+    r"nov\w*|dec\w*|full|first|second|third|fourth|end|ended|ending)",
+    re.IGNORECASE,
+)
+
+
+def _named_years_dropped(clause: str, text: str, reported: int) -> str:
+    """The clause's text without the later years it uses as a name ("our ROAD 2030 goals"):
+    an actual's clause can name a plan, not a later period."""
+    named = {
+        found[2]
+        for found in _NAMED_YEAR.finditer(clause)
+        if int(found[2]) > reported and not _NOT_NAME.fullmatch(found[1])
+    }
+    for year in named:
+        text = re.sub(rf"(?<![\d.,$]){year}\b", " ", text)
+    return text
+
+
+def _year_before(day: date) -> date:
+    return (
+        day.replace(year=day.year - 1, day=28)
+        if (day.month, day.day) == (2, 29)
+        else (day.replace(year=day.year - 1))
+    )
+
+
+def _balance_date(text: str, start: int, end: int, floor: int) -> date | None:
+    """The date a balance in running text is stated at: right after it ("$3.29 billion at
+    September 30, 2026"), else the last "as of <date>" before it in its clause, after the
+    previous amount ("As of September 30, 2026, cash was $132.9 million")."""
+    after = re.match(r"\s*,?\s*(?:at|as of|as at)\s+", text[end:])
+    if after and (dated := DATE.match(text, end + after.end())):
+        return date_of(dated)
+    found = None
+    for match in _AT_DATE.finditer(text, floor, start):
+        if dated := DATE.match(text, match.end()):
+            found = date_of(dated)
+    return found
 
 
 def _per_share_window(claim: list[str], prefix: str, following: str) -> tuple[int, int] | None:
@@ -1423,7 +1620,9 @@ def _paragraph_binding(
             if kind == "money" and not re.search(r"billion|million", text)
             else None
         )
-        tokens = number_tokens(text, "" if kind in ("%", "bps") else (caption or ""))
+        tokens = number_tokens(
+            text, "" if kind in ("%", "bps") else (caption or ""), worded=kind == "count"
+        )
         if field in ("reported_growth", "comparable_growth"):
             tokens = _directed(tokens, text)
         for index, token in enumerate(tokens):
@@ -1465,10 +1664,16 @@ def _paragraph_binding(
                     # "to decline ... by 3 to 1 percent" is never a rise of 3% to 1%
                     failures.append("the source states a decline, the claim a rise")
                     continue
-            window = _metric_window(claim, prefix)
-            if window is None and required != claim:
+            worded = text[token[0]].isalpha()  # "seven strategic acquisitions"
+            named_next = False  # the measure is named only after the number, by a rule below
+            window = None if worded else _metric_window(claim, prefix)
+            if window is None and required != claim and not worded:
                 window = _metric_window(required, prefix)
-            if window is None and (
+            if worded:
+                # A count written as a word counts only the noun phrase right after it
+                if _counted_after(required, following, prefix):
+                    window, named_next = (token[0], token[0]), True
+            elif window is None and (
                 kind == "count" or (kind == "%" and re.match(r"\s*of\b", following))
             ):
                 # A count can name what it counts after its number ("repurchased 9.5 million
@@ -1495,9 +1700,29 @@ def _paragraph_binding(
                     and set(metric_words(whole)) <= set(needed)
                 ):
                     window = (token[0], token[0])
-            if window is None and _named_after(required, following, kind, growth_slot, prefix):
+            if (
+                window is None
+                and not worded
+                and _named_after(required, following, kind, growth_slot, prefix)
+            ):
                 window = (token[0], token[0])
-            if window is None and len(claim) > 1 and re.search(r"[a-z]ed$", fact.metric.casefold()):
+            if (
+                window is None
+                and not worded
+                and (kind == "%" or (kind == "money" and not _changed_by(prefix, required)))
+                and field in ("current_actual", "reported_growth", "new_guidance")
+                and _rate_named_after(required, following, growth_slot)
+            ):
+                window, named_next = (token[0], token[0]), True
+            if named_next and _RANGE_END.search(prefix):
+                failures.append("the number ends a range, it is no value of its own")
+                continue
+            if (
+                window is None
+                and not worded
+                and len(claim) > 1
+                and re.search(r"[a-z]ed$", fact.metric.casefold())
+            ):
                 # A name ending in its verb reads verb first in a release: "Total contract value
                 # closed" is "Closed total contract value of $2.918 billion"
                 window = _metric_window(claim[-1:] + claim[:-1], prefix)
@@ -1567,6 +1792,17 @@ def _paragraph_binding(
             )
             if field == "current_actual" and (prior_word or comparator):
                 issues.append("current actual is attached to the comparison/prior-year amount")
+            if field not in ("previous_guidance", "new_guidance") and _FROM_BOUNDARY.search(text):
+                issues.append("the clause counts the value from a period's boundary")
+            dated = _balance_date(text, token[0], after_end, previous[-1][1] if previous else 0)
+            if dated is not None and field in ("current_actual", "prior_year_actual"):
+                # A balance on a date is the value of the period that ends on it: backlog "at
+                # September 30, 2026" is fiscal 2026's, never "at June 30, 2026"
+                end = frame.end
+                if field == "prior_year_actual" and end is not None:
+                    end = _year_before(end)
+                if end is None or dated != end:
+                    issues.append("the balance's date is not the end of the claimed period")
             if (
                 field == "prior_year_actual"
                 and not prior_word
@@ -1638,8 +1874,15 @@ def _paragraph_binding(
                 # Anywhere in the clause before it: "ASML expects Q4 2026 total net sales
                 # between", "Targets assume non-GAAP operating margin of ~44.0%"
                 span = f"{prefix} {span}"
-                if not _GUIDANCE.search(span):
+                if not _GUIDANCE.search(span) and not named_next:
                     span = f"{span} {frame.near}"  # an "Outlook" heading above the bullet
+            elif named_next:
+                # A measure named after its number is read with the whole clause before it: "We
+                # expect to finish 2026 at ... 15% to 18% revenue growth" is no actual, and
+                # "will attend ... four upcoming investor conferences" is a plan
+                span = f"{prefix} {span}"
+                if re.search(r"\bwill\b|\w'll\b|\bupcoming\b", f"{prefix} {after}"):
+                    issues.append("the clause states a plan, not a result")
             issues.extend(_slot_issues(field, value, span, fact.metric, before=prefix[-120:]))
             if field not in ("previous_guidance", "new_guidance", "prior_year_actual") and (
                 _guidance_heading(frame.near)
@@ -1649,11 +1892,22 @@ def _paragraph_binding(
             if growth_slot:
                 compared, shown = _comparison(field, value, f"{text[after_end:following]} {text}")
                 issues.extend(compared)
-            period_text = text
-            if field in ("previous_guidance", "new_guidance"):
-                # A forecast's period is named up to its number and just after it, not in the
-                # reasons that follow ("...$12.0B ... due primarily to a transaction in Q4")
-                period_text = f"{text[:after_end]} {after}"
+            guide = field in ("previous_guidance", "new_guidance")
+            # A forecast's period is named up to its number and just after it, not in the
+            # reasons that follow ("...$12.0B ... due primarily to a transaction in Q4")
+            period_text = f"{text[:after_end]} {after}" if guide else text
+            if named_next:
+                # A measure named after its number takes the period its own part of the clause
+                # states, when it states one: "Following record fourth quarter revenue, our
+                # backlog entering fiscal 2027 strongly supports our guidance of 15% revenue
+                # growth" is fiscal 2027's, not the fourth quarter's
+                own = _segment(prefix) + re.split(r"[,;:]", text[len(prefix) :], maxsplit=1)[0]
+                if years(own) or quarter(own) or durations_in(own):
+                    period_text = own
+            if not guide and frame.reported:
+                # A later year used as a name is no period of an actual: the "ROAD 2030 goals"
+                # a fiscal 2026 count was made under
+                period_text = _named_years_dropped(clause, period_text, int(frame.reported[0]))
             period_near = f"{ref.quote}\n{frame.near}"
             if field == "current_actual" and frame.reported:
                 # A year attached to an explicit comparison after this amount describes its
@@ -1992,6 +2246,7 @@ def _bind(facts: list[ReferencedFact], document: SourceDocument) -> BindingRepor
         if len(announced) == 1:
             named_period = (int(reported[0]), _QUARTER_NUMBER[announced.pop()])
     terms = _terms(document)
+    end = terms.end
     shown_updates: set[str] = set()
     for fact in facts:
         changes: dict[str, object] = {}
@@ -2017,6 +2272,7 @@ def _bind(facts: list[ReferencedFact], document: SourceDocument) -> BindingRepor
                     offset=offset,
                     reported=reported,
                     terms=terms,
+                    end=end,
                 )
                 if named_period and not quarter(context.far):
                     # A harmless layout table can precede the title. The release's own

@@ -23,6 +23,30 @@ _NUMBER = re.compile(
     re.IGNORECASE,
 )
 _MONTHS = {"three": 3, "six": 6, "nine": 9, "twelve": 12, "3": 3, "6": 6, "9": 9, "12": 12}
+# A count the quote writes as a word: "seven strategic acquisitions". The verifier decides
+# what it counts
+_CARDINAL_WORDS = [
+    "one",
+    "two",
+    "three",
+    "four",
+    "five",
+    "six",
+    "seven",
+    "eight",
+    "nine",
+    "ten",
+    "eleven",
+    "twelve",
+    "thirteen",
+    "fourteen",
+    "fifteen",
+    "sixteen",
+    "seventeen",
+    "eighteen",
+    "nineteen",
+    "twenty",
+]
 _COUNTS = re.compile(
     r"accounts|users|MAU|shares|restaurants|engines|deals|\bcount\b", re.IGNORECASE
 )
@@ -82,8 +106,8 @@ def _numbers(text: str, unit: str = "") -> list[tuple[Decimal, Decimal, str]]:
         lambda match: "-" + match[1] + (match[2] or ""),
         text,
     )
-    for word, number in {"one": "1", "two": "2", "three": "3", "five": "5", "ten": "10"}.items():
-        text = re.sub(rf"\b{word}\b", number, text, flags=re.IGNORECASE)
+    for number, word in enumerate(_CARDINAL_WORDS, start=1):
+        text = re.sub(rf"\b{word}\b", str(number), text, flags=re.IGNORECASE)
     hint = next((v for k, v in _SCALE.items() if len(k) > 1 and k in unit.lower()), Decimal(1))
     result = []
     for match in _NUMBER.finditer(text):
@@ -127,6 +151,9 @@ def _table_duration(fact: SummaryFact, context: str, source_unit: str) -> int | 
             r"\b(three|six|nine|twelve|3|6|9|12) months? ended", context, re.IGNORECASE
         )
     ]
+    if not durations and re.search(r"\b(?:fiscal )?years? ended\b", context, re.IGNORECASE):
+        # An annual statement with no quarter columns: "For the Fiscal Year Ended September 30,"
+        durations = [12]
     if not durations:
         return None
     # A combined quarter/YTD table has two current/prior pairs, in header order.
