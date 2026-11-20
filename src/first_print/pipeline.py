@@ -62,6 +62,7 @@ from first_print.sources import (
 )
 from first_print.summary import MODEL, WRITER, Summarizer, SummaryError
 from first_print.text import release_document, verified_report
+from first_print.transition_evidence import TransitionEvidence
 
 FILE_TYPES = (".pdf", ".xlsx", ".xls")
 # A release PDF is summarized as soon as it's read. A page reads better (its tables keep their
@@ -1210,7 +1211,7 @@ async def watch_schedule(
     """Runs the schedule and posts each release to the channel. `ping`, a cheap Discord request,
     keeps the connection open during windows (see keep_warm)."""
     with log_path.open("a", encoding="utf-8") as file:
-        journal = Journal(file)
+        journal = Journal(file, evidence=TransitionEvidence.for_log(log_path))
         async with Fetcher(sec_user_agent) as fetcher:
             releases = Releases(lambda: DiscordPoster(channel), fetcher, journal, summarizer)
             windows = [target.window for target in plan.target]
