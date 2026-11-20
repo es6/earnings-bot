@@ -233,7 +233,8 @@ def format_period(value: str) -> str:
 
 
 def format_label(value: str) -> str:
-    text = re.sub(r"fee[- ]related earnings", "FRE", value, flags=re.IGNORECASE)
+    text = re.sub(r"\s*\(unaudited\)", "", value, flags=re.IGNORECASE)
+    text = re.sub(r"fee[- ]related earnings", "FRE", text, flags=re.IGNORECASE)
     text = re.sub(r"total operating earnings", "TOE", text, flags=re.IGNORECASE)
     return re.sub(r"\b([A-Z][A-Z0-9]{1,8})\s*\(\1\)", r"\1", text)
 
@@ -249,7 +250,7 @@ def format_change(value: str, comparison: str = "") -> str:
     text = re.sub(r"year[- ]over[- ]year|Y/Y", "YoY", value, flags=re.IGNORECASE)
     text = re.sub(r"quarter[- ]over[- ]quarter|Q/Q", "QoQ", text, flags=re.IGNORECASE)
     match = re.fullmatch(
-        r"\s*(\()?([+-]?\d+(?:\.\d+)?)\)?\s*(%|bps|pp)\)?"
+        r"\s*(\()?([+-]?\d+(?:\.\d+)?)\)?\s*(%|bps|pp|percentage points?)\)?"
         r"\s*(YoY|QoQ|versus prior guidance)?\s*",
         text,
         re.IGNORECASE,
@@ -300,7 +301,8 @@ _GENERIC_UNIT = re.compile(
 # Tags that only restate the default or the section: "(reported)", "(Operating KPI)",
 # "(Forward outlook)"
 _DEFAULT_TAG = re.compile(
-    r"(?:as )?reported|(?:operating |key |financial |business )?(?:kpi|metric|indicator)s?|"
+    r"unaudited|(?:as )?reported|(?:operating |key |financial |business )?"
+    r"(?:kpi|metric|indicator)s?|"
     r"(?:forward(?:[- ]looking)? )?(?:outlook|guidance)|forward[- ]looking",
     re.IGNORECASE,
 )
@@ -337,6 +339,9 @@ def format_fact(fact: SummaryFact) -> str:
         label = re.sub(rf"^{re.escape(stamp)}(?:\s+|:\s*)", "", label, flags=re.IGNORECASE)
     scope = " ".join(fact.group.split())
     scope_key = _basis_key(scope)
+    label_words, scope_words = set(_basis_key(label).split()), set(scope_key.split())
+    if len(label_words) >= 2 and label_words < scope_words:
+        label = scope  # "Middle East fleet" / "Middle East Robotaxi fleet" names one fleet
     # A neutral consolidation label adds no identity; an actual region/segment does.
     if (
         scope_key
@@ -368,7 +373,16 @@ def format_fact(fact: SummaryFact) -> str:
     if (
         dimension
         and re.search(r"\d", value)
-        and not re.search(r"[A-Za-z]{3,}", re.sub(r"\b[KMBT]\b|bn", "", value))
+        and not re.search(
+            r"[A-Za-z]{3,}",
+            re.sub(
+                r"\b[KMBT]\b|bn|approximately|about|around|roughly|nearly|almost|"
+                r"more than|less than|at least|up to",
+                "",
+                value,
+                flags=re.IGNORECASE,
+            ),
+        )
         and dimension.lower()[:5] not in f"{label} {value}".lower()
     ):
         value = f"{value} {dimension}"
@@ -382,8 +396,26 @@ def format_fact(fact: SummaryFact) -> str:
         and denominator[1].lower() not in label.lower()
     ):
         value = f"{value} of {denominator[1]}"
+    if (
+        reference
+        and not fact.change.strip()
+        and re.search(r"\b(?:doubled|tripled|quadrupled)\b", value, re.IGNORECASE)
+        and reference.casefold() not in value.casefold()
+    ):
+        value += f" {reference}"
     change = format_change(fact.change, reference)
     rate = re.fullmatch(r"([2212-]?)\+?(\d+(?:\.\d+)?)%", value.strip())
+    if (
+        rate
+        and reference
+        and not change.strip()
+        and not re.search(r"margin|rate|ratio|share", label, re.IGNORECASE)
+        and (
+            value.strip().startswith(("+", "-"))
+            or re.search(r"growth|increase|decrease|decline", label, re.IGNORECASE)
+        )
+    ):
+        value = format_change(value, reference)
     if (
         rate
         and not re.search(r"margin|rate|ratio|share", label, re.IGNORECASE)

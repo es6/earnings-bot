@@ -646,7 +646,8 @@ _TOKEN = re.compile(
     r"(?P<neg>\((?=\s*(?:US\$|C\$|A\$|[$€£¥])?\s*\d)|(?<![\w.%)/])-|−)?\s*"
     r"(?P<cur>US\$|C\$|A\$|[$€£¥])?\s*(?P<neg2>\(|(?<![\w.%)/])-|−)?\s*"
     r"(?P<num>\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)\s*(?P<close>\))?\s*"
-    r"(?P<suffix>%|percent\b|bps\b|basis points\b|trillion\b|billion\b|million\b|thousand\b|"
+    r"(?P<suffix>percentage points?\b|pp\b|%|percent\b|bps\b|basis points\b|"
+    r"trillion\b|billion\b|million\b|thousand\b|"
     r"bn\b|[KMBT]\b)?",
     re.IGNORECASE,
 )
@@ -754,6 +755,9 @@ def number_tokens(
         )
         if dash:
             negative = False
+        if suffix in ("percentage point", "percentage points", "pp"):
+            amount, step = amount * 100, step * 100
+            suffix = "bps"
         if suffix in ("%", "percent", "bps", "basis points"):
             dimension = "%" if suffix in ("%", "percent") else "bps"
             if ranged and unscaled and found[-1][4] == "number":

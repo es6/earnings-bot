@@ -1130,8 +1130,8 @@ class Release:
         footer = f"{BETA} · Summary by {WRITER} in {took:.0f}s from the {label} text"
         if summary.unverified:
             held = len(summary.unverified)
-            figures = "figure" if held == 1 else "figures"
-            footer += f" · {held} {figures} held back: the release didn't confirm them"
+            checks = "check" if held == 1 else "checks"
+            footer += f" · {held} verification {checks} flagged omitted facts or details"
         footer = footer[:2048]
         if self.jobs:
             self.jobs.summary_written(

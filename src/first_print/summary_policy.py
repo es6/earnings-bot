@@ -8,7 +8,7 @@ import re
 from dataclasses import dataclass
 from typing import Literal
 
-POLICY_VERSION = "2026-11-12.1"
+POLICY_VERSION = "2026-11-20.1"
 
 
 # These are the settings actually tested in the November prototype, not model aliases.
@@ -40,6 +40,9 @@ Coverage:
   Choose the company's relevant profit measure:
   adjusted EPS, operating profit, EBITDA or another measure emphasized in its results.
   EPS is optional. Do not silently substitute GAAP for adjusted or vice versa.
+  A loss-making company still needs a material loss/profitability measure; revenue and
+  gross margin alone can hide its funding story. A regional unit-economics milestone
+  does not establish company profitability.
 - Material revenue segments, largest first, grouped compactly;
   include a small but important growth engine and recurring fee/subscription streams.
   Preserve the revenue taxonomy. Expense rows are not segments. Product and operating
@@ -94,7 +97,10 @@ Evidence and arithmetic:
   reinvestment, funding and dilution together. A synergy target is not immediate accretion.
 - Business updates need a consequence for adoption, monetization, capacity, earnings or risk.
   Do not fill an updates slot with routine launches or accounting disclosures. A usage milestone
-  can outrank a product announcement when it demonstrates business traction. Retain meaningful
+  can outrank a product announcement when it demonstrates business traction. Preserve
+  meaningful monetization, overseas/product revenue and fleet/delivery scale when they
+  explain the business; do not replace them with a generic launch or a cash-runway quote.
+  Retain meaningful
   constraints and next steps in a capacity/demand outlook, not just its headline.
 - Never invent consensus or call a figure a beat/miss without a supplied, matching estimate.
   Missing information is missing, not zero. Omit an ambiguous fact or flag it for review.
