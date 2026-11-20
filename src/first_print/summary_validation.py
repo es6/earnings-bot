@@ -86,15 +86,27 @@ _QOQ_WORDS = re.compile(r"quarter[- ]over[- ]quarter|sequential|\bq/q\b|\bqoq\b"
 def _stated_comparison(fact: SummaryFact) -> SummaryFact:
     """Fill a missing YoY label only when the quoted passage says year-over-year and nothing
     else; the current period alone never establishes it."""
-    if fact.comparison or not re.search(r"\d\s*(?:%|bps|percent)", fact.change):
+    if fact.comparison or not re.search(
+        r"\d\s*(?:%|bps|pp|percent)|\b(?:doubled|tripled|quadrupled)\b",
+        f"{fact.change} {fact.value}",
+        re.IGNORECASE,
+    ):
         return fact
     if _YOY_WORDS.search(fact.source) and not _QOQ_WORDS.search(fact.source):
         return replace(fact, comparison="YoY")
+    if _QOQ_WORDS.search(fact.source) and not _YOY_WORDS.search(fact.source):
+        return replace(fact, comparison="QoQ")
     return fact
 
 
 def _numbers(text: str, unit: str = "") -> list[tuple[Decimal, Decimal, str]]:
     """Amount, rounding tolerance and dimension; Decimal preserves table precision."""
+    text = re.sub(
+        r"([+-]?\d+(?:\.\d+)?)\s*(?:percentage points?|pp)\b",
+        lambda m: f"{Decimal(m[1]) * 100} bps",
+        text,
+        flags=re.IGNORECASE,
+    )
     # The joining dash becomes "to", so "$10.55-$10.75B" never reads as a minus
     text = _RANGE_SCALE.sub(
         lambda m: f"{m[1]} {m[3]}" + re.sub(r"^\s*(?:-|\u2013|to)", " to ", m[2]), text
