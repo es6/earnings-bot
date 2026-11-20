@@ -25,6 +25,7 @@ from first_print.ir_research import issuer_links, next_page
 from first_print.issuer_news import discover_manifest, news_records, read_news
 from first_print.issuers import SEC_SUBMISSIONS, filing_form, release_time
 from first_print.known import KnownCompany, SourceCheck, known_companies, naming_offset
+from first_print.newsroom_discovery import discover_newsrooms
 from first_print.periods import title_period
 from first_print.recorder import ET, PollError, poll
 from first_print.sec_results import SixKResults, SixKUnavailable, reported_period
@@ -44,7 +45,7 @@ from first_print.text import html_to_text, release_text, verified_report
 log = logging.getLogger(__name__)
 REINVESTIGATE = timedelta(days=30)
 # Bump when discovery rules change so persisted issuer research is rechecked.
-INVESTIGATION = 15
+INVESTIGATION = 16
 _HOST = re.compile(r"\b((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,})\b", re.IGNORECASE)
 _WEB_HOST = re.compile(r"\b(?:https?://|(?=www\.))" + _HOST.pattern, re.IGNORECASE)
 _IR_HOST = re.compile(r"^(?:ir|investors?|investor-?relations)\.", re.IGNORECASE)
@@ -123,6 +124,8 @@ OpenChrome = Callable[[], AbstractAsyncContextManager[Chrome]]
 def due(ticker: str, company: KnownCompany, today: date, catalog: bool = True) -> bool:
     """Whether to look for a company's sources: one outside the catalog, not looked at lately.
     `catalog=False` looks at a catalog company's too (/track debug mode)."""
+    if any(item.state == "unresolved" and item.checked < today for item in company.newsrooms):
+        return True  # unresolved candidates are revisited daily, outside release windows
     if catalog and ticker in known_companies():
         return False
     return (
@@ -905,6 +908,23 @@ async def investigate(
             findings.listing = next(iter(_release_pages(home, page.body)), None)
         if findings.listing or findings.q4 or findings.feeds:
             break
+    report.doing("Inventorying independent official newsrooms")
+    newsrooms = await discover_newsrooms(
+        fetcher,
+        [
+            f"https://{host}/"
+            for host in hosts
+            if host != findings.site or not (findings.q4 or findings.feeds or findings.release_url)
+        ],
+        [company.name, *company.names],
+        today,
+        existing=company.newsrooms,
+        primary=[url for url in (findings.listing, company.ir_listing) if url],
+    )
+    for item in newsrooms:
+        (report.watch if item.enabled else report.reject)(
+            f"Independent newsroom <{item.listing}>", item.reason
+        )
     if not findings.q4 and not findings.feeds:
         feed, found_wire = await _named_feed(fetcher, text, report)
         if feed:
@@ -1009,5 +1029,6 @@ async def investigate(
             "investigated": today,
             "investigation": INVESTIGATION,
             "checks": report.checks,
+            "newsrooms": newsrooms,
         }
     )

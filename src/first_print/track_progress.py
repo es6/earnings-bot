@@ -9,6 +9,7 @@ from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from urllib.parse import urlsplit
 
 import aiohttp
 import discord
@@ -436,6 +437,12 @@ class TrackProgress:
         no_date = bool(phase and RECHECKING in phase)
         between = bool(no_date and phase and not phase.startswith("No release date"))
 
+        watched_rooms = {room.listing for room in target.newsrooms} if target else set()
+        newsroom_gaps = [
+            room
+            for room in row.company.newsrooms
+            if room.state != "verified" or (target and room.listing not in watched_rooms)
+        ]
         # The checklist, and the color and headline it adds up to
         form = row.company.sec_form or "8-K"
         steps = [f"{DONE} Found in SEC data: CIK {row.cik}, results on Form {form}"]
@@ -483,12 +490,15 @@ class TrackProgress:
         else:
             steps.append(f"{TODO} Speed history")
 
+        if newsroom_gaps:
+            steps.append(f"{FAILED} Independent newsroom coverage needs follow-up")
         working = any(step.startswith(WORKING) for step in steps)
         complete = (
             speed is not None
             and not investigating
             and not working
             and not ir_pending
+            and not newsroom_gaps
             and not cache_pending
             and row.cik not in self.audit_failed
             and (no_date or (target and phase is None))
@@ -555,6 +565,18 @@ class TrackProgress:
                 watching.append("IR press release page *(verified after the date is set)*")
             heading = "👀 Will watch once a date is set"
         embed.add_field(name=heading, value=bullets(watching) or "Nothing yet", inline=False)
+        if row.company.newsrooms:
+            inventory = []
+            for room in row.company.newsrooms:
+                state = "Watched" if room.listing in watched_rooms else "Not in the active plan"
+                if not target:
+                    state = "Prepared" if room.enabled else "Unresolved"
+                if room.state != "verified":
+                    state += "; unresolved"
+                inventory.append(f"[{state}](<{room.listing}>) · {room.reason}")
+            embed.add_field(
+                name="Independent newsroom inventory", value=bullets(inventory), inline=False
+            )
         if cache:
             embed.add_field(name="Cache preflight", value=bullets(cache), inline=False)
         if profile_note := self.profile_note(row.cik):
@@ -582,7 +604,14 @@ class TrackProgress:
             if not check.watch
             # Verified for this release since, so it's watched after all
             and not (
-                target and target.ir and target.ir.listing and "press release page" in check.source
+                target
+                and target.ir
+                and target.ir.listing
+                and "press release page" in check.source
+                and (
+                    target.ir.listing in check.source
+                    or (urlsplit(target.ir.listing).hostname or "__none__") in check.source
+                )
             )
         ]
         if target and target.ir is None and note and issuer_listing(row.ticker, row.company):
