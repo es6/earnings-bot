@@ -376,6 +376,7 @@ class _Context:
     scale: str | None = None
     terms: _Terms = _NO_TERMS
     end: date | None = None  # the last day of the period the release reports
+    section: str = ""  # an explicitly named business section above the cited block
 
     def __str__(self) -> str:
         return f"{self.near}\n{self.far}"
@@ -389,9 +390,30 @@ def _context(document: SourceDocument, block_id: str) -> _Context:
     passed_table = False
     lead = ""
     scale = None
+    section = ""
     for block in document.blocks:
         if block.id == block_id:
             break
+        text = block.text.strip()
+        # Some IR pages lay a business heading out as a one-cell table. Accept a name
+        # with its acronym, or the explicit "Results for ..." corner of a results table.
+        named = re.fullmatch(r"[A-Z][A-Za-z &'’,.-]{2,85}\s+\([A-Z]{2,6}\)", text)
+        results = re.match(r"Results for ([^|\n]{2,80})", text, re.IGNORECASE)
+        if results and _generic_heading(results[1]):
+            results = None
+        if named or results:
+            heading = results[1].strip() if results else text
+            if not section or not _names_group(section, heading):
+                section = heading
+            local.clear()
+        elif (
+            block.kind == "paragraph"
+            and len(text) <= 100
+            and not re.search(r"[.!?;]|\d", text)
+            and text.rstrip(":").casefold() != "discussion of results"
+        ):
+            # A new standalone heading ends the section, even when it names no business.
+            section = ""
         lead = block.text if block.kind == "paragraph" and len(block.text) <= 300 else ""
         # A caption's scale holds for the tables after it until another states its own:
         # Walmart's "Dollars in billions, except as noted" over three segment tables
@@ -422,7 +444,7 @@ def _context(document: SourceDocument, block_id: str) -> _Context:
     if outlook:
         near = [outlook, *near]
     far = [line for line in opening[:12] if _METADATA.search(line)]
-    return _Context("\n".join(near), "\n".join(far), lead=lead, scale=scale)
+    return _Context("\n".join(near), "\n".join(far), lead=lead, scale=scale, section=section)
 
 
 # Words after a growth rate that say what it compares, not what it measures
@@ -1032,6 +1054,7 @@ def _table_binding(
         if len(claims) == 2 and (high := _range_end(table, row, index)):
             raw = f"{raw} to {high}"
         label, section = (terms.expand(t) for t in _label_and_group(table, cell))
+        section = section or terms.expand(frame.section)
         headers = f"{_headers(table, cell)} {prefix}".strip()
         named = _PERIOD_ONLY.sub("", headers).strip(" -:|")
         if label.strip() and not _PERIOD_ONLY.sub("", label).strip(" -:|") and named:
@@ -1608,7 +1631,12 @@ def _paragraph_binding(
         measure = [w for w in measure if w not in _GUIDANCE_STEMS] or measure
     # The group's words are checked as the group; when they are all the measure has
     # ("Adobe AI-first ARR" growth), the measure is named in full
-    claim = [w for w in measure if w not in set(metric_words(group))] or measure
+    group_words = set(metric_words(group))
+    if group and _names_group(group, terms.expand(frame.section)):
+        # "CIB net revenue" below "Commercial & Investment Bank (CIB)": the heading
+        # establishes the abbreviation as part of the group, not the measure's name.
+        group_words |= {w for form in _group_forms(frame.section) for w in metric_words(form)}
+    claim = [w for w in measure if w not in group_words] or measure
     # "Net sales" is named by "Sales in the quarter were", unless the release tells them apart
     required = [w for w in claim if w not in terms.optional(set(claim))] or claim
     named_claim, named_required = claim, required
@@ -1857,8 +1885,26 @@ def _paragraph_binding(
             money = kind == "count" and bool(
                 _MONEY_MARK.search(text[max(0, token[0] - 4) : token[0] + 1])
             )
-            if group and not _clause_names(group, text) and not _names_itself(fact, group, text):
+            scope = terms.expand(_group(fact.model_copy(update={"group": frame.section}), terms))
+            stated_group = _clause_names(group, text) or _names_itself(fact, group, text)
+            if group and not stated_group and not _clause_names(group, scope):
                 issues.append("segment/group is absent from the claim clause")
+            elif group and not stated_group:
+                # A heading scopes a bare measure, not another named business's measure:
+                # "Banking & Payments revenue" beneath CIB is not CIB net revenue.
+                # Stay conservative when the measure is named only after the number.
+                before = _segment(prefix[: window[0]])
+                leading = set(metric_words(before))
+                leading -= {stem(w) for w in ("the", "our", "its", "this", "segment", "business")}
+                if named_next or leading:
+                    issues.append("the section cannot establish this more specific source measure")
+            if (
+                scope
+                and not group
+                and not _names_group(scope, metric)
+                and not _names_itself(fact, scope, text)
+            ):
+                issues.append("the source belongs to a business section the claim doesn't name")
             bounds = text[max(0, token[0] - 20) : after_end]
             # "approximately $1.2 billion" claimed as "$1.2 billion" is shown as the source
             # words it; any other difference in a bound is a different claim
@@ -2181,10 +2227,12 @@ def _group_stated(fact: ReferencedFact, document: SourceDocument, terms: _Terms)
                 # in a cell names it in its own text
                 if cells and not _prose(cells[0]):
                     label, section = _label_and_group(block, cells[0])
+                    section = section or _context(document, ref.block_id).section
                     if not _names_group(group, terms.expand(f"{label} | {section}")):
                         return False
                     continue
-            if not _names_group(group, terms.expand(ref.quote)):
+            scope = _context(document, ref.block_id).section
+            if not _names_group(group, terms.expand(f"{scope}\n{ref.quote}")):
                 return False
     return True
 
