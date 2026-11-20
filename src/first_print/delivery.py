@@ -348,8 +348,15 @@ class DeliveryStore:
                 ),
             )
 
-    def summary_status(self, key: str, status: str) -> None:
+    def summary_status(self, key: str, status: str, *, evidence: str | None = None) -> None:
         with self.db:
+            if evidence is not None:
+                self.db.execute(
+                    "INSERT OR REPLACE INTO summary_evidence "
+                    "SELECT channel_id, release_key, document, attempts, ? FROM summaries "
+                    "WHERE channel_id = ? AND release_key = ?",
+                    (evidence, self.channel_id, key),
+                )
             self.db.execute(
                 "UPDATE summaries SET status = ?, updated = ? WHERE channel_id = ? "
                 "AND release_key = ?",

@@ -1121,7 +1121,7 @@ class Release:
                 )
             except SummaryError as error:
                 if self.jobs:
-                    self.jobs.summary_status(key, FAILED)
+                    self.jobs.summary_status(key, FAILED, evidence=error.evidence)
                 self.summarizing = False  # let a later source try
                 self.journal.write("summary_error", ticker=self.target.ticker, message=str(error))
                 self.journal.say(f"{self.target.ticker}: summary failed: {error}")
@@ -1152,7 +1152,7 @@ class Release:
             input_tokens=summary.input_tokens,
             output_tokens=summary.output_tokens,
             document_sha256=document.sha256,
-            validation="source-references/1" if summary.evidence else "legacy",
+            validation=summary.validation,
             **({"replaces": replaces} if replaces else {}),
         )
 
