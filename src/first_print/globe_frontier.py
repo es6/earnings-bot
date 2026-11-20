@@ -28,7 +28,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from first_print.fetch import Fetcher
 from first_print.periods import agrees_with_period
 from first_print.release_band import ET
-from first_print.sec_results import announces_results
+from first_print.sec_results import _ANNOUNCES_RESULTS, announces_results, reported_period
 from first_print.sources import RssFeed, Sighting, results_headline
 from first_print.text import html_to_text
 
@@ -110,6 +110,8 @@ class Frontier:
         numbers = [int(n) for n in _NUMBER.findall(response.body.decode(errors="replace"))]
         if response.status != 200 or not numbers:
             self.journal.write("globe_guess_error", label=self.label, status=response.status)
+            if response.status in REFUSED:
+                raise Refused(f"{response.status} for frontier feed")
             return None
         return max(numbers)
 
@@ -196,6 +198,27 @@ def is_release(page: Page, target: "Target") -> bool:
     quarter or a text that announces them (sec_results.announces_results)."""
     symbols = {part.split(":")[-1].strip().upper() for part in page.tickers.split(",")}
     if target.ticker.upper() not in symbols:
+        if symbols - {""}:
+            return False
+        text = html_to_text(page.body.decode(errors="replace"))
+        lines = text.splitlines()
+        for index, line in enumerate(lines):
+            for announcement in _ANNOUNCES_RESULTS.finditer(line):
+                for name in target.trial.globenewswire:
+                    if re.fullmatch(r"[A-Z]{2,12}\s*:\s*[\w.-]+", name, re.IGNORECASE):
+                        continue
+                    subject = (
+                        rf"(?<!\w){re.escape(name)}"
+                        r"(?:\s+(?:Inc\.?|Ltd\.?|Limited|Corporation|Corp\.?|plc))*"
+                        r"\s*(?:\([^()\n]{0,120}\)\s*)?(?:today\s+)?$"
+                    )
+                    named = reported_period(line)
+                    if re.search(subject, line[: announcement.start()], re.IGNORECASE) and (
+                        named
+                        and (target.period is None or target.period == f"FY{named[0]}Q{named[1]}")
+                        and announces_results("\n".join(lines[index : index + 12]), target.period)
+                    ):
+                        return True
         return False
     if results_headline(page.title) and agrees_with_period(page.title, target.period):
         return True
@@ -214,6 +237,12 @@ async def guess_release(
     source = RssFeed("globenewswire_page", FEED, target.trial.globenewswire)
     frontier = Frontier(fetcher, journal, target.ticker)
 
+    def outcome(value: str) -> None:
+        journal.guess_status[target.release_key] = value
+        journal.write(
+            "globe_guess_status", ticker=target.ticker, outcome=value, guesses=frontier.sent
+        )
+
     async def found(page: Page) -> bool:
         if not is_release(page, target):
             return False
@@ -227,6 +256,7 @@ async def guess_release(
         return True
 
     try:
+        outcome("waiting")
         for start, stop in spans(target.times):
             until = min(stop, end)
             if until <= journal.now():
@@ -234,9 +264,16 @@ async def guess_release(
             # Waits on the journal's trusted clock, checked every 30 s at most
             while (wait := (start - journal.now()).total_seconds()) > 0:  # noqa: ASYNC110
                 await asyncio.sleep(min(wait, 30))
-            if await frontier.watch(until, found) in {"found", "refused", "budget"}:
+            outcome("running")
+            result = await frontier.watch(until, found)
+            outcome(result)
+            if result in {"found", "refused", "budget"}:
                 return
+        outcome("time")
+    except Refused:
+        outcome("refused")
     except Exception as error:  # a bug here mustn't stop the window
+        outcome("error")
         journal.write("globe_guess_error", label=target.ticker, message=repr(error))
 
 
